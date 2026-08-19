@@ -25,6 +25,9 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $recoveryCmd = Join-Path $scriptRoot 'Recovery.cmd'
 $recoveryLauncher = Join-Path $scriptRoot 'RecoveryLauncher.cmd'
 $recoveryShell = Join-Path $scriptRoot 'winpeshl.ini'
+$script:WindowsArchitecture = ''
+$script:WindowsEdition = 'unknown'
+$script:WindowsBuild = 'unknown'
 
 function Write-Log([string]$Message) {
     New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
@@ -36,6 +39,24 @@ function Require-Administrator {
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Administrator elevation is required.'
+    }
+}
+
+function Get-NativeWindowsArchitecture {
+    $reported = @($env:PROCESSOR_ARCHITEW6432, $env:PROCESSOR_ARCHITECTURE) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.ToUpperInvariant() }
+    if ($reported -contains 'ARM64') { return 'arm64' }
+    if ($reported -contains 'AMD64') { return 'x64' }
+    throw "Unsupported Windows architecture (reported $($reported -join ', ')). This package supports ARM64."
+}
+
+function Assert-PackageArchitecture {
+    $manifestPath = Join-Path $scriptRoot 'build-manifest.json'
+    if (-not (Test-Path $manifestPath)) { return }
+    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.architecture -and "$($manifest.architecture)" -ne $script:WindowsArchitecture) {
+        throw "This package is for $($manifest.architecture), but the current Windows OS is $script:WindowsArchitecture."
     }
 }
 
@@ -65,7 +86,10 @@ function Get-VolumeIdentity([string]$Drive) {
 function Assert-SystemEnvironment {
     $os = Get-CimInstance Win32_OperatingSystem
     if ($os.Caption -notmatch 'Windows 10|Windows 11') { throw "V1 only supports Windows 10/11: $($os.Caption)" }
-    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw "V1 release package requires x64 Windows (reported $env:PROCESSOR_ARCHITECTURE)." }
+    $script:WindowsArchitecture = Get-NativeWindowsArchitecture
+    Assert-PackageArchitecture
+    $script:WindowsEdition = "$($os.Caption)"
+    $script:WindowsBuild = "$($os.BuildNumber)"
     $firmware = (Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType
     if ("$firmware" -notmatch 'UEFI') { throw "V1 requires UEFI firmware (reported $firmware)." }
     $systemDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
@@ -150,6 +174,9 @@ $image = if ($Operation -eq 'probe') { $task } else { Get-VolumeIdentity $ImageD
 $target = Get-VolumeIdentity $TargetDrive
 $imagePath = Join-Path $image.Drive $ImageRelativePath
 $minimumTargetSize = [UInt64]0
+$sourceUsedBytes = [UInt64]($source.Size - $source.FreeBytes)
+$reservedBytes = [UInt64](2GB)
+if ($effectiveOperation -eq 'backup') { $minimumTargetSize = [UInt64]$source.Size }
 if (-not (Test-Path (Join-Path $source.Drive 'Windows\System32\config\SYSTEM'))) {
     throw "Source volume $($source.Drive) does not contain an offline Windows SYSTEM hive."
 }
@@ -189,8 +216,7 @@ if ($effectiveOperation -eq 'backup' -and $image.VolumeGuid -eq $source.VolumeGu
     throw 'The image volume must differ from the captured source volume.'
 }
 if ($effectiveOperation -eq 'backup') {
-    $sourceUsed = [UInt64]($source.Size - $source.FreeBytes)
-    $requiredFree = [UInt64]($sourceUsed + 2GB)
+    $requiredFree = [UInt64]($sourceUsedBytes + $reservedBytes)
     if ($image.FreeBytes -lt $requiredFree) { throw "Backup destination free space is insufficient: $($image.FreeBytes) < $requiredFree" }
 }
 if ($effectiveOperation -eq 'create-secondary' -and $target.VolumeGuid -eq $source.VolumeGuid) {
@@ -201,7 +227,7 @@ if ($effectiveOperation -in @('backup', 'restore-existing', 'create-secondary') 
     $RecoveryExe = Join-Path $scriptRoot 'Recovery.exe'
 }
 if ($effectiveOperation -ne 'probe' -and -not (Test-Path $RecoveryExe)) {
-    throw "Recovery.exe is required for real $effectiveOperation tasks. Build the x64 release binary and pass -RecoveryExe."
+    throw "Recovery.exe is required for real $effectiveOperation tasks. Build the ARM64 release binary and pass -RecoveryExe."
 }
 
 $recovery = Get-RecoveryIdentity
@@ -255,16 +281,29 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "SOURCE_VOLUME_GUID=$($source.VolumeGuid)"
     "SOURCE_DISK_GUID=$($source.DiskGuid)"
     "SOURCE_PARTITION_GUID=$($source.PartitionGuid)"
+    "SOURCE_PARTITION_OFFSET=$($source.PartitionOffset)"
     "SOURCE_PARTITION_SIZE=$($source.Size)"
+    "SOURCE_PARTITION_TYPE_GUID=$($source.PartitionTypeGuid)"
+    "SOURCE_FILESYSTEM=$($source.Filesystem)"
     "SOURCE_VOLUME_SERIAL=$($source.VolumeSerial)"
+    "SOURCE_USED_BYTES=$sourceUsedBytes"
+    "RESERVED_BYTES=$reservedBytes"
     'SOURCE_MOUNT='
     "SOURCE_DISK_NUMBER=$($source.DiskNumber)"
     "SOURCE_PARTITION_NUMBER=$($source.PartitionNumber)"
     "IMAGE_VOLUME_GUID=$($image.VolumeGuid)"
+    "IMAGE_DISK_GUID=$($image.DiskGuid)"
+    "IMAGE_PARTITION_GUID=$($image.PartitionGuid)"
+    "IMAGE_PARTITION_OFFSET=$($image.PartitionOffset)"
+    "IMAGE_PARTITION_SIZE=$($image.Size)"
     'IMAGE_MOUNT='
     "IMAGE_DISK_NUMBER=$($image.DiskNumber)"
     "IMAGE_PARTITION_NUMBER=$($image.PartitionNumber)"
     "TARGET_VOLUME_GUID=$($target.VolumeGuid)"
+    "TARGET_DISK_GUID=$($target.DiskGuid)"
+    "TARGET_PARTITION_GUID=$($target.PartitionGuid)"
+    "TARGET_PARTITION_OFFSET=$($target.PartitionOffset)"
+    "TARGET_PARTITION_SIZE=$($target.Size)"
     'TARGET_MOUNT='
     "TARGET_DISK_NUMBER=$($target.DiskNumber)"
     "TARGET_PARTITION_NUMBER=$($target.PartitionNumber)"
@@ -277,6 +316,9 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "TARGET_PARTITION_SIZE=$($target.Size)"
     "MINIMUM_TARGET_SIZE=$minimumTargetSize"
     "WIM_INDEX=$WimIndex"
+    "WINDOWS_ARCHITECTURE=$script:WindowsArchitecture"
+    "WINDOWS_EDITION=$($script:WindowsEdition)"
+    "WINDOWS_BUILD=$($script:WindowsBuild)"
     "ALLOW_DESTRUCTIVE=$allow"
     "PROGRAM_VERSION=$programVersion"
     "TASK_CREATED=$created"
@@ -336,6 +378,9 @@ Copy-Item (Join-Path $payload 'RecoveryLauncher.cmd') (Join-Path $mount 'Windows
 Copy-Item (Join-Path $payload 'RecoveryTask.env') (Join-Path $mount 'Windows\System32\RecoveryTask.env') -Force
 Copy-Item (Join-Path $payload 'task.json') (Join-Path $mount 'Windows\System32\task.json') -Force
 Copy-Item (Join-Path $payload 'winpeshl.ini') (Join-Path $mount 'Windows\System32\winpeshl.ini') -Force
+if (Test-Path (Join-Path $payload 'Recovery.exe')) {
+    Copy-Item (Join-Path $payload 'Recovery.exe') (Join-Path $mount 'Windows\System32\Recovery.exe') -Force
+}
 Invoke-Native 'dism.exe' @('/Unmount-Image', "/MountDir:$mount", '/Commit') $taskLog
 
 Copy-Item $stagedWim $registeredWim -Force

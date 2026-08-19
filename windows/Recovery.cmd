@@ -211,9 +211,11 @@ exit /b 0
 :write_metadata
 set "META_HASH="
 for /f "skip=1 tokens=1" %%H in ('certutil.exe -hashfile "%~1" SHA256 2^>nul') do if not defined META_HASH set "META_HASH=%%H"
+if not defined META_HASH exit /b 1
 for %%F in ("%~1") do set "META_SIZE=%%~zF"
+if "%META_SIZE%"=="0" exit /b 1
 set "META_PATH=%~dp1metadata.json"
->"%META_PATH%" echo {"version":1,"type":"wim","created":"%TASK_CREATED%","computer":"WinRE","windowsEdition":"unknown","architecture":"amd64","windowsBuild":"unknown","wimIndex":%WIM_INDEX%,"imageSha256":"%META_HASH%","imageSize":%META_SIZE%,"source":{"diskGuid":"%SOURCE_DISK_GUID%","partitionGuid":"%SOURCE_PARTITION_GUID%","volumeGuid":"%SOURCE_VOLUME_GUID%","partitionTypeGuid":"","diskNumber":%SOURCE_DISK_NUMBER%,"partitionNumber":%SOURCE_PARTITION_NUMBER%,"partitionOffset":0,"partitionSize":%SOURCE_PARTITION_SIZE%,"filesystem":"NTFS","volumeSerial":"%SOURCE_VOLUME_SERIAL%"},"capturedUsedBytes":0,"reservedBytes":0,"minimumTargetSize":%SOURCE_PARTITION_SIZE%,"volumeSerial":"%SOURCE_VOLUME_SERIAL%","programVersion":"%PROGRAM_VERSION%"}
+>"%META_PATH%" echo {"version":1,"type":"wim","created":"%TASK_CREATED%","computer":"WinRE","windowsEdition":"%WINDOWS_EDITION%","architecture":"%WINDOWS_ARCHITECTURE%","windowsBuild":"%WINDOWS_BUILD%","wimIndex":%WIM_INDEX%,"imageSha256":"%META_HASH%","imageSize":%META_SIZE%,"source":{"diskGuid":"%SOURCE_DISK_GUID%","partitionGuid":"%SOURCE_PARTITION_GUID%","volumeGuid":"%SOURCE_VOLUME_GUID%","partitionTypeGuid":"%SOURCE_PARTITION_TYPE_GUID%","diskNumber":%SOURCE_DISK_NUMBER%,"partitionNumber":%SOURCE_PARTITION_NUMBER%,"partitionOffset":%SOURCE_PARTITION_OFFSET%,"partitionSize":%SOURCE_PARTITION_SIZE%,"filesystem":"%SOURCE_FILESYSTEM%","volumeSerial":"%SOURCE_VOLUME_SERIAL%"},"capturedUsedBytes":%SOURCE_USED_BYTES%,"reservedBytes":%RESERVED_BYTES%,"minimumTargetSize":%MINIMUM_TARGET_SIZE%,"volumeSerial":"%SOURCE_VOLUME_SERIAL%","programVersion":"%PROGRAM_VERSION%"}
 exit /b 0
 
 :verify_file_sha

@@ -8,17 +8,24 @@
 use backuprestore_core::{BootMode, Operation, verify_image_file};
 use backuprestore_core::{Stage, Task, TaskError, TaskStore, read_json, sha256_file};
 use chrono::Utc;
-#[cfg(windows)]
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
+#[cfg(windows)]
+use std::io::Read;
 use std::io::Write;
+#[cfg(windows)]
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::process::Command;
 #[cfg(windows)]
-use std::process::Stdio;
+use std::process::{ChildStderr, ChildStdout, Stdio};
+#[cfg(windows)]
+use std::sync::{Arc, Mutex};
+#[cfg(windows)]
+use std::thread;
 
 fn usage() -> ! {
     eprintln!(
@@ -206,7 +213,7 @@ fn recover(root: String, id: String, dry_run: bool) -> Result<(), TaskError> {
             "real Recovery execution is only available on Windows/WinRE; use --dry-run on this host",
         ));
     }
-    let result = recover_windows(&store, &mut task, &log, None);
+    let result = recover_windows(&store, &mut task, &log, None, None);
     if let Err(error) = &result {
         let _ = store.write_failure(&mut task, 1, error.to_string());
     }
@@ -227,10 +234,14 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let values = read_env_file(&path)?;
     let task_id = env_required(&values, "TASK_ID")?;
     let task_root_rel = env_required(&values, "TASK_ROOT_REL")?;
+    backuprestore_core::validate_relative_path(&task_root_rel)?;
     let (store_rel, relative_id) = task_root_rel
         .replace('/', "\\")
         .rsplit_once("\\tasks\\")
         .ok_or_else(|| err("TASK_ROOT_REL must contain \\tasks\\"))?;
+    if store_rel.is_empty() || store_rel.eq_ignore_ascii_case("tasks") {
+        return Err(err("TASK_ROOT_REL has an invalid task store path"));
+    }
     if relative_id != task_id {
         return Err(err("TASK_ROOT_REL task id does not match TASK_ID"));
     }
@@ -243,6 +254,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let task_dir = store.task_dir(&task_id);
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log);
     let mut task = store.load(&task_id)?;
+    verify_task_identity_env(&values, &task)?;
     let manifest: PayloadManifest = read_json(task_dir.join("manifest.json"))?;
     let launcher = task_dir.join("payload").join("RecoveryLauncher.cmd");
     let recovery_cmd = task_dir.join("payload").join("Recovery.cmd");
@@ -303,10 +315,16 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         ),
     )?;
     let efi_root = task.target.as_ref().map(|_| Path::new("E:\\"));
-    let result = recover_windows(&store, &mut task, &log, efi_root);
+    let stage_before_failure = task.status;
+    let result = recover_windows(&store, &mut task, &log, efi_root, Some(&values));
     if let Err(error) = &result {
         let _ = store.write_failure(&mut task, 1, error.to_string());
         append_log(&log, &format!("Recovery failed: {error}"))?;
+        if stage_before_failure == Stage::BootRepaired {
+            if let Err(rollback) = restore_bcd_snapshot(&task_dir, &log) {
+                append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
+            }
+        }
     }
     let cleanup = restore_original_winre(&values, &task_dir, &log);
     if let Err(error) = &cleanup {
@@ -387,6 +405,106 @@ fn env_u32(values: &BTreeMap<String, String>, key: &str) -> Result<u32, TaskErro
 }
 
 #[cfg(windows)]
+fn env_optional(values: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    values
+        .get(key)
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(windows)]
+fn env_optional_u64(values: &BTreeMap<String, String>, key: &str) -> Option<u64> {
+    env_optional(values, key).and_then(|value| value.parse::<u64>().ok())
+}
+
+#[cfg(windows)]
+fn verify_task_identity_env(
+    values: &BTreeMap<String, String>,
+    task: &Task,
+) -> Result<(), TaskError> {
+    fn verify(
+        values: &BTreeMap<String, String>,
+        prefix: &str,
+        identity: &backuprestore_core::VolumeIdentity,
+    ) -> Result<(), TaskError> {
+        for (suffix, expected, actual) in [
+            ("VOLUME_GUID", identity.volume_guid.as_str(), "volume"),
+            ("DISK_GUID", identity.disk_guid.as_str(), "disk"),
+            (
+                "PARTITION_GUID",
+                identity.partition_guid.as_str(),
+                "partition",
+            ),
+        ] {
+            if let Some(value) = env_optional(values, &format!("{prefix}_{suffix}")) {
+                if !expected.is_empty() && !expected.eq_ignore_ascii_case(&value) {
+                    return Err(err(&format!(
+                        "{prefix} {actual} identity differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        if let Some(number) = identity.disk_number {
+            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_DISK_NUMBER")) {
+                if number as u64 != expected {
+                    return Err(err(&format!(
+                        "{prefix} disk number differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        if let Some(number) = identity.partition_number {
+            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_PARTITION_NUMBER"))
+            {
+                if number as u64 != expected {
+                    return Err(err(&format!(
+                        "{prefix} partition number differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        if identity.partition_size > 0 {
+            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_PARTITION_SIZE")) {
+                if identity.partition_size != expected {
+                    return Err(err(&format!(
+                        "{prefix} partition size differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    if let Some(source) = task.source.as_ref() {
+        verify(values, "SOURCE", source)?;
+    }
+    match task.operation {
+        Operation::Backup => {
+            let destination = task
+                .destination
+                .as_ref()
+                .ok_or_else(|| err("backup task is missing destination"))?;
+            verify(values, "IMAGE", &destination.volume)?;
+        }
+        Operation::RestoreExisting | Operation::CreateSecondary => {
+            let image = task
+                .image
+                .as_ref()
+                .ok_or_else(|| err("restore task is missing image"))?;
+            verify(values, "IMAGE", &image.volume)?;
+            let target = task
+                .target
+                .as_ref()
+                .ok_or_else(|| err("restore task is missing target"))?;
+            verify(values, "TARGET", &target.volume)?;
+        }
+        Operation::Probe => {}
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn mount_env_volume(
     values: &BTreeMap<String, String>,
     prefix: &str,
@@ -444,12 +562,62 @@ fn restore_original_winre(
     Ok(())
 }
 
+#[cfg(windows)]
+fn restore_bcd_snapshot(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
+    let snapshot = task_dir.join("bcd-before-export");
+    if !snapshot.exists() {
+        return Err(err("BCD snapshot is missing"));
+    }
+    let efi_store = Path::new(r"E:\EFI\Microsoft\Boot\BCD");
+    if efi_store.exists() {
+        let snapshot_arg = snapshot.to_string_lossy().into_owned();
+        let store_arg = efi_store.to_string_lossy().into_owned();
+        run_logged(
+            "bcdedit.exe",
+            &["/store", &store_arg, "/import", &snapshot_arg],
+            log,
+        )?;
+    } else {
+        let snapshot_arg = snapshot.to_string_lossy().into_owned();
+        run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
+    }
+    append_log(
+        log,
+        "Previous BCD snapshot imported after boot repair failure",
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn native_windows_architecture() -> String {
+    let reported = [
+        env::var("PROCESSOR_ARCHITEW6432").ok(),
+        env::var("PROCESSOR_ARCHITECTURE").ok(),
+    ];
+    if reported
+        .iter()
+        .flatten()
+        .any(|value| value.eq_ignore_ascii_case("ARM64"))
+    {
+        "arm64".into()
+    } else if reported
+        .iter()
+        .flatten()
+        .any(|value| value.eq_ignore_ascii_case("AMD64"))
+    {
+        "x64".into()
+    } else {
+        "unknown".into()
+    }
+}
+
 #[cfg(not(windows))]
 fn recover_windows(
     _store: &TaskStore,
     _task: &mut Task,
     _log: &Path,
     _efi_root: Option<&Path>,
+    _metadata_context: Option<&BTreeMap<String, String>>,
 ) -> Result<(), TaskError> {
     Err(err(
         "real Recovery execution is only available on Windows/WinRE",
@@ -462,6 +630,7 @@ fn recover_windows(
     task: &mut Task,
     log: &Path,
     efi_root: Option<&Path>,
+    metadata_context: Option<&BTreeMap<String, String>>,
 ) -> Result<(), TaskError> {
     use backuprestore_core::TargetRole;
     if task.status == Stage::Prepared {
@@ -581,21 +750,31 @@ fn recover_windows(
             fs::rename(&partial, &destination_path)?;
             let image_size = fs::metadata(&destination_path)?.len();
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
+            let context_value = |key: &str, fallback: &str| {
+                metadata_context
+                    .and_then(|values| env_optional(values, key))
+                    .unwrap_or_else(|| fallback.to_string())
+            };
+            let context_u64 = |key: &str, fallback: u64| {
+                metadata_context
+                    .and_then(|values| env_optional_u64(values, key))
+                    .unwrap_or(fallback)
+            };
             let metadata = BackupMetadata {
                 version: 1,
                 image_type: "wim".into(),
                 created: Utc::now(),
-                computer: "WinRE".into(),
-                windows_edition: "unknown".into(),
-                architecture: "amd64".into(),
-                windows_build: "unknown".into(),
+                computer: context_value("COMPUTERNAME", "WinRE"),
+                windows_edition: context_value("WINDOWS_EDITION", "unknown"),
+                architecture: context_value("WINDOWS_ARCHITECTURE", &native_windows_architecture()),
+                windows_build: context_value("WINDOWS_BUILD", "unknown"),
                 wim_index: 1,
                 image_sha256,
                 image_size,
                 source: source.clone(),
-                captured_used_bytes: 0,
-                reserved_bytes: 0,
-                minimum_target_size: source.partition_size,
+                captured_used_bytes: context_u64("SOURCE_USED_BYTES", 0),
+                reserved_bytes: context_u64("RESERVED_BYTES", 0),
+                minimum_target_size: context_u64("MINIMUM_TARGET_SIZE", source.partition_size),
                 volume_serial: source.volume_serial.clone(),
                 program_version: PROGRAM_VERSION.into(),
             };
@@ -654,6 +833,13 @@ fn recover_windows(
             if !boot_manager.exists() {
                 return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
             }
+            if target.role == TargetRole::NewWindows {
+                let menu_name = target
+                    .boot_menu_name
+                    .as_deref()
+                    .ok_or_else(|| err("secondary target has no boot menu name"))?;
+                set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
+            }
             store.write_transition(task, Stage::Success)?;
         }
     }
@@ -686,22 +872,164 @@ fn find_efi_root(override_root: Option<&Path>) -> Result<PathBuf, TaskError> {
 #[cfg(windows)]
 fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError> {
     append_log(log, &format!("running {program} {}", args.join(" ")))?;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let log_file = OpenOptions::new().create(true).append(true).open(log)?;
+    let sink = Arc::new(Mutex::new(log_file));
+    let stdout: ChildStdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| err(&format!("{program} stdout was not piped")))?;
+    let stderr: ChildStderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| err(&format!("{program} stderr was not piped")))?;
+    let stdout_sink = Arc::clone(&sink);
+    let stdout_thread = thread::spawn(move || stream_to_log("stdout", stdout, stdout_sink));
+    let stderr_sink = Arc::clone(&sink);
+    let stderr_thread = thread::spawn(move || stream_to_log("stderr", stderr, stderr_sink));
+    let status = child.wait()?;
+    stdout_thread
+        .join()
+        .map_err(|_| err(&format!("{program} stdout reader panicked")))??;
+    stderr_thread
+        .join()
+        .map_err(|_| err(&format!("{program} stderr reader panicked")))??;
+    if !status.success() {
+        return Err(err(&format!("{program} failed with {status}")));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, TaskError> {
+    append_log(log, &format!("capturing {program} {}", args.join(" ")))?;
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .output()?;
-    fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)?
-        .write_all(&output.stdout)?;
-    fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)?
-        .write_all(&output.stderr)?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if !text.is_empty() {
+        append_log(log, &text)?;
+    }
     if !output.status.success() {
         return Err(err(&format!("{program} failed with {}", output.status)));
+    }
+    Ok(text)
+}
+
+#[cfg(windows)]
+fn set_secondary_boot_menu(
+    efi_root: &Path,
+    target_root: &Path,
+    menu_name: &str,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
+    if !store.exists() {
+        return Err(err("BCD store is missing after BCDBoot"));
+    }
+    let store_arg = store.to_string_lossy().into_owned();
+    let output = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    let letter = target_root
+        .to_string_lossy()
+        .chars()
+        .next()
+        .ok_or_else(|| err("secondary target has no drive letter"))?
+        .to_ascii_lowercase();
+    let target_needle = format!("partition={letter}:");
+    let mut current_id: Option<String> = None;
+    let mut matched = Vec::new();
+    let mut os_loaders = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if (lower.starts_with("identifier") || trimmed.starts_with("标识符"))
+            && trimmed.find('{').is_some()
+        {
+            let start = trimmed.find('{').unwrap_or(0);
+            let end = trimmed[start..]
+                .find('}')
+                .map(|offset| start + offset + 1)
+                .unwrap_or(trimmed.len());
+            current_id = Some(trimmed[start..end].to_string());
+        }
+        if lower.contains("winload") {
+            if let Some(identifier) = current_id.as_ref() {
+                if !os_loaders.contains(identifier) {
+                    os_loaders.push(identifier.clone());
+                }
+            }
+        }
+        if lower.contains(&target_needle) {
+            if let Some(identifier) = current_id.as_ref() {
+                if !matched.contains(identifier) {
+                    matched.push(identifier.clone());
+                }
+            }
+        }
+    }
+    let identifier = matched
+        .last()
+        .or_else(|| os_loaders.last())
+        .ok_or_else(|| err("BCDBoot created no identifiable Windows loader"))?;
+    let description_args = [
+        "/store",
+        store_arg.as_str(),
+        "/set",
+        identifier.as_str(),
+        "description",
+        menu_name,
+    ];
+    run_logged("bcdedit.exe", &description_args, log)?;
+    let verify = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    if !verify
+        .to_ascii_lowercase()
+        .contains(&menu_name.to_ascii_lowercase())
+    {
+        return Err(err("BCD menu name was not visible after update"));
+    }
+    append_log(
+        log,
+        &format!("Secondary Windows loader {identifier} named {menu_name}"),
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn stream_to_log<R: Read>(
+    label: &str,
+    stream: R,
+    sink: Arc<Mutex<std::fs::File>>,
+) -> Result<(), TaskError> {
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        {
+            let mut file = sink
+                .lock()
+                .map_err(|_| err("recovery log lock was poisoned"))?;
+            write!(file, "[{label}] {line}")?;
+            file.flush()?;
+        }
+        print!("{label}: {line}");
     }
     Ok(())
 }

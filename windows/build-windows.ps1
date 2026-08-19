@@ -44,6 +44,7 @@ foreach ($arch in $architectures) {
     New-Item -ItemType Directory -Force -Path $package | Out-Null
     $binary = Join-Path $repoRoot "target\$target\release\backuprestore-cli.exe"
     if (-not (Test-Path $binary)) { throw "Build output missing: $binary" }
+    $binaryHash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
 
     Copy-Item $binary (Join-Path $package 'BackupRestore.exe')
     Copy-Item $binary (Join-Path $package 'Recovery.exe')
@@ -65,8 +66,11 @@ foreach ($arch in $architectures) {
         version = $version
         architecture = $arch
         rustTarget = $target
+        nativeMachine = if ($arch -eq 'arm64') { 'ARM64' } else { 'AMD64' }
+        binarySha256 = $binaryHash
         frontend = 'BackupRestore.exe'
         recovery = 'Recovery.exe'
+        runtime = 'Windows 11 ARM64 development package'
         note = 'Architecture-specific Windows development package; x64 and ARM64 are separate binaries.'
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $package 'build-manifest.json') -Encoding UTF8
