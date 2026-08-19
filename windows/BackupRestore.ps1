@@ -1,0 +1,377 @@
+[CmdletBinding()]
+param(
+    [ValidateSet('probe', 'backup', 'restore', 'restore-existing', 'create-secondary')]
+    [string]$Operation = 'probe',
+    [ValidatePattern('^[A-Za-z]$')]
+    [string]$TaskDrive = 'C',
+    [ValidatePattern('^[A-Za-z]$')]
+    [string]$SourceDrive = 'C',
+    [ValidatePattern('^[A-Za-z]$')]
+    [string]$ImageDrive = 'D',
+    [ValidatePattern('^[A-Za-z]$')]
+    [string]$TargetDrive = 'C',
+    [string]$ImageRelativePath = 'BackupRestore\Windows.wim',
+    [int]$WimIndex = 1,
+    [string]$BootMenuName = 'Windows Backup',
+    [switch]$AllowDestructive,
+    [switch]$NoReboot,
+    [string]$RecoveryExe = ''
+)
+
+$ErrorActionPreference = 'Stop'
+$root = 'C:\ProgramData\BackupRestore'
+$logRoot = Join-Path $root 'logs'
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$recoveryCmd = Join-Path $scriptRoot 'Recovery.cmd'
+$recoveryLauncher = Join-Path $scriptRoot 'RecoveryLauncher.cmd'
+$recoveryShell = Join-Path $scriptRoot 'winpeshl.ini'
+
+function Write-Log([string]$Message) {
+    New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+    "[{0}] {1}" -f (Get-Date -Format o), $Message | Tee-Object -FilePath (Join-Path $logRoot 'prepare.log') -Append
+}
+
+function Require-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Administrator elevation is required.'
+    }
+}
+
+function Get-VolumeIdentity([string]$Drive) {
+    $volume = Get-Volume -DriveLetter $Drive -ErrorAction Stop
+    $partition = Get-Partition -DriveLetter $Drive -ErrorAction Stop
+    $disk = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
+    if ($disk.PartitionStyle -ne 'GPT') { throw "Selected volume $Drive`:: disk is not GPT." }
+    if ($disk.PSObject.Properties.Name -contains 'IsDynamic' -and $disk.IsDynamic) { throw "Selected volume $Drive`:: dynamic disks are unsupported." }
+    [pscustomobject]@{
+        Drive = "$Drive`:"
+        VolumeGuid = $volume.UniqueId
+        DiskGuid = $disk.UniqueId
+        PartitionGuid = $partition.Guid
+        PartitionNumber = $partition.PartitionNumber
+        DiskNumber = $partition.DiskNumber
+        PartitionOffset = $partition.Offset
+        Size = $partition.Size
+        FreeBytes = $volume.SizeRemaining
+        Filesystem = $volume.FileSystem
+        VolumeSerial = if ($volume.PSObject.Properties.Name -contains 'SerialNumber') { "$($volume.SerialNumber)" } else { '' }
+        PartitionTypeGuid = "$($partition.GptType)"
+        DriveLetter = $Drive
+    }
+}
+
+function Assert-SystemEnvironment {
+    $os = Get-CimInstance Win32_OperatingSystem
+    if ($os.Caption -notmatch 'Windows 10|Windows 11') { throw "V1 only supports Windows 10/11: $($os.Caption)" }
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw "V1 release package requires x64 Windows (reported $env:PROCESSOR_ARCHITECTURE)." }
+    $firmware = (Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType
+    if ("$firmware" -notmatch 'UEFI') { throw "V1 requires UEFI firmware (reported $firmware)." }
+    $systemDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
+    if (-not $systemDisk -or $systemDisk.PartitionStyle -ne 'GPT') { throw 'V1 requires the boot disk to use GPT.' }
+    $reagent = reagentc.exe /info 2>&1 | Out-String
+    if ($reagent -notmatch '(?i)(Windows RE status|Windows RE 状态)\s*:\s*(Enabled|启用|已启用)') { throw 'Windows RE is disabled or unavailable. Enable WinRE before starting a task.' }
+    if ($reagent -notmatch '(?i)(Windows RE location|Windows RE 位置)\s*:\s*[^\r\n]+') { throw 'Windows RE image location was not reported.' }
+    $bitlocker = Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue
+    if ($bitlocker) {
+        $protected = Get-BitLockerVolume -MountPoint "$($SourceDrive):" -ErrorAction SilentlyContinue
+        if ($protected -and "$($protected.ProtectionStatus)" -match 'On') {
+            throw 'BitLocker protection is enabled on the source volume. Suspend/unlock it manually; V1 never changes BitLocker state.'
+        }
+    }
+}
+
+function Write-JsonAtomic([string]$Path, $Value) {
+    $dir = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $tmp = "$Path.tmp"
+    $Value | ConvertTo-Json -Depth 12 | Set-Content -Path $tmp -Encoding UTF8
+    $stream = [System.IO.File]::Open($tmp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    $stream.Flush($true); $stream.Dispose()
+    Move-Item -Force -Path $tmp -Destination $Path
+}
+
+function Convert-Identity($Identity) {
+    [ordered]@{
+        diskGuid = "$($Identity.DiskGuid)"
+        partitionGuid = "$($Identity.PartitionGuid)"
+        volumeGuid = "$($Identity.VolumeGuid)"
+        partitionTypeGuid = "$($Identity.PartitionTypeGuid)"
+        diskNumber = [int]$Identity.DiskNumber
+        partitionNumber = [int]$Identity.PartitionNumber
+        partitionOffset = [UInt64]$Identity.PartitionOffset
+        partitionSize = [UInt64]$Identity.Size
+        filesystem = "$($Identity.Filesystem)"
+        volumeSerial = "$($Identity.VolumeSerial)"
+        driveLetter = "$($Identity.DriveLetter)"
+    }
+}
+
+function Get-RecoveryIdentity {
+    $partition = Get-Partition |
+        Where-Object { $_.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' -and $_.Size -gt 500MB } |
+        Sort-Object Size -Descending |
+        Select-Object -First 1
+    if (-not $partition) { throw 'The WinRE recovery partition was not found.' }
+    $volume = $partition | Get-Volume
+    [pscustomobject]@{ Partition = $partition; VolumeGuid = $volume.UniqueId }
+}
+
+function Get-EfiIdentity {
+    $partition = Get-Partition |
+        Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } |
+        Select-Object -First 1
+    if (-not $partition) { throw 'The EFI system partition was not found.' }
+    $volume = $partition | Get-Volume
+    [pscustomobject]@{ Partition = $partition; VolumeGuid = $volume.UniqueId }
+}
+
+function Invoke-Native([string]$File, [string[]]$Arguments, [string]$LogFile) {
+    & $File @Arguments 2>&1 | Tee-Object -FilePath $LogFile -Append
+    if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
+}
+
+Require-Administrator
+Assert-SystemEnvironment
+if (-not (Test-Path $recoveryCmd) -or -not (Test-Path $recoveryLauncher) -or -not (Test-Path $recoveryShell)) { throw 'Recovery payload files are missing.' }
+Write-Log "Preparing $Operation task"
+
+$effectiveOperation = switch ($Operation) {
+    'restore' { 'restore-existing' }
+    default { $Operation }
+}
+$programVersion = (Get-Content (Join-Path $scriptRoot '..\VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+if ([string]::IsNullOrWhiteSpace($programVersion)) { $programVersion = '0.0.0' }
+
+$task = Get-VolumeIdentity $TaskDrive
+$source = Get-VolumeIdentity $SourceDrive
+$image = if ($Operation -eq 'probe') { $task } else { Get-VolumeIdentity $ImageDrive }
+$target = Get-VolumeIdentity $TargetDrive
+$imagePath = Join-Path $image.Drive $ImageRelativePath
+$minimumTargetSize = [UInt64]0
+if (-not (Test-Path (Join-Path $source.Drive 'Windows\System32\config\SYSTEM'))) {
+    throw "Source volume $($source.Drive) does not contain an offline Windows SYSTEM hive."
+}
+
+if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+    foreach ($drive in @($SourceDrive, $ImageDrive, $TargetDrive) | Select-Object -Unique) {
+        $state = Get-BitLockerVolume -MountPoint "$drive`:" -ErrorAction SilentlyContinue
+        if ($state -and "$($state.ProtectionStatus)" -match 'On') {
+            throw "BitLocker protection is enabled on $drive`:. V1 will not alter or unlock it."
+        }
+    }
+}
+
+if ($effectiveOperation -in @('backup', 'restore-existing', 'create-secondary') -and $task.VolumeGuid -eq $source.VolumeGuid) {
+    throw 'Backup and restore tasks must use a task volume different from the source volume.'
+}
+if ($effectiveOperation -in @('restore-existing', 'create-secondary')) {
+    if (-not $AllowDestructive) { throw 'Restore requires -AllowDestructive.' }
+    if ($effectiveOperation -eq 'create-secondary' -and [string]::IsNullOrWhiteSpace($BootMenuName)) { throw 'A boot menu name is required for create-secondary.' }
+    if ($effectiveOperation -eq 'restore-existing' -and $target.VolumeGuid -ne $source.VolumeGuid) { throw 'restore-existing must target the currently selected Windows source volume.' }
+    if ($image.VolumeGuid -eq $target.VolumeGuid) { throw 'The image volume must differ from the restore target.' }
+    if ($task.VolumeGuid -eq $target.VolumeGuid) { throw 'The task volume must differ from the restore target.' }
+    if ($target.PartitionTypeGuid -in @('{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}', '{e3c9e316-0b5c-4db8-817d-f92df00215ae}', '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}')) { throw 'EFI, MSR and Recovery partitions cannot be restore targets.' }
+    if ($target.Filesystem -ne 'NTFS') { throw 'The restore target must be an NTFS partition.' }
+    if (-not (Test-Path $imagePath)) { throw "WIM image does not exist: $imagePath" }
+    Invoke-Native 'dism.exe' @('/Get-WimInfo', "/WimFile:$imagePath", "/Index:$WimIndex") (Join-Path $logRoot 'prepare.log')
+    $metadataPath = Join-Path (Split-Path -Parent $imagePath) 'metadata.json'
+    if (-not (Test-Path $metadataPath)) { throw "Backup metadata is missing: $metadataPath" }
+    $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+    $actualHash = (Get-FileHash $imagePath -Algorithm SHA256).Hash
+    if ($metadata.imageSha256 -and $actualHash -ne $metadata.imageSha256) { throw 'WIM SHA-256 does not match metadata.' }
+    $minimumTargetSize = [UInt64]$metadata.minimumTargetSize
+    if ($minimumTargetSize -eq 0) { $minimumTargetSize = [UInt64]$metadata.source.partitionSize }
+    if ($target.Size -lt $minimumTargetSize) { throw "Target partition is too small: $($target.Size) < $minimumTargetSize" }
+}
+if ($effectiveOperation -eq 'backup' -and $image.VolumeGuid -eq $source.VolumeGuid) {
+    throw 'The image volume must differ from the captured source volume.'
+}
+if ($effectiveOperation -eq 'backup') {
+    $sourceUsed = [UInt64]($source.Size - $source.FreeBytes)
+    $requiredFree = [UInt64]($sourceUsed + 2GB)
+    if ($image.FreeBytes -lt $requiredFree) { throw "Backup destination free space is insufficient: $($image.FreeBytes) < $requiredFree" }
+}
+if ($effectiveOperation -eq 'create-secondary' -and $target.VolumeGuid -eq $source.VolumeGuid) {
+    throw 'The secondary Windows target must differ from the existing Windows source.'
+}
+
+if ($effectiveOperation -in @('backup', 'restore-existing', 'create-secondary') -and $RecoveryExe -eq '') {
+    $RecoveryExe = Join-Path $scriptRoot 'Recovery.exe'
+}
+if ($effectiveOperation -ne 'probe' -and -not (Test-Path $RecoveryExe)) {
+    throw "Recovery.exe is required for real $effectiveOperation tasks. Build the x64 release binary and pass -RecoveryExe."
+}
+
+$recovery = Get-RecoveryIdentity
+$efi = Get-EfiIdentity
+$recoveryMount = 'R:'
+$existingRecoveryVolume = Get-Volume -DriveLetter R -ErrorAction SilentlyContinue
+if ($existingRecoveryVolume -and $existingRecoveryVolume.UniqueId -ne $recovery.VolumeGuid) {
+    throw "Drive R: is already assigned to a different volume; refusing to replace it."
+}
+if (-not $existingRecoveryVolume) {
+    Add-PartitionAccessPath -DiskNumber $recovery.Partition.DiskNumber -PartitionNumber $recovery.Partition.PartitionNumber -AccessPath 'R:\'
+}
+$registeredWim = 'R:\Recovery\WindowsRE\Winre.wim'
+if (-not (Test-Path $registeredWim)) { throw "Registered WinRE image missing: $registeredWim" }
+
+$taskId = [guid]::NewGuid().Guid
+$taskRootRelative = "BackupRestore\tasks\$taskId"
+$taskRoot = "$($task.Drive)\$taskRootRelative"
+$payload = Join-Path $taskRoot 'payload'
+$original = Join-Path $taskRoot 'original'
+$stage = Join-Path $taskRoot 'stage'
+$mount = Join-Path $taskRoot 'mount'
+$taskLog = Join-Path $taskRoot 'prepare.log'
+New-Item -ItemType Directory -Force -Path $payload, $original, $stage, $mount | Out-Null
+
+$bcdSnapshot = Join-Path $taskRoot 'bcd-before-export'
+Invoke-Native 'bcdedit.exe' @('/export', $bcdSnapshot) $taskLog
+$bcdHash = (Get-FileHash $bcdSnapshot -Algorithm SHA256).Hash
+
+Copy-Item $registeredWim (Join-Path $original 'Winre.wim') -Force
+$originalHash = (Get-FileHash (Join-Path $original 'Winre.wim') -Algorithm SHA256).Hash
+Copy-Item $recoveryCmd (Join-Path $payload 'Recovery.cmd') -Force
+Copy-Item $recoveryLauncher (Join-Path $payload 'RecoveryLauncher.cmd') -Force
+Copy-Item $recoveryShell (Join-Path $payload 'winpeshl.ini') -Force
+if ($RecoveryExe -and (Test-Path $RecoveryExe)) { Copy-Item $RecoveryExe (Join-Path $payload 'Recovery.exe') -Force }
+
+$allow = if ($AllowDestructive) { 'YES' } else { 'NO' }
+$created = (Get-Date).ToUniversalTime().ToString('o')
+@(
+    "TASK_ID=$taskId"
+    "OPERATION=$effectiveOperation"
+    "TASK_VOLUME_GUID=$($task.VolumeGuid)"
+    'TASK_MOUNT='
+    "TASK_DISK_NUMBER=$($task.DiskNumber)"
+    "TASK_PARTITION_NUMBER=$($task.PartitionNumber)"
+    "TASK_ROOT_REL=$taskRootRelative"
+    "RECOVERY_VOLUME_GUID=$($recovery.VolumeGuid)"
+    'RECOVERY_MOUNT='
+    "RECOVERY_DISK_NUMBER=$($recovery.Partition.DiskNumber)"
+    "RECOVERY_PARTITION_NUMBER=$($recovery.Partition.PartitionNumber)"
+    "SOURCE_VOLUME_GUID=$($source.VolumeGuid)"
+    "SOURCE_DISK_GUID=$($source.DiskGuid)"
+    "SOURCE_PARTITION_GUID=$($source.PartitionGuid)"
+    "SOURCE_PARTITION_SIZE=$($source.Size)"
+    "SOURCE_VOLUME_SERIAL=$($source.VolumeSerial)"
+    'SOURCE_MOUNT='
+    "SOURCE_DISK_NUMBER=$($source.DiskNumber)"
+    "SOURCE_PARTITION_NUMBER=$($source.PartitionNumber)"
+    "IMAGE_VOLUME_GUID=$($image.VolumeGuid)"
+    'IMAGE_MOUNT='
+    "IMAGE_DISK_NUMBER=$($image.DiskNumber)"
+    "IMAGE_PARTITION_NUMBER=$($image.PartitionNumber)"
+    "TARGET_VOLUME_GUID=$($target.VolumeGuid)"
+    'TARGET_MOUNT='
+    "TARGET_DISK_NUMBER=$($target.DiskNumber)"
+    "TARGET_PARTITION_NUMBER=$($target.PartitionNumber)"
+    "EFI_VOLUME_GUID=$($efi.VolumeGuid)"
+    'EFI_MOUNT='
+    "EFI_DISK_NUMBER=$($efi.Partition.DiskNumber)"
+    "EFI_PARTITION_NUMBER=$($efi.Partition.PartitionNumber)"
+    "IMAGE_RELATIVE_PATH=$ImageRelativePath"
+    "IMAGE_SHA256=$(if (Test-Path $imagePath) { (Get-FileHash $imagePath -Algorithm SHA256).Hash } else { '' })"
+    "TARGET_PARTITION_SIZE=$($target.Size)"
+    "MINIMUM_TARGET_SIZE=$minimumTargetSize"
+    "WIM_INDEX=$WimIndex"
+    "ALLOW_DESTRUCTIVE=$allow"
+    "PROGRAM_VERSION=$programVersion"
+    "TASK_CREATED=$created"
+    "BOOT_MENU_NAME=$($BootMenuName.Trim())"
+) | Set-Content (Join-Path $payload 'RecoveryTask.env') -Encoding ascii
+
+$imageRelative = $ImageRelativePath.Replace('/', '\\')
+$taskJsonPath = Join-Path $taskRoot 'task.json'
+$taskJson = [ordered]@{
+    taskId = $taskId
+    version = 1
+    operation = $effectiveOperation
+    source = Convert-Identity $source
+    image = if ($effectiveOperation -eq 'probe') { $null } else { [ordered]@{
+        volume = Convert-Identity $image
+        relativePath = $imageRelative
+        sha256 = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-FileHash (Join-Path $image.Drive $imageRelative) -Algorithm SHA256).Hash.ToLowerInvariant() } else { '0' * 64 }
+        sizeBytes = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Item (Join-Path $image.Drive $imageRelative)).Length } else { 0 }
+        index = $WimIndex
+    } }
+    destination = if ($effectiveOperation -eq 'backup') { [ordered]@{ volume = Convert-Identity $image; relativePath = $imageRelative } } else { $null }
+    target = if ($effectiveOperation -in @('restore-existing', 'create-secondary')) { [ordered]@{
+        volume = Convert-Identity $target
+        role = if ($effectiveOperation -eq 'create-secondary') { 'new-windows' } else { 'existing-windows' }
+        bootMenuName = if ($effectiveOperation -eq 'create-secondary') { $BootMenuName.Trim() } else { $null }
+        minimumSizeBytes = if ($minimumTargetSize -gt 0) { [UInt64]$minimumTargetSize } else { [UInt64]$target.Size }
+    } } else { $null }
+    bootPlan = [ordered]@{
+        mode = if ($effectiveOperation -eq 'create-secondary') { 'add-secondary' } else { 'return-existing' }
+        previousBcdSha256 = $bcdHash.ToLowerInvariant()
+        menuName = if ($effectiveOperation -eq 'create-secondary') { $BootMenuName.Trim() } else { $null }
+        bootSequenceRequested = $true
+    }
+    created = $created
+    bootOnce = $true
+    status = 'prepared'
+}
+Write-JsonAtomic $taskJsonPath $taskJson
+Copy-Item $taskJsonPath (Join-Path $payload 'task.json') -Force
+$launcherHash = (Get-FileHash (Join-Path $payload 'RecoveryLauncher.cmd') -Algorithm SHA256).Hash
+$recoveryCmdHash = (Get-FileHash (Join-Path $payload 'Recovery.cmd') -Algorithm SHA256).Hash
+$recoveryHash = if (Test-Path (Join-Path $payload 'Recovery.exe')) { (Get-FileHash (Join-Path $payload 'Recovery.exe') -Algorithm SHA256).Hash } else { $recoveryCmdHash }
+$taskHash = (Get-FileHash (Join-Path $payload 'task.json') -Algorithm SHA256).Hash
+@(
+    "EXPECTED_LAUNCHER_SHA256=$launcherHash"
+    "EXPECTED_RECOVERY_CMD_SHA256=$recoveryCmdHash"
+    "EXPECTED_RECOVERY_SHA256=$recoveryHash"
+    "EXPECTED_TASK_SHA256=$taskHash"
+    "ORIGINAL_WINRE_SHA256=$originalHash"
+) | Add-Content (Join-Path $payload 'RecoveryTask.env') -Encoding ascii
+
+$stagedWim = Join-Path $stage 'Winre.wim'
+Copy-Item $registeredWim $stagedWim -Force
+Invoke-Native 'dism.exe' @('/Mount-Image', "/ImageFile:$stagedWim", '/Index:1', "/MountDir:$mount") $taskLog
+Copy-Item (Join-Path $payload 'Recovery.cmd') (Join-Path $mount 'Windows\System32\Recovery.cmd') -Force
+Copy-Item (Join-Path $payload 'RecoveryLauncher.cmd') (Join-Path $mount 'Windows\System32\RecoveryLauncher.cmd') -Force
+Copy-Item (Join-Path $payload 'RecoveryTask.env') (Join-Path $mount 'Windows\System32\RecoveryTask.env') -Force
+Copy-Item (Join-Path $payload 'task.json') (Join-Path $mount 'Windows\System32\task.json') -Force
+Copy-Item (Join-Path $payload 'winpeshl.ini') (Join-Path $mount 'Windows\System32\winpeshl.ini') -Force
+Invoke-Native 'dism.exe' @('/Unmount-Image', "/MountDir:$mount", '/Commit') $taskLog
+
+Copy-Item $stagedWim $registeredWim -Force
+$stagedHash = (Get-FileHash $registeredWim -Algorithm SHA256).Hash
+$manifest = [ordered]@{
+    taskId = $taskId
+    launcherSha256 = $launcherHash.ToLowerInvariant()
+    recoverySha256 = $recoveryHash.ToLowerInvariant()
+    taskSha256 = $taskHash.ToLowerInvariant()
+    originalWinreSha256 = $originalHash.ToLowerInvariant()
+    stagedWinreSha256 = $stagedHash.ToLowerInvariant()
+    createdByVersion = (Get-Content (Join-Path $PSScriptRoot '..\VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+Write-JsonAtomic (Join-Path $taskRoot 'manifest.json') $manifest
+@(
+    "task_id=$taskId"
+    'stage=prepared'
+    'progress=0'
+    "operation=$effectiveOperation"
+    "original_winre_sha256=$originalHash"
+    "staged_winre_sha256=$stagedHash"
+) | Set-Content (Join-Path $taskRoot 'status.env') -Encoding ascii
+$initialStatus = [ordered]@{
+    taskId = $taskId
+    operation = $effectiveOperation
+    stage = 'prepared'
+    progress = 0
+    updated = $created
+}
+Write-JsonAtomic (Join-Path $taskRoot 'status.json') $initialStatus
+
+Invoke-Native 'reagentc.exe' @('/boottore') $taskLog
+Write-Log "Task prepared: $taskId"
+if ($NoReboot) {
+    Write-Output "TASK_ID=$taskId"
+    Write-Output "TASK_ROOT=$taskRoot"
+    exit 0
+}
+shutdown.exe /r /t 0
