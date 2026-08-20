@@ -229,10 +229,13 @@ fn recover_env(_path: String) -> Result<(), TaskError> {
 
 #[cfg(windows)]
 fn recover_env(path: String) -> Result<(), TaskError> {
-    use backuprestore_core::{PayloadManifest, validate_payload_files, verify_sha256};
+    use backuprestore_core::{
+        PayloadManifest, validate_payload_files, validate_task_id, verify_sha256,
+    };
 
     let values = read_env_file(&path)?;
     let task_id = env_required(&values, "TASK_ID")?;
+    validate_task_id(&task_id)?;
     let task_root_rel = env_required(&values, "TASK_ROOT_REL")?;
     backuprestore_core::validate_relative_path(&task_root_rel)?;
     let normalized_task_root = task_root_rel.replace('/', "\\");

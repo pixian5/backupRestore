@@ -309,8 +309,7 @@ impl Task {
                 self.version, TASK_VERSION
             )));
         }
-        Uuid::parse_str(&self.task_id)
-            .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))?;
+        validate_task_id(&self.task_id)?;
         if !self.boot_once {
             return Err(TaskError::Invalid(
                 "recovery tasks must use one-time boot".into(),
@@ -515,6 +514,11 @@ fn default_progress(stage: Stage) -> u8 {
 }
 fn missing(name: &str) -> TaskError {
     TaskError::Invalid(format!("missing {name}"))
+}
+pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
+    Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))
 }
 fn validate_sha256_text(name: &str, value: &str) -> Result<(), TaskError> {
     if value.len() != 64 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -721,7 +725,13 @@ impl TaskStore {
         Ok(())
     }
     pub fn load(&self, task_id: &str) -> Result<Task, TaskError> {
+        validate_task_id(task_id)?;
         let task: Task = read_json(self.task_path(task_id))?;
+        if task.task_id != task_id {
+            return Err(TaskError::Invalid(
+                "task file id does not match requested task id".into(),
+            ));
+        }
         task.validate()?;
         Ok(task)
     }
@@ -969,6 +979,24 @@ mod tests {
         let value: serde_json::Value = read_json(&path).unwrap();
         assert_eq!(value["ok"], true);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_store_rejects_mismatched_task_id() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-task-id-{suffix}"));
+        let store = TaskStore::new(&root);
+        let task = backup_task();
+        store.create(&task).unwrap();
+        let mut replacement = backup_task();
+        replacement.status = Stage::BootRequested;
+        write_json_atomic(store.task_path(&task.task_id), &replacement).unwrap();
+        let error = store.load(&task.task_id).unwrap_err().to_string();
+        assert!(error.contains("does not match requested task id"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
