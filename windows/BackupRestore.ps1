@@ -34,6 +34,17 @@ function Write-Log([string]$Message) {
     "[{0}] {1}" -f (Get-Date -Format o), $Message | Tee-Object -FilePath (Join-Path $logRoot 'prepare.log') -Append
 }
 
+function Get-Sha256([string]$Path) {
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '')
+    } finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+}
+
 function Require-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -95,8 +106,9 @@ function Assert-SystemEnvironment {
     $systemDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
     if (-not $systemDisk -or $systemDisk.PartitionStyle -ne 'GPT') { throw 'V1 requires the boot disk to use GPT.' }
     $reagent = reagentc.exe /info 2>&1 | Out-String
-    if ($reagent -notmatch '(?i)\bEnabled\b') { throw 'Windows RE is disabled or unavailable. Enable WinRE before starting a task.' }
-    if ($reagent -notmatch '(?i)(GLOBALROOT|Recovery\\WindowsRE)') { throw 'Windows RE image location was not reported.' }
+    # The status label is localized. A registered WinRE path is the stable
+    # signal: disabled WinRE reports no Recovery\WindowsRE location.
+    if ($reagent -notmatch '(?i)(GLOBALROOT|Recovery\\WindowsRE)') { throw 'Windows RE is disabled or unavailable. Enable WinRE before starting a task.' }
     $bitlocker = Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue
     if ($bitlocker) {
         $protected = Get-BitLockerVolume -MountPoint "$($SourceDrive):" -ErrorAction SilentlyContinue
@@ -152,8 +164,39 @@ function Get-EfiIdentity {
 }
 
 function Invoke-Native([string]$File, [string[]]$Arguments, [string]$LogFile) {
-    & $File @Arguments 2>&1 | Tee-Object -FilePath $LogFile -Append
-    if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
+    Add-Content -LiteralPath $LogFile -Value "[native] starting $File $($Arguments -join ' ')" -Encoding UTF8
+    $nativeArguments = @($Arguments)
+    $nativeLogFile = $LogFile
+    if ([System.IO.Path]::GetFileName($File) -ieq 'dism.exe' -and
+        -not ($nativeArguments | Where-Object { $_ -match '(?i)^/LogPath:' })) {
+        # DISM keeps its log handle open briefly after the image session closes.
+        # Keep that handle separate from the task log we append below.
+        $nativeLogFile = "$LogFile.dism.log"
+        $nativeArguments += "/LogPath:$nativeLogFile"
+    }
+    $quotedArguments = foreach ($argument in $nativeArguments) {
+        $value = [string]$argument
+        if ($value -match '[\s"]') {
+            $escaped = $value.Replace('"', '\"')
+            if ($escaped.EndsWith('\')) { $escaped += '\' }
+            '"' + $escaped + '"'
+        } else {
+            $value
+        }
+    }
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $File
+    $startInfo.Arguments = $quotedArguments -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw "Unable to start $File" }
+    $process.WaitForExit()
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    Add-Content -LiteralPath $LogFile -Value "[native] exited $File code=$exitCode" -Encoding UTF8
+    if ($exitCode -ne 0) { throw "$File failed with exit code $exitCode" }
 }
 
 Require-Administrator
@@ -206,7 +249,7 @@ if ($effectiveOperation -in @('restore-existing', 'create-secondary')) {
     $metadataPath = Join-Path (Split-Path -Parent $imagePath) 'metadata.json'
     if (-not (Test-Path $metadataPath)) { throw "Backup metadata is missing: $metadataPath" }
     $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
-    $actualHash = (Get-FileHash $imagePath -Algorithm SHA256).Hash
+    $actualHash = Get-Sha256 $imagePath
     if ($metadata.imageSha256 -and $actualHash -ne $metadata.imageSha256) { throw 'WIM SHA-256 does not match metadata.' }
     $minimumTargetSize = [UInt64]$metadata.minimumTargetSize
     if ($minimumTargetSize -eq 0) { $minimumTargetSize = [UInt64]$metadata.source.partitionSize }
@@ -255,14 +298,17 @@ New-Item -ItemType Directory -Force -Path $payload, $original, $stage, $mount | 
 
 $bcdSnapshot = Join-Path $taskRoot 'bcd-before-export'
 Invoke-Native 'bcdedit.exe' @('/export', $bcdSnapshot) $taskLog
-$bcdHash = (Get-FileHash $bcdSnapshot -Algorithm SHA256).Hash
+$bcdHash = Get-Sha256 $bcdSnapshot
+Write-Log "BCD snapshot exported: $taskId"
 
 Copy-Item $registeredWim (Join-Path $original 'Winre.wim') -Force
-$originalHash = (Get-FileHash (Join-Path $original 'Winre.wim') -Algorithm SHA256).Hash
+$originalHash = Get-Sha256 (Join-Path $original 'Winre.wim')
+Write-Log "Original WinRE copied: $taskId"
 Copy-Item $recoveryCmd (Join-Path $payload 'Recovery.cmd') -Force
 Copy-Item $recoveryLauncher (Join-Path $payload 'RecoveryLauncher.cmd') -Force
 Copy-Item $recoveryShell (Join-Path $payload 'winpeshl.ini') -Force
 if ($RecoveryExe -and (Test-Path $RecoveryExe)) { Copy-Item $RecoveryExe (Join-Path $payload 'Recovery.exe') -Force }
+Write-Log "Recovery payload copied: $taskId"
 
 $allow = if ($AllowDestructive) { 'YES' } else { 'NO' }
 $created = (Get-Date).ToUniversalTime().ToString('o')
@@ -312,7 +358,7 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "EFI_DISK_NUMBER=$($efi.Partition.DiskNumber)"
     "EFI_PARTITION_NUMBER=$($efi.Partition.PartitionNumber)"
     "IMAGE_RELATIVE_PATH=$ImageRelativePath"
-    "IMAGE_SHA256=$(if (Test-Path $imagePath) { (Get-FileHash $imagePath -Algorithm SHA256).Hash } else { '' })"
+    "IMAGE_SHA256=$(if (Test-Path $imagePath) { Get-Sha256 $imagePath } else { '' })"
     "TARGET_PARTITION_SIZE=$($target.Size)"
     "MINIMUM_TARGET_SIZE=$minimumTargetSize"
     "WIM_INDEX=$WimIndex"
@@ -335,7 +381,7 @@ $taskJson = [ordered]@{
     image = if ($effectiveOperation -eq 'probe') { $null } else { [ordered]@{
         volume = Convert-Identity $image
         relativePath = $imageRelative
-        sha256 = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-FileHash (Join-Path $image.Drive $imageRelative) -Algorithm SHA256).Hash.ToLowerInvariant() } else { '0' * 64 }
+        sha256 = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Sha256 (Join-Path $image.Drive $imageRelative)).ToLowerInvariant() } else { '0' * 64 }
         sizeBytes = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Item (Join-Path $image.Drive $imageRelative)).Length } else { 0 }
         index = $WimIndex
     } }
@@ -358,10 +404,10 @@ $taskJson = [ordered]@{
 }
 Write-JsonAtomic $taskJsonPath $taskJson
 Copy-Item $taskJsonPath (Join-Path $payload 'task.json') -Force
-$launcherHash = (Get-FileHash (Join-Path $payload 'RecoveryLauncher.cmd') -Algorithm SHA256).Hash
-$recoveryCmdHash = (Get-FileHash (Join-Path $payload 'Recovery.cmd') -Algorithm SHA256).Hash
-$recoveryHash = if (Test-Path (Join-Path $payload 'Recovery.exe')) { (Get-FileHash (Join-Path $payload 'Recovery.exe') -Algorithm SHA256).Hash } else { $recoveryCmdHash }
-$taskHash = (Get-FileHash (Join-Path $payload 'task.json') -Algorithm SHA256).Hash
+$launcherHash = Get-Sha256 (Join-Path $payload 'RecoveryLauncher.cmd')
+$recoveryCmdHash = Get-Sha256 (Join-Path $payload 'Recovery.cmd')
+$recoveryHash = if (Test-Path (Join-Path $payload 'Recovery.exe')) { Get-Sha256 (Join-Path $payload 'Recovery.exe') } else { $recoveryCmdHash }
+$taskHash = Get-Sha256 (Join-Path $payload 'task.json')
 @(
     "EXPECTED_LAUNCHER_SHA256=$launcherHash"
     "EXPECTED_RECOVERY_CMD_SHA256=$recoveryCmdHash"
@@ -371,52 +417,91 @@ $taskHash = (Get-FileHash (Join-Path $payload 'task.json') -Algorithm SHA256).Ha
 ) | Add-Content (Join-Path $payload 'RecoveryTask.env') -Encoding ascii
 
 $stagedWim = Join-Path $stage 'Winre.wim'
-Copy-Item $registeredWim $stagedWim -Force
-Invoke-Native 'dism.exe' @('/Mount-Image', "/ImageFile:$stagedWim", '/Index:1', "/MountDir:$mount") $taskLog
-Copy-Item (Join-Path $payload 'Recovery.cmd') (Join-Path $mount 'Windows\System32\Recovery.cmd') -Force
-Copy-Item (Join-Path $payload 'RecoveryLauncher.cmd') (Join-Path $mount 'Windows\System32\RecoveryLauncher.cmd') -Force
-Copy-Item (Join-Path $payload 'RecoveryTask.env') (Join-Path $mount 'Windows\System32\RecoveryTask.env') -Force
-Copy-Item (Join-Path $payload 'task.json') (Join-Path $mount 'Windows\System32\task.json') -Force
-Copy-Item (Join-Path $payload 'winpeshl.ini') (Join-Path $mount 'Windows\System32\winpeshl.ini') -Force
-if (Test-Path (Join-Path $payload 'Recovery.exe')) {
-    Copy-Item (Join-Path $payload 'Recovery.exe') (Join-Path $mount 'Windows\System32\Recovery.exe') -Force
-}
-Invoke-Native 'dism.exe' @('/Unmount-Image', "/MountDir:$mount", '/Commit') $taskLog
+$mounted = $false
+try {
+    Copy-Item $registeredWim $stagedWim -Force
+    Invoke-Native 'dism.exe' @('/Mount-Image', "/ImageFile:$stagedWim", '/Index:1', "/MountDir:$mount") $taskLog
+    $mounted = $true
+    $mountSystem32 = Join-Path $mount 'Windows\System32'
+    foreach ($name in @('Recovery.cmd', 'RecoveryLauncher.cmd', 'RecoveryTask.env', 'task.json', 'winpeshl.ini', 'Recovery.exe')) {
+        Remove-Item (Join-Path $mountSystem32 $name) -Force -ErrorAction SilentlyContinue
+    }
+    Copy-Item (Join-Path $payload 'Recovery.cmd') (Join-Path $mountSystem32 'Recovery.cmd') -Force
+    Copy-Item (Join-Path $payload 'RecoveryLauncher.cmd') (Join-Path $mountSystem32 'RecoveryLauncher.cmd') -Force
+    Copy-Item (Join-Path $payload 'RecoveryTask.env') (Join-Path $mountSystem32 'RecoveryTask.env') -Force
+    Copy-Item (Join-Path $payload 'task.json') (Join-Path $mountSystem32 'task.json') -Force
+    Copy-Item (Join-Path $payload 'winpeshl.ini') (Join-Path $mountSystem32 'winpeshl.ini') -Force
+    if (Test-Path (Join-Path $payload 'Recovery.exe')) {
+        Copy-Item (Join-Path $payload 'Recovery.exe') (Join-Path $mountSystem32 'Recovery.exe') -Force
+    }
+    Invoke-Native 'dism.exe' @('/Unmount-Image', "/MountDir:$mount", '/Commit') $taskLog
+    $mounted = $false
+    # DISM can leave its WIM service alive for a short period after returning.
+    # Avoid enumerating that process from PowerShell 5.1 (which can itself hang
+    # on a terminating wimserv); a bounded grace period is sufficient here.
+    Start-Sleep -Seconds 5
+    Write-Log "DISM image commit completed: $taskId"
 
-Copy-Item $stagedWim $registeredWim -Force
-$stagedHash = (Get-FileHash $registeredWim -Algorithm SHA256).Hash
-$manifest = [ordered]@{
-    taskId = $taskId
-    launcherSha256 = $launcherHash.ToLowerInvariant()
-    recoverySha256 = $recoveryHash.ToLowerInvariant()
-    taskSha256 = $taskHash.ToLowerInvariant()
-    originalWinreSha256 = $originalHash.ToLowerInvariant()
-    stagedWinreSha256 = $stagedHash.ToLowerInvariant()
-    createdByVersion = (Get-Content (Join-Path $PSScriptRoot '..\VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1)
-}
-Write-JsonAtomic (Join-Path $taskRoot 'manifest.json') $manifest
-@(
-    "task_id=$taskId"
-    'stage=prepared'
-    'progress=0'
-    "operation=$effectiveOperation"
-    "original_winre_sha256=$originalHash"
-    "staged_winre_sha256=$stagedHash"
-) | Set-Content (Join-Path $taskRoot 'status.env') -Encoding ascii
-$initialStatus = [ordered]@{
-    taskId = $taskId
-    operation = $effectiveOperation
-    stage = 'prepared'
-    progress = 0
-    updated = $created
-}
-Write-JsonAtomic (Join-Path $taskRoot 'status.json') $initialStatus
+    $stagedHash = Get-Sha256 $stagedWim
+    if (-not $NoReboot) {
+        Copy-Item $stagedWim $registeredWim -Force
+        $registeredHash = Get-Sha256 $registeredWim
+        if ($registeredHash -ne $stagedHash) { throw 'Registered WinRE hash differs from staged WinRE.' }
+    }
+    $manifest = [ordered]@{
+        taskId = $taskId
+        launcherSha256 = $launcherHash.ToLowerInvariant()
+        recoverySha256 = $recoveryHash.ToLowerInvariant()
+        taskSha256 = $taskHash.ToLowerInvariant()
+        originalWinreSha256 = $originalHash.ToLowerInvariant()
+        stagedWinreSha256 = $stagedHash.ToLowerInvariant()
+        createdByVersion = (Get-Content (Join-Path $PSScriptRoot '..\VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1)
+    }
+    Write-JsonAtomic (Join-Path $taskRoot 'manifest.json') $manifest
+    @(
+        "task_id=$taskId"
+        'stage=prepared'
+        'progress=0'
+        "operation=$effectiveOperation"
+        "original_winre_sha256=$originalHash"
+        "staged_winre_sha256=$stagedHash"
+    ) | Set-Content (Join-Path $taskRoot 'status.env') -Encoding ascii
+    $initialStatus = [ordered]@{
+        taskId = $taskId
+        operation = $effectiveOperation
+        stage = 'prepared'
+        progress = 0
+        updated = $created
+    }
+    Write-JsonAtomic (Join-Path $taskRoot 'status.json') $initialStatus
 
-Invoke-Native 'reagentc.exe' @('/boottore') $taskLog
-Write-Log "Task prepared: $taskId"
-if ($NoReboot) {
-    Write-Output "TASK_ID=$taskId"
-    Write-Output "TASK_ROOT=$taskRoot"
-    exit 0
+    if ($NoReboot) {
+        Write-Log "Task prepared without changing registered WinRE: $taskId"
+        Write-Output "TASK_ID=$taskId"
+        Write-Output "TASK_ROOT=$taskRoot"
+        exit 0
+    }
+    Invoke-Native 'reagentc.exe' @('/boottore') $taskLog
+    Write-Log "Task prepared: $taskId"
+    shutdown.exe /r /t 0
+} catch {
+    $failureMessage = "Preparation failed: $($_.Exception.Message)"
+    try { Write-Log $failureMessage } catch { Add-Content -LiteralPath (Join-Path $logRoot 'prepare-errors.log') -Value $failureMessage -Encoding UTF8 }
+    if ($mounted) {
+        try {
+            Invoke-Native 'dism.exe' @('/Unmount-Image', "/MountDir:$mount", '/Discard') $taskLog
+            $mounted = $false
+        } catch {
+            Write-Log "Preparation cleanup could not discard the mounted WinRE image: $($_.Exception.Message)"
+        }
+    }
+    try {
+        Copy-Item (Join-Path $original 'Winre.wim') $registeredWim -Force
+        $restoredHash = Get-Sha256 $registeredWim
+        if ($restoredHash -ne $originalHash) { throw 'WinRE restore hash differs from the original copy.' }
+        Write-Log 'Preparation failed; original registered WinRE restored.'
+    } catch {
+        Write-Log "Preparation failed and automatic WinRE restore failed: $($_.Exception.Message)"
+    }
+    throw
 }
-shutdown.exe /r /t 0

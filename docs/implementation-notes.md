@@ -7,9 +7,11 @@
 - 恢复状态在准备、启动、WinRE、预检、捕获、擦除、应用、修复引导、成功/失败之间单向流转；准备阶段失败也会落盘失败状态，避免“无状态卡死”。
 - Windows 准备脚本检查 Windows 10/11、ARM64（同时保留 x64 配置）、UEFI/GPT、WinRE、BitLocker 状态，保存原始 WinRE 与 BCD，并用 SHA-256 清单保护 WinRE payload。
 - `winpeshl.ini` 现在自动进入哈希校验的 `RecoveryLauncher.cmd`；真实任务优先启动 `Recovery.exe recover-env`，没有 exe 时只允许 `probe` 兼容脚本运行。
+- `BackupRestore.ps1 -NoReboot` 只生成并校验临时 WinRE 载荷，不设置一次性启动、不替换注册的 WinRE；准备阶段异常会先丢弃残留 DISM 挂载，再尝试用原始副本恢复注册镜像；DISM 提交后会等待 `wimserv.exe` 释放 WIM，再计算哈希。
 - WinRE 执行路径按磁盘号/分区号和卷 GUID 重新挂载固定临时盘符，并逐项比对任务 JSON 与 RecoveryTask.env 的磁盘/分区/大小快照；恢复前再次校验镜像与 metadata，备份完成后原子生成 `metadata.json`，所有破坏性操作都要求 `-AllowDestructive`。
 - ARM64 备份元数据记录实际架构、Windows 版本/构建号、已用空间和预留空间；Recovery.exe 的 DISM/BCDBoot 输出同时实时写入日志和 WinRE 控制台，启动修复失败时尝试导入任务创建前的 BCD 快照。
 - GUI 在提交前重新读取任务、源、镜像和目标的磁盘 GUID、分区 GUID、偏移、大小、文件系统，并把这些值放入确认对话框。
+- GUI 现在只在管理员准备脚本返回 0 时提示任务准备成功；备份不会附带破坏性开关，还原失败会显示退出码和准备日志路径。
 - Rust Recovery 路径带有清理守卫：在 WinRE 已挂载任务卷后，即使载荷校验、磁盘挂载或 DISM/BCDBoot 提前失败，也会尝试恢复原始注册 WinRE，并保留失败日志。
 
 ## 当前验证结果
@@ -39,11 +41,10 @@ macOS 本地已完成：
 3. 在管理员 Guest Tools 会话执行无破坏性的 `probe -NoReboot`，确认任务身份复核、WinRE 载荷哈希和 `winpeshl.ini -> Recovery.exe` 自动入口。
 4. 使用快照分别验证 DISM Capture、单系统 Apply/BCDBoot、双系统 `/addlast`，每次验证后恢复快照并确认原始 WinRE 哈希不变。
 
-## 2026-08-20 ARM64 编译验证
+## 2026-08-20 ARM64 编译验证边界
 
-- Parallels Win11 ARM64 已安装 Rust stable、`aarch64-pc-windows-msvc`、Visual Studio C++ Build Tools 和 ARM64 SDK。
-- 构建脚本支持 `-CargoTargetDir`，将 Cargo 临时产物放在 VM 本地磁盘，避开共享目录的临时归档限制。
-- `windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target` 成功生成版本 0.1.2 包。
-- `dumpbin /headers` 报告 `AA64 machine (ARM64)`；`BackupRestore.exe` 与 `Recovery.exe` 的哈希和 `build-manifest.json` 一致。
-- 两个 ARM64 程序在 VM 内分别成功执行 `run-command`、`hash`、真实 PowerShell 生成任务的 `validate-task` 和 `recover --dry-run`。曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲；另修复了 PowerShell 5.1 UTF-8 BOM 导致的 JSON 解析失败。
-- 非破坏性 WinRE 准备探测已走到 DISM 挂载阶段；探测进程停止等待后，已卸载临时挂载并用原始副本恢复注册的 `Winre.wim`，SHA-256 恢复为之前记录的原始值 `2BC69064C33D0D21435327F752233042FAA4469F7A25F083BB28609B6FF9A6C3`。本次没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。
+- 构建脚本支持 `-CargoTargetDir`，将 Cargo 临时产物放在 VM 本地磁盘，避开共享目录的临时归档限制；脚本不会自动安装或下载工具链。
+- 本次恢复会话通过 `prlctl` 只读检查当前 Win11 ARM64 VM：`where cargo` 和 `rustup --version` 均未找到。因此 0.2.3 的 ARM64 包、`dumpbin` 哈希核对和 VM 内 `validate-task`/`recover --dry-run` 尚未在当前 VM 重建后复现，不能作为当前发布证据。
+- Windows PowerShell 5.1 的原生命令改用 .NET `ProcessStartInfo` 等待并把 DISM 专用日志写入任务日志，避免 `Tee-Object` 管道或同步 `.Result` 在 ARM64 VM 上出现命令已完成但父进程不返回。
+- 历史探测曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲；另修复了 PowerShell 5.1 UTF-8 BOM 导致的 JSON 解析失败。历史探测没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。
+- 0.2.1 ARM64 探测曾出现 DISM 提交后立即读取 WIM 的短暂文件锁；0.2.3 修复为独立 DISM 日志、固定等待释放窗口并记录独立失败日志，避免 PowerShell 5.1 枚举 `wimserv.exe` 进程时卡住。

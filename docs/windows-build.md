@@ -39,6 +39,7 @@ ARM64 包中的 `BackupRestore.ps1` 会读取同目录的 `build-manifest.json`�
 任何磁盘操作前停止。RecoveryTask.env 和 metadata.json 也会记录实际 ARM64 架构、
 Windows 版本/构建号和容量安全字段。
 
-宿主机仍只安装了 `aarch64-apple-darwin`，不承担 Windows 交叉链接；Parallels
-Win11 ARM64 已安装 Rust、`aarch64-pc-windows-msvc` 和 Visual Studio C++ 工具。
-构建时应把 Cargo target 目录放在 VM 本地磁盘，避免共享目录的临时文件语义差异。
+宿主机仍只安装了 `aarch64-apple-darwin`，不承担 Windows 交叉链接。当前 VM 的只读
+检查未找到 `cargo`/`rustup`，因此需要用户明确允许后，才可在 VM 内安装
+`aarch64-pc-windows-msvc` 和 Visual Studio C++ 工具。构建时应把 Cargo target 目录
+放在 VM 本地磁盘，避免共享目录的临时文件语义差异。

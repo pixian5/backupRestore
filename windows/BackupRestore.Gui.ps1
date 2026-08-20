@@ -115,11 +115,17 @@ $button.Add_Click({
         '-Operation', $selected, '-TaskDrive', $taskDrive.Text.Trim(':').Trim(),
         '-SourceDrive', $sourceDrive.Text.Trim(':').Trim(), '-ImageDrive', $imageDrive.Text.Trim(':').Trim(),
         '-TargetDrive', $targetDrive.Text.Trim(':').Trim(), '-ImageRelativePath', $relativePath.Text,
-        '-BootMenuName', $bootMenuName.Text,
-        '-AllowDestructive')
+        '-BootMenuName', $bootMenuName.Text)
+    if ($selected -in @('restore-existing', 'create-secondary')) {
+        $arguments += '-AllowDestructive'
+    }
     try {
-        Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList $arguments
-        [System.Windows.MessageBox]::Show('任务已提交。请查看任务目录中的 status.json 和 recovery.log。', 'BackupRestore') | Out-Null
+        $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $arguments
+        if ($process.ExitCode -eq 0) {
+            [System.Windows.MessageBox]::Show('任务已准备。请查看任务目录中的 status.json 和 recovery.log。', 'BackupRestore') | Out-Null
+        } else {
+            [System.Windows.MessageBox]::Show("任务准备失败，退出码：$($process.ExitCode)。请查看 C:\ProgramData\BackupRestore\logs\prepare.log。", '提交失败', 'OK', 'Error') | Out-Null
+        }
     } catch {
         [System.Windows.MessageBox]::Show($_.Exception.Message, '提交失败', 'OK', 'Error') | Out-Null
     }
