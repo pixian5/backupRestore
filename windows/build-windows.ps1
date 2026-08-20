@@ -2,7 +2,8 @@
 param(
     [ValidateSet('x64', 'arm64', 'all')]
     [string]$Architecture = 'arm64',
-    [string]$OutputRoot = ''
+    [string]$OutputRoot = '',
+    [string]$CargoTargetDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,15 +23,59 @@ $outputBase = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     if ($resolvedOutput) { $resolvedOutput.Path } else { [System.IO.Path]::GetFullPath($OutputRoot) }
 }
 New-Item -ItemType Directory -Force -Path $outputBase | Out-Null
+$targetRoot = if (-not [string]::IsNullOrWhiteSpace($CargoTargetDir)) {
+    [System.IO.Path]::GetFullPath($CargoTargetDir)
+} elseif (-not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+} else {
+    Join-Path $repoRoot 'target'
+}
+New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($CargoTargetDir)) {
+    $env:CARGO_TARGET_DIR = $targetRoot
+}
 
 function Invoke-Cargo([string[]]$Arguments) {
     & cargo @Arguments
     if ($LASTEXITCODE -ne 0) { throw "cargo failed with exit code $LASTEXITCODE" }
 }
 
+function Initialize-MsvcEnvironment([string]$arch) {
+    $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path $vswhere)) {
+        if (-not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
+            throw 'MSVC link.exe was not found. Install Visual Studio C++ Build Tools before building.'
+        }
+        return
+    }
+    $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+        Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($vsPath)) {
+        throw 'A Visual Studio C++ Build Tools installation was not found.'
+    }
+    $vsDevCmd = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
+    if (-not (Test-Path $vsDevCmd)) { throw "VsDevCmd.bat is missing: $vsDevCmd" }
+    $targetArch = if ($arch -eq 'arm64') { 'arm64' } else { 'x64' }
+    $hostArch = if ($env:PROCESSOR_ARCHITECTURE -match '(?i)ARM64') { 'arm64' } else { 'x64' }
+    $commandLine = '"' + $vsDevCmd + '" -arch=' + $targetArch + ' -host_arch=' + $hostArch + ' >nul && set'
+    $lines = & cmd.exe /d /s /c $commandLine
+    $imported = 0
+    foreach ($line in $lines) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+            $imported++
+        }
+    }
+    if ($imported -eq 0 -or -not (Get-Command link.exe -ErrorAction SilentlyContinue)) {
+        throw "Visual Studio developer environment could not be initialized for $targetArch."
+    }
+}
+
 foreach ($arch in $architectures) {
     $target = $targets[$arch]
     if ([string]::IsNullOrWhiteSpace($target)) { throw "Unknown architecture: $arch" }
+    Initialize-MsvcEnvironment $arch
     $installed = @(rustup target list --installed)
     if ($installed -notcontains $target) {
         throw "Rust target $target is not installed. Install it explicitly with 'rustup target add $target' before building; this script never downloads toolchains automatically."
@@ -42,7 +87,7 @@ foreach ($arch in $architectures) {
     $package = Join-Path $outputBase "BackupRestore-windows-$arch-v$version"
     if (Test-Path $package) { Remove-Item -LiteralPath $package -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $package | Out-Null
-    $binary = Join-Path $repoRoot "target\$target\release\backuprestore-cli.exe"
+    $binary = Join-Path $targetRoot "$target\release\backuprestore-cli.exe"
     if (-not (Test-Path $binary)) { throw "Build output missing: $binary" }
     $binaryHash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
 
@@ -70,7 +115,7 @@ foreach ($arch in $architectures) {
         binarySha256 = $binaryHash
         frontend = 'BackupRestore.exe'
         recovery = 'Recovery.exe'
-        runtime = 'Windows 11 ARM64 development package'
+        runtime = "Windows 10/11 $($arch.ToUpperInvariant()) development package"
         note = 'Architecture-specific Windows development package; x64 and ARM64 are separate binaries.'
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $package 'build-manifest.json') -Encoding UTF8

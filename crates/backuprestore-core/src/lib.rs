@@ -564,7 +564,10 @@ pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
 pub fn sha256_file(path: impl AsRef<Path>) -> Result<String, TaskError> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
+    // Keep the 1 MiB hashing buffer on the heap. Windows ARM64's default
+    // process stack is small enough that a stack array can terminate the
+    // native Recovery.exe with STATUS_STACK_OVERFLOW.
+    let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {

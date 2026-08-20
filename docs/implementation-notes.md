@@ -38,3 +38,12 @@ macOS 本地已完成：
 2. 运行 `windows\\build-windows.ps1 -Architecture arm64`，检查 `build-manifest.json` 中的二进制 SHA-256。
 3. 在管理员 Guest Tools 会话执行无破坏性的 `probe -NoReboot`，确认任务身份复核、WinRE 载荷哈希和 `winpeshl.ini -> Recovery.exe` 自动入口。
 4. 使用快照分别验证 DISM Capture、单系统 Apply/BCDBoot、双系统 `/addlast`，每次验证后恢复快照并确认原始 WinRE 哈希不变。
+
+## 2026-08-20 ARM64 编译验证
+
+- Parallels Win11 ARM64 已安装 Rust stable、`aarch64-pc-windows-msvc`、Visual Studio C++ Build Tools 和 ARM64 SDK。
+- 构建脚本支持 `-CargoTargetDir`，将 Cargo 临时产物放在 VM 本地磁盘，避开共享目录的临时归档限制。
+- `windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target` 成功生成版本 0.1.0 包。
+- `dumpbin /headers` 报告 `AA64 machine (ARM64)`；`BackupRestore.exe` 与 `Recovery.exe` 的哈希和 `build-manifest.json` 一致。
+- 两个 ARM64 程序在 VM 内分别成功执行 `run-command` 和 `hash`。曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲。
+- 本次只做编译、哈希和无破坏性命令验证，没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。

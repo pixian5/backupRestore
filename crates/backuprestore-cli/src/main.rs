@@ -235,8 +235,8 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let task_id = env_required(&values, "TASK_ID")?;
     let task_root_rel = env_required(&values, "TASK_ROOT_REL")?;
     backuprestore_core::validate_relative_path(&task_root_rel)?;
-    let (store_rel, relative_id) = task_root_rel
-        .replace('/', "\\")
+    let normalized_task_root = task_root_rel.replace('/', "\\");
+    let (store_rel, relative_id) = normalized_task_root
         .rsplit_once("\\tasks\\")
         .ok_or_else(|| err("TASK_ROOT_REL must contain \\tasks\\"))?;
     if store_rel.is_empty() || store_rel.eq_ignore_ascii_case("tasks") {
@@ -531,7 +531,8 @@ fn mount_env_volume(
     if !output.status.success() {
         return Err(err(&format!("mountvol failed for {letter}:")));
     }
-    let actual = String::from_utf8_lossy(&output.stdout)
+    let output_text = String::from_utf8_lossy(&output.stdout);
+    let actual = output_text
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
@@ -716,12 +717,12 @@ fn recover_windows(
         }
         Operation::Backup => {
             use backuprestore_core::{BackupMetadata, PROGRAM_VERSION, write_json_atomic};
-            let source = task.source.as_ref().ok_or_else(|| err("missing source"))?;
+            let source = task.source.clone().ok_or_else(|| err("missing source"))?;
             let destination = task
                 .destination
-                .as_ref()
+                .clone()
                 .ok_or_else(|| err("missing destination"))?;
-            let source_path = resolve_volume_root(source)?;
+            let source_path = resolve_volume_root(&source)?;
             let destination_path =
                 resolve_volume_path(&destination.volume, &destination.relative_path)?;
             let partial = PathBuf::from(format!("{}.partial", destination_path.display()));
@@ -750,6 +751,8 @@ fn recover_windows(
             fs::rename(&partial, &destination_path)?;
             let image_size = fs::metadata(&destination_path)?.len();
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
+            let source_volume_serial = source.volume_serial.clone();
+            let source_partition_size = source.partition_size;
             let context_value = |key: &str, fallback: &str| {
                 metadata_context
                     .and_then(|values| env_optional(values, key))
@@ -771,11 +774,11 @@ fn recover_windows(
                 wim_index: 1,
                 image_sha256,
                 image_size,
-                source: source.clone(),
+                source,
                 captured_used_bytes: context_u64("SOURCE_USED_BYTES", 0),
                 reserved_bytes: context_u64("RESERVED_BYTES", 0),
-                minimum_target_size: context_u64("MINIMUM_TARGET_SIZE", source.partition_size),
-                volume_serial: source.volume_serial.clone(),
+                minimum_target_size: context_u64("MINIMUM_TARGET_SIZE", source_partition_size),
+                volume_serial: source_volume_serial,
                 program_version: PROGRAM_VERSION.into(),
             };
             let metadata_path = destination_path
@@ -787,7 +790,8 @@ fn recover_windows(
             store.write_transition(task, Stage::Success)?;
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
-            let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;
+            let target = task.target.clone().ok_or_else(|| err("missing target"))?;
+            let image_index = task.image.as_ref().map(|image| image.index).unwrap_or(1);
             if target.role == TargetRole::NewWindows
                 && task.boot_plan.mode != BootMode::AddSecondary
             {
@@ -807,10 +811,7 @@ fn recover_windows(
                 &[
                     "/Apply-Image",
                     &format!("/ImageFile:{}", image_path.display()),
-                    &format!(
-                        "/Index:{}",
-                        task.image.as_ref().map(|x| x.index).unwrap_or(1)
-                    ),
+                    &format!("/Index:{}", image_index),
                     &format!("/ApplyDir:{}", target_root.display()),
                 ],
                 log,
