@@ -95,8 +95,8 @@ function Assert-SystemEnvironment {
     $systemDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
     if (-not $systemDisk -or $systemDisk.PartitionStyle -ne 'GPT') { throw 'V1 requires the boot disk to use GPT.' }
     $reagent = reagentc.exe /info 2>&1 | Out-String
-    if ($reagent -notmatch '(?i)(Windows RE status|Windows RE 状态)\s*:\s*(Enabled|启用|已启用)') { throw 'Windows RE is disabled or unavailable. Enable WinRE before starting a task.' }
-    if ($reagent -notmatch '(?i)(Windows RE location|Windows RE 位置)\s*:\s*[^\r\n]+') { throw 'Windows RE image location was not reported.' }
+    if ($reagent -notmatch '(?i)\bEnabled\b') { throw 'Windows RE is disabled or unavailable. Enable WinRE before starting a task.' }
+    if ($reagent -notmatch '(?i)(GLOBALROOT|Recovery\\WindowsRE)') { throw 'Windows RE image location was not reported.' }
     $bitlocker = Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue
     if ($bitlocker) {
         $protected = Get-BitLockerVolume -MountPoint "$($SourceDrive):" -ErrorAction SilentlyContinue

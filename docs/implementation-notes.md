@@ -16,9 +16,9 @@
 
 macOS 本地已完成：
 
-- `cargo test --workspace --all-targets --offline`：核心 crate 7 项测试通过；
+- `cargo test --workspace --all-targets --offline`：核心 crate 8 项测试通过；
 - `cargo fmt --all -- --check`：通过；
-- PowerShell AST 解析：`windows/BackupRestore.ps1`、`windows/BackupRestore.Gui.ps1` 均通过。
+- PowerShell AST 解析：`windows/BackupRestore.ps1`、`windows/BackupRestore.Gui.ps1`、`windows/build-windows.ps1` 均通过；Win11 ARM64 的 Windows PowerShell 5.1 输出也已覆盖 UTF-8 BOM JSON 读取。
 
 ## 尚未宣称完成的实机项
 
@@ -43,7 +43,7 @@ macOS 本地已完成：
 
 - Parallels Win11 ARM64 已安装 Rust stable、`aarch64-pc-windows-msvc`、Visual Studio C++ Build Tools 和 ARM64 SDK。
 - 构建脚本支持 `-CargoTargetDir`，将 Cargo 临时产物放在 VM 本地磁盘，避开共享目录的临时归档限制。
-- `windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target` 成功生成版本 0.1.0 包。
+- `windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target` 成功生成版本 0.1.2 包。
 - `dumpbin /headers` 报告 `AA64 machine (ARM64)`；`BackupRestore.exe` 与 `Recovery.exe` 的哈希和 `build-manifest.json` 一致。
-- 两个 ARM64 程序在 VM 内分别成功执行 `run-command` 和 `hash`。曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲。
-- 本次只做编译、哈希和无破坏性命令验证，没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。
+- 两个 ARM64 程序在 VM 内分别成功执行 `run-command`、`hash`、真实 PowerShell 生成任务的 `validate-task` 和 `recover --dry-run`。曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲；另修复了 PowerShell 5.1 UTF-8 BOM 导致的 JSON 解析失败。
+- 非破坏性 WinRE 准备探测已走到 DISM 挂载阶段；探测进程停止等待后，已卸载临时挂载并用原始副本恢复注册的 `Winre.wim`，SHA-256 恢复为之前记录的原始值 `2BC69064C33D0D21435327F752233042FAA4469F7A25F083BB28609B6FF9A6C3`。本次没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。

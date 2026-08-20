@@ -675,7 +675,12 @@ pub fn write_json_atomic<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Res
     Ok(())
 }
 pub fn read_json<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, TaskError> {
-    Ok(serde_json::from_slice(&fs::read(path)?)?)
+    let bytes = fs::read(path)?;
+    // Windows PowerShell 5.1's `Set-Content -Encoding UTF8` emits a UTF-8
+    // BOM.  WinRE payload JSON is written by that host, so accept the BOM
+    // before handing the document to serde_json.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    Ok(serde_json::from_slice(bytes)?)
 }
 
 #[derive(Debug, Clone)]
@@ -952,6 +957,20 @@ mod tests {
         assert_eq!(status.error_code, Some(123));
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn read_json_accepts_windows_powershell_utf8_bom() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("backuprestore-bom-{suffix}.json"));
+        fs::write(&path, b"\xEF\xBB\xBF{\"ok\":true}").unwrap();
+        let value: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(value["ok"], true);
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn path_and_capacity_guards() {
         assert!(validate_relative_path("x\\y\\z.wim").is_ok());
