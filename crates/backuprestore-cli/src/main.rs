@@ -221,7 +221,7 @@ fn recover(root: String, id: String, dry_run: bool) -> Result<(), TaskError> {
             "real Recovery execution is only available on Windows/WinRE; use --dry-run on this host",
         ));
     }
-    let result = recover_windows(&store, &mut task, &log, None, None);
+    let result = recover_windows(&store, &mut task, &log, None, None, true);
     if let Err(error) = &result {
         let _ = store.write_failure(&mut task, 1, error.to_string());
     }
@@ -370,7 +370,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     )?;
     let efi_root = task.target.as_ref().map(|_| Path::new("E:\\"));
     let stage_before_failure = task.status;
-    let result = recover_windows(&store, &mut task, &log, efi_root, Some(&values));
+    // WinRE cleanup is part of the recovery contract.  Defer the terminal
+    // success write until the original registered WinRE image has been
+    // restored and verified below.
+    let result = recover_windows(&store, &mut task, &log, efi_root, Some(&values), false);
     if let Err(error) = &result {
         let should_rollback_bcd =
             task.status == Stage::BootRepaired || stage_before_failure == Stage::BootRepaired;
@@ -386,11 +389,44 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     if let Err(error) = &cleanup {
         append_log(&log, &format!("WinRE cleanup failed: {error}"))?;
     }
-    if cleanup.is_ok() {
-        cleanup_guard.disarm();
-        run_logged("wpeutil.exe", &["reboot"], &log)?;
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => {
+            store.write_transition(&mut task, Stage::Success)?;
+            append_log(&log, "WinRE cleanup completed; task marked successful")?;
+            cleanup_guard.disarm();
+            run_logged("wpeutil.exe", &["reboot"], &log)?;
+            Ok(())
+        }
+        (Ok(()), Err(cleanup_error)) => {
+            // The disk operation may have completed, but leaving the
+            // registered WinRE image modified is not a successful task.
+            // Keep the task terminally failed until an operator repairs the
+            // registered WinRE state; the guard still gets one final
+            // best-effort restore on drop.
+            if let Err(status_error) = store.write_failure(
+                &mut task,
+                2,
+                format!("WinRE cleanup failed: {cleanup_error}"),
+            ) {
+                append_log(
+                    &log,
+                    &format!("Unable to persist WinRE cleanup failure: {status_error}"),
+                )?;
+            }
+            Err(cleanup_error)
+        }
+        (Err(recovery_error), cleanup_result) => {
+            if let Err(cleanup_error) = cleanup_result {
+                append_log(
+                    &log,
+                    &format!("WinRE cleanup also failed after recovery error: {cleanup_error}"),
+                )?;
+            } else {
+                cleanup_guard.disarm();
+            }
+            Err(recovery_error)
+        }
     }
-    result.and(cleanup)
 }
 
 #[cfg(windows)]
@@ -790,6 +826,7 @@ fn recover_windows(
     _log: &Path,
     _efi_root: Option<&Path>,
     _metadata_context: Option<&BTreeMap<String, String>>,
+    _finalize_success: bool,
 ) -> Result<(), TaskError> {
     Err(err(
         "real Recovery execution is only available on Windows/WinRE",
@@ -803,6 +840,7 @@ fn recover_windows(
     log: &Path,
     efi_root: Option<&Path>,
     metadata_context: Option<&BTreeMap<String, String>>,
+    finalize_success: bool,
 ) -> Result<(), TaskError> {
     use backuprestore_core::TargetRole;
     if task.status == Stage::Prepared {
@@ -882,7 +920,7 @@ fn recover_windows(
             if task.status == Stage::RecoveryStarted {
                 store.write_transition(task, Stage::Preflight)?;
             }
-            if task.status == Stage::Preflight {
+            if task.status == Stage::Preflight && finalize_success {
                 store.write_transition(task, Stage::Success)?;
             }
         }
@@ -973,7 +1011,9 @@ fn recover_windows(
                 .join("metadata.json");
             write_json_atomic(metadata_path, &metadata)?;
             append_log(log, "Backup metadata written and image hash recorded")?;
-            store.write_transition(task, Stage::Success)?;
+            if finalize_success {
+                store.write_transition(task, Stage::Success)?;
+            }
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let target = task.target.clone().ok_or_else(|| err("missing target"))?;
@@ -1046,7 +1086,9 @@ fn recover_windows(
                         .ok_or_else(|| err("secondary target has no boot menu name"))?;
                     set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
                 }
-                store.write_transition(task, Stage::Success)?;
+                if finalize_success {
+                    store.write_transition(task, Stage::Success)?;
+                }
             } else {
                 return Err(err(&format!(
                     "restore cannot resume from stage {:?}",

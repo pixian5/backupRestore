@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.2.8`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.2.9`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -93,7 +93,7 @@ docs/README.md                              文档阅读入口
 - 每次注入有 payload manifest 和 SHA-256；`-NoReboot` 不替换注册 WinRE，不设置一次性启动。
 - manifest 同时绑定 `RecoveryTask.env` 的 SHA-256；Rust Recovery 在读取 env 后再次校验它，环境变量文件被替换时拒绝执行。
 - DISM 卸载后固定等待短窗口，防止 Windows PowerShell 5.1 的 WIM 文件锁尚未释放。
-- Recovery.exe 在载荷校验、挂载、DISM、BCDBoot 失败时尽力恢复原始 WinRE；清理失败不应删除任务目录，保留日志供人工处理。
+- Recovery.exe 在载荷校验、挂载、DISM、BCDBoot 失败时尽力恢复原始 WinRE；WinRE 路径会延迟写入 `success`，直到原始注册镜像恢复并通过 hash 校验。清理失败写入 `failed`，不删除任务目录，保留日志供人工处理。
 - `Recovery.cmd` 只作为无 Rust 二进制时的 probe 兼容路径，真实 backup/restore 没有 `Recovery.exe` 会拒绝；兼容入口额外检查任务 ID、`TASK_ROOT_REL`、相对镜像路径和保留分区类型。
 
 ## 5. GUI 页面现状
