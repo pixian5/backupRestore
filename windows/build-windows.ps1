@@ -36,7 +36,16 @@ if (-not [string]::IsNullOrWhiteSpace($CargoTargetDir)) {
 }
 
 function Invoke-Cargo([string[]]$Arguments) {
-    & cargo @Arguments
+    # prlctl/Guest Tools starts PowerShell in C:\. Always bind Cargo to this
+    # package manifest so a documented build command works from any directory.
+    if ($Arguments.Count -eq 0) { throw 'Cargo command is missing.' }
+    $cargoArguments = @(
+        $Arguments[0]
+        '--manifest-path'
+        (Join-Path $repoRoot 'Cargo.toml')
+        $Arguments | Select-Object -Skip 1
+    )
+    & cargo @cargoArguments
     if ($LASTEXITCODE -ne 0) { throw "cargo failed with exit code $LASTEXITCODE" }
 }
 

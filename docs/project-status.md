@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-21
-当前开发版本：`0.3.0`
+当前开发版本：`0.3.6`
 分支：`main`
 本地开发基线：`b32acac`
 
@@ -45,11 +45,11 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | 任务卷防替换 | 新任务记录 `taskVolume`；WinRE 复核任务、源、镜像和目标的 GUID、分区位置、大小、类型、文件系统与序列号。 | 代码与离线测试已覆盖 |
 | WinRE 载荷完整性 | 原始/暂存 WinRE、任务专用 payload manifest、每个载荷的 SHA-256、`RecoveryTask.env` 二次 hash 校验。 | 代码已覆盖 |
 | 正常 Windows 准备 | 环境、UEFI/GPT、WinRE、Secure Boot、BitLocker 检查；注册 Recovery 分区定位；EFI 选择；WIM 注入；BCD 快照；`last-task.json`。 | PowerShell AST 已通过 |
-| WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | 代码已覆盖，实机未验收 |
-| 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | 代码已覆盖，实机未验收 |
-| probe 同卷情形 | `probe` 的源卷若与任务卷相同，复用已验证的 `T:`，不再尝试重复挂到 `S:`。真实备份/还原仍要求任务卷与源/目标独立。 | Rust 离线检查已通过，WinRE 实机未验收 |
+| WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 已实机完成自动入口和清理；破坏性恢复仍未验收 |
+| 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
+| probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用任务卷实际盘符。真实备份/还原仍要求任务卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
 | GUI | 环境、备份与还原、结果与日志三个页签；二次确认、镜像 hash/metadata 查看、状态刷新。 | PowerShell AST 已通过，WPF 实机未验收 |
-| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.3.0` 包已在 VM 编译并复制到共享桌面 |
+| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.3.6` 已实测构建、hash/schema 烟测和 WinRE 自动 probe |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
 ### 已执行且通过的本机验证
@@ -70,13 +70,14 @@ git diff --check
 
 以下项目均不能因代码、AST 或 macOS 测试通过而标记完成：
 
-1. 管理员 Windows 会话运行 `probe -NoReboot`，验证载荷注入、卷身份、manifest 与清理路径；
-2. 在 VM 快照中完成 `Windows -> 重启 -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe` 自动启动，并读回任务卷中的持久化 marker、`status.json` 和 `Recovery.log`；
-3. 在快照中验证 DISM Capture、`restore-existing`、`create-secondary`、BCDBoot、启动菜单、原 WinRE hash 恢复和正常 Windows 回归；
-4. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
-5. 在真实 WPF 窗口核验磁盘枚举、确认对话框、长路径、日志刷新和 UAC 行为。
+1. 在独立 VM 快照中验证 DISM Capture；
+2. 在独立 VM 快照中验证 `restore-existing`、`create-secondary`、BCDBoot、启动菜单、原 WinRE hash 恢复和正常 Windows 回归；
+3. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
+4. 在真实 WPF 窗口核验磁盘枚举、确认对话框、长路径、日志刷新和 UAC 行为。
 
-2026-08-21 已复核：`Windows 11` ARM64 VM 正在运行，Rust 1.98.0、ARM64 MSVC、Visual Studio Build Tools 和 Windows SDK 均可用；`v0.3.0` 源码通过共享桌面传入 `C:\BackupRestoreBuild\source-v0.3.0`，并使用 VM 本地 `C:\BackupRestoreBuild\target-v0.3.0` 完成 ARM64 编译。VM 内 `Recovery.exe hash` 与 `build-manifest.json` 一致，`validate-task` 通过；压缩包位于 macOS 共享桌面 `BackupRestore-windows-arm64-v0.3.0.zip`。该结果只证明 ARM64 二进制和 schema 入口可运行，不证明 WinRE 自动启动、DISM、格式化、BCDBoot 或真实重启成功。
+2026-08-21 已实测：`Windows 11` ARM64 VM 使用 `v0.3.6` 完成真实自动 probe，任务为 `c12026c0-6a9e-4093-8a8b-2971968a31f7`。流程完成 `Windows -> reagentc /boottore -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe -> probe preflight -> 原始 WinRE hash 恢复 -> wpeutil reboot -> Windows`；最终 `status.json` 为 `success`，注册 WinRE 与任务原始副本 SHA-256 均为 `0cbc86b44994065c7295f0322df670cf0b6c9e4a7be5099cfd962ddec956fda1`。这证明自动入口、同卷盘符复用和清理状态机；不证明 DISM Capture/Apply、格式化、BCDBoot、双系统或故障回滚。
+
+同日交付产物：共享桌面 `/Users/x/Desktop/BackupRestore-windows-arm64-v0.3.6.zip`，SHA-256 为 `a934134e09173bc9a131036ea76722761941fd243f626142367a022a863e6a21`。压缩包只包含 ARM64 运行包、PowerShell 前端/WinRE 载荷、两个 ARM64 MSVC runtime 和 `build-manifest.json`；不包含任务、WIM、日志或 VM 数据。
 
 ## 5. 恢复工作时的唯一顺序
 
@@ -96,7 +97,7 @@ git diff --check
    .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target
    ```
 
-5. 先执行非破坏性 `probe -NoReboot`，然后在独立快照中执行自动进入 WinRE 的 probe；只有这项成功后，才继续备份、单系统还原、双系统还原和故障注入。
+5. 自动 probe 已在 ARM64 快照实测成功；后续任何影响 WinRE 路径的修改都要先重复 `probe -NoReboot` 与自动 probe。当前下一项是独立快照中的备份，其后才是单系统还原、双系统还原和故障注入。
 6. 每项实机测试仅保留最小压缩证据：最终 `status.json`、`Recovery.log`、`prepare.log`、前后 WinRE/BCD hash 和必要截图。每项结束后恢复 VM 快照。
 
 ## 6. 文档职责与验收口径
@@ -109,4 +110,4 @@ git diff --check
 | `docs/windows-build.md` | 说明 Windows 包的构建条件、架构隔离和输出。 |
 | 本文件 | 记录当前进度、用户决策和继续工作的门槛。 |
 
-状态术语固定为“代码已覆盖”“离线已验证”“实机待验证”“不在 V1”。只有带有 Windows VM 实际日志、持久化文件或可复核快照证据的项目可以从“实机待验证”变更为已验证。
+状态术语固定为“代码已覆盖”“离线已验证”“实机待验证”“实机已验证”“不在 V1”。只有带有 Windows VM 实际日志、持久化文件或可复核快照证据的项目可以从“实机待验证”变更为“实机已验证”。

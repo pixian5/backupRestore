@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.3.0`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.3.6`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -134,9 +134,9 @@ GUI 仍是 PowerShell/WPF 开发版，macOS 上只能做 AST 解析，不能声�
 
    首次出现缺少 target 时脚本应停止，而不是自动下载。
 
-3. 在管理员 Guest 会话先运行 `probe -NoReboot`，确认任务身份、载荷 hash、`winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`；保存 `status.json`、`Recovery.log`、`prepare.log` 和 WinRE 原始 hash。
-4. 使用 VM 快照分别验证：备份、单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚、原始 WinRE 恢复和自动重启。
-5. 只有拿到重启后的真实证据，才能在文档中把对应项从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
+3. 已完成 ARM64 自动 probe：任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 已验证 `winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`、同卷盘符复用、原始 WinRE SHA-256 恢复和自动返回 Windows。修改 WinRE 路径后必须在新快照重复该验证。
+4. 使用 VM 快照分别验证：备份、单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚。
+5. 只有拿到对应流程的真实证据，才能在文档中把该流程从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
 6. 完成修复后再次运行离线测试、AST、`git diff --check`，递增版本，中文提交并推送 `origin/main`。
 
 ## 8. 当前应执行的离线验证

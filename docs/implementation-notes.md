@@ -29,6 +29,8 @@
 - 无 Rust 可执行文件的 `Recovery.cmd` 兼容入口增加任务 ID、任务路径、镜像相对路径和保留分区类型检查；RecoveryTask.env 同步记录镜像/目标分区类型、文件系统和卷序列号。
 - `docs/verification-matrix.md` 按每一项需求列出代码证据、离线证据与实机验收证据，后续交接不得用 AST/单元测试替代自动重启、DISM、格式化或 BCD 证据。
 - `probe` 允许任务目录与源分区相同：WinRE 先验证并挂载任务卷为 `T:`，若源与任务是同一分区则复用 `T:`，不再二次分配 `S:`；真实 backup/restore 仍拒绝任务卷与源或目标重合。
+- 2026-08-21 修复 WinRE 盘符复用：恢复主机现在先按卷 GUID 扫描 `C:` 到 `Z:` 的已有挂载，任务卷、Recovery 卷、源/镜像/目标卷和 EFI 均复用已存在盘符；只有找不到匹配卷时才执行 `mountvol`/DiskPart 分配。实际使用的盘符会回写到任务内存模型，清理原始 WinRE 也使用实际 Recovery 盘符，避免 WinRE 保留 `C:` 时重复分配 `T:` 卡死。
+- 2026-08-21 修复 Windows 构建目录依赖：`build-windows.ps1` 现在为每次 Cargo 调用显式传入仓库 `Cargo.toml`；因此 Parallels Guest Tools 从 `C:\` 启动 PowerShell 时，文档中的构建命令仍会使用指定源码目录，而不会错误在 `C:\` 查找 manifest。
 - 2026-08-21 修复：任务卷重叠校验原先只拦截了 source/target，未覆盖 backup 的 destination 和 restore 的 image volume。已补齐同分区拒绝逻辑，并在 core 端新增回归测试，确保任务卷不能与镜像卷或目标卷重叠。
 - 2026-08-21 ARM64 构建：Recovery payload 会随包携带 `VCRUNTIME140.dll` 与 `VCRUNTIME140_1.dll`；WinRE 启动器把完整 payload hash 校验交给 Rust，兼容 `certutil` 输出中的空格。挂载失败时保留 file-backed DiskPart 日志，便于后续 WinRE 实机排查。
 
@@ -41,15 +43,19 @@ macOS 本地已完成：
 - PowerShell AST 解析：`windows/BackupRestore.ps1`、`windows/BackupRestore.Gui.ps1`、`windows/build-windows.ps1` 均通过；Win11 ARM64 的 Windows PowerShell 5.1 输出也已覆盖 UTF-8 BOM JSON 读取。
 - Windows VM 曾生成 `BackupRestore-windows-arm64-v0.2.8`；上一轮已编译 `BackupRestore-windows-arm64-v0.2.9`，包含状态一致性修复。本轮已编译 `v0.3.0` ARM64 包，包含 probe 状态机修复。这类产物只是编译/打包证据，不是 WinRE 运行验收。
 - 2026-08-21 `v0.3.0` ARM64 包已在 Windows VM 内实际启动：`Recovery.exe hash` 返回 `dad44f85e4ba78044a56399625934b61e2548c8e471633fb6a03435e04772631`，与 `build-manifest.json` 一致；`validate-task` 对现有任务 fixture 通过。该证据覆盖 ARM64 进程启动和 schema 入口，不覆盖管理员 WinRE、DISM、BCDBoot 或重启。
+- 2026-08-21 管理员 `probe -NoReboot` 实测完成了 BCD 快照、原始 WinRE 复制、DISM 挂载/提交、manifest/status 写入，并确认原始 WinRE hash 未改变；首次实测发现 probe 未携带同目录 `Recovery.exe`，已修复脚本默认路径，使所有操作优先复制同架构 Recovery.exe，只有探针包确实缺少 exe 时才保留兼容入口。
+- 2026-08-21 `v0.3.1` 自动 WinRE 入口已实际进入 `RecoveryLauncher.cmd` 并启动 `Recovery.exe`；首次入口测试暴露任务分区在 WinRE 已保留 `C:` 而代码强行申请 `T:` 的挂载缺陷。该缺陷已修复为 GUID 扫描复用逻辑，当前 `v0.3.6` 需要重新构建后再次验证终态和原始 WinRE 清理。
+- 2026-08-21 Windows ARM64 编译补充：macOS 上的 `cargo test`/Clippy 不会编译 `#[cfg(windows)]` 分支；首次 VM 构建发现 `mountvol` 参数类型和盘符局部变量初始化问题，已在 `v0.3.5` 修复。每次修改 WinRE Rust 路径后，必须在目标 Windows 架构重新构建，不能只依赖 macOS 离线检查。
+- 2026-08-21 新增 `poc/restore-task-winre.ps1`：只允许管理员按 UUID 任务恢复其保存的原始 WinRE；脚本复核任务 ID、Recovery 分区 GUID/类型、env/manifest 原始 hash，拒绝错误的 `R:` 盘符后才复制并复核目标 hash。它用于测试失败后的受控清理，不执行 BCD、格式化或还原。
+- 2026-08-21 Win11 ARM64 自动 probe 实测通过：`v0.3.6` 的任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 从正常 Windows 进入任务 WinRE，`RecoveryLauncher.cmd` 记录启动 `Recovery.exe`；Recovery 日志记录 probe 完成、原始注册 WinRE 恢复并校验、最终写入 `success` 和 `wpeutil reboot`。返回 Windows 后注册镜像 SHA-256 与任务原始副本一致。该证据只覆盖 probe，不覆盖任何磁盘格式化、DISM Capture/Apply、BCDBoot 或双系统写入。
 
 ## 尚未宣称完成的实机项
 
 当前先以 Parallels Win11 ARM64 为主线，以下必须在 ARM64 虚拟机和快照上验证后才能发布：
 
-1. ARM64 `Recovery.exe` 的编译、复制进 WinRE 并从 `winpeshl.ini` 实际启动；
-2. DISM Capture/Apply、快速格式化、BCDBoot 返回已有系统和添加第二启动项（含启动菜单名称）的完整链路；
-3. BitLocker 解锁/拒绝、异常断电后的原始 WinRE/BCD 回滚；
-4. GUI 在真实磁盘枚举、二次确认和任务日志展示上的可用性。
+1. DISM Capture/Apply、快速格式化、BCDBoot 返回已有系统和添加第二启动项（含启动菜单名称）的完整链路；
+2. BitLocker 解锁/拒绝、异常断电后的原始 WinRE/BCD 回滚；
+3. GUI 在真实磁盘枚举、二次确认和任务日志展示上的可用性。
 
 在这些实机项完成前，项目属于开发测试版；x64 构建暂缓，不要把 macOS 离线测试结果当作 Windows 恢复成功证明。ARM64 包还会读取
 `build-manifest.json`，拒绝在不匹配的 Windows 架构上运行。
@@ -58,8 +64,8 @@ macOS 本地已完成：
 
 1. 在 Win11 ARM64 虚拟机安装 Rust 与 `aarch64-pc-windows-msvc` target（下载前遵守个人热点确认）。
 2. 运行 `windows\\build-windows.ps1 -Architecture arm64`，检查 `build-manifest.json` 中的二进制 SHA-256。
-3. 在管理员 Guest Tools 会话执行无破坏性的 `probe -NoReboot`，确认任务身份复核、WinRE 载荷哈希和 `winpeshl.ini -> Recovery.exe` 自动入口。
-4. 使用快照分别验证 DISM Capture、单系统 Apply/BCDBoot、双系统 `/addlast`，每次验证后恢复快照并确认原始 WinRE 哈希不变。
+3. 已完成：在管理员 Guest 会话执行 `probe -NoReboot` 和独立快照上的自动 probe，确认任务身份复核、WinRE 载荷哈希、`winpeshl.ini -> Recovery.exe`、清理与返回 Windows。
+4. 后续使用独立快照验证 DISM Capture、单系统 Apply/BCDBoot、双系统 `/addlast`；每次验证后恢复快照并确认原始 WinRE 哈希不变。
 
 ## 2026-08-20 ARM64 编译验证边界
 

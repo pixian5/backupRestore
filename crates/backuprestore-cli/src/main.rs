@@ -260,10 +260,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     if let Some(parent) = early_log.parent() {
         fs::create_dir_all(parent)?;
     }
-    mount_env_volume(&values, "TASK", 'T', &early_log)?;
-    let store = TaskStore::new(PathBuf::from(format!(r"T:\{store_rel}")));
+    let task_letter = mount_env_volume(&values, "TASK", 'T', &early_log)?;
+    let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
-    let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log);
+    let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, task_letter);
     let mut task = store.load(&task_id)?;
     if matches!(task.status, Stage::Success | Stage::Failed) {
         return Err(err(&format!(
@@ -321,25 +321,28 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         verify_sha256(&staged, &manifest.staged_winre_sha256)?;
     }
 
-    mount_env_volume(&values, "RECOVERY", 'R', &early_log)?;
-    if task.operation != Operation::Probe {
-        mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
-        mount_env_volume(&values, "IMAGE", 'I', &early_log)?;
+    let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log)?;
+    let efi_letter = if task.operation != Operation::Probe {
+        let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
+        let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log)?;
         if let Some(source) = task.source.as_mut() {
-            source.drive_letter = Some('S');
+            source.drive_letter = Some(source_letter);
         }
         if let Some(image) = task.image.as_mut() {
-            image.volume.drive_letter = Some('I');
+            image.volume.drive_letter = Some(image_letter);
         }
         if let Some(destination) = task.destination.as_mut() {
-            destination.volume.drive_letter = Some('I');
+            destination.volume.drive_letter = Some(image_letter);
         }
         if task.target.is_some() {
-            mount_env_volume(&values, "TARGET", 'W', &early_log)?;
-            mount_env_volume(&values, "EFI", 'E', &early_log)?;
+            let target_letter = mount_env_volume(&values, "TARGET", 'W', &early_log)?;
+            let efi_letter = mount_env_volume(&values, "EFI", 'E', &early_log)?;
             if let Some(target) = task.target.as_mut() {
-                target.volume.drive_letter = Some('W');
+                target.volume.drive_letter = Some(target_letter);
             }
+            Some(efi_letter)
+        } else {
+            None
         }
     } else if let Some(source) = task.source.as_mut() {
         // Probe tasks are allowed to keep their task files on the source
@@ -352,13 +355,18 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             .as_ref()
             .ok_or_else(|| err("probe task is missing task volume identity"))?;
         if !task_volume.same_partition(source) {
-            mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
-            source.drive_letter = Some('S');
+            source.drive_letter = Some(mount_env_volume(&values, "SOURCE", 'S', &early_log)?);
         } else {
-            source.drive_letter = Some('T');
-            append_log(&early_log, "Probe source is the task partition; reusing T:")?;
+            source.drive_letter = Some(task_letter);
+            append_log(
+                &early_log,
+                &format!("Probe source is the task partition; reusing {task_letter}:"),
+            )?;
         }
-    }
+        None
+    } else {
+        None
+    };
 
     let log = store.log_path(&task_id)?;
     append_log(
@@ -368,12 +376,19 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task_id, task.operation
         ),
     )?;
-    let efi_root = task.target.as_ref().map(|_| Path::new("E:\\"));
+    let efi_root = efi_letter.map(|letter| PathBuf::from(format!(r"{}:\", letter)));
     let stage_before_failure = task.status;
     // WinRE cleanup is part of the recovery contract.  Defer the terminal
     // success write until the original registered WinRE image has been
     // restored and verified below.
-    let result = recover_windows(&store, &mut task, &log, efi_root, Some(&values), false);
+    let result = recover_windows(
+        &store,
+        &mut task,
+        &log,
+        efi_root.as_deref(),
+        Some(&values),
+        false,
+    );
     if let Err(error) = &result {
         let should_rollback_bcd =
             task.status == Stage::BootRepaired || stage_before_failure == Stage::BootRepaired;
@@ -385,7 +400,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             }
         }
     }
-    let cleanup = restore_original_winre(&values, &task_dir, &log);
+    let cleanup = restore_original_winre(&values, &task_dir, &log, recovery_letter);
     if let Err(error) = &cleanup {
         append_log(&log, &format!("WinRE cleanup failed: {error}"))?;
     }
@@ -434,16 +449,23 @@ struct WinreRestoreGuard<'a> {
     values: &'a BTreeMap<String, String>,
     task_dir: &'a Path,
     log: &'a Path,
+    recovery_letter: char,
     active: bool,
 }
 
 #[cfg(windows)]
 impl<'a> WinreRestoreGuard<'a> {
-    fn new(values: &'a BTreeMap<String, String>, task_dir: &'a Path, log: &'a Path) -> Self {
+    fn new(
+        values: &'a BTreeMap<String, String>,
+        task_dir: &'a Path,
+        log: &'a Path,
+        recovery_letter: char,
+    ) -> Self {
         Self {
             values,
             task_dir,
             log,
+            recovery_letter,
             active: true,
         }
     }
@@ -457,7 +479,8 @@ impl<'a> WinreRestoreGuard<'a> {
 impl Drop for WinreRestoreGuard<'_> {
     fn drop(&mut self) {
         if self.active {
-            let _ = restore_original_winre(self.values, self.task_dir, self.log);
+            let _ =
+                restore_original_winre(self.values, self.task_dir, self.log, self.recovery_letter);
         }
     }
 }
@@ -651,10 +674,17 @@ fn mount_env_volume(
     prefix: &str,
     letter: char,
     log: &Path,
-) -> Result<(), TaskError> {
+) -> Result<char, TaskError> {
     let disk = env_u32(values, &format!("{prefix}_DISK_NUMBER"))?;
     let partition = env_u32(values, &format!("{prefix}_PARTITION_NUMBER"))?;
     let expected = env_required(values, &format!("{prefix}_VOLUME_GUID"))?;
+    if let Some(existing) = find_mounted_volume(&expected) {
+        append_log(
+            log,
+            &format!("{prefix} volume already mounted at {existing}:; reusing it"),
+        )?;
+        return Ok(existing);
+    }
     let script = PathBuf::from(format!(
         r"C:\Windows\Temp\BackupRestore-assign-{letter}.txt"
     ));
@@ -669,7 +699,7 @@ fn mount_env_volume(
             .find(|line| !line.is_empty())
         {
             if actual.eq_ignore_ascii_case(&expected) {
-                return Ok(());
+                return Ok(letter);
             }
             return Err(err(&format!(
                 "volume {letter}: is already mounted to {actual}, refusing to replace it"
@@ -687,7 +717,8 @@ fn mount_env_volume(
         &format!("mountvol.exe direct assignment for {letter}: exited with {direct_status}"),
     )?;
     if direct_status.success() {
-        return verify_mounted_volume(letter, &expected);
+        verify_mounted_volume(letter, &expected)?;
+        return Ok(letter);
     }
     let body =
         format!("select disk {disk}\r\nselect partition {partition}\r\nassign letter={letter}\r\n");
@@ -720,7 +751,30 @@ fn mount_env_volume(
         ),
     )?;
     let _ = fs::remove_file(&script);
-    verify_mounted_volume(letter, &expected)
+    verify_mounted_volume(letter, &expected)?;
+    Ok(letter)
+}
+
+#[cfg(windows)]
+fn find_mounted_volume(expected: &str) -> Option<char> {
+    for letter in 'C'..='Z' {
+        let Ok(output) = Command::new("mountvol.exe")
+            .args([format!("{letter}:"), "/L".to_string()])
+            .stdin(Stdio::null())
+            .output()
+        else {
+            continue;
+        };
+        if output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .any(|line| !line.is_empty() && line.eq_ignore_ascii_case(expected))
+        {
+            return Some(letter);
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -757,9 +811,13 @@ fn restore_original_winre(
     values: &BTreeMap<String, String>,
     task_dir: &Path,
     log: &Path,
+    recovery_letter: char,
 ) -> Result<(), TaskError> {
     let original = task_dir.join("original").join("Winre.wim");
-    let registered = PathBuf::from(r"R:\Recovery\WindowsRE\Winre.wim");
+    let registered = PathBuf::from(format!(
+        r"{}:\Recovery\WindowsRE\Winre.wim",
+        recovery_letter
+    ));
     if !original.exists() || !registered.parent().is_some_and(Path::exists) {
         return Err(err("original or registered WinRE image is missing"));
     }

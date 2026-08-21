@@ -332,7 +332,7 @@ if ($effectiveOperation -eq 'create-secondary' -and $target.VolumeGuid -eq $sour
     throw 'The secondary Windows target must differ from the existing Windows source.'
 }
 
-if ($effectiveOperation -in @('backup', 'restore-existing', 'create-secondary') -and $RecoveryExe -eq '') {
+if ($RecoveryExe -eq '') {
     $RecoveryExe = Join-Path $scriptRoot 'Recovery.exe'
 }
 if ($effectiveOperation -ne 'probe' -and -not (Test-Path $RecoveryExe)) {
