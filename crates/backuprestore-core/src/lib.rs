@@ -519,6 +519,20 @@ impl Task {
                     "task volume must differ from source partition".into(),
                 ));
             }
+            if let Some(destination) = self.destination.as_ref()
+                && task_volume.same_partition(&destination.volume)
+            {
+                return Err(TaskError::Invalid(
+                    "task volume must differ from backup destination".into(),
+                ));
+            }
+            if let Some(image) = self.image.as_ref()
+                && task_volume.same_partition(&image.volume)
+            {
+                return Err(TaskError::Invalid(
+                    "task volume must differ from restore image volume".into(),
+                ));
+            }
             if let Some(target) = self.target.as_ref()
                 && task_volume.same_partition(&target.volume)
             {
@@ -949,8 +963,39 @@ mod tests {
         task.task_volume.as_mut().unwrap().partition_type_guid =
             "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}".into();
         assert!(task.validate().is_err());
+
         let mut task = backup_task();
         task.task_volume.as_mut().unwrap().partition_guid = "source".into();
+        assert!(task.validate().is_err());
+
+        let mut task = backup_task();
+        task.task_volume.as_mut().unwrap().partition_guid = "image".into();
+        assert!(task.validate().is_err());
+
+        let mut task = Task::new(
+            Operation::RestoreExisting,
+            BootPlan {
+                mode: BootMode::ReturnExisting,
+                previous_bcd_sha256: Some("a".repeat(64)),
+                menu_name: None,
+                boot_sequence_requested: true,
+            },
+        );
+        task.source = Some(identity("source", 200));
+        task.task_volume = Some(identity("image", 200));
+        task.image = Some(ImageSpec {
+            volume: identity("image", 100),
+            relative_path: "backup.wim".into(),
+            sha256: "a".repeat(64),
+            size_bytes: 1,
+            index: 1,
+        });
+        task.target = Some(TargetSpec {
+            volume: identity("source", 200),
+            role: TargetRole::ExistingWindows,
+            boot_menu_name: None,
+            minimum_size_bytes: 100,
+        });
         assert!(task.validate().is_err());
     }
     #[test]
