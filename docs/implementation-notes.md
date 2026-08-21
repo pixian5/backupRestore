@@ -24,8 +24,8 @@
 - 任务卷、镜像卷和还原目标会拒绝 EFI/MSR/Recovery 分区；相对路径拒绝 `.`, `..`、绝对路径和盘符前缀，TaskStore 目录按规范化 UUID 定位且不覆盖已有任务目录。
 - 新任务 JSON 记录 `taskVolume` 身份；Recovery 会把任务卷本身也与 RecoveryTask.env 的 GUID、盘号、分区号、偏移、大小、类型、文件系统和序列号复核，避免任务目录被换卷后继续执行。
 - Recovery.exe 按持久化阶段断点续跑：备份在 `capturing` 阶段重做临时 WIM；还原从 `target-erased`、`image-applied` 或 `boot-repaired` 选择性重做，并在 BCDBoot 失败时保留 BCD 回滚边界。
-- GUI 已拆为“首页/环境”“备份与还原”“任务结果/日志”三个页面；结果页明确区分“任务已准备”和 WinRE 重启后的真实成功，探测不携带破坏性开关。
-- 准备脚本在 `C:\ProgramData\BackupRestore\last-task.json` 写入最近任务指针；GUI 结果页可回读 task ID、任务目录、status.json、Recovery.log、prepare.log、镜像路径和 metadata 摘要，并手动刷新状态。
+- 旧版 PowerShell GUI 曾拆为“首页/环境”“备份与还原”“任务结果/日志”三个页面；当前默认入口已收口为 Rust Win32 单窗口，保留同一安全文案和四种操作模式，探测不携带破坏性开关。
+- 准备脚本在 `C:\ProgramData\BackupRestore\last-task.json` 写入最近任务指针；Rust GUI 的“刷新任务状态”可回读 task ID、任务目录、status.json、Recovery.log 和 prepare.log，并明确任务准备不等于 WinRE 恢复成功。
 - 无 Rust 可执行文件的 `Recovery.cmd` 兼容入口增加任务 ID、任务路径、镜像相对路径和保留分区类型检查；RecoveryTask.env 同步记录镜像/目标分区类型、文件系统和卷序列号。
 - `docs/verification-matrix.md` 按每一项需求列出代码证据、离线证据与实机验收证据，后续交接不得用 AST/单元测试替代自动重启、DISM、格式化或 BCD 证据。
 - `probe` 允许任务目录与源分区相同：WinRE 先验证并挂载任务卷为 `T:`，若源与任务是同一分区则复用 `T:`，不再二次分配 `S:`；真实 backup/restore 仍拒绝任务卷与源或目标重合。
@@ -53,6 +53,9 @@ macOS 本地已完成：
 - 2026-08-22 GUI 收口：测试产物不再放在仓库根目录或桌面；历史项目压缩包/构建文件集中到 `.test-artifacts/desktop-archive/2026-08-22`，历史截图集中到 `.test-artifacts/root-captures/2026-08-22`，两者均被 `.gitignore` 忽略。WPF GUI 默认从无破坏 `probe` 开始，自动提出卷建议并新增 WIM 索引字段；提交时将索引传入 `BackupRestore.ps1 -WimIndex`。
 - 2026-08-22 Windows PowerShell 5.1 GUI 烟测首次发现 here-string 解析失败，已改为字符串数组拼接并纳入后续 ARM64 包重建门槛；macOS PowerShell 7 AST 不能替代目标 Windows PowerShell 5.1 解析。
 - 2026-08-22 GUI 技术路线纠正：用户要求 Rust 开发，`BackupRestore.exe` 已改为直接进入 `native_gui.rs` 的 Win32 原生窗口；它用 `ShellExecuteW(runas)` 调起已有管理员准备脚本，Recovery/CLI 仍共用同一 Rust 二进制。PowerShell/WPF 文件不再是默认 GUI 入口，保留仅为兼容和后端脚本调用。
+- 2026-08-22 `v0.4.6` ARM64 构建：Windows VM 使用已有 `aarch64-pc-windows-msvc` 工具链和本地 Cargo target 生成包；`BackupRestore.exe` 的 SHA-256 为 `3180d5b30f34e0c4512c44ad0c8470a0bb7cf1874f6793f97015b884f6061272`，与 `build-manifest.json` 一致，后台进程标题为 `BackupRestore - Rust GUI`。这只证明目标编译和进程烟测，不证明真实按钮、UAC、WinRE 或恢复流程。
+- 2026-08-22 Rust GUI 参数收口：原生窗口从当前系统和已挂载 NTFS 卷生成任务/镜像默认盘符；任务、源、镜像、目标盘符要求单个英文字母，镜像相对路径复用 core 的路径穿越校验；读取镜像使用 PowerShell 单引号转义，非 `probe` 模式拒绝镜像卷与源卷相同，并新增 `last-task.json` 状态刷新按钮。
+- 2026-08-22 GUI 刷新反馈：环境和最近任务状态按钮在执行 PowerShell 查询前立即显示进行中状态，避免用户误以为按钮没有响应；查询完成后再替换为结果或错误文本。
 
 ## 尚未宣称完成的实机项
 

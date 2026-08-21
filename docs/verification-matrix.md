@@ -16,7 +16,7 @@
 | 盘符不是身份 | `VolumeIdentity`、`verify_task_identity_env`、`mount_env_volume` | 代码已覆盖 | 改盘符或更换卷后任务必须拒绝 |
 | probe 任务/源卷相同 | `recover-env` 按卷 GUID 扫描已有挂载，任务/源同卷时复用实际盘符 | 实机已验证（Win11 ARM64 probe） | 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 在 WinRE 记录 `TASK volume already mounted at C:; reusing it`，随后为 `success` |
 | EFI/MSR/Recovery 保护 | core `is_reserved_partition`、PowerShell、`Recovery.cmd` | 离线已验证 | 实盘尝试选中三类分区都被拒绝 |
-| 备份 `.partial`、WIM 校验、SHA-256、metadata | `recover_windows` backup、`BackupMetadata`、原生输出按字节日志 | `v0.4.2` 代码已包含修复，实机待重跑 | DISM Capture 后检查 WIM、metadata 和 hash；旧 `v0.3.6` 任务曾被本地代码页日志解析缺陷阻断 |
+| 备份 `.partial`、WIM 校验、SHA-256、metadata | `recover_windows` backup、`BackupMetadata`、原生输出按字节日志 | `v0.4.6` 代码已包含修复，实机待重跑 | DISM Capture 后检查 WIM、metadata 和 hash；旧 `v0.3.6` 任务曾被本地代码页日志解析缺陷阻断 |
 | 镜像容量不是目标容量 | metadata `required_target_size`、PowerShell/Recovery 双重检查 | 离线已验证 | 小目标卷在格式化前拒绝 |
 | BitLocker 不自动修改 | PowerShell `Get-BitLockerVolume` 检查 | 代码已覆盖 | 开启保护的源/镜像/目标任务拒绝且状态不变 |
 | 临时 WinRE 副本和原始 hash | `BackupRestore.ps1`、manifest、`WinreRestoreGuard` | 实机已验证（Win11 ARM64 probe） | 任务原始与重启返回 Windows 后注册 `Winre.wim` 均为 `0cbc86b44994065c7295f0322df670cf0b6c9e4a7be5099cfd962ddec956fda1` |
@@ -26,7 +26,7 @@
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
-| Rust GUI 三页面和二次确认 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | ARM64 Windows 进程烟测已通过（窗口标题 `BackupRestore - Rust GUI`）；本机离线测试通过 | 真实按钮交互、管理员 UAC、长路径和日志刷新仍待解锁 VM 后验收 |
+| Rust Win32 GUI 单窗口和二次确认 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | `v0.4.5` ARM64 Windows 进程烟测已通过（窗口标题 `BackupRestore - Rust GUI`）；`v0.4.6` 本机离线测试通过 | 真实环境/镜像/任务状态按钮、管理员 UAC、长路径和日志刷新仍待 VM 验收 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；日志顺序可复核 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
 

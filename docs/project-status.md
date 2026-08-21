@@ -1,9 +1,9 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-22
-当前开发版本：`0.4.4`
+当前开发版本：`0.4.6`
 分支：`main`
-本地开发基线：`b32acac`
+本地开发基线：以当前 `HEAD` 为准
 
 本文件是当前状态的唯一摘要。它把用户对下载、功能完整性和交付方式的明确要求记录为工程约束；不逐字保存情绪化表达，只保留会影响后续行为的事实和结论。
 
@@ -29,7 +29,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | 不要在未获适当网络条件时下载大文件 | 不在无 Wi-Fi 或用户要求停止下载时尝试替代下载、断点下载或后台下载；先完成不消耗流量的代码、文档和离线检查。 | 工作流规则、本文第 5 节 |
 | 热点上的每次大下载都要重新授权 | Rust target、Visual Studio/MSVC、Windows SDK、Docker 镜像、依赖、模型和安装包均是独立下载；每次先运行 `check_network.py`。结果为热点时，必须就这一次下载等待用户明确授权。 | `pixian-dev-workflow`、交接文档 |
 | Wi-Fi 或有线网络不重复打断 | 同一次独立下载的网络检测结果为 Wi-Fi/有线且 `is_hotspot=false` 时，可以继续该下载，不需要重复确认。下一个独立大下载仍要重新检测网络。 | `pixian-dev-workflow`、交接文档 |
-| 工具链不可用时，先把程序完整设计和编码 | 离线阶段完成任务模型、正常 Windows 脚本、WinRE 载荷、GUI 三页、构建脚本、日志/状态、恢复边界和文档；工具链装好后不重新设计功能。 | 本仓库全部实现与第 3 节 |
+| 工具链不可用时，先把程序完整设计和编码 | 离线阶段完成任务模型、正常 Windows 脚本、WinRE 载荷、Rust 原生 GUI、构建脚本、日志/状态、恢复边界和文档；工具链装好后不重新设计功能。 | 本仓库全部实现与第 3 节 |
 | 工具链装好后应能直接构建使用 | 构建脚本不自动下载，ARM64/x64 分离，明确 VM 本地 target 目录、包结构和 WinRE 启动入口；实际可用性仍以 Windows/WinRE 证据为准。 | `windows/build-windows.ps1`、`windows-build.md` |
 | 工具链准备好后直接开发 | 通过共享桌面传输当前工作树源码，使用 VM 本地 Cargo target 直接构建 ARM64 包；不把源码传输误写成工具链下载。 | `windows/build-windows.ps1`、本文件第 3 节 |
 
@@ -48,8 +48,8 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 已实机完成自动入口和清理；破坏性恢复仍未验收 |
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用任务卷实际盘符。真实备份/还原仍要求任务卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
-| GUI | Rust Win32 原生窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、身份状态、破坏性确认和管理员准备启动；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。 | ARM64 交叉编译已通过；原生窗口真实交互、UAC、日志刷新待 VM 解锁后验收 |
-| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.4.2` 已完成构建，manifest 与二进制 SHA-256 一致；WinRE 自动 probe/破坏性流程仍按证据矩阵区分 |
+| GUI | Rust Win32 原生单窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；刷新按钮会先显示进行中状态；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。 | `v0.4.6` ARM64 包已编译并启动进程烟测；原生窗口真实按钮交互、UAC、日志刷新仍按证据矩阵验收 |
+| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v0.4.5` ARM64 包已编译并启动烟测；本轮代码通过离线检查后重建 `v0.4.6`，WinRE 自动 probe/破坏性流程仍按证据矩阵区分 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
 ### 已执行且通过的本机验证
@@ -73,7 +73,7 @@ git diff --check
 1. 在独立 VM 快照中验证 DISM Capture；
 2. 在独立 VM 快照中验证 `restore-existing`、`create-secondary`、BCDBoot、启动菜单、原 WinRE hash 恢复和正常 Windows 回归；
 3. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
-4. 在真实 WPF 窗口核验磁盘枚举、确认对话框、长路径、日志刷新和 UAC 行为。
+4. 在真实 Rust Win32 窗口核验环境刷新、卷默认值、镜像读取、任务状态刷新、确认对话框、长路径和 UAC 行为。
 
 2026-08-21 已实测：`Windows 11` ARM64 VM 使用 `v0.3.6` 完成真实自动 probe，任务为 `c12026c0-6a9e-4093-8a8b-2971968a31f7`。流程完成 `Windows -> reagentc /boottore -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe -> probe preflight -> 原始 WinRE hash 恢复 -> wpeutil reboot -> Windows`；最终 `status.json` 为 `success`，注册 WinRE 与任务原始副本 SHA-256 均为 `0cbc86b44994065c7295f0322df670cf0b6c9e4a7be5099cfd962ddec956fda1`。这证明自动入口、同卷盘符复用和清理状态机；不证明 DISM Capture/Apply、格式化、BCDBoot、双系统或故障回滚。
 
@@ -83,7 +83,7 @@ git diff --check
 
 2026-08-22 隔离还原已推进到引导修复：任务 `985ab31b-e9f1-4c64-a49d-7b044e5f8cde` 在唯一允许的 `S:` 测试卷上完成 DiskPart 格式化和 DISM Apply，且 `S:\Windows\System32\config\SYSTEM` 已恢复。它只指定独立 `E:` EFI 卷（`\\?\Volume{6ba9bc91-04dd-4105-9c46-7377ce26b862}\`），不接触 `C:` 或真实 EFI。旧包 BCDBoot 返回 193；普通令牌 `/v` 诊断返回 5，并明确是隔离 EFI `0x5 Access denied`。`P8B6\\x` 是本地 Administrators 成员，后续必须由其高完整性 RunAs 进程重试 `v0.4.1`，成功前“单系统还原”仍保持实机待验证。
 
-2026-08-22 GUI 收口：Rust `native_gui.rs` 接管 `BackupRestore.exe` 默认窗口，使用 Windows SDK Win32 API，不下载 GUI crate；窗口包含操作模式、任务/源/镜像/目标卷、镜像路径、WIM 索引、第二系统名称、环境刷新、镜像读取和管理员创建任务。旧 `BackupRestore.Gui.ps1` 仅作为兼容前端保留。`v0.4.4` ARM64 包已启动烟测通过，窗口标题为 `BackupRestore - Rust GUI`；按钮交互、UAC、日志刷新仍须在 Windows VM 解锁后验收，不能用进程存活代替完整 GUI 验收。
+2026-08-22 GUI 收口：Rust `native_gui.rs` 接管 `BackupRestore.exe` 默认窗口，使用 Windows SDK Win32 API，不下载 GUI crate；窗口包含操作模式、任务/源/镜像/目标卷、镜像路径、WIM 索引、第二系统名称、环境刷新、镜像读取、最近任务状态刷新和管理员创建任务。默认值从当前系统及已挂载 NTFS 卷建议，所有盘符和镜像相对路径在本地先校验；镜像卷与源卷在非 probe 模式下不得相同；环境和任务刷新会先显示进行中状态。旧 `BackupRestore.Gui.ps1` 仅作为兼容前端保留。`v0.4.6` ARM64 包已重建并启动烟测通过，窗口标题为 `BackupRestore - Rust GUI`；按钮交互、UAC、日志刷新仍待真实 VM UI 验收，不能用进程存活代替完整 GUI 验收。
 
 ## 5. 恢复工作时的唯一顺序
 

@@ -53,6 +53,7 @@ const IDYES: i32 = 6;
 const ID_REFRESH: usize = 1001;
 const ID_READ_IMAGE: usize = 1002;
 const ID_CREATE_TASK: usize = 1003;
+const ID_REFRESH_TASK: usize = 1004;
 const ID_OPERATION: usize = 1100;
 const ID_TASK: usize = 1101;
 const ID_SOURCE: usize = 1102;
@@ -240,6 +241,10 @@ fn quote_argument(value: &str) -> String {
     }
 }
 
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn powershell_output(command: &str) -> String {
     match Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", command])
@@ -263,22 +268,75 @@ unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32
 }
 
 unsafe fn refresh_environment(state: &State) {
+    set_text(
+        state.controls.status,
+        "正在刷新 Windows、WinRE 和 NTFS 卷信息…",
+    );
     let text = powershell_output(
         r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:', $vol) -join [Environment]::NewLine"#,
     );
     set_text(state.controls.status, &text);
 }
 
-unsafe fn read_image(state: &State) {
-    let image = get_text(state.controls.image)
+unsafe fn refresh_task_status(state: &State) {
+    set_text(state.controls.status, "正在读取最近任务状态…");
+    let text = powershell_output(
+        r#"$p=Join-Path $env:ProgramData 'BackupRestore\last-task.json'; if(-not(Test-Path -LiteralPath $p)){ '尚未找到最近任务记录。' } else { try { $r=Get-Content -LiteralPath $p -Raw|ConvertFrom-Json; $lines=@("任务 ID：$($r.taskId)","操作：$($r.operation)","任务目录：$($r.taskRoot)","准备日志：$($r.prepareLog)","恢复日志：$($r.recoveryLog)"); if($r.statusJson -and (Test-Path -LiteralPath $r.statusJson)){ $s=Get-Content -LiteralPath $r.statusJson -Raw|ConvertFrom-Json; $lines += "状态：$($s|ConvertTo-Json -Compress)" } else { $lines += '状态：status.json 不可读或尚未生成' }; $lines -join [Environment]::NewLine } catch { "读取任务状态失败：$($_.Exception.Message)" } }"#,
+    );
+    set_text(state.controls.status, &text);
+}
+
+fn suggested_drive_defaults() -> (String, String, String) {
+    let system = std::env::var("SystemDrive")
+        .unwrap_or_else(|_| "C:".to_string())
         .trim()
         .trim_end_matches(':')
-        .to_string();
-    let relative = get_text(state.controls.relative);
+        .to_ascii_uppercase();
+    let output = powershell_output(
+        r#"$system=$env:SystemDrive.TrimEnd(':').ToUpperInvariant(); $candidates=@(Get-Volume -ErrorAction SilentlyContinue | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter)".ToUpperInvariant() } | sort -Unique); $task=$candidates|? { $_ -ne $system }|select -First 1; $image=$candidates|? { $_ -ne $system -and $_ -ne $task }|select -First 1; "$system|$task|$image""#,
+    );
+    let parts = output.split('|').map(str::trim).collect::<Vec<_>>();
+    if parts.len() == 3 && parts[0].len() == 1 && parts[1].len() <= 1 && parts[2].len() <= 1 {
+        return (
+            parts[0].to_string(),
+            parts[1].to_string(),
+            parts[2].to_string(),
+        );
+    }
+    (system, String::new(), String::new())
+}
+
+fn normalize_drive(value: String, label: &str) -> Result<String, String> {
+    let value = value.trim().trim_end_matches(':').to_ascii_uppercase();
+    if value.len() == 1 && value.as_bytes()[0].is_ascii_alphabetic() {
+        Ok(value)
+    } else {
+        Err(format!("{label}必须是单个盘符，例如 C。"))
+    }
+}
+
+unsafe fn read_image(state: &State) {
+    let image = match normalize_drive(get_text(state.controls.image), "镜像卷") {
+        Ok(value) => value,
+        Err(error) => {
+            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            return;
+        }
+    };
+    let relative = get_text(state.controls.relative).trim().to_string();
+    if let Err(error) = backuprestore_core::validate_relative_path(&relative) {
+        show_message(
+            state.root,
+            &format!("镜像相对路径无效：{error}"),
+            "参数校验失败",
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
     let command = format!(
-        "$p=Join-Path '{}:\\' '{}'; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $m=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $p) 'metadata.json') -Raw|ConvertFrom-Json; \"image=$p`nsha256=$h`nmetadata=$($m.imageSha256)`nminimumTarget=$($m.minimumTargetSize)\"",
-        image.replace('"', "''"),
-        relative.replace('"', "''"),
+        "$p=Join-Path {} {} ; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $m=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $p) 'metadata.json') -Raw|ConvertFrom-Json; \"image=$p`nsha256=$h`nmetadata=$($m.imageSha256)`nminimumTarget=$($m.minimumTargetSize)\"",
+        powershell_single_quote(&format!("{}:\\", image)),
+        powershell_single_quote(&relative),
     );
     let text = powershell_output(&command);
     set_text(state.controls.status, &text);
@@ -301,13 +359,50 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
+    let task_drive = match normalize_drive(get_text(state.controls.task), "任务卷") {
+        Ok(value) => value,
+        Err(error) => {
+            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            return;
+        }
+    };
+    let source_drive = match normalize_drive(get_text(state.controls.source), "源卷") {
+        Ok(value) => value,
+        Err(error) => {
+            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            return;
+        }
+    };
+    let image_drive = match normalize_drive(get_text(state.controls.image), "镜像卷") {
+        Ok(value) => value,
+        Err(error) => {
+            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            return;
+        }
+    };
+    let target_drive = match normalize_drive(get_text(state.controls.target), "目标卷") {
+        Ok(value) => value,
+        Err(error) => {
+            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            return;
+        }
+    };
+    if operation != "probe" && image_drive == source_drive {
+        show_message(
+            state.root,
+            "镜像卷不能与 Windows 源卷相同。",
+            "参数校验失败",
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
     let summary = format!(
         "模式：{operation}\n任务卷：{}\n源卷：{}\n镜像卷：{}\n目标卷：{}\n镜像：{}\\{}\nWIM 索引：{index}",
-        get_text(state.controls.task),
-        get_text(state.controls.source),
-        get_text(state.controls.image),
-        get_text(state.controls.target),
-        get_text(state.controls.image),
+        task_drive,
+        source_drive,
+        image_drive,
+        target_drive,
+        image_drive,
         get_text(state.controls.relative),
     );
     if matches!(operation.as_str(), "restore-existing" | "create-secondary")
@@ -331,25 +426,13 @@ unsafe fn create_task(state: &State) {
         "-Operation".to_string(),
         operation.clone(),
         "-TaskDrive".to_string(),
-        get_text(state.controls.task)
-            .trim()
-            .trim_end_matches(':')
-            .to_string(),
+        task_drive.clone(),
         "-SourceDrive".to_string(),
-        get_text(state.controls.source)
-            .trim()
-            .trim_end_matches(':')
-            .to_string(),
+        source_drive,
         "-ImageDrive".to_string(),
-        get_text(state.controls.image)
-            .trim()
-            .trim_end_matches(':')
-            .to_string(),
+        image_drive,
         "-TargetDrive".to_string(),
-        get_text(state.controls.target)
-            .trim()
-            .trim_end_matches(':')
-            .to_string(),
+        target_drive,
         "-ImageRelativePath".to_string(),
         get_text(state.controls.relative),
         "-WimIndex".to_string(),
@@ -400,6 +483,7 @@ unsafe extern "system" fn window_proc(
             .ok()
             .and_then(|path| path.parent().map(|value| value.to_path_buf()))
             .unwrap_or_default();
+        let (system_drive, task_drive, image_drive) = suggested_drive_defaults();
         let controls = Controls {
             operation: create_control(
                 hwnd,
@@ -415,7 +499,7 @@ unsafe extern "system" fn window_proc(
             task: create_control(
                 hwnd,
                 "EDIT",
-                "",
+                &task_drive,
                 WS_BORDER | WS_TABSTOP,
                 160,
                 88,
@@ -426,7 +510,7 @@ unsafe extern "system" fn window_proc(
             source: create_control(
                 hwnd,
                 "EDIT",
-                "C",
+                &system_drive,
                 WS_BORDER | WS_TABSTOP,
                 160,
                 124,
@@ -437,7 +521,7 @@ unsafe extern "system" fn window_proc(
             image: create_control(
                 hwnd,
                 "EDIT",
-                "",
+                &image_drive,
                 WS_BORDER | WS_TABSTOP,
                 160,
                 160,
@@ -448,7 +532,7 @@ unsafe extern "system" fn window_proc(
             target: create_control(
                 hwnd,
                 "EDIT",
-                "C",
+                &system_drive,
                 WS_BORDER | WS_TABSTOP,
                 160,
                 196,
@@ -547,6 +631,17 @@ unsafe extern "system" fn window_proc(
             28,
             ID_CREATE_TASK,
         );
+        create_control(
+            hwnd,
+            "BUTTON",
+            "刷新任务状态",
+            WS_TABSTOP,
+            410,
+            350,
+            140,
+            28,
+            ID_REFRESH_TASK,
+        );
         let state = Box::new(State {
             root: hwnd,
             controls,
@@ -563,6 +658,7 @@ unsafe extern "system" fn window_proc(
                 ID_REFRESH => refresh_environment(state),
                 ID_READ_IMAGE => read_image(state),
                 ID_CREATE_TASK => create_task(state),
+                ID_REFRESH_TASK => refresh_task_status(state),
                 _ => {}
             }
             return 0;

@@ -26,7 +26,7 @@
 | “没有热点/没有 Wi-Fi 时先把不需要流量的代码写完” | 本轮只使用已有本地工具和离线 Cargo 缓存；不安装 Rust target、Visual Studio、SDK 或其他大文件。 |
 | “以后工具链好了要直接编译运行” | `windows/build-windows.ps1` 不自动下载，目标架构、Cargo target 目录、产物文件名和运行入口已固定；交接文档给出唯一构建顺序。 |
 | “热点每次下载前重新授权，Wi-Fi 不需要反复问” | 工作流技能按每个独立下载执行 `check_network.py`；热点授权不跨下载继承，Wi-Fi/有线不重复询问。 |
-| “所有页面、功能、恢复流程都设计完整” | GUI 有环境、备份/还原、结果/日志三个页签；core、PowerShell、WinRE launcher、Recovery.exe 和 fallback cmd 的职责均已写入文档。 |
+| “所有页面、功能、恢复流程都设计完整” | Rust Win32 GUI 单窗口覆盖环境、备份/还原、镜像信息和任务结果状态；旧 WPF 三页仍保留兼容实现；core、PowerShell、WinRE launcher、Recovery.exe 和 fallback cmd 的职责均已写入文档。 |
 | “让其它 AI 接手后直接继续” | `docs/README.md`、`project-status.md`、本文、`implementation-notes.md`、`windows-build.md` 和 `verification-matrix.md` 分别记录入口、进度、文件结构、决策、构建和证据。 |
 | “工具链完成后直接继续开发” | 已通过 Parallels 共享桌面传入当前工作树，ARM64 构建脚本可以在 VM 本地 target 目录直接产出包；本轮不执行破坏性恢复。 |
 
@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.4.4`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.4.6`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -60,7 +60,7 @@ docs/project-status.md                      当前进度、对话决策和继续
 docs/README.md                              文档阅读入口
 ```
 
-`BackupRestore.exe` 的文件名会被 Rust 程序识别为 GUI 启动器；它旁边必须有 `BackupRestore.Gui.ps1`。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。
+`BackupRestore.exe` 的文件名会被 Rust 程序识别为 GUI 启动器；它旁边必须有 `BackupRestore.ps1`，旧 `BackupRestore.Gui.ps1` 仅供兼容调用。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。
 
 ## 4. 已实现的安全与功能约束
 
@@ -99,13 +99,14 @@ docs/README.md                              文档阅读入口
 
 ## 5. GUI 页面现状
 
-`windows/BackupRestore.Gui.ps1` 目前拆成三个页签：
+`BackupRestore.exe` 当前默认进入 `crates/backuprestore-cli/src/native_gui.rs` 的 Rust Win32 单窗口，使用 Windows SDK 原生 API，不依赖新的 GUI crate：
 
-1. **首页 / 环境**：显示 Windows 版本/build、固件、启动盘 GPT 状态、Secure Boot、C: BitLocker、WinRE 注册状态，并枚举可识别的 NTFS Windows 安装和候选目标分区。页面明确说明静态信息不等于 WinRE 重启成功。
-2. **备份与还原**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；填写任务卷、源卷、镜像卷、目标卷、镜像相对路径、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`；会从当前系统和已挂载 NTFS 卷提出任务/镜像卷建议，没有候选卷时保持空值或当前系统卷，不伪造固定 D:。单系统还原自动使用源卷作为目标并禁用目标编辑；只有双系统启用启动菜单名称。提交前再次读取 GUID、分区 GUID、偏移、容量、剩余空间和文件系统，破坏性模式必须二次确认。
-3. **任务结果 / 日志**：显示准备脚本退出码、任务 ID、任务目录、`status.json`、`Recovery.log` 和 `prepare.log`，支持刷新状态，并明确“任务已准备”不是“恢复成功”；准备脚本通过 `C:\ProgramData\BackupRestore\last-task.json` 传递最近任务指针，真实终态要看任务卷上的 `status.json` 和 `Recovery.log`。
+1. **任务参数区**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；填写任务卷、源卷、镜像卷、目标卷、镜像相对路径、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`，启动时从当前系统及已挂载 NTFS 卷建议任务/镜像盘符，不伪造固定 `D:`。
+2. **环境与镜像操作**：`刷新环境` 显示 Windows/build、架构、固件和 NTFS 卷；`读取镜像` 读取 WIM SHA-256 与 metadata 摘要。镜像卷要求单个英文字母，镜像相对路径复用 core 的路径穿越校验；非 `probe` 模式拒绝镜像卷与源卷相同。
+3. **任务状态区**：`刷新任务状态` 读取 `C:\ProgramData\BackupRestore\last-task.json`，展示任务 ID、任务目录、准备日志、恢复日志及可读的 `status.json`；文案明确任务准备不等于 WinRE 重启后的真实成功。
+4. **破坏性边界**：`restore-existing` 和 `create-secondary` 创建前显示目标卷摘要并要求二次确认；随后用 `ShellExecuteW("runas")` 启动管理员 PowerShell 准备脚本。GUI 只报告启动结果，不把 UAC 接受或准备成功当作恢复成功。
 
-GUI 仍是 PowerShell/WPF 开发版；当前页面和参数已收口，但 macOS 上只能做 AST 解析，不能声称 WPF 真实交互已经验收。若以后改成原生 Rust GUI，保留上述页面和安全文案，不要删掉“准备成功 ≠ 恢复成功”的边界。
+旧 `windows/BackupRestore.Gui.ps1` 仍保留为兼容前端和脚本级回归对象；本机只能做 AST/离线检查，Rust GUI 的真实按钮、UAC 和日志刷新仍须在 Windows VM 中验收。
 
 ## 6. 已踩坑与不要重复犯的错误
 
@@ -143,7 +144,7 @@ GUI 仍是 PowerShell/WPF 开发版；当前页面和参数已收口，但 macOS
    首次出现缺少 target 时脚本应停止，而不是自动下载。
 
 3. 已完成 ARM64 自动 probe：任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 已验证 `winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`、同卷盘符复用、原始 WinRE SHA-256 恢复和自动返回 Windows。修改 WinRE 路径后必须在新快照重复该验证。
-4. `v0.4.2` 先重新验证备份 fixture，确认本地代码页的 DISM 输出不会中断任务并使用新的 GUI 参数；之后再使用 VM 快照验证单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚。
+4. `v0.4.6` 先重新构建并做 GUI 无破坏烟测，再验证备份 fixture，确认本地代码页的 DISM 输出不会中断任务并使用新的 GUI 参数；之后再使用 VM 快照验证单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚。
 5. 只有拿到对应流程的真实证据，才能在文档中把该流程从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
 6. 完成修复后再次运行离线测试、AST、`git diff --check`，递增版本，中文提交并推送 `origin/main`。
 
