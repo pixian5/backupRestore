@@ -1,5 +1,7 @@
 # BackupRestore V1 交接与继续开发说明
 
+> 开始工作前先阅读 [文档索引](README.md) 和 [当前进度与决策记录](project-status.md)。后者是当前状态和用户最新工程约束的唯一摘要；本文件负责具体实现交接，不重复记录会变化的进度。
+
 本文是给下一位开发者或 AI 的工作交接文件。它记录“为什么这样设计”、已经完成的代码边界、不能误报的验证结论，以及工具链可用后应该直接执行的顺序。若本文与源代码不一致，以源代码和最新测试结果为准，并在修复后同步更新本文。
 
 ## 1. 用户目标与已经确认的沟通决策
@@ -14,6 +16,19 @@
 4. 重要操作和踩坑写入 `docs/`，中文说明和中文提交信息优先。
 
 上述网络规则已经写入用户级技能 `~/.codex/skills/pixian-dev-workflow/SKILL.md`。本仓库不能保存私密凭据，也不能把热点授权写成永久开关。
+
+### 1.1 关键对话摘要
+
+以下是影响工程边界的必要对话结论，按意图记录，不把情绪化措辞复制进代码或提交：
+
+| 对话意图 | 已落实的工程决定 |
+|---|---|
+| “没有热点/没有 Wi-Fi 时先把不需要流量的代码写完” | 本轮只使用已有本地工具和离线 Cargo 缓存；不安装 Rust target、Visual Studio、SDK 或其他大文件。 |
+| “以后工具链好了要直接编译运行” | `windows/build-windows.ps1` 不自动下载，目标架构、Cargo target 目录、产物文件名和运行入口已固定；交接文档给出唯一构建顺序。 |
+| “热点每次下载前重新授权，Wi-Fi 不需要反复问” | 工作流技能按每个独立下载执行 `check_network.py`；热点授权不跨下载继承，Wi-Fi/有线不重复询问。 |
+| “所有页面、功能、恢复流程都设计完整” | GUI 有环境、备份/还原、结果/日志三个页签；core、PowerShell、WinRE launcher、Recovery.exe 和 fallback cmd 的职责均已写入文档。 |
+| “让其它 AI 接手后直接继续” | `docs/README.md`、`project-status.md`、本文、`implementation-notes.md`、`windows-build.md` 和 `verification-matrix.md` 分别记录入口、进度、文件结构、决策、构建和证据。 |
+| “当前先别继续开发，先整理文档和进度” | 当前轮仅完善文档、版本同步和验证记录；不下载工具链、不重启 VM、不做磁盘操作。 |
 
 ## 2. 当前仓库与版本
 
@@ -40,6 +55,8 @@ windows/build-windows.ps1                  x64/ARM64 分离打包，不自动下
 docs/implementation-notes.md               当前实现、验证证据和未验证边界
 docs/windows-build.md                      Windows ARM64/x64 构建说明
 docs/continuation-handoff.md                本交接文件
+docs/project-status.md                      当前进度、对话决策和继续条件
+docs/README.md                              文档阅读入口
 ```
 
 `BackupRestore.exe` 的文件名会被 Rust 程序识别为 GUI 启动器；它旁边必须有 `BackupRestore.Gui.ps1`。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。
@@ -50,8 +67,9 @@ docs/continuation-handoff.md                本交接文件
 
 - `Operation`：`probe`、`backup`、`restore-existing`、`create-secondary`。
 - `Stage`：`prepared`、`boot-requested`、`recovery-started`、`preflight`、`capturing`、`target-erased`、`image-applied`、`boot-repaired`、`success`、`failed`。
-- 所有任务都保存卷的 disk GUID、partition GUID、volume GUID、分区类型、盘号、分区号、偏移、容量、文件系统和卷序列号；盘符只作为 WinRE 临时挂载提示。
+- 所有任务都保存源、任务、镜像/目的地和目标卷的 disk GUID、partition GUID、volume GUID、分区类型、盘号、分区号、偏移、容量、文件系统和卷序列号；盘符只作为 WinRE 临时挂载提示。
 - `TaskStore` 用规范化 UUID 定位任务目录，拒绝路径穿越、非法 UUID、已存在目录覆盖和 `task.json` ID 串任务。
+- 正常 Windows 准备脚本在写入 task JSON 后，会优先调用同一 Rust 二进制的 `validate-task` 命令；这样 PowerShell 生成的字段必须通过 Recovery.exe 使用的同一套 schema 校验。
 - `status.json` 与 `task.json` 的任务 ID、操作类型必须匹配；`recover-env` 不允许重复执行已处于终态的任务。
 
 ### 4.2 备份
@@ -73,6 +91,7 @@ docs/continuation-handoff.md                本交接文件
 
 - 准备阶段保存原始 `Winre.wim` 和 BCD 快照，生成任务专用副本，注入 `RecoveryLauncher.cmd`、`Recovery.cmd`、`RecoveryTask.env`、`task.json`、`winpeshl.ini` 和可选 `Recovery.exe`。
 - 每次注入有 payload manifest 和 SHA-256；`-NoReboot` 不替换注册 WinRE，不设置一次性启动。
+- manifest 同时绑定 `RecoveryTask.env` 的 SHA-256；Rust Recovery 在读取 env 后再次校验它，环境变量文件被替换时拒绝执行。
 - DISM 卸载后固定等待短窗口，防止 Windows PowerShell 5.1 的 WIM 文件锁尚未释放。
 - Recovery.exe 在载荷校验、挂载、DISM、BCDBoot 失败时尽力恢复原始 WinRE；清理失败不应删除任务目录，保留日志供人工处理。
 - `Recovery.cmd` 只作为无 Rust 二进制时的 probe 兼容路径，真实 backup/restore 没有 `Recovery.exe` 会拒绝；兼容入口额外检查任务 ID、`TASK_ROOT_REL`、相对镜像路径和保留分区类型。
@@ -81,9 +100,9 @@ docs/continuation-handoff.md                本交接文件
 
 `windows/BackupRestore.Gui.ps1` 目前拆成三个页签：
 
-1. **首页 / 环境**：显示 Windows 版本/build、固件、启动盘 GPT 状态、C: BitLocker、WinRE 注册状态，并枚举可识别的 NTFS Windows 安装和候选目标分区。页面明确说明静态信息不等于 WinRE 重启成功。
+1. **首页 / 环境**：显示 Windows 版本/build、固件、启动盘 GPT 状态、Secure Boot、C: BitLocker、WinRE 注册状态，并枚举可识别的 NTFS Windows 安装和候选目标分区。页面明确说明静态信息不等于 WinRE 重启成功。
 2. **备份与还原**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；填写任务卷、源卷、镜像卷、目标卷、镜像相对路径和第二系统名称。普通模式默认 `backup`；单系统还原自动使用源卷作为目标并禁用目标编辑；只有双系统启用启动菜单名称。提交前再次读取 GUID、分区 GUID、偏移、容量、剩余空间和文件系统，破坏性模式必须二次确认。
-3. **任务结果 / 日志**：显示准备脚本退出码、任务已准备/失败、日志路径，并明确“任务已准备”不是“恢复成功”；真实终态要看 WinRE 产生的 `status.json` 和 `Recovery.log`。
+3. **任务结果 / 日志**：显示准备脚本退出码、任务 ID、任务目录、`status.json`、`Recovery.log` 和 `prepare.log`，支持刷新状态，并明确“任务已准备”不是“恢复成功”；准备脚本通过 `C:\ProgramData\BackupRestore\last-task.json` 传递最近任务指针，真实终态要看任务卷上的 `status.json` 和 `Recovery.log`。
 
 GUI 仍是 PowerShell/WPF 开发版，macOS 上只能做 AST 解析，不能声称 WPF 真实交互已经验收。若以后改成原生 Rust GUI，保留上述页面和安全文案，不要删掉“准备成功 ≠ 恢复成功”的边界。
 

@@ -11,6 +11,7 @@ param(
     [ValidatePattern('^[A-Za-z]$')]
     [string]$TargetDrive = 'C',
     [string]$ImageRelativePath = 'BackupRestore\Windows.wim',
+    [ValidateRange(1, 2147483647)]
     [int]$WimIndex = 1,
     [string]$BootMenuName = 'Windows Backup',
     [switch]$AllowDestructive,
@@ -28,6 +29,7 @@ $recoveryShell = Join-Path $scriptRoot 'winpeshl.ini'
 $script:WindowsArchitecture = ''
 $script:WindowsEdition = 'unknown'
 $script:WindowsBuild = 'unknown'
+$script:SecureBoot = 'unknown'
 $reservedPartitionTypes = @(
     '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
     '{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
@@ -50,6 +52,27 @@ function Get-Sha256([string]$Path) {
     }
 }
 
+function Assert-RelativeImagePath([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Contains([char]0)) {
+        throw 'ImageRelativePath must be a non-empty relative path.'
+    }
+    $normalized = $Value.Replace('/', '\')
+    if ($normalized.StartsWith('\') -or $normalized -match '^[A-Za-z]:') {
+        throw 'ImageRelativePath must not be rooted or contain a drive prefix.'
+    }
+    foreach ($part in ($normalized -split '\\')) {
+        if ([string]::IsNullOrWhiteSpace($part) -or $part -eq '.' -or $part -eq '..') {
+            throw 'ImageRelativePath contains an invalid path component.'
+        }
+    }
+}
+
+function Assert-BootMenuName([string]$Value) {
+    if ($Value.Length -gt 256 -or $Value.IndexOfAny([char[]]"`r`n`t") -ge 0) {
+        throw 'BootMenuName is too long or contains control characters.'
+    }
+}
+
 function Require-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -64,7 +87,7 @@ function Get-NativeWindowsArchitecture {
         ForEach-Object { $_.ToUpperInvariant() }
     if ($reported -contains 'ARM64') { return 'arm64' }
     if ($reported -contains 'AMD64') { return 'x64' }
-    throw "Unsupported Windows architecture (reported $($reported -join ', ')). This package supports ARM64."
+    throw "Unsupported Windows architecture (reported $($reported -join ', ')). This package supports x64 and ARM64."
 }
 
 function Assert-PackageArchitecture {
@@ -108,6 +131,12 @@ function Assert-SystemEnvironment {
     $script:WindowsBuild = "$($os.BuildNumber)"
     $firmware = (Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType
     if ("$firmware" -notmatch 'UEFI') { throw "V1 requires UEFI firmware (reported $firmware)." }
+    try {
+        $script:SecureBoot = if (Confirm-SecureBootUEFI -ErrorAction Stop) { 'on' } else { 'off' }
+    } catch {
+        $script:SecureBoot = 'unknown'
+    }
+    Write-Log "Secure Boot: $script:SecureBoot"
     $systemDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
     if (-not $systemDisk -or $systemDisk.PartitionStyle -ne 'GPT') { throw 'V1 requires the boot disk to use GPT.' }
     $reagent = reagentc.exe /info 2>&1 | Out-String
@@ -150,18 +179,32 @@ function Convert-Identity($Identity) {
 }
 
 function Get-RecoveryIdentity {
-    $partition = Get-Partition |
-        Where-Object { $_.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' -and $_.Size -gt 500MB } |
-        Sort-Object Size -Descending |
-        Select-Object -First 1
+    $reagent = reagentc.exe /info 2>&1 | Out-String
+    $partition = $null
+    if ($reagent -match '(?i)harddisk(?<disk>\d+)\\partition(?<partition>\d+)') {
+        $partition = Get-Partition -DiskNumber ([int]$matches.disk) -PartitionNumber ([int]$matches.partition) -ErrorAction SilentlyContinue
+        if ($partition -and ($partition.GptType -ne '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' -or $partition.Size -le 500MB)) {
+            $partition = $null
+        }
+    }
+    if (-not $partition) {
+        $partition = Get-Partition |
+            Where-Object { $_.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' -and $_.Size -gt 500MB } |
+            Sort-Object Size -Descending |
+            Select-Object -First 1
+    }
     if (-not $partition) { throw 'The WinRE recovery partition was not found.' }
     $volume = $partition | Get-Volume
     [pscustomobject]@{ Partition = $partition; VolumeGuid = $volume.UniqueId }
 }
 
 function Get-EfiIdentity {
+    $bootDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
     $partition = Get-Partition |
-        Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } |
+        Where-Object {
+            $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -and
+            (-not $bootDisk -or $_.DiskNumber -eq $bootDisk.Number)
+        } |
         Select-Object -First 1
     if (-not $partition) { throw 'The EFI system partition was not found.' }
     $volume = $partition | Get-Volume
@@ -206,6 +249,8 @@ function Invoke-Native([string]$File, [string[]]$Arguments, [string]$LogFile) {
 
 Require-Administrator
 Assert-SystemEnvironment
+Assert-RelativeImagePath $ImageRelativePath
+Assert-BootMenuName $BootMenuName
 if (-not (Test-Path $recoveryCmd) -or -not (Test-Path $recoveryLauncher) -or -not (Test-Path $recoveryShell)) { throw 'Recovery payload files are missing.' }
 Write-Log "Preparing $Operation task"
 
@@ -213,7 +258,9 @@ $effectiveOperation = switch ($Operation) {
     'restore' { 'restore-existing' }
     default { $Operation }
 }
-$programVersion = (Get-Content (Join-Path $scriptRoot '..\VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+$versionPath = Join-Path $scriptRoot 'VERSION'
+if (-not (Test-Path $versionPath)) { $versionPath = Join-Path $scriptRoot '..\VERSION' }
+$programVersion = (Get-Content $versionPath -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
 if ([string]::IsNullOrWhiteSpace($programVersion)) { $programVersion = '0.0.0' }
 
 $task = Get-VolumeIdentity $TaskDrive
@@ -336,6 +383,13 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     'TASK_MOUNT='
     "TASK_DISK_NUMBER=$($task.DiskNumber)"
     "TASK_PARTITION_NUMBER=$($task.PartitionNumber)"
+    "TASK_DISK_GUID=$($task.DiskGuid)"
+    "TASK_PARTITION_GUID=$($task.PartitionGuid)"
+    "TASK_PARTITION_OFFSET=$($task.PartitionOffset)"
+    "TASK_PARTITION_SIZE=$($task.Size)"
+    "TASK_PARTITION_TYPE_GUID=$($task.PartitionTypeGuid)"
+    "TASK_FILESYSTEM=$($task.Filesystem)"
+    "TASK_VOLUME_SERIAL=$($task.VolumeSerial)"
     "TASK_ROOT_REL=$taskRootRelative"
     "RECOVERY_VOLUME_GUID=$($recovery.VolumeGuid)"
     'RECOVERY_MOUNT='
@@ -382,12 +436,12 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "EFI_PARTITION_NUMBER=$($efi.Partition.PartitionNumber)"
     "IMAGE_RELATIVE_PATH=$ImageRelativePath"
     "IMAGE_SHA256=$(if (Test-Path $imagePath) { Get-Sha256 $imagePath } else { '' })"
-    "TARGET_PARTITION_SIZE=$($target.Size)"
     "MINIMUM_TARGET_SIZE=$minimumTargetSize"
     "WIM_INDEX=$WimIndex"
     "WINDOWS_ARCHITECTURE=$script:WindowsArchitecture"
     "WINDOWS_EDITION=$($script:WindowsEdition)"
     "WINDOWS_BUILD=$($script:WindowsBuild)"
+    "SECURE_BOOT=$script:SecureBoot"
     "ALLOW_DESTRUCTIVE=$allow"
     "PROGRAM_VERSION=$programVersion"
     "TASK_CREATED=$created"
@@ -401,6 +455,7 @@ $taskJson = [ordered]@{
     version = 1
     operation = $effectiveOperation
     source = Convert-Identity $source
+    taskVolume = Convert-Identity $task
     image = if ($effectiveOperation -in @('restore-existing', 'create-secondary')) { [ordered]@{
         volume = Convert-Identity $image
         relativePath = $imageRelative
@@ -427,6 +482,17 @@ $taskJson = [ordered]@{
 }
 Write-JsonAtomic $taskJsonPath $taskJson
 Copy-Item $taskJsonPath (Join-Path $payload 'task.json') -Force
+$validator = $RecoveryExe
+if ([string]::IsNullOrWhiteSpace($validator)) {
+    $candidate = Join-Path $scriptRoot 'BackupRestore.exe'
+    if (Test-Path $candidate) { $validator = $candidate }
+}
+if (-not [string]::IsNullOrWhiteSpace($validator) -and (Test-Path $validator)) {
+    # Use the same Rust schema validator that Recovery.exe will use. This
+    # turns a PowerShell/schema drift into a preparation failure before any
+    # WinRE image is modified.
+    Invoke-Native $validator @('validate-task', $taskJsonPath) $taskLog
+}
 $launcherHash = Get-Sha256 (Join-Path $payload 'RecoveryLauncher.cmd')
 $recoveryCmdHash = Get-Sha256 (Join-Path $payload 'Recovery.cmd')
 $recoveryHash = if (Test-Path (Join-Path $payload 'Recovery.exe')) { Get-Sha256 (Join-Path $payload 'Recovery.exe') } else { $recoveryCmdHash }
@@ -438,6 +504,7 @@ $taskHash = Get-Sha256 (Join-Path $payload 'task.json')
     "EXPECTED_TASK_SHA256=$taskHash"
     "ORIGINAL_WINRE_SHA256=$originalHash"
 ) | Add-Content (Join-Path $payload 'RecoveryTask.env') -Encoding ascii
+$recoveryTaskEnvHash = Get-Sha256 (Join-Path $payload 'RecoveryTask.env')
 
 $stagedWim = Join-Path $stage 'Winre.wim'
 $mounted = $false
@@ -478,7 +545,8 @@ try {
         taskSha256 = $taskHash.ToLowerInvariant()
         originalWinreSha256 = $originalHash.ToLowerInvariant()
         stagedWinreSha256 = $stagedHash.ToLowerInvariant()
-        createdByVersion = (Get-Content (Join-Path $PSScriptRoot '..\VERSION') -ErrorAction SilentlyContinue | Select-Object -First 1)
+        createdByVersion = $programVersion
+        recoveryTaskEnvSha256 = $recoveryTaskEnvHash.ToLowerInvariant()
     }
     Write-JsonAtomic (Join-Path $taskRoot 'manifest.json') $manifest
     @(
@@ -497,6 +565,17 @@ try {
         updated = $created
     }
     Write-JsonAtomic (Join-Path $taskRoot 'status.json') $initialStatus
+    Write-JsonAtomic (Join-Path $root 'last-task.json') ([ordered]@{
+        taskId = $taskId
+        operation = $effectiveOperation
+        taskRoot = $taskRoot
+        statusJson = (Join-Path $taskRoot 'status.json')
+        recoveryLog = (Join-Path $taskRoot 'Recovery.log')
+        prepareLog = $taskLog
+        imagePath = $imagePath
+        metadataPath = (Join-Path (Split-Path -Parent $imagePath) 'metadata.json')
+        created = $created
+    })
 
     if ($NoReboot) {
         Write-Log "Task prepared without changing registered WinRE: $taskId"

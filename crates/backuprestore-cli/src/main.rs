@@ -269,12 +269,31 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task.status
         )));
     }
+    let persisted_status: StatusRecord = read_json(store.status_path(&task_id)?)?;
+    if !persisted_status.task_id.eq_ignore_ascii_case(&task.task_id) {
+        return Err(err("status.json task_id does not match task.json"));
+    }
+    if persisted_status.operation != task.operation {
+        return Err(err("status.json operation does not match task.json"));
+    }
+    // The normal-host preparation records boot-requested in status.json
+    // without rewriting the payload task.json. Accept exactly that one-step
+    // ahead state; any other divergence indicates a torn or tampered task.
+    if persisted_status.stage != task.status
+        && !(task.status == Stage::Prepared && persisted_status.stage == Stage::BootRequested)
+    {
+        return Err(err("status.json stage does not match task.json"));
+    }
     verify_task_identity_env(&values, &task)?;
     let manifest: PayloadManifest = read_json(task_dir.join("manifest.json"))?;
+    if !manifest.task_id.eq_ignore_ascii_case(&task.task_id) {
+        return Err(err("payload manifest task_id does not match task.json"));
+    }
     let launcher = task_dir.join("payload").join("RecoveryLauncher.cmd");
     let recovery_cmd = task_dir.join("payload").join("Recovery.cmd");
     let recovery_exe = task_dir.join("payload").join("Recovery.exe");
     let task_json = task_dir.join("payload").join("task.json");
+    let recovery_task_env = task_dir.join("payload").join("RecoveryTask.env");
     let original = task_dir.join("original").join("Winre.wim");
     let staged = task_dir.join("stage").join("Winre.wim");
     if recovery_exe.exists() {
@@ -283,6 +302,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             &launcher,
             &recovery_exe,
             &task_json,
+            &recovery_task_env,
             &original,
             &staged,
         )?;
@@ -292,6 +312,9 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         verify_sha256(&launcher, &manifest.launcher_sha256)?;
         verify_sha256(&recovery_cmd, &manifest.recovery_sha256)?;
         verify_sha256(&task_json, &manifest.task_sha256)?;
+        if let Some(expected) = manifest.recovery_task_env_sha256.as_deref() {
+            verify_sha256(&recovery_task_env, expected)?;
+        }
         verify_sha256(&original, &manifest.original_winre_sha256)?;
         verify_sha256(&staged, &manifest.staged_winre_sha256)?;
     }
@@ -317,8 +340,22 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             }
         }
     } else if let Some(source) = task.source.as_mut() {
-        mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
-        source.drive_letter = Some('S');
+        // Probe tasks are allowed to keep their task files on the source
+        // partition.  That partition is already mounted as T: above, and
+        // assigning a second letter in WinRE is unreliable (and can fail
+        // after diskpart has partially changed the mount state).  Reuse the
+        // verified task mount instead of trying to mount it again as S:.
+        let task_volume = task
+            .task_volume
+            .as_ref()
+            .ok_or_else(|| err("probe task is missing task volume identity"))?;
+        if !task_volume.same_partition(source) {
+            mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
+            source.drive_letter = Some('S');
+        } else {
+            source.drive_letter = Some('T');
+            append_log(&early_log, "Probe source is the task partition; reusing T:")?;
+        }
     }
 
     let log = store.log_path(&task_id)?;
@@ -398,7 +435,14 @@ fn read_env_file(path: impl AsRef<Path>) -> Result<BTreeMap<String, String>, Tas
         let (key, value) = line
             .split_once('=')
             .ok_or_else(|| err("RecoveryTask.env contains a malformed line"))?;
-        if key.is_empty() || values.insert(key.to_string(), value.to_string()).is_some() {
+        if key.is_empty()
+            || !key.chars().enumerate().all(|(index, ch)| {
+                ch == '_' || ch.is_ascii_alphanumeric() && (index > 0 || ch.is_ascii_alphabetic())
+            })
+        {
+            return Err(err("RecoveryTask.env contains an invalid key"));
+        }
+        if values.insert(key.to_string(), value.to_string()).is_some() {
             return Err(err("RecoveryTask.env contains a duplicate or empty key"));
         }
     }
@@ -490,12 +534,54 @@ fn verify_task_identity_env(
                 }
             }
         }
+        if identity.partition_offset > 0 {
+            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_PARTITION_OFFSET"))
+            {
+                if identity.partition_offset != expected {
+                    return Err(err(&format!(
+                        "{prefix} partition offset differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        if !identity.partition_type_guid.trim().is_empty() {
+            if let Some(expected) = env_optional(values, &format!("{prefix}_PARTITION_TYPE_GUID")) {
+                if !identity.partition_type_guid.eq_ignore_ascii_case(&expected) {
+                    return Err(err(&format!(
+                        "{prefix} partition type differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        if !identity.filesystem.trim().is_empty() {
+            if let Some(expected) = env_optional(values, &format!("{prefix}_FILESYSTEM")) {
+                if !identity.filesystem.eq_ignore_ascii_case(&expected) {
+                    return Err(err(&format!(
+                        "{prefix} filesystem differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
+        if !identity.volume_serial.trim().is_empty() {
+            if let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL")) {
+                if !identity.volume_serial.eq_ignore_ascii_case(&expected) {
+                    return Err(err(&format!(
+                        "{prefix} volume serial differs between task.json and RecoveryTask.env"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
     if let Some(source) = task.source.as_ref() {
         verify(values, "SOURCE", source)?;
     }
+    let task_volume = task
+        .task_volume
+        .as_ref()
+        .ok_or_else(|| err("task.json is missing task_volume identity"))?;
+    verify(values, "TASK", task_volume)?;
     match task.operation {
         Operation::Backup => {
             let destination = task

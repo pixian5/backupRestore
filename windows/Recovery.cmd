@@ -163,11 +163,18 @@ rem The Rust host applies the same checks.  Keep the compatibility fallback
 rem conservative because it may run without the Rust executable in WinRE.
 if not defined TASK_ID exit /b 1
 for /f "delims=0123456789abcdefABCDEF-" %%A in ("!TASK_ID!") do exit /b 1
+if not "!TASK_ID:~36,1!"=="" exit /b 1
+if "!TASK_ID:~35,1!"=="" exit /b 1
+if not "!TASK_ID:~8,1!"=="-" exit /b 1
+if not "!TASK_ID:~13,1!"=="-" exit /b 1
+if not "!TASK_ID:~18,1!"=="-" exit /b 1
+if not "!TASK_ID:~23,1!"=="-" exit /b 1
 if not defined TASK_ROOT_REL exit /b 1
 if /I not "!TASK_ROOT_REL:~0,20!"=="BackupRestore\tasks\" exit /b 1
 if /I not "!TASK_ROOT_REL!"=="BackupRestore\tasks\!TASK_ID!" exit /b 1
 if not defined OPERATION exit /b 1
 if /I not "!OPERATION!"=="probe" if /I not "!OPERATION!"=="backup" if /I not "!OPERATION!"=="restore" if /I not "!OPERATION!"=="restore-existing" if /I not "!OPERATION!"=="create-secondary" exit /b 1
+for %%G in (TASK_VOLUME_GUID TASK_DISK_NUMBER TASK_PARTITION_NUMBER RECOVERY_VOLUME_GUID RECOVERY_DISK_NUMBER RECOVERY_PARTITION_NUMBER SOURCE_VOLUME_GUID SOURCE_DISK_NUMBER SOURCE_PARTITION_NUMBER) do if not defined %%G exit /b 1
 if not defined IMAGE_RELATIVE_PATH if /I not "!OPERATION!"=="probe" exit /b 1
 if defined IMAGE_RELATIVE_PATH (
   if "!IMAGE_RELATIVE_PATH:~0,1!"=="\" exit /b 1
@@ -176,12 +183,16 @@ if defined IMAGE_RELATIVE_PATH (
   echo(!IMAGE_RELATIVE_PATH!| findstr.exe /L /C:".." >nul && exit /b 1
   echo(!IMAGE_RELATIVE_PATH!| findstr.exe /L /C:":" >nul && exit /b 1
 )
-for %%G in (SOURCE_PARTITION_TYPE_GUID IMAGE_PARTITION_TYPE_GUID TARGET_PARTITION_TYPE_GUID) do (
+for %%G in (TASK_PARTITION_TYPE_GUID SOURCE_PARTITION_TYPE_GUID IMAGE_PARTITION_TYPE_GUID TARGET_PARTITION_TYPE_GUID) do (
   if defined %%G if /I "!%%G!"=="{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}" exit /b 1
   if defined %%G if /I "!%%G!"=="{e3c9e316-0b5c-4db8-817d-f92df00215ae}" exit /b 1
   if defined %%G if /I "!%%G!"=="{de94bba4-06d1-4d40-a16a-bfd50179d6ac}" exit /b 1
 )
 if /I not "!OPERATION!"=="probe" if /I "!IMAGE_VOLUME_GUID!"=="!TARGET_VOLUME_GUID!" exit /b 1
+if /I not "!OPERATION!"=="probe" if /I "!TASK_VOLUME_GUID!"=="!TARGET_VOLUME_GUID!" exit /b 1
+if /I not "!OPERATION!"=="probe" if /I "!TASK_VOLUME_GUID!"=="!SOURCE_VOLUME_GUID!" exit /b 1
+if /I "!OPERATION!"=="backup" if /I "!IMAGE_VOLUME_GUID!"=="!SOURCE_VOLUME_GUID!" exit /b 1
+if /I "!OPERATION!"=="restore-existing" if /I not "!TARGET_VOLUME_GUID!"=="!SOURCE_VOLUME_GUID!" exit /b 1
 exit /b 0
 
 :matches_volume

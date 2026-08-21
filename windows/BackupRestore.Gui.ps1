@@ -89,6 +89,10 @@ function Get-EnvironmentText {
     try {
         $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
         $firmware = (Get-ComputerInfo -Property BiosFirmwareType -ErrorAction Stop).BiosFirmwareType
+        $secureBoot = 'unknown'
+        try {
+            $secureBoot = if (Confirm-SecureBootUEFI -ErrorAction Stop) { 'on' } else { 'off' }
+        } catch { }
         $bootDisk = Get-Disk -ErrorAction Stop | Where-Object IsBoot -eq $true | Select-Object -First 1
         $reagent = reagentc.exe /info 2>&1 | Out-String
         $bitlocker = if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
@@ -109,6 +113,7 @@ function Get-EnvironmentText {
         return @(
             "Windows：$($os.Caption) build=$($os.BuildNumber) architecture=$env:PROCESSOR_ARCHITECTURE"
             "Firmware：$firmware; boot disk=$($bootDisk.Number) partitionStyle=$($bootDisk.PartitionStyle)"
+            "Secure Boot：$secureBoot"
             "BitLocker(C:)：$bitlocker"
             "WinRE：$winreState"
             '可识别的 NTFS 卷：'
@@ -153,8 +158,8 @@ function Get-DriveIdentityText([string]$driveText) {
         $partition = Get-Partition -DriveLetter $drive -ErrorAction Stop
         $disk = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
         $volume = Get-Volume -DriveLetter $drive -ErrorAction Stop
-        return ('{0}: 磁盘 GUID={1}; 分区 GUID={2}; 偏移={3}; 大小={4}; 剩余={5}; 文件系统={6}' -f
-            $drive, $disk.UniqueId, $partition.Guid, $partition.Offset, $partition.Size, $volume.SizeRemaining, $volume.FileSystem)
+        return ('{0}: 磁盘 GUID={1}; 分区 GUID={2}; 卷 GUID={3}; 类型={4}; 偏移={5}; 大小={6}; 剩余={7}; 文件系统={8}; 序列号={9}' -f
+            $drive, $disk.UniqueId, $partition.Guid, $volume.UniqueId, $partition.GptType, $partition.Offset, $partition.Size, $volume.SizeRemaining, $volume.FileSystem, $volume.SerialNumber)
     } catch {
         return "$driveText（无法读取分区身份：$($_.Exception.Message)）"
     }
@@ -166,6 +171,35 @@ $imageDrive = Add-DriveRow '镜像卷盘符' 'D'
 $targetDrive = Add-DriveRow '还原目标盘符' 'C'
 $relativePath = Add-DriveRow '镜像相对路径' 'BackupRestore\Windows.wim'
 $bootMenuName = Add-DriveRow '第二系统启动名称' 'Windows Backup'
+$imageInfo = New-Object System.Windows.Controls.TextBlock
+$imageInfo.Text = '镜像信息：点击“读取镜像信息”检查 WIM 文件和 metadata.json。'
+$imageInfo.TextWrapping = 'Wrap'
+$imageInfo.Margin = '4,8,4,4'
+$panel.Children.Add($imageInfo) | Out-Null
+$readImage = New-Object System.Windows.Controls.Button
+$readImage.Content = '读取镜像信息'
+$readImage.Width = 140
+$readImage.Margin = '4,4,4,4'
+$panel.Children.Add($readImage) | Out-Null
+
+function Read-ImageInfo {
+    try {
+        $drive = $imageDrive.Text.Trim().TrimEnd(':')
+        if ($drive -notmatch '^[A-Za-z]$') { throw '镜像卷盘符格式无效。' }
+        $candidate = Join-Path "$drive`:\" $relativePath.Text
+        if (-not (Test-Path -LiteralPath $candidate)) { throw "WIM 不存在：$candidate" }
+        $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
+        $actualHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+        $metadataPath = Join-Path (Split-Path -Parent $candidate) 'metadata.json'
+        if (-not (Test-Path -LiteralPath $metadataPath)) { throw "metadata.json 不存在：$metadataPath" }
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+        $hashState = if ($metadata.imageSha256 -and $actualHash -eq "$($metadata.imageSha256)".ToLowerInvariant()) { '匹配' } else { '不匹配' }
+        return "镜像：$candidate`n大小：$($file.Length) bytes`nSHA-256（实际）：$actualHash`nSHA-256（metadata）：$($metadata.imageSha256) [$hashState]`nWindows：$($metadata.windowsEdition) build=$($metadata.windowsBuild) arch=$($metadata.architecture)`n源分区大小：$($metadata.source.partitionSize)；最小目标：$($metadata.minimumTargetSize)"
+    } catch {
+        return "镜像信息读取失败：$($_.Exception.Message)"
+    }
+}
+$readImage.Add_Click({ $imageInfo.Text = Read-ImageInfo })
 
 $identity = New-Object System.Windows.Controls.TextBlock
 $identity.Text = '点击创建任务时会重新读取磁盘 GUID、分区 GUID、偏移、大小、剩余空间和文件系统。'
@@ -197,10 +231,39 @@ $status.TextWrapping = 'Wrap'
 $status.Height = 120
 $resultPanel.Children.Add($status) | Out-Null
 $paths = New-Object System.Windows.Controls.TextBlock
-$paths.Text = '日志位置：C:\ProgramData\BackupRestore\logs\prepare.log；任务目录由准备脚本输出。'
+$paths.Text = '任务信息和日志将在准备脚本返回后显示；真实终态以任务目录中的 status.json 为准。'
 $paths.TextWrapping = 'Wrap'
 $paths.Margin = '4,12,4,4'
 $resultPanel.Children.Add($paths) | Out-Null
+$refreshTask = New-Object System.Windows.Controls.Button
+$refreshTask.Content = '刷新任务状态'
+$refreshTask.Width = 140
+$refreshTask.Margin = '4,8,4,4'
+$resultPanel.Children.Add($refreshTask) | Out-Null
+
+$lastTaskPath = Join-Path $env:ProgramData 'BackupRestore\last-task.json'
+function Read-LastTaskStatus {
+    if (-not (Test-Path $lastTaskPath)) {
+        return '尚未找到最近任务记录。'
+    }
+    try {
+        $record = Get-Content -LiteralPath $lastTaskPath -Raw | ConvertFrom-Json
+        $statusValue = 'status.json 不可读'
+        if (Test-Path $record.statusJson) {
+            $statusValue = (Get-Content -LiteralPath $record.statusJson -Raw | ConvertFrom-Json | ConvertTo-Json -Compress)
+        }
+        $imageSummary = "镜像：$($record.imagePath)"
+        if (Test-Path $record.metadataPath) {
+            $metadata = Get-Content -LiteralPath $record.metadataPath -Raw | ConvertFrom-Json
+            $imageSummary = "镜像：$($record.imagePath)`n镜像大小：$($metadata.imageSize) bytes；创建时间：$($metadata.created)；SHA-256：$($metadata.imageSha256)"
+        }
+        $paths.Text = "任务 ID：$($record.taskId)`n任务目录：$($record.taskRoot)`n准备日志：$($record.prepareLog)`n恢复日志：$($record.recoveryLog)`n$imageSummary"
+        return "最近任务：$($record.operation)`n$statusValue`n$imageSummary`n`n注意：准备成功不等于 WinRE 恢复成功。"
+    } catch {
+        return "读取任务状态失败：$($_.Exception.Message)"
+    }
+}
+$refreshTask.Add_Click({ $status.Text = Read-LastTaskStatus })
 
 function Update-ModeFields {
     $selected = [string]$mode.SelectedItem
@@ -265,7 +328,7 @@ $button.Add_Click({
         $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join ' '
         $process = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $argumentLine
         if ($process.ExitCode -eq 0) {
-            $status.Text = "任务已准备（不是恢复成功）。`n请查看任务目录中的 status.json、Recovery.log 和 prepare.log；真实完成状态须在 WinRE 重启后确认。"
+            $status.Text = Read-LastTaskStatus
             [System.Windows.MessageBox]::Show($status.Text, 'BackupRestore') | Out-Null
         } else {
             $status.Text = "任务准备失败，退出码：$($process.ExitCode)。"

@@ -219,6 +219,8 @@ pub struct PayloadManifest {
     pub original_winre_sha256: String,
     pub staged_winre_sha256: String,
     pub created_by_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_task_env_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +259,11 @@ pub struct Task {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<VolumeIdentity>,
+    /// The non-target volume holding task.json and the recovery payload.
+    /// New Windows tasks always record it; the optional form keeps old task
+    /// files readable until Recovery explicitly requires it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_volume: Option<VolumeIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -292,6 +299,7 @@ impl Task {
             version: TASK_VERSION,
             operation,
             source: None,
+            task_volume: None,
             image: None,
             destination: None,
             target: None,
@@ -464,6 +472,11 @@ impl Task {
                                 "create-secondary requires a boot menu name".into(),
                             ));
                         }
+                        if !valid_menu_name(target.boot_menu_name.as_deref().unwrap_or("")) {
+                            return Err(TaskError::Invalid(
+                                "create-secondary boot menu name contains control characters or is too long".into(),
+                            ));
+                        }
                         if !matches!(self.boot_plan.mode, BootMode::AddSecondary) {
                             return Err(TaskError::Invalid(
                                 "create-secondary must use add-secondary boot mode".into(),
@@ -481,9 +494,37 @@ impl Task {
                                 "create-secondary requires a boot plan menu name".into(),
                             ));
                         }
+                        if !valid_menu_name(self.boot_plan.menu_name.as_deref().unwrap_or("")) {
+                            return Err(TaskError::Invalid(
+                                "create-secondary boot plan menu name contains control characters or is too long".into(),
+                            ));
+                        }
                     }
                     Operation::Probe | Operation::Backup => unreachable!(),
                 }
+            }
+        }
+        if let Some(task_volume) = self.task_volume.as_ref() {
+            require_complete("task volume", task_volume)?;
+            if task_volume.is_reserved_partition() {
+                return Err(TaskError::Invalid(
+                    "EFI/MSR/Recovery partitions cannot store task files".into(),
+                ));
+            }
+            if self.operation != Operation::Probe
+                && let Some(source) = self.source.as_ref()
+                && task_volume.same_partition(source)
+            {
+                return Err(TaskError::Invalid(
+                    "task volume must differ from source partition".into(),
+                ));
+            }
+            if let Some(target) = self.target.as_ref()
+                && task_volume.same_partition(&target.volume)
+            {
+                return Err(TaskError::Invalid(
+                    "task volume must differ from restore target".into(),
+                ));
             }
         }
         Ok(())
@@ -524,6 +565,9 @@ fn default_progress(stage: Stage) -> u8 {
 }
 fn missing(name: &str) -> TaskError {
     TaskError::Invalid(format!("missing {name}"))
+}
+fn valid_menu_name(value: &str) -> bool {
+    value.chars().count() <= 256 && !value.chars().any(char::is_control)
 }
 pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
     canonical_task_id(value).map(|_| ())
@@ -622,6 +666,7 @@ pub fn validate_payload_files(
     launcher: impl AsRef<Path>,
     recovery: impl AsRef<Path>,
     task_json: impl AsRef<Path>,
+    recovery_task_env: impl AsRef<Path>,
     original_winre: impl AsRef<Path>,
     staged_winre: impl AsRef<Path>,
 ) -> Result<(), TaskError> {
@@ -657,6 +702,9 @@ pub fn validate_payload_files(
             )));
         }
         verify_sha256(path, expected)?;
+    }
+    if let Some(expected) = manifest.recovery_task_env_sha256.as_deref() {
+        verify_sha256(recovery_task_env, expected)?;
     }
     Ok(())
 }
@@ -873,6 +921,7 @@ mod tests {
             },
         );
         task.source = Some(identity("source", 100));
+        task.task_volume = Some(identity("task", 100));
         task.destination = Some(DestinationSpec {
             volume: identity("image", 100),
             relative_path: "MyBackup/Windows.wim".into(),
@@ -893,6 +942,22 @@ mod tests {
         let mut task = backup_task();
         task.destination.as_mut().unwrap().volume.partition_guid = "source".into();
         assert!(task.validate().is_err());
+    }
+    #[test]
+    fn task_volume_rejects_reserved_and_overlapping_partitions() {
+        let mut task = backup_task();
+        task.task_volume.as_mut().unwrap().partition_type_guid =
+            "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}".into();
+        assert!(task.validate().is_err());
+        let mut task = backup_task();
+        task.task_volume.as_mut().unwrap().partition_guid = "source".into();
+        assert!(task.validate().is_err());
+    }
+    #[test]
+    fn menu_name_rejects_controls_and_unbounded_input() {
+        assert!(valid_menu_name("Windows Backup"));
+        assert!(!valid_menu_name("Windows\nBackup"));
+        assert!(!valid_menu_name(&"x".repeat(257)));
     }
     #[test]
     fn reserved_volumes_and_dot_paths_are_rejected() {
