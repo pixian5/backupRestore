@@ -28,6 +28,11 @@ $recoveryShell = Join-Path $scriptRoot 'winpeshl.ini'
 $script:WindowsArchitecture = ''
 $script:WindowsEdition = 'unknown'
 $script:WindowsBuild = 'unknown'
+$reservedPartitionTypes = @(
+    '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
+    '{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
+    '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'
+)
 
 function Write-Log([string]$Message) {
     New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
@@ -215,6 +220,20 @@ $task = Get-VolumeIdentity $TaskDrive
 $source = Get-VolumeIdentity $SourceDrive
 $image = if ($Operation -eq 'probe') { $task } else { Get-VolumeIdentity $ImageDrive }
 $target = Get-VolumeIdentity $TargetDrive
+$recovery = Get-RecoveryIdentity
+$efi = Get-EfiIdentity
+if ($task.PartitionTypeGuid.ToLowerInvariant() -in $reservedPartitionTypes) {
+    throw 'The task volume cannot be an EFI, MSR or Recovery partition.'
+}
+if ($image.PartitionTypeGuid.ToLowerInvariant() -in $reservedPartitionTypes) {
+    throw 'The image volume cannot be an EFI, MSR or Recovery partition.'
+}
+if ($task.VolumeGuid -in @($recovery.VolumeGuid, $efi.VolumeGuid)) {
+    throw 'The task volume cannot be the registered Recovery or EFI volume.'
+}
+if ($image.VolumeGuid -in @($recovery.VolumeGuid, $efi.VolumeGuid)) {
+    throw 'The image volume cannot be the registered Recovery or EFI volume.'
+}
 $imagePath = Join-Path $image.Drive $ImageRelativePath
 $minimumTargetSize = [UInt64]0
 $sourceUsedBytes = [UInt64]($source.Size - $source.FreeBytes)
@@ -273,8 +292,6 @@ if ($effectiveOperation -ne 'probe' -and -not (Test-Path $RecoveryExe)) {
     throw "Recovery.exe is required for real $effectiveOperation tasks. Build the ARM64 release binary and pass -RecoveryExe."
 }
 
-$recovery = Get-RecoveryIdentity
-$efi = Get-EfiIdentity
 $recoveryMount = 'R:'
 $existingRecoveryVolume = Get-Volume -DriveLetter R -ErrorAction SilentlyContinue
 if ($existingRecoveryVolume -and $existingRecoveryVolume.UniqueId -ne $recovery.VolumeGuid) {
@@ -342,6 +359,9 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "IMAGE_PARTITION_GUID=$($image.PartitionGuid)"
     "IMAGE_PARTITION_OFFSET=$($image.PartitionOffset)"
     "IMAGE_PARTITION_SIZE=$($image.Size)"
+    "IMAGE_PARTITION_TYPE_GUID=$($image.PartitionTypeGuid)"
+    "IMAGE_FILESYSTEM=$($image.Filesystem)"
+    "IMAGE_VOLUME_SERIAL=$($image.VolumeSerial)"
     'IMAGE_MOUNT='
     "IMAGE_DISK_NUMBER=$($image.DiskNumber)"
     "IMAGE_PARTITION_NUMBER=$($image.PartitionNumber)"
@@ -350,6 +370,9 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "TARGET_PARTITION_GUID=$($target.PartitionGuid)"
     "TARGET_PARTITION_OFFSET=$($target.PartitionOffset)"
     "TARGET_PARTITION_SIZE=$($target.Size)"
+    "TARGET_PARTITION_TYPE_GUID=$($target.PartitionTypeGuid)"
+    "TARGET_FILESYSTEM=$($target.Filesystem)"
+    "TARGET_VOLUME_SERIAL=$($target.VolumeSerial)"
     'TARGET_MOUNT='
     "TARGET_DISK_NUMBER=$($target.DiskNumber)"
     "TARGET_PARTITION_NUMBER=$($target.PartitionNumber)"
@@ -378,13 +401,13 @@ $taskJson = [ordered]@{
     version = 1
     operation = $effectiveOperation
     source = Convert-Identity $source
-    image = if ($effectiveOperation -eq 'probe') { $null } else { [ordered]@{
+    image = if ($effectiveOperation -in @('restore-existing', 'create-secondary')) { [ordered]@{
         volume = Convert-Identity $image
         relativePath = $imageRelative
         sha256 = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Sha256 (Join-Path $image.Drive $imageRelative)).ToLowerInvariant() } else { '0' * 64 }
         sizeBytes = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Item (Join-Path $image.Drive $imageRelative)).Length } else { 0 }
         index = $WimIndex
-    } }
+    } } else { $null }
     destination = if ($effectiveOperation -eq 'backup') { [ordered]@{ volume = Convert-Identity $image; relativePath = $imageRelative } } else { $null }
     target = if ($effectiveOperation -in @('restore-existing', 'create-secondary')) { [ordered]@{
         volume = Convert-Identity $target
@@ -482,6 +505,21 @@ try {
         exit 0
     }
     Invoke-Native 'reagentc.exe' @('/boottore') $taskLog
+    @(
+        "task_id=$taskId"
+        'stage=boot-requested'
+        'progress=2'
+        "operation=$effectiveOperation"
+        "original_winre_sha256=$originalHash"
+        "staged_winre_sha256=$stagedHash"
+    ) | Set-Content (Join-Path $taskRoot 'status.env') -Encoding ascii
+    Write-JsonAtomic (Join-Path $taskRoot 'status.json') ([ordered]@{
+        taskId = $taskId
+        operation = $effectiveOperation
+        stage = 'boot-requested'
+        progress = 2
+        updated = (Get-Date).ToUniversalTime().ToString('o')
+    })
     Write-Log "Task prepared: $taskId"
     shutdown.exe /r /t 0
 } catch {

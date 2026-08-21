@@ -6,7 +6,7 @@
 
 #[cfg(windows)]
 use backuprestore_core::{BootMode, Operation, verify_image_file};
-use backuprestore_core::{Stage, Task, TaskError, TaskStore, read_json, sha256_file};
+use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
 use chrono::Utc;
 use std::collections::BTreeMap;
 use std::env;
@@ -152,7 +152,13 @@ fn validate_task(path: String) -> Result<(), TaskError> {
 fn show_status(root: String, id: String) -> Result<(), TaskError> {
     let store = TaskStore::new(root);
     let task = store.load(&id)?;
-    let status = read_json(store.status_path(&id))?;
+    let status: StatusRecord = read_json(store.status_path(&id)?)?;
+    if status.task_id != task.task_id {
+        return Err(err("status file task_id does not match task.json"));
+    }
+    if status.operation != task.operation {
+        return Err(err("status file operation does not match task.json"));
+    }
     println!(
         "{}",
         serde_json::to_string_pretty::<backuprestore_core::StatusRecord>(&status)?
@@ -174,7 +180,7 @@ fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
 fn recover(root: String, id: String, dry_run: bool) -> Result<(), TaskError> {
     let store = TaskStore::new(root);
     let mut task = store.load(&id)?;
-    let log = store.log_path(&id);
+    let log = store.log_path(&id)?;
     append_log(
         &log,
         &format!(
@@ -254,9 +260,15 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     }
     mount_env_volume(&values, "TASK", 'T', &early_log)?;
     let store = TaskStore::new(PathBuf::from(format!(r"T:\{store_rel}")));
-    let task_dir = store.task_dir(&task_id);
+    let task_dir = store.task_dir(&task_id)?;
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log);
     let mut task = store.load(&task_id)?;
+    if matches!(task.status, Stage::Success | Stage::Failed) {
+        return Err(err(&format!(
+            "task is already terminal at stage {:?}; refusing to run it again",
+            task.status
+        )));
+    }
     verify_task_identity_env(&values, &task)?;
     let manifest: PayloadManifest = read_json(task_dir.join("manifest.json"))?;
     let launcher = task_dir.join("payload").join("RecoveryLauncher.cmd");
@@ -309,7 +321,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         source.drive_letter = Some('S');
     }
 
-    let log = store.log_path(&task_id);
+    let log = store.log_path(&task_id)?;
     append_log(
         &log,
         &format!(
@@ -321,9 +333,11 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let stage_before_failure = task.status;
     let result = recover_windows(&store, &mut task, &log, efi_root, Some(&values));
     if let Err(error) = &result {
+        let should_rollback_bcd =
+            task.status == Stage::BootRepaired || stage_before_failure == Stage::BootRepaired;
         let _ = store.write_failure(&mut task, 1, error.to_string());
         append_log(&log, &format!("Recovery failed: {error}"))?;
-        if stage_before_failure == Stage::BootRepaired {
+        if should_rollback_bcd {
             if let Err(rollback) = restore_bcd_snapshot(&task_dir, &log) {
                 append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
             }
@@ -520,6 +534,24 @@ fn mount_env_volume(
     let script = PathBuf::from(format!(
         r"C:\Windows\Temp\BackupRestore-assign-{letter}.txt"
     ));
+    let existing = Command::new("mountvol")
+        .arg(format!("{letter}:"))
+        .arg("/L")
+        .output()?;
+    if existing.status.success() {
+        if let Some(actual) = String::from_utf8_lossy(&existing.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+        {
+            if actual.eq_ignore_ascii_case(&expected) {
+                return Ok(());
+            }
+            return Err(err(&format!(
+                "volume {letter}: is already mounted to {actual}, refusing to replace it"
+            )));
+        }
+    }
     let body =
         format!("select disk {disk}\r\nselect partition {partition}\r\nassign letter={letter}\r\n");
     fs::write(&script, body)?;
@@ -732,7 +764,20 @@ fn recover_windows(
             if let Some(parent) = partial.parent() {
                 fs::create_dir_all(parent)?;
             }
-            store.write_transition(task, Stage::Capturing)?;
+            match task.status {
+                Stage::Preflight => store.write_transition(task, Stage::Capturing)?,
+                Stage::Capturing => {
+                    append_log(
+                        log,
+                        "Resuming backup from capturing stage; replacing partial image",
+                    )?;
+                }
+                stage => return Err(err(&format!("backup cannot resume from stage {stage:?}"))),
+            }
+            // A power loss can leave a partial WIM behind.  DISM does not
+            // reliably overwrite an existing partial image, so remove only
+            // this task-owned temporary file before restarting capture.
+            let _ = fs::remove_file(&partial);
             run_logged(
                 "dism.exe",
                 &[
@@ -802,49 +847,74 @@ fn recover_windows(
             }
             let image_path = image_path.ok_or_else(|| err("missing image"))?;
             let target_root = resolve_volume_root(&target.volume)?;
-            store.write_transition(task, Stage::TargetErased)?;
-            run_logged(
-                "format.com",
-                &[&target_root.to_string_lossy(), "/FS:NTFS", "/Q", "/Y"],
-                log,
-            )?;
-            store.write_transition(task, Stage::ImageApplied)?;
-            run_logged(
-                "dism.exe",
-                &[
-                    "/Apply-Image",
-                    &format!("/ImageFile:{}", image_path.display()),
-                    &format!("/Index:{}", image_index),
-                    &format!("/ApplyDir:{}", target_root.display()),
-                ],
-                log,
-            )?;
+            // TargetErased is deliberately persisted before formatting.  If
+            // power fails after that write, formatting and applying the WIM
+            // are safe to repeat on the explicitly selected target.  Older
+            // task versions persisted ImageApplied before DISM completed, so
+            // resume from ImageApplied also re-runs Apply-Image defensively.
+            if matches!(task.status, Stage::Preflight | Stage::TargetErased) {
+                if task.status == Stage::Preflight {
+                    store.write_transition(task, Stage::TargetErased)?;
+                }
+                run_logged(
+                    "format.com",
+                    &[&target_root.to_string_lossy(), "/FS:NTFS", "/Q", "/Y"],
+                    log,
+                )?;
+            }
+            if matches!(task.status, Stage::TargetErased | Stage::ImageApplied) {
+                run_logged(
+                    "dism.exe",
+                    &[
+                        "/Apply-Image",
+                        &format!("/ImageFile:{}", image_path.display()),
+                        &format!("/Index:{}", image_index),
+                        &format!("/ApplyDir:{}", target_root.display()),
+                    ],
+                    log,
+                )?;
+                if task.status == Stage::TargetErased {
+                    store.write_transition(task, Stage::ImageApplied)?;
+                }
+            }
             let efi = find_efi_root(efi_root)?;
-            store.write_transition(task, Stage::BootRepaired)?;
-            let mut bcd_args = vec![
-                format!("{}\\Windows", target_root.display()),
-                "/s".to_string(),
-                efi.to_string_lossy().into_owned(),
-                "/f".to_string(),
-                "UEFI".to_string(),
-            ];
-            if target.role == TargetRole::NewWindows {
-                bcd_args.push("/addlast".to_string());
+            if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
+                // BootRepaired is recorded immediately before BCDBoot so a
+                // failure is eligible for BCD rollback.  A retry from that
+                // stage simply re-runs BCDBoot and validates its output.
+                if task.status == Stage::ImageApplied {
+                    store.write_transition(task, Stage::BootRepaired)?;
+                }
+                let mut bcd_args = vec![
+                    format!("{}\\Windows", target_root.display()),
+                    "/s".to_string(),
+                    efi.to_string_lossy().into_owned(),
+                    "/f".to_string(),
+                    "UEFI".to_string(),
+                ];
+                if target.role == TargetRole::NewWindows {
+                    bcd_args.push("/addlast".to_string());
+                }
+                let bcd_refs: Vec<&str> = bcd_args.iter().map(String::as_str).collect();
+                run_logged("bcdboot.exe", &bcd_refs, log)?;
+                let boot_manager = efi.join("EFI\\Microsoft\\Boot\\bootmgfw.efi");
+                if !boot_manager.exists() {
+                    return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
+                }
+                if target.role == TargetRole::NewWindows {
+                    let menu_name = target
+                        .boot_menu_name
+                        .as_deref()
+                        .ok_or_else(|| err("secondary target has no boot menu name"))?;
+                    set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
+                }
+                store.write_transition(task, Stage::Success)?;
+            } else {
+                return Err(err(&format!(
+                    "restore cannot resume from stage {:?}",
+                    task.status
+                )));
             }
-            let bcd_refs: Vec<&str> = bcd_args.iter().map(String::as_str).collect();
-            run_logged("bcdboot.exe", &bcd_refs, log)?;
-            let boot_manager = efi.join("EFI\\Microsoft\\Boot\\bootmgfw.efi");
-            if !boot_manager.exists() {
-                return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
-            }
-            if target.role == TargetRole::NewWindows {
-                let menu_name = target
-                    .boot_menu_name
-                    .as_deref()
-                    .ok_or_else(|| err("secondary target has no boot menu name"))?;
-                set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
-            }
-            store.write_transition(task, Stage::Success)?;
         }
     }
     append_log(log, "Recovery completed")?;
@@ -869,9 +939,9 @@ fn resolve_volume_path(
 }
 #[cfg(windows)]
 fn find_efi_root(override_root: Option<&Path>) -> Result<PathBuf, TaskError> {
-    Ok(override_root
+    override_root
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("S:\\")))
+        .ok_or_else(|| err("EFI root must be explicitly mounted before recovery"))
 }
 #[cfg(windows)]
 fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError> {

@@ -362,6 +362,11 @@ impl Task {
                         "backup destination must differ from source partition".into(),
                     ));
                 }
+                if dest.volume.is_reserved_partition() {
+                    return Err(TaskError::Invalid(
+                        "EFI/MSR/Recovery partitions cannot store backup images".into(),
+                    ));
+                }
                 validate_relative_path(&dest.relative_path)?;
                 if self.image.is_some() || self.target.is_some() {
                     return Err(TaskError::Invalid(
@@ -379,6 +384,11 @@ impl Task {
                 if source.same_partition(&image.volume) {
                     return Err(TaskError::Invalid(
                         "image volume must differ from source volume".into(),
+                    ));
+                }
+                if image.volume.is_reserved_partition() {
+                    return Err(TaskError::Invalid(
+                        "EFI/MSR/Recovery partitions cannot store restore images".into(),
                     ));
                 }
                 if image.sha256.len() != 64 || !image.sha256.chars().all(|c| c.is_ascii_hexdigit())
@@ -516,8 +526,11 @@ fn missing(name: &str) -> TaskError {
     TaskError::Invalid(format!("missing {name}"))
 }
 pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
+    canonical_task_id(value).map(|_| ())
+}
+fn canonical_task_id(value: &str) -> Result<String, TaskError> {
     Uuid::parse_str(value)
-        .map(|_| ())
+        .map(|id| id.to_string())
         .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))
 }
 fn validate_sha256_text(name: &str, value: &str) -> Result<(), TaskError> {
@@ -555,7 +568,7 @@ pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
     for component in path.components() {
         if matches!(
             component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_)
         ) {
             return Err(TaskError::Invalid(
                 "path may not escape the volume root".into(),
@@ -695,23 +708,29 @@ impl TaskStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
-    pub fn task_dir(&self, task_id: &str) -> PathBuf {
-        self.root.join("tasks").join(task_id)
+    pub fn task_dir(&self, task_id: &str) -> Result<PathBuf, TaskError> {
+        let canonical = canonical_task_id(task_id)?;
+        Ok(self.root.join("tasks").join(canonical))
     }
-    pub fn task_path(&self, task_id: &str) -> PathBuf {
-        self.task_dir(task_id).join("task.json")
+    pub fn task_path(&self, task_id: &str) -> Result<PathBuf, TaskError> {
+        Ok(self.task_dir(task_id)?.join("task.json"))
     }
-    pub fn status_path(&self, task_id: &str) -> PathBuf {
-        self.task_dir(task_id).join("status.json")
+    pub fn status_path(&self, task_id: &str) -> Result<PathBuf, TaskError> {
+        Ok(self.task_dir(task_id)?.join("status.json"))
     }
-    pub fn log_path(&self, task_id: &str) -> PathBuf {
-        self.task_dir(task_id).join("recovery.log")
+    pub fn log_path(&self, task_id: &str) -> Result<PathBuf, TaskError> {
+        Ok(self.task_dir(task_id)?.join("recovery.log"))
     }
     pub fn create(&self, task: &Task) -> Result<(), TaskError> {
         task.validate()?;
-        let dir = self.task_dir(&task.task_id);
+        let dir = self.task_dir(&task.task_id)?;
+        if dir.exists() {
+            return Err(TaskError::Invalid(
+                "task directory already exists; refusing to overwrite it".into(),
+            ));
+        }
         fs::create_dir_all(&dir)?;
-        write_json_atomic(self.task_path(&task.task_id), task)?;
+        write_json_atomic(self.task_path(&task.task_id)?, task)?;
         let status = StatusRecord {
             task_id: task.task_id.clone(),
             operation: task.operation,
@@ -721,13 +740,17 @@ impl TaskStore {
             error_code: None,
             error: None,
         };
-        write_json_atomic(self.status_path(&task.task_id), &status)?;
+        write_json_atomic(self.status_path(&task.task_id)?, &status)?;
         Ok(())
     }
     pub fn load(&self, task_id: &str) -> Result<Task, TaskError> {
         validate_task_id(task_id)?;
-        let task: Task = read_json(self.task_path(task_id))?;
-        if task.task_id != task_id {
+        let task: Task = read_json(self.task_path(task_id)?)?;
+        let requested_id = Uuid::parse_str(task_id)
+            .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))?;
+        let actual_id = Uuid::parse_str(&task.task_id)
+            .map_err(|_| TaskError::Invalid("task file task_id is not a UUID".into()))?;
+        if actual_id != requested_id {
             return Err(TaskError::Invalid(
                 "task file id does not match requested task id".into(),
             ));
@@ -741,8 +764,8 @@ impl TaskStore {
         next: Stage,
     ) -> Result<StatusRecord, TaskError> {
         let status = task.transition(next)?;
-        write_json_atomic(self.task_path(&task.task_id), task)?;
-        write_json_atomic(self.status_path(&task.task_id), &status)?;
+        write_json_atomic(self.task_path(&task.task_id)?, task)?;
+        write_json_atomic(self.status_path(&task.task_id)?, &status)?;
         Ok(status)
     }
     pub fn write_failure(
@@ -767,8 +790,8 @@ impl TaskStore {
             error_code: Some(code),
             error: Some(error.into()),
         };
-        write_json_atomic(self.task_path(&task.task_id), task)?;
-        write_json_atomic(self.status_path(&task.task_id), &status)?;
+        write_json_atomic(self.task_path(&task.task_id)?, task)?;
+        write_json_atomic(self.status_path(&task.task_id)?, &status)?;
         Ok(status)
     }
 }
@@ -872,6 +895,48 @@ mod tests {
         assert!(task.validate().is_err());
     }
     #[test]
+    fn reserved_volumes_and_dot_paths_are_rejected() {
+        let mut backup = backup_task();
+        backup
+            .destination
+            .as_mut()
+            .unwrap()
+            .volume
+            .partition_type_guid = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}".into();
+        assert!(backup.validate().is_err());
+        assert!(validate_relative_path(".").is_err());
+        assert!(validate_relative_path(".\\Windows.wim").is_err());
+
+        let source = identity("source", 100);
+        let mut image = identity("image", 100);
+        image.partition_type_guid = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}".into();
+        let target = identity("source", 100);
+        let mut task = Task::new(
+            Operation::RestoreExisting,
+            BootPlan {
+                mode: BootMode::ReturnExisting,
+                previous_bcd_sha256: Some("a".repeat(64)),
+                menu_name: None,
+                boot_sequence_requested: true,
+            },
+        );
+        task.source = Some(source);
+        task.image = Some(ImageSpec {
+            volume: image,
+            relative_path: "backup.wim".into(),
+            sha256: "a".repeat(64),
+            size_bytes: 1,
+            index: 1,
+        });
+        task.target = Some(TargetSpec {
+            volume: target,
+            role: TargetRole::ExistingWindows,
+            boot_menu_name: None,
+            minimum_size_bytes: 100,
+        });
+        assert!(task.validate().is_err());
+    }
+    #[test]
     fn restore_rejects_image_on_target_and_reserved_target() {
         let source = identity("source", 100);
         let image = identity("image", 100);
@@ -955,6 +1020,11 @@ mod tests {
         let mut task = backup_task();
         store.create(&task).unwrap();
         assert_eq!(store.load(&task.task_id).unwrap().status, Stage::Prepared);
+        assert_eq!(
+            store.load(&task.task_id.to_uppercase()).unwrap().task_id,
+            task.task_id
+        );
+        assert!(store.create(&task).is_err());
         store
             .write_transition(&mut task, Stage::BootRequested)
             .unwrap();
@@ -962,7 +1032,7 @@ mod tests {
             .write_transition(&mut task, Stage::RecoveryStarted)
             .unwrap();
         store.write_failure(&mut task, 123, "test failure").unwrap();
-        let status: StatusRecord = read_json(store.status_path(&task.task_id)).unwrap();
+        let status: StatusRecord = read_json(store.status_path(&task.task_id).unwrap()).unwrap();
         assert_eq!(status.stage, Stage::Failed);
         assert_eq!(status.error_code, Some(123));
         let _ = fs::remove_dir_all(root);
@@ -993,7 +1063,7 @@ mod tests {
         store.create(&task).unwrap();
         let mut replacement = backup_task();
         replacement.status = Stage::BootRequested;
-        write_json_atomic(store.task_path(&task.task_id), &replacement).unwrap();
+        write_json_atomic(store.task_path(&task.task_id).unwrap(), &replacement).unwrap();
         let error = store.load(&task.task_id).unwrap_err().to_string();
         assert!(error.contains("does not match requested task id"));
         let _ = fs::remove_dir_all(root);
