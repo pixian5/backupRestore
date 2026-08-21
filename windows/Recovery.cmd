@@ -261,8 +261,14 @@ exit /b 0
 if not exist "%~1" exit /b 1
 if "%~2"=="" exit /b 1
 set "VERIFY_HASH="
+set "EXPECTED_HASH=%~2"
 for /f "skip=1 tokens=1" %%H in ('certutil.exe -hashfile "%~1" SHA256 2^>nul') do if not defined VERIFY_HASH set "VERIFY_HASH=%%H"
-if /I not "!VERIFY_HASH!"=="%~2" exit /b 1
+set "VERIFY_HASH=!VERIFY_HASH: =!"
+set "EXPECTED_HASH=!EXPECTED_HASH: =!"
+if /I not "!VERIFY_HASH!"=="!EXPECTED_HASH!" (
+  >>"%EARLY_LOG%" echo hash mismatch file=%~1 expected=!EXPECTED_HASH! actual=!VERIFY_HASH!
+  exit /b 1
+)
 exit /b 0
 
 :log

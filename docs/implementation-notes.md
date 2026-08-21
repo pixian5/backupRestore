@@ -28,6 +28,7 @@
 - `docs/verification-matrix.md` 按每一项需求列出代码证据、离线证据与实机验收证据，后续交接不得用 AST/单元测试替代自动重启、DISM、格式化或 BCD 证据。
 - `probe` 允许任务目录与源分区相同：WinRE 先验证并挂载任务卷为 `T:`，若源与任务是同一分区则复用 `T:`，不再二次分配 `S:`；真实 backup/restore 仍拒绝任务卷与源或目标重合。
 - 2026-08-21 修复：任务卷重叠校验原先只拦截了 source/target，未覆盖 backup 的 destination 和 restore 的 image volume。已补齐同分区拒绝逻辑，并在 core 端新增回归测试，确保任务卷不能与镜像卷或目标卷重叠。
+- 2026-08-21 ARM64 构建：Recovery payload 会随包携带 `VCRUNTIME140.dll` 与 `VCRUNTIME140_1.dll`；WinRE 启动器把完整 payload hash 校验交给 Rust，兼容 `certutil` 输出中的空格。挂载失败时保留 file-backed DiskPart 日志，便于后续 WinRE 实机排查。
 
 ## 当前验证结果
 
@@ -36,6 +37,7 @@ macOS 本地已完成：
 - `cargo test --workspace --all-targets --offline`：核心 crate 12 项测试通过；
 - `cargo fmt --all -- --check`：通过；
 - PowerShell AST 解析：`windows/BackupRestore.ps1`、`windows/BackupRestore.Gui.ps1`、`windows/build-windows.ps1` 均通过；Win11 ARM64 的 Windows PowerShell 5.1 输出也已覆盖 UTF-8 BOM JSON 读取。
+- Windows VM 已生成 `BackupRestore-windows-arm64-v0.2.8`；这是编译/打包证据，不是 WinRE 运行验收。
 
 ## 尚未宣称完成的实机项
 
@@ -59,7 +61,7 @@ macOS 本地已完成：
 ## 2026-08-20 ARM64 编译验证边界
 
 - 构建脚本支持 `-CargoTargetDir`，将 Cargo 临时产物放在 VM 本地磁盘，避开共享目录的临时归档限制；脚本不会自动安装或下载工具链。
-- 本次恢复会话通过 `prlctl` 只读检查当前 Win11 ARM64 VM：`where cargo` 和 `rustup --version` 均未找到。因此 0.2.3 的 ARM64 包、`dumpbin` 哈希核对和 VM 内 `validate-task`/`recover --dry-run` 尚未在当前 VM 重建后复现，不能作为当前发布证据。
+- 早期恢复会话曾通过 `prlctl` 只读检查发现当前 Win11 ARM64 VM 缺少 `cargo`/`rustup`；本轮已安装 Rust/ARM64 MSVC/Windows SDK，并生成 `BackupRestore-windows-arm64-v0.2.8`。该包的 WinRE 自动入口、DISM、BCDBoot 和重启链路仍未实机验收。
 - Windows PowerShell 5.1 的原生命令改用 .NET `ProcessStartInfo` 等待并把 DISM 专用日志写入任务日志，避免 `Tee-Object` 管道或同步 `.Result` 在 ARM64 VM 上出现命令已完成但父进程不返回。
 - 历史探测曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲；另修复了 PowerShell 5.1 UTF-8 BOM 导致的 JSON 解析失败。历史探测没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。
 - 0.2.1 ARM64 探测曾出现 DISM 提交后立即读取 WIM 的短暂文件锁；0.2.3 修复为独立 DISM 日志、固定等待释放窗口并记录独立失败日志，避免 PowerShell 5.1 枚举 `wimserv.exe` 进程时卡住。

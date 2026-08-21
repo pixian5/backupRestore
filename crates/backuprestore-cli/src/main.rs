@@ -26,6 +26,8 @@ use std::process::{ChildStderr, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::thread;
+#[cfg(windows)]
+use std::time::Duration;
 
 fn usage() -> ! {
     eprintln!(
@@ -638,19 +640,67 @@ fn mount_env_volume(
             )));
         }
     }
+    let direct_status = Command::new("mountvol.exe")
+        .args([format!("{letter}:"), expected.clone()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    append_log(
+        log,
+        &format!("mountvol.exe direct assignment for {letter}: exited with {direct_status}"),
+    )?;
+    if direct_status.success() {
+        return verify_mounted_volume(letter, &expected);
+    }
     let body =
         format!("select disk {disk}\r\nselect partition {partition}\r\nassign letter={letter}\r\n");
     fs::write(&script, body)?;
     let script_arg = script.to_string_lossy().into_owned();
-    let result = run_logged("diskpart.exe", &["/s", script_arg.as_str()], log);
+    append_log(
+        log,
+        &format!("running diskpart.exe /s {script_arg} with file-backed output"),
+    )?;
+    let diskpart_log = log.with_extension("diskpart.log");
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&diskpart_log)?;
+    let stderr = stdout.try_clone()?;
+    let mut child = Command::new("diskpart.exe")
+        .args(["/s", script_arg.as_str()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()?;
+    thread::sleep(Duration::from_secs(5));
+    let _ = child.kill();
+    let _ = child.wait();
+    append_log(
+        log,
+        &format!(
+            "diskpart.exe given 5s to apply assignment, then terminated; output={}",
+            diskpart_log.display()
+        ),
+    )?;
     let _ = fs::remove_file(&script);
-    result?;
-    let output = Command::new("mountvol")
+    verify_mounted_volume(letter, &expected)
+}
+
+#[cfg(windows)]
+fn verify_mounted_volume(letter: char, expected: &str) -> Result<(), TaskError> {
+    let root = PathBuf::from(format!("{letter}:\\"));
+    if !root.is_dir() {
+        return Err(err(&format!(
+            "volume {letter}: is not accessible after assignment"
+        )));
+    }
+    let output = Command::new("mountvol.exe")
         .arg(format!("{letter}:"))
         .arg("/L")
         .output()?;
     if !output.status.success() {
-        return Err(err(&format!("mountvol failed for {letter}:")));
+        return Err(err(&format!("mountvol failed while verifying {letter}:")));
     }
     let output_text = String::from_utf8_lossy(&output.stdout);
     let actual = output_text
@@ -658,7 +708,7 @@ fn mount_env_volume(
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| err(&format!("volume {letter}: has no mountvol identity")))?;
-    if !actual.eq_ignore_ascii_case(&expected) {
+    if !actual.eq_ignore_ascii_case(expected) {
         return Err(err(&format!(
             "volume identity mismatch for {letter}: expected {expected}, got {actual}"
         )));
@@ -851,7 +901,9 @@ fn recover_windows(
                 fs::create_dir_all(parent)?;
             }
             match task.status {
-                Stage::Preflight => store.write_transition(task, Stage::Capturing)?,
+                Stage::Preflight => {
+                    store.write_transition(task, Stage::Capturing)?;
+                }
                 Stage::Capturing => {
                     append_log(
                         log,

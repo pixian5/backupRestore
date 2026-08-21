@@ -93,6 +93,18 @@ foreach ($arch in $architectures) {
 
     Copy-Item $binary (Join-Path $package 'BackupRestore.exe')
     Copy-Item $binary (Join-Path $package 'Recovery.exe')
+    $runtimeRoot = if ($arch -eq 'arm64') {
+        Join-Path $env:WINDIR 'System32'
+    } elseif ($env:PROCESSOR_ARCHITECTURE -match '(?i)ARM64') {
+        Join-Path $env:WINDIR 'SysWOW64'
+    } else {
+        Join-Path $env:WINDIR 'System32'
+    }
+    foreach ($runtime in @('VCRUNTIME140.dll', 'VCRUNTIME140_1.dll')) {
+        $runtimePath = Join-Path $runtimeRoot $runtime
+        if (-not (Test-Path $runtimePath)) { throw "MSVC runtime is missing: $runtimePath" }
+        Copy-Item $runtimePath (Join-Path $package $runtime)
+    }
     foreach ($file in @(
         'BackupRestore.cmd',
         'BackupRestore.Gui.ps1',

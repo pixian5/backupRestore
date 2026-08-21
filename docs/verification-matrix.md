@@ -10,7 +10,7 @@
 | 需求 | 代码证据 | 当前状态 | 实机验收证据 |
 |---|---|---|---|
 | Windows 10/11、UEFI、GPT | `windows/BackupRestore.ps1:Assert-SystemEnvironment` | 代码已覆盖 | `prepare.log` 中 OS、firmware、GPT 检查通过 |
-| x64/ARM64 架构隔离 | `windows/build-windows.ps1`、`build-manifest.json`、`Assert-PackageArchitecture` | 代码已覆盖 | x64/ARM64 各自产物在对应 Guest 启动并拒绝错架构 |
+| x64/ARM64 架构隔离 | `windows/build-windows.ps1`、`build-manifest.json`、`Assert-PackageArchitecture` | ARM64 已构建，运行待验证 | x64/ARM64 各自产物在对应 Guest 启动并拒绝错架构 |
 | 当前/候选 Windows 分区枚举 | `BackupRestore.Gui.ps1:Get-EnvironmentText` | 代码已覆盖 | GUI 实盘显示并人工核对 GUID |
 | 盘符不是身份 | `VolumeIdentity`、`verify_task_identity_env`、`mount_env_volume` | 代码已覆盖 | 改盘符或更换卷后任务必须拒绝 |
 | probe 任务/源卷相同 | `recover-env` 复用已验证的 `T:` 挂载 | 代码已覆盖 | 同一分区 probe 不再重复分配 `S:`，并留下成功状态和日志 |

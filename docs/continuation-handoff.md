@@ -28,14 +28,14 @@
 | “热点每次下载前重新授权，Wi-Fi 不需要反复问” | 工作流技能按每个独立下载执行 `check_network.py`；热点授权不跨下载继承，Wi-Fi/有线不重复询问。 |
 | “所有页面、功能、恢复流程都设计完整” | GUI 有环境、备份/还原、结果/日志三个页签；core、PowerShell、WinRE launcher、Recovery.exe 和 fallback cmd 的职责均已写入文档。 |
 | “让其它 AI 接手后直接继续” | `docs/README.md`、`project-status.md`、本文、`implementation-notes.md`、`windows-build.md` 和 `verification-matrix.md` 分别记录入口、进度、文件结构、决策、构建和证据。 |
-| “当前先别继续开发，先整理文档和进度” | 当前轮仅完善文档、版本同步和验证记录；不下载工具链、不重启 VM、不做磁盘操作。 |
+| “工具链完成后直接继续开发” | 已通过 Parallels 共享桌面传入当前工作树，ARM64 构建脚本可以在 VM 本地 target 目录直接产出包；本轮不执行破坏性恢复。 |
 
 ## 2. 当前仓库与版本
 
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.2.8`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -119,15 +119,14 @@ GUI 仍是 PowerShell/WPF 开发版，macOS 上只能做 AST 解析，不能声�
 - **状态重复写入**：断电恢复不能无条件重复写同一个状态；状态机的合法边界和“哪个阶段允许重做”必须同时维护。
 - **BCD 回滚时机**：不能在 `write_failure` 后才判断原状态，因为写失败会覆盖原阶段；先保存 `stage_before_failure`，并把 `BootRepaired` 前后的失败都纳入回滚判断。
 - **GUI 进程参数空格**：PowerShell `Start-Process -ArgumentList` 需要安全引用完整参数，路径包含空格时不能直接依赖数组隐式转换。
-- **不要虚构实机证据**：当前 Parallels VM 曾检测到 ARM64，但没有 `cargo`/`rustup`/完整 MSVC；未安装工具链前不能写“ARM64 已编译成功”。
+- **不要虚构实机证据**：本轮已在 Parallels ARM64 VM 生成 ARM64 包，但这不能替代 WinRE 自动入口、DISM、BCDBoot 或真实重启证据。
 
 ## 7. 工具链可用后的唯一推荐顺序
 
 在用户明确允许并且网络规则允许时：
 
-1. 在 Parallels Windows 11 ARM64 VM 内检查网络；若是热点，单独请求本次安装授权；若无 Wi-Fi，不下载。
-2. 安装/准备 Visual Studio C++ Build Tools、Windows SDK、Rust、`aarch64-pc-windows-msvc` target。工具链下载必须在 VM 内完成，不能把 macOS 的 Rust 当 Windows linker。
-3. 在仓库目录执行：
+1. 工具链已安装在 Parallels Windows 11 ARM64 VM；源码通过共享桌面传输到 `C:\BackupRestoreBuild\source`，Cargo target 使用 VM 本地目录。
+2. 在仓库目录执行：
 
    ```powershell
    .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target
@@ -135,10 +134,10 @@ GUI 仍是 PowerShell/WPF 开发版，macOS 上只能做 AST 解析，不能声�
 
    首次出现缺少 target 时脚本应停止，而不是自动下载。
 
-4. 在管理员 Guest 会话先运行 `probe -NoReboot`，确认任务身份、载荷 hash、`winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`；保存 `status.json`、`Recovery.log`、`prepare.log` 和 WinRE 原始 hash。
-5. 使用 VM 快照分别验证：备份、单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚、原始 WinRE 恢复和自动重启。
-6. 只有拿到重启后的真实证据，才能在文档中把对应项从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
-7. 完成修复后再次运行离线测试、AST、`git diff --check`，递增版本，中文提交并推送 `origin/main`。
+3. 在管理员 Guest 会话先运行 `probe -NoReboot`，确认任务身份、载荷 hash、`winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`；保存 `status.json`、`Recovery.log`、`prepare.log` 和 WinRE 原始 hash。
+4. 使用 VM 快照分别验证：备份、单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚、原始 WinRE 恢复和自动重启。
+5. 只有拿到重启后的真实证据，才能在文档中把对应项从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
+6. 完成修复后再次运行离线测试、AST、`git diff --check`，递增版本，中文提交并推送 `origin/main`。
 
 ## 8. 当前应执行的离线验证
 

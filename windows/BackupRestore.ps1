@@ -372,6 +372,8 @@ Copy-Item $recoveryCmd (Join-Path $payload 'Recovery.cmd') -Force
 Copy-Item $recoveryLauncher (Join-Path $payload 'RecoveryLauncher.cmd') -Force
 Copy-Item $recoveryShell (Join-Path $payload 'winpeshl.ini') -Force
 if ($RecoveryExe -and (Test-Path $RecoveryExe)) { Copy-Item $RecoveryExe (Join-Path $payload 'Recovery.exe') -Force }
+Get-ChildItem $scriptRoot -Filter '*.dll' -File -ErrorAction SilentlyContinue |
+    ForEach-Object { Copy-Item $_.FullName (Join-Path $payload $_.Name) -Force }
 Write-Log "Recovery payload copied: $taskId"
 
 $allow = if ($AllowDestructive) { 'YES' } else { 'NO' }
@@ -524,6 +526,8 @@ try {
     if (Test-Path (Join-Path $payload 'Recovery.exe')) {
         Copy-Item (Join-Path $payload 'Recovery.exe') (Join-Path $mountSystem32 'Recovery.exe') -Force
     }
+    Get-ChildItem $payload -Filter '*.dll' -File -ErrorAction SilentlyContinue |
+        ForEach-Object { Copy-Item $_.FullName (Join-Path $mountSystem32 $_.Name) -Force }
     Invoke-Native 'dism.exe' @('/Unmount-Image', "/MountDir:$mount", '/Commit') $taskLog
     $mounted = $false
     # DISM can leave its WIM service alive for a short period after returning.

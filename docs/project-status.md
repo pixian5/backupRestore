@@ -1,9 +1,9 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-21
-当前开发版本：`0.2.6`
+当前开发版本：`0.2.8`
 分支：`main`
-上一版本已推送基线提交：`1941bef`
+本地开发基线：`b32acac`
 
 本文件是当前状态的唯一摘要。它把用户对下载、功能完整性和交付方式的明确要求记录为工程约束；不逐字保存情绪化表达，只保留会影响后续行为的事实和结论。
 
@@ -31,7 +31,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | Wi-Fi 或有线网络不重复打断 | 同一次独立下载的网络检测结果为 Wi-Fi/有线且 `is_hotspot=false` 时，可以继续该下载，不需要重复确认。下一个独立大下载仍要重新检测网络。 | `pixian-dev-workflow`、交接文档 |
 | 工具链不可用时，先把程序完整设计和编码 | 离线阶段完成任务模型、正常 Windows 脚本、WinRE 载荷、GUI 三页、构建脚本、日志/状态、恢复边界和文档；工具链装好后不重新设计功能。 | 本仓库全部实现与第 3 节 |
 | 工具链装好后应能直接构建使用 | 构建脚本不自动下载，ARM64/x64 分离，明确 VM 本地 target 目录、包结构和 WinRE 启动入口；实际可用性仍以 Windows/WinRE 证据为准。 | `windows/build-windows.ps1`、`windows-build.md` |
-| 当前先停止功能开发，整理文档并说明进度 | 本次仅补全状态、决策、证据和继续条件文档；不启动工具链下载、不执行 VM 磁盘操作、不继续扩展功能。 | 本文件与文档索引 |
+| 工具链准备好后直接开发 | 通过共享桌面传输当前工作树源码，使用 VM 本地 Cargo target 直接构建 ARM64 包；不把源码传输误写成工具链下载。 | `windows/build-windows.ps1`、本文件第 3 节 |
 
 网络状态不是永久属性，本文不把某次检测结果当作后续下载授权。恢复下载工作前必须重新检测。
 
@@ -48,7 +48,8 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | 代码已覆盖，实机未验收 |
 | probe 同卷情形 | `probe` 的源卷若与任务卷相同，复用已验证的 `T:`，不再尝试重复挂到 `S:`。真实备份/还原仍要求任务卷与源/目标独立。 | Rust 离线检查已通过，WinRE 实机未验收 |
 | GUI | 环境、备份与还原、结果与日志三个页签；二次确认、镜像 hash/metadata 查看、状态刷新。 | PowerShell AST 已通过，WPF 实机未验收 |
-| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机。 | 脚本静态检查已通过 |
+| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.2.8` 包已在 VM 构建 |
+| Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
 ### 已执行且通过的本机验证
 
@@ -68,18 +69,17 @@ git diff --check
 
 以下项目均不能因代码、AST 或 macOS 测试通过而标记完成：
 
-1. Windows 11 ARM64 VM 内安装 Rust、MSVC Build Tools 和所需 Windows SDK，并实际生成 ARM64 包；
-2. 管理员 Windows 会话运行 `probe -NoReboot`，验证载荷注入、卷身份、manifest 与清理路径；
-3. 在 VM 快照中完成 `Windows -> 重启 -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe` 自动启动，并读回任务卷中的持久化 marker、`status.json` 和 `Recovery.log`；
-4. 在快照中验证 DISM Capture、`restore-existing`、`create-secondary`、BCDBoot、启动菜单、原 WinRE hash 恢复和正常 Windows 回归；
-5. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
-6. 在真实 WPF 窗口核验磁盘枚举、确认对话框、长路径、日志刷新和 UAC 行为。
+1. 管理员 Windows 会话运行 `probe -NoReboot`，验证载荷注入、卷身份、manifest 与清理路径；
+2. 在 VM 快照中完成 `Windows -> 重启 -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe` 自动启动，并读回任务卷中的持久化 marker、`status.json` 和 `Recovery.log`；
+3. 在快照中验证 DISM Capture、`restore-existing`、`create-secondary`、BCDBoot、启动菜单、原 WinRE hash 恢复和正常 Windows 回归；
+4. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
+5. 在真实 WPF 窗口核验磁盘枚举、确认对话框、长路径、日志刷新和 UAC 行为。
 
-2026-08-21 已只读复核：`Windows 11` ARM64 VM 正在运行，`where cargo`、`where rustup`、`where cl`、`where winget`、`where choco` 均未找到对应程序。因此当前明确阻塞是缺少 Rust、MSVC/Build Tools、包管理入口和可用的 Windows 端 Rust 编译环境。宿主 macOS 的 Rust target 是 `aarch64-apple-darwin`，不能替代 Windows ARM64 MSVC 链接器。
+2026-08-21 已复核：`Windows 11` ARM64 VM 正在运行，Rust 1.98.0、ARM64 MSVC、Visual Studio Build Tools 和 Windows SDK 均可用；源码通过共享桌面传入 `C:\BackupRestoreBuild\source`，ARM64 `v0.2.8` 包已生成到 VM 本地 artifacts，并以压缩包复制到共享桌面。该结果只证明编译产物生成，不证明 WinRE 自动启动、DISM、格式化、BCDBoot 或真实重启成功。
 
 ## 5. 恢复工作时的唯一顺序
 
-当前指令是文档整理，因此本次不下载、不构建 Windows 工具链、不执行重启或磁盘操作。用户恢复开发授权后按以下顺序执行：
+当前阶段已进入直接开发/构建，但不执行破坏性恢复操作。后续按以下顺序执行：
 
 1. 每个独立大下载前运行：
 
@@ -88,7 +88,7 @@ git diff --check
    ```
 
 2. 检测为热点时，报告具体要下载的一个项目并等待授权；检测为 Wi-Fi/有线时，执行该下载。下载下一个大项目之前重新检测。
-3. 在 Windows ARM64 VM 中安装 Rust、`aarch64-pc-windows-msvc`、Visual Studio C++ Build Tools 和匹配 SDK；保持 Cargo target 在 VM 本地，例如 `C:\BackupRestoreBuild\target`。
+3. 保持 Cargo target 在 VM 本地，例如 `C:\BackupRestoreBuild\target`；源码可通过共享桌面传输，避免再次下载仓库压缩包。
 4. 在 VM 中运行：
 
    ```powershell
