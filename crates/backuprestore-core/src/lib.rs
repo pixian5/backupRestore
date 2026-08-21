@@ -67,6 +67,7 @@ impl Stage {
                 | (RecoveryStarted, Failed)
                 | (Preflight, Capturing)
                 | (Preflight, TargetErased)
+                | (Preflight, Success)
                 | (Preflight, Failed)
                 | (Capturing, Success)
                 | (Capturing, Failed)
@@ -948,6 +949,7 @@ mod tests {
         assert!(Stage::Prepared.can_transition_to(Stage::Failed));
         assert!(Stage::Preflight.can_transition_to(Stage::Capturing));
         assert!(Stage::Preflight.can_transition_to(Stage::TargetErased));
+        assert!(Stage::Preflight.can_transition_to(Stage::Success));
         assert!(Stage::ImageApplied.can_transition_to(Stage::BootRepaired));
         assert!(!Stage::Prepared.can_transition_to(Stage::Success));
     }

@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-21
-当前开发版本：`0.2.9`
+当前开发版本：`0.3.0`
 分支：`main`
 本地开发基线：`b32acac`
 
@@ -46,10 +46,10 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 载荷完整性 | 原始/暂存 WinRE、任务专用 payload manifest、每个载荷的 SHA-256、`RecoveryTask.env` 二次 hash 校验。 | 代码已覆盖 |
 | 正常 Windows 准备 | 环境、UEFI/GPT、WinRE、Secure Boot、BitLocker 检查；注册 Recovery 分区定位；EFI 选择；WIM 注入；BCD 快照；`last-task.json`。 | PowerShell AST 已通过 |
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | 代码已覆盖，实机未验收 |
-| 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；清理失败写入 `failed` 并保留恢复日志。 | 代码已覆盖，实机未验收 |
+| 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | 代码已覆盖，实机未验收 |
 | probe 同卷情形 | `probe` 的源卷若与任务卷相同，复用已验证的 `T:`，不再尝试重复挂到 `S:`。真实备份/还原仍要求任务卷与源/目标独立。 | Rust 离线检查已通过，WinRE 实机未验收 |
 | GUI | 环境、备份与还原、结果与日志三个页签；二次确认、镜像 hash/metadata 查看、状态刷新。 | PowerShell AST 已通过，WPF 实机未验收 |
-| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.2.9` 包已在 VM 编译并复制到共享桌面 |
+| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.3.0` 包已在 VM 编译并复制到共享桌面 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
 ### 已执行且通过的本机验证
@@ -76,7 +76,7 @@ git diff --check
 4. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
 5. 在真实 WPF 窗口核验磁盘枚举、确认对话框、长路径、日志刷新和 UAC 行为。
 
-2026-08-21 已复核：`Windows 11` ARM64 VM 正在运行，Rust 1.98.0、ARM64 MSVC、Visual Studio Build Tools 和 Windows SDK 均可用；当前源码通过共享桌面传入 `C:\BackupRestoreBuild\source-v0.2.9`，并使用 VM 本地 `C:\BackupRestoreBuild\target-v0.2.9` 完成 ARM64 `v0.2.9` 编译。压缩包位于 macOS 共享桌面 `BackupRestore-windows-arm64-v0.2.9.zip`。该结果只证明编译产物生成，不证明 WinRE 自动启动、DISM、格式化、BCDBoot 或真实重启成功。
+2026-08-21 已复核：`Windows 11` ARM64 VM 正在运行，Rust 1.98.0、ARM64 MSVC、Visual Studio Build Tools 和 Windows SDK 均可用；`v0.3.0` 源码通过共享桌面传入 `C:\BackupRestoreBuild\source-v0.3.0`，并使用 VM 本地 `C:\BackupRestoreBuild\target-v0.3.0` 完成 ARM64 编译。VM 内 `Recovery.exe hash` 与 `build-manifest.json` 一致，`validate-task` 通过；压缩包位于 macOS 共享桌面 `BackupRestore-windows-arm64-v0.3.0.zip`。该结果只证明 ARM64 二进制和 schema 入口可运行，不证明 WinRE 自动启动、DISM、格式化、BCDBoot 或真实重启成功。
 
 ## 5. 恢复工作时的唯一顺序
 
