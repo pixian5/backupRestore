@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-21
-当前开发版本：`0.3.6`
+更新时间：2026-08-22
+当前开发版本：`0.4.4`
 分支：`main`
 本地开发基线：`b32acac`
 
@@ -48,8 +48,8 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 已实机完成自动入口和清理；破坏性恢复仍未验收 |
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用任务卷实际盘符。真实备份/还原仍要求任务卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
-| GUI | 环境、备份与还原、结果与日志三个页签；二次确认、镜像 hash/metadata 查看、状态刷新。 | PowerShell AST 已通过，WPF 实机未验收 |
-| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.3.6` 已实测构建、hash/schema 烟测和 WinRE 自动 probe |
+| GUI | Rust Win32 原生窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、身份状态、破坏性确认和管理员准备启动；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。 | ARM64 交叉编译已通过；原生窗口真实交互、UAC、日志刷新待 VM 解锁后验收 |
+| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | ARM64 `v0.4.2` 已完成构建，manifest 与二进制 SHA-256 一致；WinRE 自动 probe/破坏性流程仍按证据矩阵区分 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
 ### 已执行且通过的本机验证
@@ -77,7 +77,13 @@ git diff --check
 
 2026-08-21 已实测：`Windows 11` ARM64 VM 使用 `v0.3.6` 完成真实自动 probe，任务为 `c12026c0-6a9e-4093-8a8b-2971968a31f7`。流程完成 `Windows -> reagentc /boottore -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe -> probe preflight -> 原始 WinRE hash 恢复 -> wpeutil reboot -> Windows`；最终 `status.json` 为 `success`，注册 WinRE 与任务原始副本 SHA-256 均为 `0cbc86b44994065c7295f0322df670cf0b6c9e4a7be5099cfd962ddec956fda1`。这证明自动入口、同卷盘符复用和清理状态机；不证明 DISM Capture/Apply、格式化、BCDBoot、双系统或故障回滚。
 
-同日交付产物：共享桌面 `/Users/x/Desktop/BackupRestore-windows-arm64-v0.3.6.zip`，SHA-256 为 `a934134e09173bc9a131036ea76722761941fd243f626142367a022a863e6a21`。压缩包只包含 ARM64 运行包、PowerShell 前端/WinRE 载荷、两个 ARM64 MSVC runtime 和 `build-manifest.json`；不包含任务、WIM、日志或 VM 数据。
+2026-08-22 备份 fixture 实测：管理员准备任务 `53332658-7dd8-4684-9b19-372d9c680a95` 成功，但旧 `v0.3.6` Recovery 在 DISM Capture 输出为本地代码页时因 UTF-8 日志解析失败，任务为 `failed`，`Windows.wim.partial` 保留用于诊断。该问题已在 `v0.3.7` 修复，新的备份任务必须重新准备，不能复用失败任务。
+
+同日交付产物：历史 ARM64 压缩包已统一移入项目 `.test-artifacts/desktop-archive/2026-08-22`，不再散落桌面。后续桌面只保留用户自己的文件；项目测试截图统一放在 `.test-artifacts/root-captures/`，不进入仓库根目录。
+
+2026-08-22 隔离还原已推进到引导修复：任务 `985ab31b-e9f1-4c64-a49d-7b044e5f8cde` 在唯一允许的 `S:` 测试卷上完成 DiskPart 格式化和 DISM Apply，且 `S:\Windows\System32\config\SYSTEM` 已恢复。它只指定独立 `E:` EFI 卷（`\\?\Volume{6ba9bc91-04dd-4105-9c46-7377ce26b862}\`），不接触 `C:` 或真实 EFI。旧包 BCDBoot 返回 193；普通令牌 `/v` 诊断返回 5，并明确是隔离 EFI `0x5 Access denied`。`P8B6\\x` 是本地 Administrators 成员，后续必须由其高完整性 RunAs 进程重试 `v0.4.1`，成功前“单系统还原”仍保持实机待验证。
+
+2026-08-22 GUI 收口：Rust `native_gui.rs` 接管 `BackupRestore.exe` 默认窗口，使用 Windows SDK Win32 API，不下载 GUI crate；窗口包含操作模式、任务/源/镜像/目标卷、镜像路径、WIM 索引、第二系统名称、环境刷新、镜像读取和管理员创建任务。旧 `BackupRestore.Gui.ps1` 仅作为兼容前端保留。`v0.4.4` ARM64 包已启动烟测通过，窗口标题为 `BackupRestore - Rust GUI`；按钮交互、UAC、日志刷新仍须在 Windows VM 解锁后验收，不能用进程存活代替完整 GUI 验收。
 
 ## 5. 恢复工作时的唯一顺序
 

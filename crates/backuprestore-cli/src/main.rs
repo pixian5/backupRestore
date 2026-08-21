@@ -16,9 +16,7 @@ use std::io::Read;
 use std::io::Write;
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
 use std::process::{ChildStderr, ChildStdout, Stdio};
@@ -29,9 +27,12 @@ use std::thread;
 #[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
+mod native_gui;
+
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  recover <task-root> <task-id> [--dry-run]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
     );
     std::process::exit(2)
 }
@@ -68,9 +69,10 @@ fn main() {
         Some("recover") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));
-            let dry_run = args.any(|x| x == "--dry-run");
+            let options = parse_recover_options(args.collect());
             root.and_then(|r| id.map(|i| (r, i)))
-                .and_then(|(r, i)| recover(r, i, dry_run))
+                .and_then(|(r, i)| options.map(|options| (r, i, options)))
+                .and_then(|(r, i, options)| recover(r, i, options))
         }
         Some("recover-env") => args
             .next()
@@ -86,6 +88,33 @@ fn main() {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
+}
+
+#[derive(Default)]
+struct RecoverOptions {
+    dry_run: bool,
+    efi_root: Option<PathBuf>,
+}
+
+fn parse_recover_options(arguments: Vec<String>) -> Result<RecoverOptions, TaskError> {
+    let mut options = RecoverOptions::default();
+    let mut arguments = arguments.into_iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--dry-run" => options.dry_run = true,
+            "--efi-root" => {
+                let root = arguments
+                    .next()
+                    .ok_or_else(|| err("--efi-root requires a mounted EFI root path"))?;
+                if root.trim().is_empty() {
+                    return Err(err("--efi-root cannot be empty"));
+                }
+                options.efi_root = Some(PathBuf::from(root));
+            }
+            _ => return Err(err(&format!("unknown recover option: {argument}"))),
+        }
+    }
+    Ok(options)
 }
 
 #[cfg(not(windows))]
@@ -111,30 +140,7 @@ fn launch_gui() -> Result<(), TaskError> {
 
 #[cfg(windows)]
 fn launch_gui() -> Result<(), TaskError> {
-    let executable = env::current_exe()?;
-    let script = executable
-        .parent()
-        .ok_or_else(|| err("BackupRestore.exe has no parent directory"))?
-        .join("BackupRestore.Gui.ps1");
-    if !script.exists() {
-        return Err(err(
-            "BackupRestore.Gui.ps1 is missing beside BackupRestore.exe",
-        ));
-    }
-    let status = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script.to_string_lossy().as_ref(),
-        ])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(err(&format!("GUI exited with {status}")))
-    }
+    native_gui::run()
 }
 
 fn err(message: &str) -> TaskError {
@@ -179,7 +185,7 @@ fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
     Ok(())
 }
 
-fn recover(root: String, id: String, dry_run: bool) -> Result<(), TaskError> {
+fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), TaskError> {
     let store = TaskStore::new(root);
     let mut task = store.load(&id)?;
     let log = store.log_path(&id)?;
@@ -199,7 +205,7 @@ fn recover(root: String, id: String, dry_run: bool) -> Result<(), TaskError> {
             "task is failed; create a new task after reviewing recovery.log",
         ));
     }
-    if dry_run {
+    if options.dry_run {
         println!(
             "dry-run: task={} operation={:?} stage={:?}",
             task.task_id, task.operation, task.status
@@ -221,7 +227,26 @@ fn recover(root: String, id: String, dry_run: bool) -> Result<(), TaskError> {
             "real Recovery execution is only available on Windows/WinRE; use --dry-run on this host",
         ));
     }
-    let result = recover_windows(&store, &mut task, &log, None, None, true);
+    if let Some(efi_root) = options.efi_root.as_deref() {
+        if !efi_root.is_dir() {
+            return Err(err("--efi-root must be an existing mounted EFI directory"));
+        }
+        append_log(
+            &log,
+            &format!(
+                "Using explicit EFI root for direct recovery: {}",
+                efi_root.display()
+            ),
+        )?;
+    }
+    let result = recover_windows(
+        &store,
+        &mut task,
+        &log,
+        options.efi_root.as_deref(),
+        None,
+        true,
+    );
     if let Err(error) = &result {
         let _ = store.write_failure(&mut task, 1, error.to_string());
     }
@@ -1092,11 +1117,12 @@ fn recover_windows(
                 if task.status == Stage::Preflight {
                     store.write_transition(task, Stage::TargetErased)?;
                 }
-                run_logged(
-                    "format.com",
-                    &[&target_root.to_string_lossy(), "/FS:NTFS", "/Q", "/Y"],
-                    log,
-                )?;
+                format_target_partition(store, task, &target.volume, log)?;
+                if !target_root.is_dir() {
+                    return Err(err(
+                        "restore target is unavailable after DiskPart format operation",
+                    ));
+                }
             }
             if matches!(task.status, Stage::TargetErased | Stage::ImageApplied) {
                 run_logged(
@@ -1121,12 +1147,14 @@ fn recover_windows(
                 if task.status == Stage::ImageApplied {
                     store.write_transition(task, Stage::BootRepaired)?;
                 }
+                let windows_root = target_root.join("Windows");
                 let mut bcd_args = vec![
-                    format!("{}\\Windows", target_root.display()),
+                    windows_root.to_string_lossy().into_owned(),
                     "/s".to_string(),
                     efi.to_string_lossy().into_owned(),
                     "/f".to_string(),
                     "UEFI".to_string(),
+                    "/v".to_string(),
                 ];
                 if target.role == TargetRole::NewWindows {
                     bcd_args.push("/addlast".to_string());
@@ -1167,6 +1195,49 @@ fn resolve_volume_root(volume: &backuprestore_core::VolumeIdentity) -> Result<Pa
         .ok_or_else(|| {
             err("Recovery volume has no resolved drive letter; front end must record or assign one")
         })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn diskpart_format_script(
+    disk_number: Option<u32>,
+    partition_number: Option<u32>,
+) -> Result<String, TaskError> {
+    let disk_number = disk_number
+        .ok_or_else(|| err("restore target has no verified disk number for DiskPart formatting"))?;
+    let partition_number = partition_number.ok_or_else(|| {
+        err("restore target has no verified partition number for DiskPart formatting")
+    })?;
+    if partition_number == 0 {
+        return Err(err(
+            "restore target has an invalid partition number for DiskPart",
+        ));
+    }
+    Ok(format!(
+        "select disk {disk_number}\r\nselect partition {partition_number}\r\nformat fs=ntfs quick\r\n"
+    ))
+}
+
+#[cfg(windows)]
+fn format_target_partition(
+    store: &TaskStore,
+    task: &Task,
+    target: &backuprestore_core::VolumeIdentity,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let task_dir = store.task_dir(&task.task_id)?;
+    let script = task_dir.join("diskpart-format.txt");
+    let body = diskpart_format_script(target.disk_number, target.partition_number)?;
+    fs::write(&script, body)?;
+    let script_arg = script.to_string_lossy().into_owned();
+    append_log(
+        log,
+        &format!(
+            "Formatting verified target with diskpart.exe: disk={} partition={} script={script_arg}",
+            target.disk_number.unwrap_or_default(),
+            target.partition_number.unwrap_or_default(),
+        ),
+    )?;
+    run_logged("diskpart.exe", &["/s", script_arg.as_str()], log)
 }
 #[cfg(windows)]
 fn resolve_volume_path(
@@ -1328,12 +1399,17 @@ fn stream_to_log<R: Read>(
     sink: Arc<Mutex<std::fs::File>>,
 ) -> Result<(), TaskError> {
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
+    let mut bytes = Vec::new();
     loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        bytes.clear();
+        if reader.read_until(b'\n', &mut bytes)? == 0 {
             break;
         }
+        // DISM/bcdboot use the Windows console code page on localized hosts;
+        // stdout is not guaranteed to be UTF-8. Preserve every byte in the
+        // log with replacement decoding instead of failing the recovery task
+        // after the native operation has already started.
+        let line = String::from_utf8_lossy(&bytes);
         {
             let mut file = sink
                 .lock()
@@ -1352,5 +1428,36 @@ fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
         Ok(())
     } else {
         Err(err(&format!("{program} failed with {status}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{diskpart_format_script, parse_recover_options};
+
+    #[test]
+    fn recover_options_accept_explicit_efi_root() {
+        let options =
+            parse_recover_options(vec!["--dry-run".into(), "--efi-root".into(), "E:\\".into()])
+                .expect("options should parse");
+        assert!(options.dry_run);
+        assert_eq!(options.efi_root.unwrap().to_string_lossy(), "E:\\");
+    }
+
+    #[test]
+    fn recover_options_reject_unknown_or_incomplete_flags() {
+        assert!(parse_recover_options(vec!["--unknown".into()]).is_err());
+        assert!(parse_recover_options(vec!["--efi-root".into()]).is_err());
+    }
+
+    #[test]
+    fn diskpart_format_script_uses_verified_target_numbers() {
+        assert_eq!(
+            diskpart_format_script(Some(3), Some(2)).unwrap(),
+            "select disk 3\r\nselect partition 2\r\nformat fs=ntfs quick\r\n"
+        );
+        assert!(diskpart_format_script(None, Some(2)).is_err());
+        assert!(diskpart_format_script(Some(3), None).is_err());
+        assert!(diskpart_format_script(Some(3), Some(0)).is_err());
     }
 }

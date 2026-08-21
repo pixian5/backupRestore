@@ -9,6 +9,7 @@ artifacts/
 dist/
 packages/
 test-artifacts/
+.test-artifacts/
 winre-poc-*.png
 probe-*.png
 after-*.png

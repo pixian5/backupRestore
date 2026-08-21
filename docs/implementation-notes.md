@@ -48,6 +48,11 @@ macOS 本地已完成：
 - 2026-08-21 Windows ARM64 编译补充：macOS 上的 `cargo test`/Clippy 不会编译 `#[cfg(windows)]` 分支；首次 VM 构建发现 `mountvol` 参数类型和盘符局部变量初始化问题，已在 `v0.3.5` 修复。每次修改 WinRE Rust 路径后，必须在目标 Windows 架构重新构建，不能只依赖 macOS 离线检查。
 - 2026-08-21 新增 `poc/restore-task-winre.ps1`：只允许管理员按 UUID 任务恢复其保存的原始 WinRE；脚本复核任务 ID、Recovery 分区 GUID/类型、env/manifest 原始 hash，拒绝错误的 `R:` 盘符后才复制并复核目标 hash。它用于测试失败后的受控清理，不执行 BCD、格式化或还原。
 - 2026-08-21 Win11 ARM64 自动 probe 实测通过：`v0.3.6` 的任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 从正常 Windows 进入任务 WinRE，`RecoveryLauncher.cmd` 记录启动 `Recovery.exe`；Recovery 日志记录 probe 完成、原始注册 WinRE 恢复并校验、最终写入 `success` 和 `wpeutil reboot`。返回 Windows 后注册镜像 SHA-256 与任务原始副本一致。该证据只覆盖 probe，不覆盖任何磁盘格式化、DISM Capture/Apply、BCDBoot 或双系统写入。
+- 2026-08-22 备份实测发现：中文 Windows 的 DISM 输出可能使用系统代码页而不是 UTF-8；Recovery 原先用 UTF-8 `read_line` 读取原生输出，导致 Capture 已启动后日志线程因 `stream did not contain valid UTF-8` 使任务失败。`v0.3.7` 改为按字节读取、UTF-8 lossless replacement 写日志，不能让日志编码问题中断已经开始的 DISM/BCDBoot。
+- 2026-08-22 隔离 EFI 诊断：`prlctl exec --current-user` 对应 `P8B6\\x` 本地管理员账户，但普通进程是 UAC medium token。它调用 `bcdboot S:\Windows /s E: /f UEFI /v` 时，源端 ARM64 `bcdboot.exe`、`bootmgfw.efi` 与 `winload.efi` 一致，随后因对隔离 `HarddiskVolume9` 的 `0x5 Access denied` 失败。`v0.4.1` 改用 `target_root.join("Windows")` 构造源路径，并永久传入 `/v`，使高完整性实测能够保留 BFSVC 细节；仍须用 `x` 的 RunAs 令牌验收，不能使用来宾账户替代。
+- 2026-08-22 GUI 收口：测试产物不再放在仓库根目录或桌面；历史项目压缩包/构建文件集中到 `.test-artifacts/desktop-archive/2026-08-22`，历史截图集中到 `.test-artifacts/root-captures/2026-08-22`，两者均被 `.gitignore` 忽略。WPF GUI 默认从无破坏 `probe` 开始，自动提出卷建议并新增 WIM 索引字段；提交时将索引传入 `BackupRestore.ps1 -WimIndex`。
+- 2026-08-22 Windows PowerShell 5.1 GUI 烟测首次发现 here-string 解析失败，已改为字符串数组拼接并纳入后续 ARM64 包重建门槛；macOS PowerShell 7 AST 不能替代目标 Windows PowerShell 5.1 解析。
+- 2026-08-22 GUI 技术路线纠正：用户要求 Rust 开发，`BackupRestore.exe` 已改为直接进入 `native_gui.rs` 的 Win32 原生窗口；它用 `ShellExecuteW(runas)` 调起已有管理员准备脚本，Recovery/CLI 仍共用同一 Rust 二进制。PowerShell/WPF 文件不再是默认 GUI 入口，保留仅为兼容和后端脚本调用。
 
 ## 尚未宣称完成的实机项
 
@@ -64,7 +69,7 @@ macOS 本地已完成：
 
 1. 在 Win11 ARM64 虚拟机安装 Rust 与 `aarch64-pc-windows-msvc` target（下载前遵守个人热点确认）。
 2. 运行 `windows\\build-windows.ps1 -Architecture arm64`，检查 `build-manifest.json` 中的二进制 SHA-256。
-3. 已完成：在管理员 Guest 会话执行 `probe -NoReboot` 和独立快照上的自动 probe，确认任务身份复核、WinRE 载荷哈希、`winpeshl.ini -> Recovery.exe`、清理与返回 Windows。
+3. 已完成：在管理员 `x` 会话执行 `probe -NoReboot` 和独立快照上的自动 probe，确认任务身份复核、WinRE 载荷哈希、`winpeshl.ini -> Recovery.exe`、清理与返回 Windows。
 4. 后续使用独立快照验证 DISM Capture、单系统 Apply/BCDBoot、双系统 `/addlast`；每次验证后恢复快照并确认原始 WinRE 哈希不变。
 
 ## 2026-08-20 ARM64 编译验证边界

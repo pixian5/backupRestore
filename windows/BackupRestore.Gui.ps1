@@ -60,15 +60,15 @@ $homeTitle.FontSize = 18
 $homeTitle.Margin = '4,4,4,8'
 $homePanel.Children.Add($homeTitle) | Out-Null
 $homeInfo = New-Object System.Windows.Controls.TextBlock
-$homeInfo.Text = @'
-本工具只负责创建并验证任务，真正的 DISM、格式化和 BCDBoot 操作在 WinRE 中执行。
-
-推荐顺序：先运行“探测”确认 UEFI/GPT/WinRE/BitLocker 与磁盘身份，再创建备份；还原前必须核对目标盘的 GUID、偏移、容量和文件系统。
-
-状态含义：已准备表示载荷已写入 WinRE 但尚未证明恢复成功；运行中/失败/成功以任务目录的 status.json、Recovery.log 和 prepare.log 为准。
-
-当前主机无法替代真实 Windows/WinRE 验收；不要把本页的静态信息当成重启后成功证据。
-'@
+$homeInfo.Text = @(
+    '本工具只负责创建并验证任务，真正的 DISM、格式化和 BCDBoot 操作在 WinRE 中执行。'
+    ''
+    '推荐顺序：先运行“探测”确认 UEFI/GPT/WinRE/BitLocker 与磁盘身份，再创建备份；还原前必须核对目标盘的 GUID、偏移、容量和文件系统。'
+    ''
+    '状态含义：已准备表示载荷已写入 WinRE 但尚未证明恢复成功；运行中/失败/成功以任务目录的 status.json、Recovery.log 和 prepare.log 为准。'
+    ''
+    '当前主机无法替代真实 Windows/WinRE 验收；不要把本页的静态信息当成重启后成功证据。'
+) -join "`n"
 $homeInfo.TextWrapping = 'Wrap'
 $homePanel.Children.Add($homeInfo) | Out-Null
 
@@ -132,8 +132,8 @@ $label.Text = '操作模式'
 $panel.Children.Add($label) | Out-Null
 $mode = New-Object System.Windows.Controls.ComboBox
 foreach ($item in @('probe', 'backup', 'restore-existing', 'create-secondary')) { $mode.Items.Add($item) | Out-Null }
-# 探测是诊断入口，但不应成为普通用户误点“开始”时的默认任务。
-$mode.SelectedIndex = 1
+# 探测是无破坏诊断入口，作为默认模式，避免窗口刚打开就准备备份或还原任务。
+$mode.SelectedIndex = 0
 $mode.Margin = '4'
 $panel.Children.Add($mode) | Out-Null
 
@@ -165,11 +165,20 @@ function Get-DriveIdentityText([string]$driveText) {
     }
 }
 
-$taskDrive = Add-DriveRow '任务卷盘符' 'D'
-$sourceDrive = Add-DriveRow 'Windows 源盘符' 'C'
-$imageDrive = Add-DriveRow '镜像卷盘符' 'D'
-$targetDrive = Add-DriveRow '还原目标盘符' 'C'
+$systemDrive = if ($env:SystemDrive -match '^[A-Za-z]:$') { $env:SystemDrive.TrimEnd(':') } else { 'C' }
+$candidateLetters = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object {
+    $_.DriveLetter -and $_.FileSystem -eq 'NTFS'
+} | ForEach-Object { "$($_.DriveLetter)".ToUpperInvariant() } | Sort-Object -Unique)
+$taskDefault = $candidateLetters | Where-Object { $_ -ne $systemDrive.ToUpperInvariant() } | Select-Object -First 1
+$imageDefault = $candidateLetters | Where-Object {
+    $_ -ne $systemDrive.ToUpperInvariant() -and $_ -ne "$taskDefault".ToUpperInvariant()
+} | Select-Object -First 1
+$taskDrive = Add-DriveRow '任务卷盘符' ($(if ($taskDefault) { [string]$taskDefault } else { $systemDrive }))
+$sourceDrive = Add-DriveRow 'Windows 源盘符' $systemDrive
+$imageDrive = Add-DriveRow '镜像卷盘符' ([string]$imageDefault)
+$targetDrive = Add-DriveRow '还原目标盘符' $systemDrive
 $relativePath = Add-DriveRow '镜像相对路径' 'BackupRestore\Windows.wim'
+$wimIndex = Add-DriveRow 'WIM 索引' '1'
 $bootMenuName = Add-DriveRow '第二系统启动名称' 'Windows Backup'
 $imageInfo = New-Object System.Windows.Controls.TextBlock
 $imageInfo.Text = '镜像信息：点击“读取镜像信息”检查 WIM 文件和 metadata.json。'
@@ -270,6 +279,8 @@ function Update-ModeFields {
     $isSecondary = $selected -eq 'create-secondary'
     $bootMenuName.IsEnabled = $isSecondary
     $targetDrive.IsEnabled = $isSecondary -or $selected -eq 'restore-existing'
+    $relativePath.IsEnabled = $selected -ne 'probe'
+    $wimIndex.IsEnabled = $selected -ne 'probe'
     if ($selected -eq 'restore-existing') {
         $targetDrive.Text = $sourceDrive.Text
         $targetDrive.IsEnabled = $false
@@ -304,6 +315,12 @@ $button.Add_Click({
     $identity.Text = ($identityLines -join "`n")
     $tabs.SelectedIndex = 2
     $status.Text = '正在执行管理员准备脚本，请等待返回…'
+    $parsedWimIndex = 0
+    if (-not [int]::TryParse($wimIndex.Text.Trim(), [ref]$parsedWimIndex) -or $parsedWimIndex -lt 1) {
+        $status.Text = 'WIM 索引必须是大于等于 1 的整数。'
+        [System.Windows.MessageBox]::Show($status.Text, '参数校验失败', 'OK', 'Error') | Out-Null
+        return
+    }
     if ($identityLines | Where-Object { $_ -match '格式无效|无法读取' }) {
         $status.Text = '身份校验失败：请修正盘符后重试。'
         [System.Windows.MessageBox]::Show($status.Text, '身份校验失败', 'OK', 'Error') | Out-Null
@@ -321,7 +338,7 @@ $button.Add_Click({
         '-Operation', $selected, '-TaskDrive', $taskDrive.Text.Trim(':').Trim(),
         '-SourceDrive', $sourceDrive.Text.Trim(':').Trim(), '-ImageDrive', $imageDrive.Text.Trim(':').Trim(),
         '-TargetDrive', $targetDrive.Text.Trim(':').Trim(), '-ImageRelativePath', $relativePath.Text,
-        '-BootMenuName', $bootMenuName.Text)
+        '-WimIndex', [string]$parsedWimIndex, '-BootMenuName', $bootMenuName.Text)
     # 只有两种还原模式允许破坏性参数；probe/backup 永远不带它。
     if ($selected -in @('restore-existing', 'create-secondary')) { $arguments += '-AllowDestructive' }
     try {
