@@ -27,6 +27,7 @@
 - 无 Rust 可执行文件的 `Recovery.cmd` 兼容入口增加任务 ID、任务路径、镜像相对路径和保留分区类型检查；RecoveryTask.env 同步记录镜像/目标分区类型、文件系统和卷序列号。
 - `docs/verification-matrix.md` 按每一项需求列出代码证据、离线证据与实机验收证据，后续交接不得用 AST/单元测试替代自动重启、DISM、格式化或 BCD 证据。
 - `probe` 允许任务目录与源分区相同：WinRE 先验证并挂载任务卷为 `T:`，若源与任务是同一分区则复用 `T:`，不再二次分配 `S:`；真实 backup/restore 仍拒绝任务卷与源或目标重合。
+- 2026-08-21 修复：任务卷重叠校验原先只拦截了 source/target，未覆盖 backup 的 destination 和 restore 的 image volume。已补齐同分区拒绝逻辑，并在 core 端新增回归测试，确保任务卷不能与镜像卷或目标卷重叠。
 
 ## 当前验证结果
 
