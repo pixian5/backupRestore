@@ -56,6 +56,9 @@ macOS 本地已完成：
 - 2026-08-22 `v0.4.6` ARM64 构建：Windows VM 使用已有 `aarch64-pc-windows-msvc` 工具链和本地 Cargo target 生成包；`BackupRestore.exe` 的 SHA-256 为 `3180d5b30f34e0c4512c44ad0c8470a0bb7cf1874f6793f97015b884f6061272`，与 `build-manifest.json` 一致，后台进程标题为 `BackupRestore - Rust GUI`。这只证明目标编译和进程烟测，不证明真实按钮、UAC、WinRE 或恢复流程。
 - 2026-08-22 Rust GUI 参数收口：原生窗口从当前系统和已挂载 NTFS 卷生成任务/镜像默认盘符；任务、源、镜像、目标盘符要求单个英文字母，镜像相对路径复用 core 的路径穿越校验；读取镜像使用 PowerShell 单引号转义，非 `probe` 模式拒绝镜像卷与源卷相同，并新增 `last-task.json` 状态刷新按钮。
 - 2026-08-22 GUI 刷新反馈：环境和最近任务状态按钮在执行 PowerShell 查询前立即显示进行中状态，避免用户误以为按钮没有响应；查询完成后再替换为结果或错误文本。
+- 2026-08-22 隔离恢复收尾：使用 `v0.4.7` 在 Win11 ARM64 VM 的非启动测试卷 `S:` 和独立 EFI `E:` 完成真实 Capture/Apply/格式化/BCDBoot。备份任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 成功，WIM SHA-256 为 `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30`；还原任务 `821eb6af-f13c-46b2-8c1c-af1aa8345e42` 最终为 `success`。高完整性日志包含 `bcdboot.exe S:\Windows /s E:\ /f UEFI /v`、OS loader identifier 和成功返回；管理员 `bcdedit /store E:\EFI\Microsoft\Boot\BCD /enum all /v` 返回 0。该测试没有让 VM 从 E: 实际启动，因此不外推为真实恢复盘重启成功。
+- 2026-08-22 `v0.4.8` ARM64 构建：源码通过共享桌面压缩传输到 `C:\BackupRestoreBuild\source-v0.4.8`，使用既有 `aarch64-pc-windows-msvc` 工具链和 VM 本地 target 离线构建成功。`build-manifest.json`、`BackupRestore.exe`、`Recovery.exe` 的 SHA-256 均为 `526c612d8222920bf76f91e4fb4b04ff413cd555a7f9969f802cb6c0ca798050`；`Recovery.exe hash .\Recovery.exe` 返回 0，GUI 进程标题为 `BackupRestore - Rust GUI`。这只证明版本、架构、载荷哈希和启动烟测，不证明真实按钮、UAC、WinRE、DISM、BCDBoot 或重启。
+- 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 
 ## 尚未宣称完成的实机项
 

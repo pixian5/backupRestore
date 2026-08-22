@@ -273,7 +273,7 @@ unsafe fn refresh_environment(state: &State) {
         "正在刷新 Windows、WinRE 和 NTFS 卷信息…",
     );
     let text = powershell_output(
-        r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:', $vol) -join [Environment]::NewLine"#,
+        r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:') + $vol -join [Environment]::NewLine"#,
     );
     set_text(state.controls.status, &text);
 }
@@ -293,7 +293,7 @@ fn suggested_drive_defaults() -> (String, String, String) {
         .trim_end_matches(':')
         .to_ascii_uppercase();
     let output = powershell_output(
-        r#"$system=$env:SystemDrive.TrimEnd(':').ToUpperInvariant(); $candidates=@(Get-Volume -ErrorAction SilentlyContinue | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter)".ToUpperInvariant() } | sort -Unique); $task=$candidates|? { $_ -ne $system }|select -First 1; $image=$candidates|? { $_ -ne $system -and $_ -ne $task }|select -First 1; "$system|$task|$image""#,
+        r#"$system=$env:SystemDrive.TrimEnd(':').ToUpperInvariant(); $candidates=@(Get-Volume -ErrorAction SilentlyContinue | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { $p=Get-Partition -DriveLetter $_.DriveLetter -ErrorAction SilentlyContinue; if($p -and $p.Type -notin @('Recovery','System','Reserved')) { "$($_.DriveLetter)".ToUpperInvariant() } } | sort -Unique); $task=$candidates|? { $_ -ne $system }|select -First 1; $image=$candidates|? { $_ -ne $system -and $_ -ne $task }|select -First 1; "$system|$task|$image""#,
     );
     let parts = output.split('|').map(str::trim).collect::<Vec<_>>();
     if parts.len() == 3 && parts[0].len() == 1 && parts[1].len() <= 1 && parts[2].len() <= 1 {

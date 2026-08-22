@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前轮目标版本为 `0.4.6`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.4.8`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -121,14 +121,14 @@ docs/README.md                              文档阅读入口
 - **状态重复写入**：断电恢复不能无条件重复写同一个状态；状态机的合法边界和“哪个阶段允许重做”必须同时维护。
 - **BCD 回滚时机**：不能在 `write_failure` 后才判断原状态，因为写失败会覆盖原阶段；先保存 `stage_before_failure`，并把 `BootRepaired` 前后的失败都纳入回滚判断。
 - **GUI 进程参数空格**：PowerShell `Start-Process -ArgumentList` 需要安全引用完整参数，路径包含空格时不能直接依赖数组隐式转换。
-- **不要虚构实机证据**：本轮已在 Parallels ARM64 VM 生成 ARM64 包，但这不能替代 WinRE 自动入口、DISM、BCDBoot 或真实重启证据。
+- **不要虚构实机证据**：本轮已在 Parallels ARM64 VM 生成并启动 `v0.4.8` ARM64 包，但这不能替代 WinRE 自动入口、DISM、BCDBoot 或真实重启证据。
 - **管理员令牌边界**：`prlctl exec --current-user` 实际使用 `P8B6\\x` 本地管理员账户，但命令进程仍可能是 UAC medium token。隔离 EFI 的 `BCDBoot` 必须由同一 `x` 账户经 `Start-Process -Verb RunAs` 启动；不要改用来宾账户，也不要把普通令牌的 `0x5 Access denied` 误判为镜像或架构问题。
 
 ## 6.1 2026-08-22 隔离还原实测进度
 
-- 当前任务 `985ab31b-e9f1-4c64-a49d-7b044e5f8cde` 只针对磁盘 3、分区 2 的 `S:`，以及 GUID 为 `\\?\Volume{6ba9bc91-04dd-4105-9c46-7377ce26b862}\` 的独立 `E:` FAT32 EFI 卷；不得指定 `C:` 或真实 EFI。
-- `v0.4.0` 已实测完成 DiskPart 快速格式化和 DISM Apply，`S:\Windows\System32\config\SYSTEM`、ARM64 `bootmgfw.efi`、`winload.efi`、`BCD-Template` 都存在。旧 BCDBoot 调用返回 193，任务如实保持 `failed`。
-- 普通 UAC 令牌以 `/v` 重跑时返回 5，并记录 `BFSVC` 对隔离 `HarddiskVolume9` 的 `0x5 Access denied`；它只证明普通令牌不足，不能替代高完整性重试。后续用管理员 `x` 的高完整性进程重跑，必须保留 verbose 日志、`bootmgfw.efi`、BCD store 和 `bcdedit /store ... /enum all` 证据。
+- 当前隔离边界仍是磁盘 3、分区 2 的 `S:`，以及 GUID 为 `\\?\Volume{6ba9bc91-04dd-4105-9c46-7377ce26b862}\` 的独立 `E:` FAT32 EFI 卷；不得指定 `C:` 或真实 EFI。
+- `v0.4.7` 已完成真实隔离 Capture/Apply/快速格式化/BCDBoot：备份任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 成功，还原任务 `821eb6af-f13c-46b2-8c1c-af1aa8345e42` 最终为 `success`。`E:\EFI\Microsoft\Boot\bootmgfw.efi`、`E:\EFI\Boot\bootaa64.efi`、BCD 均存在，管理员 `bcdedit /store E:\EFI\Microsoft\Boot\BCD /enum all /v` 返回 0。
+- 早期失败任务使用了不完整 fixture 或普通令牌，分别得到 BCDBoot 193/31/5；这些任务均保留为失败证据，不能复用。正确 fixture 必须使用管理员系统中的 `C:\Windows\System32\config\BCD-Template`（20480 字节），并包含 EFI_EX、BOOTRES、Fonts、bootstr 与语言资源。
 
 ## 7. 工具链可用后的唯一推荐顺序
 
@@ -144,7 +144,7 @@ docs/README.md                              文档阅读入口
    首次出现缺少 target 时脚本应停止，而不是自动下载。
 
 3. 已完成 ARM64 自动 probe：任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 已验证 `winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`、同卷盘符复用、原始 WinRE SHA-256 恢复和自动返回 Windows。修改 WinRE 路径后必须在新快照重复该验证。
-4. `v0.4.6` 先重新构建并做 GUI 无破坏烟测，再验证备份 fixture，确认本地代码页的 DISM 输出不会中断任务并使用新的 GUI 参数；之后再使用 VM 快照验证单系统还原、双系统 `/addlast`、磁盘身份不匹配拒绝、BitLocker 拒绝、断电后阶段恢复、BCDBoot 失败 BCD 回滚。
+4. `v0.4.8` 源码已完成离线验证，并已用 VM 既有工具链成功构建、校验哈希和启动 GUI；`v0.4.7` ARM64 包已完成 GUI/UAC、Capture、Apply 和独立 EFI BCDBoot 实测。剩余顺序是：在新快照中重复真实 WinRE 自动还原并从恢复卷回到 Windows，再验证 `create-secondary`/`/addlast`、身份不匹配、BitLocker 拒绝、断电续跑和 BCD 回滚。
 5. 只有拿到对应流程的真实证据，才能在文档中把该流程从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
 6. 完成修复后再次运行离线测试、AST、`git diff --check`，递增版本，中文提交并推送 `origin/main`。
 
