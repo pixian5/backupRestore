@@ -473,7 +473,7 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "EFI_PARTITION_NUMBER=$($efi.Partition.PartitionNumber)"
     "IMAGE_ABSOLUTE_PATH=$imagePath"
     "IMAGE_RELATIVE_PATH=$imageRelativePath"
-    "IMAGE_SHA256=$(if (Test-Path $imagePath) { Get-Sha256 $imagePath } else { '' })"
+    "IMAGE_SHA256=$(if (-not [string]::IsNullOrWhiteSpace($imagePath) -and (Test-Path -LiteralPath $imagePath)) { Get-Sha256 $imagePath } else { '' })"
     "MINIMUM_TARGET_SIZE=$minimumTargetSize"
     "WIM_INDEX=$WimIndex"
     "WINDOWS_ARCHITECTURE=$script:WindowsArchitecture"
@@ -606,6 +606,11 @@ try {
         updated = $created
     }
     Write-JsonAtomic (Join-Path $taskRoot 'status.json') $initialStatus
+    $metadataPath = if ($imageInfo) {
+        Join-Path (Split-Path -Parent $imagePath) 'metadata.json'
+    } else {
+        ''
+    }
     Write-JsonAtomic (Join-Path $root 'last-task.json') ([ordered]@{
         taskId = $taskId
         operation = $effectiveOperation
@@ -614,7 +619,7 @@ try {
         recoveryLog = (Join-Path $taskRoot 'Recovery.log')
         prepareLog = $taskLog
         imagePath = $imagePath
-        metadataPath = (Join-Path (Split-Path -Parent $imagePath) 'metadata.json')
+        metadataPath = $metadataPath
         created = $created
     })
 
