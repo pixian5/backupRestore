@@ -30,7 +30,15 @@ Windows 虚拟磁盘：
 .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target
 ```
 
-输出位于 `artifacts\windows\BackupRestore-windows-<arch>-v<VERSION>`，每个包
+推荐在 VM 使用浅层目录，一次明确指定 target 和输出目录：
+
+```powershell
+.\windows\build-windows.ps1 -Architecture arm64 `
+  -CargoTargetDir C:\BackupRestoreBuild\target `
+  -OutputRoot C:\BackupRestoreBuild\package
+```
+
+输出位于 `C:\BackupRestoreBuild\package\BackupRestore-windows-<arch>-v<VERSION>`，每个包
 包含同一架构的 `BackupRestore.exe`（启动 GUI）和 `Recovery.exe`（WinRE 恢复），
 以及 PowerShell/WinRE 载荷、所需 MSVC runtime 和 `build-manifest.json`。x64 与 ARM64 不可混用。
 

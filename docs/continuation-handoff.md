@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.5.0`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.5.3`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -134,11 +134,11 @@ docs/README.md                              文档阅读入口
 
 在用户明确允许并且网络规则允许时：
 
-1. 工具链已安装在 Parallels Windows 11 ARM64 VM；源码通过共享桌面传输到 `C:\BackupRestoreBuild\source`，Cargo target 使用 VM 本地目录。
+1. 工具链已安装在 Parallels Windows 11 ARM64 VM；源码通过共享桌面传输到 `C:\BackupRestoreBuild\src`，Cargo target 使用 `C:\BackupRestoreBuild\target`，输出包使用 `C:\BackupRestoreBuild\package`。不要再按版本号创建多层 source/target/artifacts 目录。
 2. 在仓库目录执行：
 
    ```powershell
-   .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target
+   .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target -OutputRoot C:\BackupRestoreBuild\package
    ```
 
    首次出现缺少 target 时脚本应停止，而不是自动下载。

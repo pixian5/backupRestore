@@ -9,6 +9,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::ffi::c_void;
+use std::fs;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::process::Command;
@@ -43,6 +44,7 @@ const CB_RESETCONTENT: u32 = 0x014b;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
 const CBN_SELCHANGE: usize = 1;
+const SW_HIDE: i32 = 0;
 const SW_SHOWNORMAL: i32 = 1;
 const MB_OK: u32 = 0x00000000;
 const MB_ICONERROR: u32 = 0x00000010;
@@ -66,6 +68,7 @@ const ID_INDEX: usize = 1106;
 const ID_MENU: usize = 1107;
 const ID_STATUS: usize = 1200;
 const ID_LANGUAGE_LABEL: usize = 2009;
+const ID_OPERATION_HINT: usize = 2010;
 const OFN_PATHMUSTEXIST: u32 = 0x00000800;
 const OFN_FILEMUSTEXIST: u32 = 0x00001000;
 const OFN_OVERWRITEPROMPT: u32 = 0x00000002;
@@ -196,6 +199,7 @@ struct Controls {
     relative: Hwnd,
     index: Hwnd,
     menu: Hwnd,
+    operation_hint: Hwnd,
     status: Hwnd,
 }
 
@@ -203,6 +207,19 @@ struct State {
     root: Hwnd,
     controls: Controls,
     executable_dir: PathBuf,
+    wim_images: Vec<WimImageInfo>,
+}
+
+#[derive(Clone, Debug)]
+struct WimImageInfo {
+    index: u32,
+    name: String,
+    description: String,
+    version: String,
+    architecture: String,
+    edition: String,
+    installation_type: String,
+    size_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,8 +249,18 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "probe") => "probe（探测）",
         (Language::Chinese, "backup") => "backup（备份）",
-        (Language::Chinese, "restore") => "restore-existing（单系统还原）",
-        (Language::Chinese, "secondary") => "create-secondary（第二系统）",
+        (Language::Chinese, "restore") => "restore-existing（还原当前系统）",
+        (Language::Chinese, "secondary") => "create-secondary（新增第二系统）",
+        (Language::Chinese, "probe_hint") => "只检查环境和 WinRE，不会备份、还原或重启。",
+        (Language::Chinese, "backup_hint") => {
+            "备份指定源分区；准备完成后进入 WinRE 执行 DISM Capture。"
+        }
+        (Language::Chinese, "restore_hint") => {
+            "单系统还原：覆盖目标分区，把它作为唯一 Windows 系统启动。"
+        }
+        (Language::Chinese, "secondary_hint") => {
+            "第二系统：保留当前 Windows，把镜像部署到另一个分区并新增启动项。"
+        }
         (Language::English, "operation") => "Operation",
         (Language::English, "task") => "Task volume",
         (Language::English, "source") => "Windows source",
@@ -253,8 +280,20 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "probe") => "probe",
         (Language::English, "backup") => "backup",
-        (Language::English, "restore") => "restore-existing",
-        (Language::English, "secondary") => "create-secondary",
+        (Language::English, "restore") => "restore-existing (replace current)",
+        (Language::English, "secondary") => "create-secondary (add another)",
+        (Language::English, "probe_hint") => {
+            "Inspect environment and WinRE only; no backup, restore or reboot."
+        }
+        (Language::English, "backup_hint") => {
+            "Back up the selected source partition; WinRE performs DISM Capture after preparation."
+        }
+        (Language::English, "restore_hint") => {
+            "Single-system restore: overwrite the target partition and make it the only Windows system."
+        }
+        (Language::English, "secondary_hint") => {
+            "Second system: keep the current Windows, deploy the image to another partition and add a boot entry."
+        }
         _ => "",
     }
 }
@@ -351,9 +390,204 @@ unsafe fn selected_operation(state: &State) -> &'static str {
     }
 }
 
+fn operation_hint_key(operation: &str) -> &'static str {
+    match operation {
+        "backup" => "backup_hint",
+        "restore-existing" => "restore_hint",
+        "create-secondary" => "secondary_hint",
+        _ => "probe_hint",
+    }
+}
+
+unsafe fn set_operation_hint(state: &State) {
+    let language = selected_language(state);
+    set_text(
+        state.controls.operation_hint,
+        ui_text(language, operation_hint_key(selected_operation(state))),
+    );
+}
+
+unsafe fn selected_wim_index(state: &State) -> Option<u32> {
+    if let Some(image) = state.wim_images.get(combo_index(state.controls.index)) {
+        return Some(image.index);
+    }
+    get_text(state.controls.index)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+fn json_text(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|item| {
+            item.as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| item.as_u64().map(|number| number.to_string()))
+                .or_else(|| item.as_i64().map(|number| number.to_string()))
+        })
+        .unwrap_or_default()
+}
+
+fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
+    let value: serde_json::Value = serde_json::from_str(output)
+        .map_err(|error| format!("WIM metadata JSON parse failed: {error}"))?;
+    let items = if let Some(items) = value.as_array() {
+        items.clone()
+    } else if value.get("ImageIndex").is_some() {
+        vec![value]
+    } else {
+        return Err("WIM metadata did not return an image object or array".to_string());
+    };
+    let mut images = Vec::with_capacity(items.len());
+    for item in items {
+        let index = json_text(&item, "ImageIndex")
+            .parse::<u32>()
+            .map_err(|_| "WIM metadata contains an invalid image index".to_string())?;
+        if index == 0 {
+            return Err("WIM metadata contains image index 0".to_string());
+        }
+        let size_bytes = json_text(&item, "ImageSize").parse::<u64>().ok();
+        images.push(WimImageInfo {
+            index,
+            name: json_text(&item, "ImageName"),
+            description: json_text(&item, "ImageDescription"),
+            version: json_text(&item, "ImageVersion"),
+            architecture: json_text(&item, "Architecture"),
+            edition: json_text(&item, "EditionId"),
+            installation_type: json_text(&item, "InstallationType"),
+            size_bytes,
+        });
+    }
+    if images.is_empty() {
+        return Err("WIM contains no selectable image indexes".to_string());
+    }
+    Ok(images)
+}
+
+fn report_has_wim_images(report: &serde_json::Value) -> bool {
+    match report.get("images") {
+        Some(serde_json::Value::Array(items)) => !items.is_empty(),
+        Some(serde_json::Value::Object(item)) => item.get("ImageIndex").is_some(),
+        _ => false,
+    }
+}
+
+fn format_bytes(size: Option<u64>) -> String {
+    let Some(size) = size else {
+        return "?".to_string();
+    };
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = size as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{size} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn wim_display(image: &WimImageInfo, language: Language) -> String {
+    let name = if image.name.is_empty() {
+        if language == Language::English {
+            "(unnamed)"
+        } else {
+            "（未命名）"
+        }
+    } else {
+        &image.name
+    };
+    let description = if image.description.is_empty() {
+        if language == Language::English {
+            "no description"
+        } else {
+            "无描述"
+        }
+    } else {
+        &image.description
+    };
+    let version = if image.version.is_empty() {
+        "?"
+    } else {
+        &image.version
+    };
+    let architecture = if image.architecture.is_empty() {
+        "?"
+    } else {
+        &image.architecture
+    };
+    let edition = if image.edition.is_empty() {
+        "?"
+    } else {
+        &image.edition
+    };
+    let install_type = if image.installation_type.is_empty() {
+        "?"
+    } else {
+        &image.installation_type
+    };
+    if language == Language::English {
+        format!(
+            "Index {} | {} | {} | Version {} | Arch {} | Edition {} | Install {} | Size {}",
+            image.index,
+            name,
+            description,
+            version,
+            architecture,
+            edition,
+            install_type,
+            format_bytes(image.size_bytes),
+        )
+    } else {
+        format!(
+            "索引 {} | {} | {} | 版本 {} | 架构 {} | 版本类型 {} | 大小 {} | 安装类型 {}",
+            image.index,
+            name,
+            description,
+            version,
+            architecture,
+            edition,
+            format_bytes(image.size_bytes),
+            install_type,
+        )
+    }
+}
+
+unsafe fn set_wim_items(state: &State) {
+    let language = selected_language(state);
+    let selected = selected_wim_index(state);
+    reset_combo(state.controls.index);
+    if state.wim_images.is_empty() {
+        add_combo_item(
+            state.controls.index,
+            if language == Language::English {
+                "No image metadata loaded (click Read image)"
+            } else {
+                "尚未读取镜像信息（请点击“读取镜像”）"
+            },
+        );
+        SendMessageW(state.controls.index, CB_SETCURSEL, 0, 0);
+        return;
+    }
+    let mut selected_position = 0usize;
+    for (position, image) in state.wim_images.iter().enumerate() {
+        if selected == Some(image.index) {
+            selected_position = position;
+        }
+        add_combo_item(state.controls.index, &wim_display(image, language));
+    }
+    SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
+}
+
 unsafe fn apply_language(state: &State) {
     let language = selected_language(state);
     set_operation_items(state, language);
+    set_wim_items(state);
     for (id, key) in [
         (2001, "operation"),
         (2002, "task"),
@@ -376,7 +610,10 @@ unsafe fn apply_language(state: &State) {
     ] {
         set_child_text(state.root, id, ui_text(language, key));
     }
-    set_text(state.controls.status, ui_text(language, "initial_status"));
+    set_operation_hint(state);
+    if state.wim_images.is_empty() {
+        set_text(state.controls.status, ui_text(language, "initial_status"));
+    }
 }
 
 fn quote_argument(value: &str) -> String {
@@ -389,6 +626,51 @@ fn quote_argument(value: &str) -> String {
 
 fn powershell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn powershell_output_elevated(command: &str) -> String {
+    let nonce = format!("{}-{}", std::process::id(), std::process::id());
+    let script_path = std::env::temp_dir().join(format!("BackupRestore-wim-{nonce}.ps1"));
+    let output_path = std::env::temp_dir().join(format!("BackupRestore-wim-{nonce}.json"));
+    let _ = fs::remove_file(&script_path);
+    let _ = fs::remove_file(&output_path);
+    let script = format!(
+        "$ErrorActionPreference='Stop'; try {{ $result = & {{ {command} }} | Out-String; Set-Content -LiteralPath {output} -Value $result -Encoding UTF8; exit 0 }} catch {{ Set-Content -LiteralPath {output} -Value ($_ | Out-String) -Encoding UTF8; exit 1 }}",
+        output = powershell_single_quote(&output_path.to_string_lossy()),
+    );
+    if let Err(error) = fs::write(&script_path, script) {
+        return format!("elevated WIM reader setup failed: {error}");
+    }
+    let launcher = format!(
+        "$child=Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{script}); if($child.ExitCode -ne 0){{ exit $child.ExitCode }}",
+        script = powershell_single_quote(&script_path.to_string_lossy()),
+    );
+    let launch_result = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &launcher,
+        ])
+        .output();
+    let text = match launch_result {
+        Ok(_output) if output_path.exists() => fs::read_to_string(&output_path)
+            .unwrap_or_else(|error| format!("elevated WIM reader output failed: {error}")),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.is_empty() {
+                format!("elevated WIM reader exited with code {}", output.status)
+            } else {
+                stderr.into_owned()
+            }
+        }
+        Err(error) => format!("elevated WIM reader launch failed: {error}"),
+    };
+    let _ = fs::remove_file(&script_path);
+    let _ = fs::remove_file(&output_path);
+    text.trim_start_matches('\u{feff}').trim().to_string()
 }
 
 fn powershell_output(command: &str) -> String {
@@ -474,7 +756,7 @@ fn suggested_drive_defaults() -> (String, String, String) {
         .trim_end_matches(':')
         .to_ascii_uppercase();
     let output = powershell_output(
-        r#"$system=$env:SystemDrive.TrimEnd(':').ToUpperInvariant(); $candidates=@(Get-Volume -ErrorAction SilentlyContinue | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { $p=Get-Partition -DriveLetter $_.DriveLetter -ErrorAction SilentlyContinue; if($p -and $p.Type -notin @('Recovery','System','Reserved')) { "$($_.DriveLetter)".ToUpperInvariant() } } | sort -Unique); $task=$candidates|? { $_ -ne $system }|select -First 1; $image=$candidates|? { $_ -ne $system -and $_ -ne $task }|select -First 1; "$system|$task|$image""#,
+        r#"$system=$env:SystemDrive.TrimEnd(':').ToUpperInvariant(); $candidates=@(Get-Volume -ErrorAction SilentlyContinue | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { $p=Get-Partition -DriveLetter $_.DriveLetter -ErrorAction SilentlyContinue; if($p -and $p.Type -notin @('Recovery','System','Reserved')) { "$($_.DriveLetter)".ToUpperInvariant() } } | sort -Unique); $image=$candidates|? { Test-Path -LiteralPath "$_`:\BackupRestore\Windows.wim" }|select -First 1; $task=$candidates|? { $_ -ne $system -and $_ -ne $image }|select -First 1; if(-not $image) { $image=$candidates|? { $_ -ne $system -and $_ -ne $task }|select -First 1 }; "$system|$task|$image""#,
     );
     let parts = output.split('|').map(str::trim).collect::<Vec<_>>();
     if parts.len() == 3 && parts[0].len() == 1 && parts[1].len() <= 1 && parts[2].len() <= 1 {
@@ -496,7 +778,7 @@ fn normalize_drive(value: String, label: &str) -> Result<String, String> {
     }
 }
 
-unsafe fn read_image(state: &State) {
+unsafe fn read_image(state: &mut State) {
     let language = selected_language(state);
     let image_path = get_text(state.controls.image).trim().to_string();
     if let Err(error) = backuprestore_core::validate_absolute_path(&image_path) {
@@ -517,22 +799,106 @@ unsafe fn read_image(state: &State) {
         return;
     }
     let command = format!(
-        "$p={}; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $m=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $p) 'metadata.json') -Raw|ConvertFrom-Json; \"image=$p`nsha256=$h`nmetadata=$($m.imageSha256)`nminimumTarget=$($m.minimumTargetSize)\"",
+        "$p={}; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; if(-not(Get-Command Get-WindowsImage -ErrorAction SilentlyContinue)){{throw \"Get-WindowsImage is unavailable\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $metadataPath=Join-Path (Split-Path -Parent $p) 'metadata.json'; $metadata=if(Test-Path -LiteralPath $metadataPath){{Get-Content -LiteralPath $metadataPath -Raw|ConvertFrom-Json}}else{{$null}}; $images=@(Get-WindowsImage -ImagePath $p -ErrorAction Stop|Select-Object ImageIndex,ImageName,ImageDescription,ImageVersion,Architecture,EditionId,InstallationType,ImageSize); [ordered]@{{image=$p;sha256=$h;metadataSha256=if($metadata){{$metadata.imageSha256}}else{{''}};minimumTarget=if($metadata){{$metadata.minimumTargetSize}}else{{''}};images=$images}}|ConvertTo-Json -Compress -Depth 4",
         powershell_single_quote(&image_path),
     );
-    let text = powershell_output(&command);
-    let text = if language == Language::English {
-        text.replace("image=", "Image: ")
-            .replace("sha256=", "SHA-256: ")
-            .replace("metadata=", "Metadata SHA-256: ")
-            .replace("minimumTarget=", "Minimum target size: ")
-    } else {
-        text.replace("image=", "镜像：")
-            .replace("sha256=", "SHA-256：")
-            .replace("metadata=", "metadata SHA-256：")
-            .replace("minimumTarget=", "最小目标容量：")
+    let mut text = powershell_output(&command);
+    let mut report_result = serde_json::from_str::<serde_json::Value>(&text);
+    let needs_elevation = report_result
+        .as_ref()
+        .map(|report| !report_has_wim_images(report))
+        .unwrap_or(true);
+    if needs_elevation {
+        let elevated_text = powershell_output_elevated(&command);
+        if let Ok(elevated_report) = serde_json::from_str::<serde_json::Value>(&elevated_text) {
+            text = elevated_text;
+            report_result = Ok(elevated_report);
+        }
+    }
+    let report: serde_json::Value = match report_result {
+        Ok(value) => value,
+        Err(error) => {
+            state.wim_images.clear();
+            set_wim_items(state);
+            set_text(
+                state.controls.status,
+                &if language == Language::English {
+                    format!("Could not read WIM metadata: {error}\n{text}")
+                } else {
+                    format!("读取 WIM 详细信息失败：{error}\n{text}")
+                },
+            );
+            return;
+        }
     };
-    set_text(state.controls.status, &text);
+    let images_json = report
+        .get("images")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let images_text = match serde_json::to_string(&images_json) {
+        Ok(value) => value,
+        Err(error) => {
+            set_text(
+                state.controls.status,
+                &format!("WIM metadata serialization failed: {error}"),
+            );
+            return;
+        }
+    };
+    match parse_wim_images(&images_text) {
+        Ok(images) => {
+            state.wim_images = images;
+            set_wim_items(state);
+            let image = json_text(&report, "image");
+            let sha256 = json_text(&report, "sha256");
+            let metadata = json_text(&report, "metadataSha256");
+            let minimum_target = json_text(&report, "minimumTarget");
+            let details = if language == Language::English {
+                format!(
+                    "Image: {image}\nSHA-256: {sha256}\nMetadata SHA-256: {}\nMinimum target size: {}\nLoaded {} WIM image indexes. Select one from the dropdown.",
+                    if metadata.is_empty() {
+                        "not provided"
+                    } else {
+                        &metadata
+                    },
+                    if minimum_target.is_empty() {
+                        "not provided"
+                    } else {
+                        &minimum_target
+                    },
+                    state.wim_images.len(),
+                )
+            } else {
+                format!(
+                    "镜像：{image}\nSHA-256：{sha256}\nmetadata SHA-256：{}\n最小目标容量：{}\n已读取 {} 个 WIM 索引，请从下拉框选择。",
+                    if metadata.is_empty() {
+                        "未提供"
+                    } else {
+                        &metadata
+                    },
+                    if minimum_target.is_empty() {
+                        "未提供"
+                    } else {
+                        &minimum_target
+                    },
+                    state.wim_images.len(),
+                )
+            };
+            set_text(state.controls.status, &details);
+        }
+        Err(error) => {
+            state.wim_images.clear();
+            set_wim_items(state);
+            set_text(
+                state.controls.status,
+                &if language == Language::English {
+                    format!("Could not parse WIM indexes: {error}")
+                } else {
+                    format!("无法解析 WIM 索引：{error}")
+                },
+            );
+        }
+    }
 }
 
 unsafe fn browse_image(state: &State) {
@@ -603,19 +969,14 @@ unsafe fn browse_image(state: &State) {
 unsafe fn create_task(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state).to_string();
-    let index = get_text(state.controls.index);
-    if index
-        .parse::<u32>()
-        .ok()
-        .filter(|value| *value > 0)
-        .is_none()
-    {
+    let index = selected_wim_index(state);
+    if matches!(operation.as_str(), "restore-existing" | "create-secondary") && index.is_none() {
         show_message(
             state.root,
             if language == Language::English {
-                "WIM index must be a positive integer."
+                "Read the WIM first, then select a valid image index from the dropdown."
             } else {
-                "WIM 索引必须是大于等于 1 的整数。"
+                "请先读取 WIM，再从下拉框选择有效的镜像索引。"
             },
             if language == Language::English {
                 "Validation failed"
@@ -626,6 +987,7 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
+    let index = index.unwrap_or(1).to_string();
     let task_drive = match normalize_drive(
         get_text(state.controls.task),
         if language == Language::English {
@@ -776,6 +1138,8 @@ unsafe fn create_task(state: &State) {
     let script = state.executable_dir.join("BackupRestore.ps1");
     let mut arguments = vec![
         "-NoProfile".to_string(),
+        "-WindowStyle".to_string(),
+        "Hidden".to_string(),
         "-ExecutionPolicy".to_string(),
         "Bypass".to_string(),
         "-File".to_string(),
@@ -812,7 +1176,7 @@ unsafe fn create_task(state: &State) {
         powershell.as_ptr(),
         params.as_ptr(),
         null(),
-        SW_SHOWNORMAL,
+        SW_HIDE,
     );
     if result <= 32 {
         set_text(
@@ -869,7 +1233,7 @@ unsafe extern "system" fn window_proc(
                 CBS_DROPDOWNLIST | WS_TABSTOP,
                 160,
                 52,
-                220,
+                300,
                 300,
                 ID_OPERATION,
             ),
@@ -902,7 +1266,7 @@ unsafe extern "system" fn window_proc(
                 WS_BORDER | WS_TABSTOP,
                 160,
                 160,
-                360,
+                540,
                 24,
                 ID_IMAGE,
             ),
@@ -930,13 +1294,13 @@ unsafe extern "system" fn window_proc(
             ),
             index: create_control(
                 hwnd,
-                "EDIT",
-                "1",
-                WS_BORDER | WS_TABSTOP,
+                "COMBOBOX",
+                "",
+                CBS_DROPDOWNLIST | WS_TABSTOP,
                 160,
                 268,
+                650,
                 220,
-                24,
                 ID_INDEX,
             ),
             menu: create_control(
@@ -950,6 +1314,17 @@ unsafe extern "system" fn window_proc(
                 24,
                 ID_MENU,
             ),
+            operation_hint: create_control(
+                hwnd,
+                "STATIC",
+                "",
+                0,
+                480,
+                52,
+                310,
+                50,
+                ID_OPERATION_HINT,
+            ),
             status: create_control(
                 hwnd,
                 "EDIT",
@@ -957,7 +1332,7 @@ unsafe extern "system" fn window_proc(
                 WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
                 20,
                 390,
-                540,
+                760,
                 150,
                 ID_STATUS,
             ),
@@ -1016,7 +1391,7 @@ unsafe extern "system" fn window_proc(
             "BUTTON",
             "浏览…",
             WS_TABSTOP,
-            525,
+            710,
             160,
             60,
             24,
@@ -1048,6 +1423,7 @@ unsafe extern "system" fn window_proc(
             root: hwnd,
             controls,
             executable_dir,
+            wim_images: Vec::new(),
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -1056,12 +1432,16 @@ unsafe extern "system" fn window_proc(
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
     if !state_ptr.is_null() {
-        let state = &*state_ptr;
+        let state = &mut *state_ptr;
         if message == WM_COMMAND {
             let control_id = w_param & 0xffff;
             let notification = (w_param >> 16) & 0xffff;
             if control_id == ID_LANGUAGE && notification == CBN_SELCHANGE {
                 apply_language(state);
+                return 0;
+            }
+            if control_id == ID_OPERATION && notification == CBN_SELCHANGE {
+                set_operation_hint(state);
                 return 0;
             }
             match control_id {
@@ -1122,7 +1502,7 @@ pub fn run() -> Result<(), super::TaskError> {
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             120,
             80,
-            600,
+            820,
             610,
             null_mut(),
             null_mut(),

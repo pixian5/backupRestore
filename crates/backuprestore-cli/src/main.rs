@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! Small Windows front-end/recovery host entry point.
 //!
 //! The GUI can call this binary for task validation and execution.  Keeping

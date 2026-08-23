@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-23
-当前开发版本：`0.5.0`
+当前开发版本：`0.5.3`
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -58,7 +58,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 自动入口已实机完成；隔离测试卷上的 Capture、Apply、格式化和独立 EFI BCDBoot 已实机完成；真实恢复卷启动回归仍待验证 |
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用任务卷实际盘符。真实备份/还原仍要求任务卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
-| GUI | Rust Win32 原生单窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。 | `v0.5.0` ARM64 包待 VM 重建后验证；本轮加入绝对路径输入和语言切换，真实按钮交互、UAC、日志刷新仍按证据矩阵验收 |
+| GUI | Rust Win32 原生单窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。WIM 索引使用下拉框，条目显示序号、名称、描述、版本、架构、Edition、安装类型和大小；非管理员返回空索引时会自动重试隐藏管理员读取。 | `v0.5.3` ARM64 包已在 VM 重建并真实启动 GUI；点击“读取镜像”后下拉框显示 `索引 1 | Windows Backup | ... | 大小 162.9 MiB`，单系统/第二系统模式说明均在窗口显示。UAC/WinRE 仍按证据矩阵验收 |
 | 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v0.4.8` ARM64 包已在 VM 使用既有工具链离线构建，manifest 与二进制 SHA-256 一致；`v0.4.7` 的管理员 GUI/UAC、Capture、Apply、格式化和独立 EFI BCDBoot 实测证据仍保留 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
@@ -74,7 +74,7 @@ pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestor
 git diff --check
 ```
 
-当前结果：Rust core 12 项测试通过；Clippy 无 warning；3 个 PowerShell 脚本 AST 通过；差异无空白错误。
+当前结果：Rust CLI/core 共 17 项测试通过；Clippy 无 warning；PowerShell 语法检查通过；差异无空白错误。
 
 ## 4. 明确未完成的实机验收
 
@@ -101,6 +101,10 @@ git diff --check
 
 2026-08-23 `v0.5.0` 绝对镜像路径收口：GUI 和 PowerShell 参数改为 `ImagePath`，例如 `B:\BackupRestore\Windows.wim`；脚本从路径根解析镜像卷身份，任务 JSON 同时记录 `absolutePath` 和经校验的卷内路径，RecoveryTask.env 记录 `IMAGE_ABSOLUTE_PATH` 并在 WinRE 重新校验。原生 GUI 增加保存/打开文件对话框，备份使用保存对话框，还原使用打开对话框。ARM64 VM 已用既有工具链重建，`build-manifest.json`、`BackupRestore.exe`、`Recovery.exe` SHA-256 均为 `beb50a2f74852285f4508a3b1510ae9f5c2ab7f6dbd02f0b2ca852749ae01073`，`Recovery.exe hash` 返回 0；`BackupRestore.ps1 -?` 已显示 `ImagePath` 且不再显示 `ImageDrive`/`ImageRelativePath`。这仍不替代真实备份/还原重启验收。
 
+2026-08-23 `v0.5.2` GUI/WIM 收口：修复 WIM 多索引 JSON 数组分支的 Rust 借用错误，并同步两个 Cargo manifest、`Cargo.lock` 与 `VERSION` 到 `0.5.2`。ARM64 VM 使用已有工具链在浅层目录 `C:\BackupRestoreBuild\src`、`C:\BackupRestoreBuild\target`、`C:\BackupRestoreBuild\package` 构建成功，输出为 `BackupRestore-windows-arm64-v0.5.2`；没有重新下载工具链。`BackupRestore.exe` 继续使用 `WINDOWS_GUI` 子系统，WIM 索引下拉项同时展示序号和详细元数据。构建/哈希/启动证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
+
+2026-08-23 `v0.5.3` WIM 权限回退：实测发现普通令牌下 `Get-WindowsImage` 可能返回可解析但没有索引的 JSON，GUI 因此不会触发管理员读取；现改为检测“索引为空”同样启动隐藏 `runas` 重试。ARM64 包已在 VM 重建并启动，`BackupRestore.exe`/`Recovery.exe` SHA-256 均为 `1e097ab33b01348db5515f41b25b56313f88f5b4ed9485e2782b7d4905ffc6dd`；点击“读取镜像”后真实下拉框显示索引 1（Windows Backup、162.9 MiB），操作模式提示分别解释当前系统覆盖还原和新增第二系统。该 GUI/UAC 读取证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
+
 指定分区核实结论：代码和任务协议并不固定 C:。`BackupRestore.ps1` 的 `-SourceDrive`、`-TargetDrive` 接受任意单个盘符，镜像卷由用户填写的 `-ImagePath` 绝对路径根盘符解析；创建任务时会读取卷 GUID、磁盘/分区 GUID、偏移、容量、文件系统和序列号，Recovery 阶段按 GUID 复核后才把盘符作为临时挂载路径。`v0.4.7` 隔离实测实际使用非 C: 的 `S:` 源/目标卷、`B:` 镜像卷和独立 `E:` EFI，Capture、快速格式化、Apply-Image、BCDBoot 均成功；因此“不是只能备份 C:”已有实机证据。尚未完成的是从该独立 EFI 实际重启回恢复卷，以及 `create-secondary`、断电续跑和故障回滚，不能把“指定分区支持”外推成所有恢复场景均已验收。
 
 ## 5. 恢复工作时的唯一顺序
@@ -114,11 +118,11 @@ git diff --check
    ```
 
 2. 检测为热点时，报告具体要下载的一个项目并等待授权；检测为 Wi-Fi/有线时，执行该下载。下载下一个大项目之前重新检测。
-3. 保持 Cargo target 在 VM 本地，例如 `C:\BackupRestoreBuild\target`；源码可通过共享桌面传输，避免再次下载仓库压缩包。
+3. 保持 VM 构建目录浅层：源码 `C:\BackupRestoreBuild\src`、Cargo target `C:\BackupRestoreBuild\target`、输出包 `C:\BackupRestoreBuild\package`；不要按版本号继续创建多层 source/target/artifacts 目录。
 4. 在 VM 中运行：
 
    ```powershell
-   .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target
+   .\windows\build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target -OutputRoot C:\BackupRestoreBuild\package
    ```
 
 5. 自动 probe 已在 ARM64 快照实测成功；后续任何影响 WinRE 路径的修改都要先重复 `probe -NoReboot` 与自动 probe。当前下一项是独立快照中的备份，其后才是单系统还原、双系统还原和故障注入。

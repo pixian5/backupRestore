@@ -27,7 +27,7 @@
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
-| Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | `v0.5.0` ARM64 包待 VM 重建；中文/English 控件切换和绝对镜像路径输入已实现，本机离线测试通过 | 真实语言切换、环境/镜像/任务状态按钮、管理员 UAC、长路径和日志刷新仍待 VM 验收 |
+| Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | `v0.5.3` ARM64 包已在 VM 启动；无控制台子系统、中文模式提示、WIM 索引下拉框和隐藏管理员读取已通过真实窗口点测；破坏性任务、完整语言切换和日志刷新仍待验收 | `BackupRestore - Rust GUI` 窗口真实显示；读取 `B:\BackupRestore\Windows.wim` 后显示索引 1/Windows Backup/162.9 MiB；操作模式切换显示“还原当前系统”和“新增第二系统”说明 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；日志顺序可复核 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
 
