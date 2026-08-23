@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-22
-当前开发版本：`0.4.8`
+更新时间：2026-08-23
+当前开发版本：`0.5.0`
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -21,6 +21,16 @@ V1 已设计的任务包括：
 | `create-secondary` | 将镜像还原到独立分区并加入第二启动项 | 是 |
 
 V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像、Legacy BIOS 或自动修改 BitLocker。任何恢复测试只能在可回滚的虚拟机快照中进行。
+
+## 1.1 用户期望流程对照
+
+| 用户期望 | 当前实现 | 结论 |
+|---|---|---|
+| 选择镜像保存位置、选择要备份的分区，重启进入 WinRE，由程序执行备份 | GUI/PowerShell 传入用户选择的 `ImagePath` 绝对路径和 `SourceDrive`；准备阶段注入 `Recovery.exe`、`RecoveryTask.env`、`task.json` 到专用 WinRE，默认会调用 `reagentc /boottore` 后重启；WinRE `recover-env` 按 GUID 挂载源/镜像卷并执行 DISM Capture，写入 `.partial`、metadata 和 SHA-256 | 流程已覆盖；自动 WinRE probe 已实机验证，非 C: 的 `S:`/`B:` Capture 已实机验证 |
+| 选择镜像位置、选择恢复目标分区，重启进入 WinRE，由程序执行还原 | GUI/PowerShell 传入用户选择的 `ImagePath` 绝对路径、`WimIndex` 和目标；准备阶段记录绝对路径并同时保存受 GUID 保护的卷内路径，WinRE 按 GUID 挂载镜像/目标，校验 metadata/hash，格式化明确目标、DISM Apply、BCDBoot，再恢复原 WinRE 并重启 | 流程已覆盖；非 C: 的 `S:`/`B:`/`E:` 隔离 Apply/BCDBoot 已实机验证，但从独立 EFI 实际重启回恢复系统仍待验证 |
+| 还原任意指定分区 | `restore-existing` 为安全单系统模式，要求目标与选定源分区相同；`create-secondary` 才允许选择不同 NTFS 目标并使用 `/addlast` | 代码已覆盖，双系统/不同目标的完整重启验收待验证 |
+
+准备阶段使用 `-NoReboot` 时会停在正常 Windows，仅用于测试/诊断；不带该开关才会设置一次性 WinRE 启动并重启。当前 GUI 要求镜像使用类似 `B:\BackupRestore\Windows.wim` 的绝对路径，不再让用户填写相对路径；内部为适应 WinRE 盘符变化会额外保存卷内路径。GUI 不会把“准备成功”误报为 WinRE 还原成功。
 
 ## 2. 用户对话中确认的约束
 
@@ -48,7 +58,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 自动入口已实机完成；隔离测试卷上的 Capture、Apply、格式化和独立 EFI BCDBoot 已实机完成；真实恢复卷启动回归仍待验证 |
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用任务卷实际盘符。真实备份/还原仍要求任务卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
-| GUI | Rust Win32 原生单窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；刷新按钮会先显示进行中状态；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。 | `v0.4.8` ARM64 包已启动并显示窗口标题 `BackupRestore - Rust GUI`；原生窗口真实按钮交互、UAC、日志刷新仍按证据矩阵验收 |
+| GUI | Rust Win32 原生单窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。 | `v0.5.0` ARM64 包待 VM 重建后验证；本轮加入绝对路径输入和语言切换，真实按钮交互、UAC、日志刷新仍按证据矩阵验收 |
 | 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v0.4.8` ARM64 包已在 VM 使用既有工具链离线构建，manifest 与二进制 SHA-256 一致；`v0.4.7` 的管理员 GUI/UAC、Capture、Apply、格式化和独立 EFI BCDBoot 实测证据仍保留 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
@@ -88,6 +98,10 @@ git diff --check
 2026-08-22 GUI 收口：Rust `native_gui.rs` 接管 `BackupRestore.exe` 默认窗口，使用 Windows SDK Win32 API，不下载 GUI crate；窗口包含操作模式、任务/源/镜像/目标卷、镜像路径、WIM 索引、第二系统名称、环境刷新、镜像读取、最近任务状态刷新和管理员创建任务。默认值从当前系统及已挂载 NTFS 卷建议，所有盘符和镜像相对路径在本地先校验；镜像卷与源卷在非 probe 模式下不得相同；环境和任务刷新会先显示进行中状态。旧 `BackupRestore.Gui.ps1` 仅作为兼容前端保留。`v0.4.6` ARM64 包已重建并启动烟测通过，窗口标题为 `BackupRestore - Rust GUI`；按钮交互、UAC、日志刷新仍待真实 VM UI 验收，不能用进程存活代替完整 GUI 验收。
 
 2026-08-22 `v0.4.8` ARM64 构建收口：源码压缩包通过 Parallels 共享桌面传入 `C:\BackupRestoreBuild\source-v0.4.8`，未下载任何新工具链；使用已有 `aarch64-pc-windows-msvc` 工具链和 VM 本地 `C:\BackupRestoreBuild\target-v0.4.8` 构建成功。输出包为 `BackupRestore-windows-arm64-v0.4.8`，`build-manifest.json` 的 `binarySha256` 与 `BackupRestore.exe`、`Recovery.exe` 实际 SHA-256 均为 `526c612d8222920bf76f91e4fb4b04ff413cd555a7f9969f802cb6c0ca798050`；`Recovery.exe hash .\Recovery.exe` 返回 0，`BackupRestore.exe` 进程烟测窗口标题为 `BackupRestore - Rust GUI`。这些证据只覆盖 ARM64 构建、哈希和进程启动，不替代 WinRE、DISM、BCDBoot 或真实重启验收。
+
+2026-08-23 `v0.5.0` 绝对镜像路径收口：GUI 和 PowerShell 参数改为 `ImagePath`，例如 `B:\BackupRestore\Windows.wim`；脚本从路径根解析镜像卷身份，任务 JSON 同时记录 `absolutePath` 和经校验的卷内路径，RecoveryTask.env 记录 `IMAGE_ABSOLUTE_PATH` 并在 WinRE 重新校验。原生 GUI 增加保存/打开文件对话框，备份使用保存对话框，还原使用打开对话框。ARM64 VM 已用既有工具链重建，`build-manifest.json`、`BackupRestore.exe`、`Recovery.exe` SHA-256 均为 `beb50a2f74852285f4508a3b1510ae9f5c2ab7f6dbd02f0b2ca852749ae01073`，`Recovery.exe hash` 返回 0；`BackupRestore.ps1 -?` 已显示 `ImagePath` 且不再显示 `ImageDrive`/`ImageRelativePath`。这仍不替代真实备份/还原重启验收。
+
+指定分区核实结论：代码和任务协议并不固定 C:。`BackupRestore.ps1` 的 `-SourceDrive`、`-TargetDrive` 接受任意单个盘符，镜像卷由用户填写的 `-ImagePath` 绝对路径根盘符解析；创建任务时会读取卷 GUID、磁盘/分区 GUID、偏移、容量、文件系统和序列号，Recovery 阶段按 GUID 复核后才把盘符作为临时挂载路径。`v0.4.7` 隔离实测实际使用非 C: 的 `S:` 源/目标卷、`B:` 镜像卷和独立 `E:` EFI，Capture、快速格式化、Apply-Image、BCDBoot 均成功；因此“不是只能备份 C:”已有实机证据。尚未完成的是从该独立 EFI 实际重启回恢复卷，以及 `create-secondary`、断电续跑和故障回滚，不能把“指定分区支持”外推成所有恢复场景均已验收。
 
 ## 5. 恢复工作时的唯一顺序
 

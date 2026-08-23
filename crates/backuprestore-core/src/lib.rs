@@ -160,6 +160,11 @@ impl VolumeIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct ImageSpec {
     pub volume: VolumeIdentity,
+    /// User-facing Windows absolute path captured at task preparation time.
+    /// Recovery uses `relative_path` only after re-mounting the verified volume
+    /// because the drive letter may change in WinRE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_path: Option<String>,
     pub relative_path: String,
     pub sha256: String,
     pub size_bytes: u64,
@@ -170,6 +175,8 @@ pub struct ImageSpec {
 #[serde(rename_all = "camelCase")]
 pub struct DestinationSpec {
     pub volume: VolumeIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_path: Option<String>,
     pub relative_path: String,
 }
 
@@ -376,6 +383,9 @@ impl Task {
                         "EFI/MSR/Recovery partitions cannot store backup images".into(),
                     ));
                 }
+                if let Some(path) = dest.absolute_path.as_deref() {
+                    validate_absolute_path(path)?;
+                }
                 validate_relative_path(&dest.relative_path)?;
                 if self.image.is_some() || self.target.is_some() {
                     return Err(TaskError::Invalid(
@@ -399,6 +409,9 @@ impl Task {
                     return Err(TaskError::Invalid(
                         "EFI/MSR/Recovery partitions cannot store restore images".into(),
                     ));
+                }
+                if let Some(path) = image.absolute_path.as_deref() {
+                    validate_absolute_path(path)?;
                 }
                 if image.sha256.len() != 64 || !image.sha256.chars().all(|c| c.is_ascii_hexdigit())
                 {
@@ -609,7 +622,7 @@ fn require_complete(name: &str, identity: &VolumeIdentity) -> Result<(), TaskErr
 }
 
 pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
-    if value.trim().is_empty() || value.contains('\0') {
+    if value.trim().is_empty() || value.contains('\0') || value.chars().any(char::is_control) {
         return Err(TaskError::Invalid(
             "path must be a non-empty relative path".into(),
         ));
@@ -631,6 +644,41 @@ pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
         ) {
             return Err(TaskError::Invalid(
                 "path may not escape the volume root".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a Windows absolute file path supplied by the user.
+///
+/// The path must use a drive-root form such as `B:\\Backups\\Windows.wim`.
+/// UNC and volume-GUID paths are deliberately excluded from the GUI contract;
+/// the task still stores the verified volume GUID separately so WinRE can
+/// safely re-mount the same partition even if its drive letter changes.
+pub fn validate_absolute_path(value: &str) -> Result<(), TaskError> {
+    if value.trim().is_empty() || value.contains('\0') || value.chars().any(char::is_control) {
+        return Err(TaskError::Invalid(
+            "path must be a non-empty Windows absolute path".into(),
+        ));
+    }
+    let normalized = value.replace('/', "\\");
+    let bytes = normalized.as_bytes();
+    if bytes.len() < 4 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
+        return Err(TaskError::Invalid(
+            "path must use a drive-root form such as B:\\Backups\\Windows.wim".into(),
+        ));
+    }
+    let rest = &normalized[3..];
+    if rest.ends_with('\\') {
+        return Err(TaskError::Invalid(
+            "absolute image path must identify a file, not a volume root".into(),
+        ));
+    }
+    for part in rest.split('\\') {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(TaskError::Invalid(
+                "absolute image path contains an invalid component".into(),
             ));
         }
     }
@@ -939,6 +987,7 @@ mod tests {
         task.task_volume = Some(identity("task", 100));
         task.destination = Some(DestinationSpec {
             volume: identity("image", 100),
+            absolute_path: None,
             relative_path: "MyBackup/Windows.wim".into(),
         });
         task
@@ -958,6 +1007,25 @@ mod tests {
         let mut task = backup_task();
         task.destination.as_mut().unwrap().volume.partition_guid = "source".into();
         assert!(task.validate().is_err());
+    }
+    #[test]
+    fn arbitrary_drive_letters_are_temporary_hints() {
+        let mut task = backup_task();
+        task.source.as_mut().unwrap().drive_letter = Some('S');
+        task.task_volume.as_mut().unwrap().drive_letter = Some('T');
+        task.destination.as_mut().unwrap().volume.drive_letter = Some('B');
+        assert!(task.validate().is_ok());
+
+        let mut moved = task.clone();
+        moved.source.as_mut().unwrap().drive_letter = Some('D');
+        moved.destination.as_mut().unwrap().volume.drive_letter = Some('I');
+        assert!(moved.validate().is_ok());
+        assert!(
+            task.source
+                .as_ref()
+                .unwrap()
+                .same_partition(moved.source.as_ref().unwrap())
+        );
     }
     #[test]
     fn task_volume_rejects_reserved_and_overlapping_partitions() {
@@ -987,6 +1055,7 @@ mod tests {
         task.task_volume = Some(identity("image", 200));
         task.image = Some(ImageSpec {
             volume: identity("image", 100),
+            absolute_path: None,
             relative_path: "backup.wim".into(),
             sha256: "a".repeat(64),
             size_bytes: 1,
@@ -1035,6 +1104,7 @@ mod tests {
         task.source = Some(source);
         task.image = Some(ImageSpec {
             volume: image,
+            absolute_path: None,
             relative_path: "backup.wim".into(),
             sha256: "a".repeat(64),
             size_bytes: 1,
@@ -1047,6 +1117,21 @@ mod tests {
             minimum_size_bytes: 100,
         });
         assert!(task.validate().is_err());
+    }
+
+    #[test]
+    fn absolute_image_paths_require_a_drive_root() {
+        assert!(validate_absolute_path(r"B:\Backups\Windows.wim").is_ok());
+        assert!(validate_absolute_path(r"B:/Backups/Windows.wim").is_ok());
+        assert!(validate_absolute_path(r"Backups\Windows.wim").is_err());
+        assert!(validate_absolute_path(r"B:\Backups\..\Windows.wim").is_err());
+        assert!(validate_absolute_path(r"B:\").is_err());
+
+        let mut task = backup_task();
+        task.destination.as_mut().unwrap().absolute_path = Some("backup.wim".into());
+        assert!(task.validate().is_err());
+        task.destination.as_mut().unwrap().absolute_path = Some(r"B:\Backups\Windows.wim".into());
+        assert!(task.validate().is_ok());
     }
     #[test]
     fn restore_rejects_image_on_target_and_reserved_target() {
@@ -1070,6 +1155,7 @@ mod tests {
         );
         task.image = Some(ImageSpec {
             volume: identity("image", 100),
+            absolute_path: None,
             relative_path: "backup.wim".into(),
             sha256: "a".repeat(64),
             size_bytes: 1,
@@ -1100,6 +1186,7 @@ mod tests {
         task.source = Some(identity("source", 200));
         task.image = Some(ImageSpec {
             volume: identity("image", 100),
+            absolute_path: None,
             relative_path: "backup.wim".into(),
             sha256: "a".repeat(64),
             size_bytes: 1,

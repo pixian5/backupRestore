@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.4.8`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.5.0`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -60,7 +60,7 @@ docs/project-status.md                      当前进度、对话决策和继续
 docs/README.md                              文档阅读入口
 ```
 
-`BackupRestore.exe` 的文件名会被 Rust 程序识别为 GUI 启动器；它旁边必须有 `BackupRestore.ps1`，旧 `BackupRestore.Gui.ps1` 仅供兼容调用。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。
+`BackupRestore.exe` 的文件名会被 Rust 程序识别为 GUI 启动器；它旁边必须有 `BackupRestore.ps1`，旧 `BackupRestore.Gui.ps1` 仅供兼容调用。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。GUI 的语言选择器支持中文和 English；源、镜像、目标卷均为可编辑的指定盘符，数据身份仍由 GUID 快照决定。
 
 ## 4. 已实现的安全与功能约束
 
@@ -101,8 +101,8 @@ docs/README.md                              文档阅读入口
 
 `BackupRestore.exe` 当前默认进入 `crates/backuprestore-cli/src/native_gui.rs` 的 Rust Win32 单窗口，使用 Windows SDK 原生 API，不依赖新的 GUI crate：
 
-1. **任务参数区**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；填写任务卷、源卷、镜像卷、目标卷、镜像相对路径、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`，启动时从当前系统及已挂载 NTFS 卷建议任务/镜像盘符，不伪造固定 `D:`。
-2. **环境与镜像操作**：`刷新环境` 显示 Windows/build、架构、固件和 NTFS 卷；`读取镜像` 读取 WIM SHA-256 与 metadata 摘要。镜像卷要求单个英文字母，镜像相对路径复用 core 的路径穿越校验；非 `probe` 模式拒绝镜像卷与源卷相同。
+1. **任务参数区**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；可切换中文/English，填写任务卷、源卷、镜像绝对路径、目标卷、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`，启动时从当前系统及已挂载 NTFS 卷建议任务盘符和镜像路径，不伪造固定 `D:`。
+2. **环境与镜像操作**：`刷新环境` 显示 Windows/build、架构、固件和 NTFS 卷；`读取镜像` 读取绝对路径指向的 WIM SHA-256 与 metadata 摘要。镜像路径必须是单盘符根路径，例如 `B:\BackupRestore\Windows.wim`；创建任务时从该路径解析镜像卷并复核 GUID，非 `probe` 模式拒绝镜像卷与源卷相同。
 3. **任务状态区**：`刷新任务状态` 读取 `C:\ProgramData\BackupRestore\last-task.json`，展示任务 ID、任务目录、准备日志、恢复日志及可读的 `status.json`；文案明确任务准备不等于 WinRE 重启后的真实成功。
 4. **破坏性边界**：`restore-existing` 和 `create-secondary` 创建前显示目标卷摘要并要求二次确认；随后用 `ShellExecuteW("runas")` 启动管理员 PowerShell 准备脚本。GUI 只报告启动结果，不把 UAC 接受或准备成功当作恢复成功。
 
@@ -116,7 +116,7 @@ docs/README.md                              文档阅读入口
 - **PowerShell 5.1 UTF-8 BOM**：读取 JSON 必须使用项目已有的兼容读取逻辑；不要改回假设无 BOM 的简单读取。
 - **WIM 文件锁**：DISM 提交后不能立即计算/复制 WIM；保留独立 DISM 日志和等待窗口。
 - **盘符不是身份**：任务和 Recovery 阶段必须用 volume/disk/partition GUID 加大小/偏移复核，不能仅信任 C:、D:、S:。
-- **路径穿越**：镜像相对路径不能有 `.`, `..`, `/` 根、盘符前缀或其他逃逸形式；不要把用户输入直接拼成任务根路径。
+- **路径安全**：用户镜像路径必须是单盘符绝对路径，不能有 `.`, `..` 或空路径组件；Recovery 内部派生的卷内路径仍执行原有路径穿越校验，不能把用户输入直接拼成任务根路径。
 - **保留分区**：EFI、MSR、Recovery 既不能存任务/镜像，也不能作为还原目标；改 PowerShell 时要同步 Rust 和 `Recovery.cmd` 的检查。
 - **状态重复写入**：断电恢复不能无条件重复写同一个状态；状态机的合法边界和“哪个阶段允许重做”必须同时维护。
 - **BCD 回滚时机**：不能在 `write_failure` 后才判断原状态，因为写失败会覆盖原阶段；先保存 `stage_before_failure`，并把 `BootRepaired` 前后的失败都纳入回滚判断。

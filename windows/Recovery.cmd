@@ -175,6 +175,11 @@ if /I not "!TASK_ROOT_REL!"=="BackupRestore\tasks\!TASK_ID!" exit /b 1
 if not defined OPERATION exit /b 1
 if /I not "!OPERATION!"=="probe" if /I not "!OPERATION!"=="backup" if /I not "!OPERATION!"=="restore" if /I not "!OPERATION!"=="restore-existing" if /I not "!OPERATION!"=="create-secondary" exit /b 1
 for %%G in (TASK_VOLUME_GUID TASK_DISK_NUMBER TASK_PARTITION_NUMBER RECOVERY_VOLUME_GUID RECOVERY_DISK_NUMBER RECOVERY_PARTITION_NUMBER SOURCE_VOLUME_GUID SOURCE_DISK_NUMBER SOURCE_PARTITION_NUMBER) do if not defined %%G exit /b 1
+if /I not "!OPERATION!"=="probe" (
+  if not defined IMAGE_ABSOLUTE_PATH exit /b 1
+  call :validate_absolute_image_path "!IMAGE_ABSOLUTE_PATH!"
+  if errorlevel 1 exit /b 1
+)
 if not defined IMAGE_RELATIVE_PATH if /I not "!OPERATION!"=="probe" exit /b 1
 if defined IMAGE_RELATIVE_PATH (
   if "!IMAGE_RELATIVE_PATH:~0,1!"=="\" exit /b 1
@@ -193,6 +198,15 @@ if /I not "!OPERATION!"=="probe" if /I "!TASK_VOLUME_GUID!"=="!TARGET_VOLUME_GUI
 if /I not "!OPERATION!"=="probe" if /I "!TASK_VOLUME_GUID!"=="!SOURCE_VOLUME_GUID!" exit /b 1
 if /I "!OPERATION!"=="backup" if /I "!IMAGE_VOLUME_GUID!"=="!SOURCE_VOLUME_GUID!" exit /b 1
 if /I "!OPERATION!"=="restore-existing" if /I not "!TARGET_VOLUME_GUID!"=="!SOURCE_VOLUME_GUID!" exit /b 1
+exit /b 0
+
+:validate_absolute_image_path
+set "ABS_IMAGE=%~1"
+if not defined ABS_IMAGE exit /b 1
+if not "%ABS_IMAGE:~1,1%"==":" exit /b 1
+if not "%ABS_IMAGE:~2,1%"=="\" exit /b 1
+if "%ABS_IMAGE:~3,1%"=="" exit /b 1
+echo(%ABS_IMAGE%| findstr.exe /L /C:".." >nul && exit /b 1
 exit /b 0
 
 :matches_volume

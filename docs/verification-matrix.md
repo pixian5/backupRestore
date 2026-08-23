@@ -12,8 +12,9 @@
 |---|---|---|---|
 | Windows 10/11、UEFI、GPT | `windows/BackupRestore.ps1:Assert-SystemEnvironment` | 代码已覆盖 | `prepare.log` 中 OS、firmware、GPT 检查通过 |
 | x64/ARM64 架构隔离 | `windows/build-windows.ps1`、`build-manifest.json`、`Assert-PackageArchitecture` | `v0.4.8` ARM64 二进制已在 VM 启动并通过 manifest/`Recovery.exe hash` 检查，WinRE 运行待验证 | x64/ARM64 各自产物在对应 Guest 启动并拒绝错架构 |
-| 当前/候选 Windows 分区枚举 | `BackupRestore.Gui.ps1:Get-EnvironmentText` | 代码已覆盖 | GUI 实盘显示并人工核对 GUID |
+| 当前/候选 Windows 分区枚举 | `BackupRestore.Gui.ps1:Get-EnvironmentText`、Rust `Refresh environment` | 代码已覆盖 | GUI 实盘显示并人工核对 GUID |
 | 盘符不是身份 | `VolumeIdentity`、`verify_task_identity_env`、`mount_env_volume` | 代码已覆盖 | 改盘符或更换卷后任务必须拒绝 |
+| 镜像使用绝对路径 | `ImagePath`、`validate_absolute_path`、task `absolutePath`、`IMAGE_ABSOLUTE_PATH` | `v0.5.0` 代码和 ARM64 参数帮助已验证；Recovery 仍按 GUID 重挂载后使用卷内路径 | Windows GUI 选择 `B:\...\Windows.wim`，换盘符后必须仍解析到同一镜像卷 |
 | probe 任务/源卷相同 | `recover-env` 按卷 GUID 扫描已有挂载，任务/源同卷时复用实际盘符 | 实机已验证（Win11 ARM64 probe） | 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 在 WinRE 记录 `TASK volume already mounted at C:; reusing it`，随后为 `success` |
 | EFI/MSR/Recovery 保护 | core `is_reserved_partition`、PowerShell、`Recovery.cmd` | 离线已验证 | 实盘尝试选中三类分区都被拒绝 |
 | 备份 `.partial`、WIM 校验、SHA-256、metadata | `recover_windows` backup、`BackupMetadata`、原生输出按字节日志 | 实机已验证（隔离源卷/镜像卷） | `v0.4.7` 任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 为 `success`；WIM `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30` 与 metadata 一致，`.partial` 已原子替换 |
@@ -26,7 +27,7 @@
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
-| Rust Win32 GUI 单窗口和二次确认 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | `v0.4.8` ARM64 Windows 进程烟测已通过（窗口标题 `BackupRestore - Rust GUI`），manifest 与二进制 SHA-256 一致；本机离线测试通过 | 真实环境/镜像/任务状态按钮、管理员 UAC、长路径和日志刷新仍待 VM 验收 |
+| Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | `v0.5.0` ARM64 包待 VM 重建；中文/English 控件切换和绝对镜像路径输入已实现，本机离线测试通过 | 真实语言切换、环境/镜像/任务状态按钮、管理员 UAC、长路径和日志刷新仍待 VM 验收 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；日志顺序可复核 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
 

@@ -211,7 +211,14 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
             task.task_id, task.operation, task.status
         );
         if let Some(image) = &task.image {
-            println!("image={} sha256={}", image.relative_path, image.sha256);
+            println!(
+                "image={} sha256={}",
+                image
+                    .absolute_path
+                    .as_deref()
+                    .unwrap_or(&image.relative_path),
+                image.sha256
+            );
         }
         if let Some(target) = &task.target {
             println!(
@@ -675,6 +682,7 @@ fn verify_task_identity_env(
                 .as_ref()
                 .ok_or_else(|| err("backup task is missing destination"))?;
             verify(values, "IMAGE", &destination.volume)?;
+            verify_image_absolute_path(values, destination.absolute_path.as_deref())?;
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let image = task
@@ -682,6 +690,7 @@ fn verify_task_identity_env(
                 .as_ref()
                 .ok_or_else(|| err("restore task is missing image"))?;
             verify(values, "IMAGE", &image.volume)?;
+            verify_image_absolute_path(values, image.absolute_path.as_deref())?;
             let target = task
                 .target
                 .as_ref()
@@ -689,6 +698,23 @@ fn verify_task_identity_env(
             verify(values, "TARGET", &target.volume)?;
         }
         Operation::Probe => {}
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_image_absolute_path(
+    values: &BTreeMap<String, String>,
+    expected: Option<&str>,
+) -> Result<(), TaskError> {
+    let expected = expected.ok_or_else(|| err("task is missing image absolute path"))?;
+    backuprestore_core::validate_absolute_path(expected)?;
+    let actual = env_required(values, "IMAGE_ABSOLUTE_PATH")?;
+    backuprestore_core::validate_absolute_path(&actual)?;
+    if !expected.eq_ignore_ascii_case(&actual) {
+        return Err(err(
+            "image absolute path differs between task.json and RecoveryTask.env",
+        ));
     }
     Ok(())
 }

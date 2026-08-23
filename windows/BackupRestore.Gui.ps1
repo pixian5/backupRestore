@@ -1,4 +1,4 @@
-Add-Type -AssemblyName PresentationFramework
+﻿Add-Type -AssemblyName PresentationFramework
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runner = Join-Path $scriptRoot 'BackupRestore.ps1'
@@ -95,8 +95,9 @@ function Get-EnvironmentText {
         } catch { }
         $bootDisk = Get-Disk -ErrorAction Stop | Where-Object IsBoot -eq $true | Select-Object -First 1
         $reagent = reagentc.exe /info 2>&1 | Out-String
-        $bitlocker = if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-            $state = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction SilentlyContinue
+        $selectedSource = $sourceDrive.Text.Trim().TrimEnd(':')
+        $bitlocker = if ((Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) -and $selectedSource -match '^[A-Za-z]$') {
+            $state = Get-BitLockerVolume -MountPoint "$selectedSource`:" -ErrorAction SilentlyContinue
             if ($state) { "$($state.ProtectionStatus)" } else { 'unknown' }
         } else { 'cmdlet unavailable' }
         $winreState = if ($reagent -match '(?i)(GLOBALROOT|Recovery\\WindowsRE)') { 'registered' } else { 'not detected' }
@@ -114,7 +115,7 @@ function Get-EnvironmentText {
             "Windows：$($os.Caption) build=$($os.BuildNumber) architecture=$env:PROCESSOR_ARCHITECTURE"
             "Firmware：$firmware; boot disk=$($bootDisk.Number) partitionStyle=$($bootDisk.PartitionStyle)"
             "Secure Boot：$secureBoot"
-            "BitLocker(C:)：$bitlocker"
+            "BitLocker($selectedSource`:)：$bitlocker"
             "WinRE：$winreState"
             '可识别的 NTFS 卷：'
             $volumes
@@ -165,6 +166,13 @@ function Get-DriveIdentityText([string]$driveText) {
     }
 }
 
+function Get-ImageIdentityText([string]$pathText) {
+    $path = $pathText.Trim()
+    if ($path -notmatch '^[A-Za-z]:\\[^\\].*') { return "$pathText（镜像必须是绝对路径）" }
+    $drive = $path.Substring(0, 1)
+    return "镜像绝对路径：$path`n$(Get-DriveIdentityText $drive)"
+}
+
 $systemDrive = if ($env:SystemDrive -match '^[A-Za-z]:$') { $env:SystemDrive.TrimEnd(':') } else { 'C' }
 $candidateLetters = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object {
     $_.DriveLetter -and $_.FileSystem -eq 'NTFS'
@@ -175,9 +183,9 @@ $imageDefault = $candidateLetters | Where-Object {
 } | Select-Object -First 1
 $taskDrive = Add-DriveRow '任务卷盘符' ($(if ($taskDefault) { [string]$taskDefault } else { $systemDrive }))
 $sourceDrive = Add-DriveRow 'Windows 源盘符' $systemDrive
-$imageDrive = Add-DriveRow '镜像卷盘符' ([string]$imageDefault)
+$imagePathDefault = if ($imageDefault) { "$imageDefault`:\BackupRestore\Windows.wim" } else { '' }
+$imagePath = Add-DriveRow '镜像绝对路径' $imagePathDefault
 $targetDrive = Add-DriveRow '还原目标盘符' $systemDrive
-$relativePath = Add-DriveRow '镜像相对路径' 'BackupRestore\Windows.wim'
 $wimIndex = Add-DriveRow 'WIM 索引' '1'
 $bootMenuName = Add-DriveRow '第二系统启动名称' 'Windows Backup'
 $imageInfo = New-Object System.Windows.Controls.TextBlock
@@ -193,9 +201,8 @@ $panel.Children.Add($readImage) | Out-Null
 
 function Read-ImageInfo {
     try {
-        $drive = $imageDrive.Text.Trim().TrimEnd(':')
-        if ($drive -notmatch '^[A-Za-z]$') { throw '镜像卷盘符格式无效。' }
-        $candidate = Join-Path "$drive`:\" $relativePath.Text
+        $candidate = $imagePath.Text.Trim()
+        if ($candidate -notmatch '^[A-Za-z]:\\[^\\].*') { throw '镜像必须使用 Windows 绝对路径，例如 B:\\BackupRestore\\Windows.wim。' }
         if (-not (Test-Path -LiteralPath $candidate)) { throw "WIM 不存在：$candidate" }
         $file = Get-Item -LiteralPath $candidate -ErrorAction Stop
         $actualHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -279,7 +286,6 @@ function Update-ModeFields {
     $isSecondary = $selected -eq 'create-secondary'
     $bootMenuName.IsEnabled = $isSecondary
     $targetDrive.IsEnabled = $isSecondary -or $selected -eq 'restore-existing'
-    $relativePath.IsEnabled = $selected -ne 'probe'
     $wimIndex.IsEnabled = $selected -ne 'probe'
     if ($selected -eq 'restore-existing') {
         $targetDrive.Text = $sourceDrive.Text
@@ -287,9 +293,9 @@ function Update-ModeFields {
     }
     if ($selected -eq 'probe') {
         $targetDrive.IsEnabled = $false
-        $imageDrive.IsEnabled = $false
+        $imagePath.IsEnabled = $false
     } else {
-        $imageDrive.IsEnabled = $true
+        $imagePath.IsEnabled = $true
     }
     switch ($selected) {
         'probe' { $warning.Text = '无破坏探测：验证 WinRE 载荷和卷身份，不会格式化、应用镜像或重启。' }
@@ -309,7 +315,7 @@ $button.Add_Click({
     $identityLines = @(
         (Get-DriveIdentityText $taskDrive.Text),
         (Get-DriveIdentityText $sourceDrive.Text),
-        (Get-DriveIdentityText $imageDrive.Text),
+        (Get-ImageIdentityText $imagePath.Text),
         (Get-DriveIdentityText $targetDrive.Text)
     )
     $identity.Text = ($identityLines -join "`n")
@@ -321,7 +327,7 @@ $button.Add_Click({
         [System.Windows.MessageBox]::Show($status.Text, '参数校验失败', 'OK', 'Error') | Out-Null
         return
     }
-    if ($identityLines | Where-Object { $_ -match '格式无效|无法读取' }) {
+    if ($identityLines | Where-Object { $_ -match '格式无效|无法读取|镜像必须是绝对路径' }) {
         $status.Text = '身份校验失败：请修正盘符后重试。'
         [System.Windows.MessageBox]::Show($status.Text, '身份校验失败', 'OK', 'Error') | Out-Null
         return
@@ -336,8 +342,8 @@ $button.Add_Click({
     }
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $runner,
         '-Operation', $selected, '-TaskDrive', $taskDrive.Text.Trim(':').Trim(),
-        '-SourceDrive', $sourceDrive.Text.Trim(':').Trim(), '-ImageDrive', $imageDrive.Text.Trim(':').Trim(),
-        '-TargetDrive', $targetDrive.Text.Trim(':').Trim(), '-ImageRelativePath', $relativePath.Text,
+        '-SourceDrive', $sourceDrive.Text.Trim(':').Trim(),
+        '-TargetDrive', $targetDrive.Text.Trim(':').Trim(), '-ImagePath', $imagePath.Text.Trim(),
         '-WimIndex', [string]$parsedWimIndex, '-BootMenuName', $bootMenuName.Text)
     # 只有两种还原模式允许破坏性参数；probe/backup 永远不带它。
     if ($selected -in @('restore-existing', 'create-secondary')) { $arguments += '-AllowDestructive' }

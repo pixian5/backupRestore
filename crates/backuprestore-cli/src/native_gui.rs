@@ -39,10 +39,10 @@ const ES_MULTILINE: u32 = 0x0004;
 const ES_AUTOVSCROLL: u32 = 0x0040;
 const CBS_DROPDOWNLIST: u32 = 0x0003;
 const CB_ADDSTRING: u32 = 0x0143;
+const CB_RESETCONTENT: u32 = 0x014b;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
-const CB_GETLBTEXTLEN: u32 = 0x0149;
-const CB_GETLBTEXT: u32 = 0x0148;
+const CBN_SELCHANGE: usize = 1;
 const SW_SHOWNORMAL: i32 = 1;
 const MB_OK: u32 = 0x00000000;
 const MB_ICONERROR: u32 = 0x00000010;
@@ -54,6 +54,8 @@ const ID_REFRESH: usize = 1001;
 const ID_READ_IMAGE: usize = 1002;
 const ID_CREATE_TASK: usize = 1003;
 const ID_REFRESH_TASK: usize = 1004;
+const ID_LANGUAGE: usize = 1005;
+const ID_BROWSE_IMAGE: usize = 1006;
 const ID_OPERATION: usize = 1100;
 const ID_TASK: usize = 1101;
 const ID_SOURCE: usize = 1102;
@@ -63,11 +65,42 @@ const ID_RELATIVE: usize = 1105;
 const ID_INDEX: usize = 1106;
 const ID_MENU: usize = 1107;
 const ID_STATUS: usize = 1200;
+const ID_LANGUAGE_LABEL: usize = 2009;
+const OFN_PATHMUSTEXIST: u32 = 0x00000800;
+const OFN_FILEMUSTEXIST: u32 = 0x00001000;
+const OFN_OVERWRITEPROMPT: u32 = 0x00000002;
 
 #[repr(C)]
 struct Point {
     x: i32,
     y: i32,
+}
+
+#[repr(C)]
+struct OpenFileNameW {
+    l_struct_size: u32,
+    hwnd_owner: Hwnd,
+    h_instance: HInstance,
+    lpstr_filter: *const u16,
+    lpstr_custom_filter: *mut u16,
+    n_max_cust_filter: u32,
+    n_filter_index: u32,
+    lpstr_file: *mut u16,
+    n_max_file: u32,
+    lpstr_file_title: *mut u16,
+    n_max_file_title: u32,
+    lpstr_initial_dir: *const u16,
+    lpstr_title: *const u16,
+    flags: u32,
+    n_file_offset: u16,
+    n_file_extension: u16,
+    lpstr_def_ext: *const u16,
+    l_cust_data: isize,
+    lpfn_hook: *mut c_void,
+    lp_template_name: *const u16,
+    pv_reserved: *mut c_void,
+    dw_reserved: u32,
+    flags_ex: u32,
 }
 
 #[repr(C)]
@@ -118,6 +151,7 @@ unsafe extern "system" {
     fn DispatchMessageW(message: *const Msg) -> LResult;
     fn GetMessageW(message: *mut Msg, hwnd: Hwnd, min: u32, max: u32) -> i32;
     fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
+    fn GetDlgItem(hwnd: Hwnd, id: i32) -> Hwnd;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, flags: u32) -> i32;
     fn PostQuitMessage(exit_code: i32);
     fn SendMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> LResult;
@@ -125,6 +159,12 @@ unsafe extern "system" {
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
     fn ShowWindow(hwnd: Hwnd, command: i32) -> i32;
     fn TranslateMessage(message: *const Msg) -> i32;
+}
+
+#[link(name = "comdlg32")]
+unsafe extern "system" {
+    fn GetOpenFileNameW(file_name: *mut OpenFileNameW) -> i32;
+    fn GetSaveFileNameW(file_name: *mut OpenFileNameW) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -147,6 +187,7 @@ unsafe extern "system" {
 const GWLP_USERDATA: i32 = -21;
 
 struct Controls {
+    language: Hwnd,
     operation: Hwnd,
     task: Hwnd,
     source: Hwnd,
@@ -162,6 +203,60 @@ struct State {
     root: Hwnd,
     controls: Controls,
     executable_dir: PathBuf,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Language {
+    Chinese,
+    English,
+}
+
+fn ui_text(language: Language, key: &str) -> &'static str {
+    match (language, key) {
+        (Language::Chinese, "operation") => "操作模式",
+        (Language::Chinese, "task") => "任务卷盘符",
+        (Language::Chinese, "source") => "Windows 源盘符",
+        (Language::Chinese, "image") => "镜像绝对路径",
+        (Language::Chinese, "target") => "还原目标盘符",
+        (Language::Chinese, "relative") => "镜像绝对路径",
+        (Language::Chinese, "index") => "WIM 索引",
+        (Language::Chinese, "menu") => "第二系统名称",
+        (Language::Chinese, "language") => "语言 / Language",
+        (Language::Chinese, "refresh") => "刷新环境",
+        (Language::Chinese, "read_image") => "读取镜像",
+        (Language::Chinese, "browse") => "浏览…",
+        (Language::Chinese, "create_task") => "创建任务",
+        (Language::Chinese, "refresh_task") => "刷新任务状态",
+        (Language::Chinese, "initial_status") => {
+            "先点击“刷新环境”确认 Windows、WinRE 和卷身份。默认模式为无破坏 probe。"
+        }
+        (Language::Chinese, "probe") => "probe（探测）",
+        (Language::Chinese, "backup") => "backup（备份）",
+        (Language::Chinese, "restore") => "restore-existing（单系统还原）",
+        (Language::Chinese, "secondary") => "create-secondary（第二系统）",
+        (Language::English, "operation") => "Operation",
+        (Language::English, "task") => "Task volume",
+        (Language::English, "source") => "Windows source",
+        (Language::English, "image") => "Image absolute path",
+        (Language::English, "target") => "Restore target",
+        (Language::English, "relative") => "Image absolute path",
+        (Language::English, "index") => "WIM index",
+        (Language::English, "menu") => "Secondary boot name",
+        (Language::English, "language") => "Language / 语言",
+        (Language::English, "refresh") => "Refresh environment",
+        (Language::English, "read_image") => "Read image",
+        (Language::English, "browse") => "Browse…",
+        (Language::English, "create_task") => "Create task",
+        (Language::English, "refresh_task") => "Refresh task status",
+        (Language::English, "initial_status") => {
+            "Click Refresh environment to inspect Windows, WinRE and volume identities. Default mode is non-destructive probe."
+        }
+        (Language::English, "probe") => "probe",
+        (Language::English, "backup") => "backup",
+        (Language::English, "restore") => "restore-existing",
+        (Language::English, "secondary") => "create-secondary",
+        _ => "",
+    }
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -209,28 +304,79 @@ unsafe fn get_text(hwnd: Hwnd) -> String {
     String::from_utf16_lossy(&buffer[..length])
 }
 
-unsafe fn combo_text(hwnd: Hwnd) -> String {
-    let index = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
-    if index < 0 {
-        return String::new();
-    }
-    let length = SendMessageW(hwnd, CB_GETLBTEXTLEN, index as usize, 0);
-    if length < 0 {
-        return String::new();
-    }
-    let mut buffer = vec![0u16; length as usize + 1];
-    SendMessageW(
-        hwnd,
-        CB_GETLBTEXT,
-        index as usize,
-        buffer.as_mut_ptr() as isize,
-    );
-    String::from_utf16_lossy(&buffer[..length as usize])
-}
-
 unsafe fn add_combo_item(hwnd: Hwnd, value: &str) {
     let value = wide(value);
     SendMessageW(hwnd, CB_ADDSTRING, 0, value.as_ptr() as isize);
+}
+
+unsafe fn reset_combo(hwnd: Hwnd) {
+    SendMessageW(hwnd, CB_RESETCONTENT, 0, 0);
+}
+
+unsafe fn combo_index(hwnd: Hwnd) -> usize {
+    let index = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
+    if index < 0 { 0 } else { index as usize }
+}
+
+unsafe fn selected_language(state: &State) -> Language {
+    if combo_index(state.controls.language) == 1 {
+        Language::English
+    } else {
+        Language::Chinese
+    }
+}
+
+unsafe fn set_child_text(parent: Hwnd, id: usize, value: &str) {
+    let child = GetDlgItem(parent, id as i32);
+    if !child.is_null() {
+        set_text(child, value);
+    }
+}
+
+unsafe fn set_operation_items(state: &State, language: Language) {
+    let selected = combo_index(state.controls.operation);
+    reset_combo(state.controls.operation);
+    for key in ["probe", "backup", "restore", "secondary"] {
+        add_combo_item(state.controls.operation, ui_text(language, key));
+    }
+    SendMessageW(state.controls.operation, CB_SETCURSEL, selected.min(3), 0);
+}
+
+unsafe fn selected_operation(state: &State) -> &'static str {
+    match combo_index(state.controls.operation) {
+        1 => "backup",
+        2 => "restore-existing",
+        3 => "create-secondary",
+        _ => "probe",
+    }
+}
+
+unsafe fn apply_language(state: &State) {
+    let language = selected_language(state);
+    set_operation_items(state, language);
+    for (id, key) in [
+        (2001, "operation"),
+        (2002, "task"),
+        (2003, "source"),
+        (2004, "image"),
+        (2005, "target"),
+        (2006, "relative"),
+        (2007, "index"),
+        (2008, "menu"),
+        (ID_LANGUAGE_LABEL, "language"),
+    ] {
+        set_child_text(state.root, id, ui_text(language, key));
+    }
+    for (id, key) in [
+        (ID_REFRESH, "refresh"),
+        (ID_READ_IMAGE, "read_image"),
+        (ID_BROWSE_IMAGE, "browse"),
+        (ID_CREATE_TASK, "create_task"),
+        (ID_REFRESH_TASK, "refresh_task"),
+    ] {
+        set_child_text(state.root, id, ui_text(language, key));
+    }
+    set_text(state.controls.status, ui_text(language, "initial_status"));
 }
 
 fn quote_argument(value: &str) -> String {
@@ -268,21 +414,56 @@ unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32
 }
 
 unsafe fn refresh_environment(state: &State) {
+    let language = selected_language(state);
     set_text(
         state.controls.status,
-        "正在刷新 Windows、WinRE 和 NTFS 卷信息…",
+        if language == Language::English {
+            "Refreshing Windows, WinRE and NTFS volume information…"
+        } else {
+            "正在刷新 Windows、WinRE 和 NTFS 卷信息…"
+        },
     );
     let text = powershell_output(
         r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:') + $vol -join [Environment]::NewLine"#,
     );
+    let text = if language == Language::English {
+        text
+    } else {
+        text.replace("Windows:", "Windows：")
+            .replace("Firmware:", "固件：")
+            .replace("NTFS volumes:", "NTFS 卷：")
+    };
     set_text(state.controls.status, &text);
 }
 
 unsafe fn refresh_task_status(state: &State) {
-    set_text(state.controls.status, "正在读取最近任务状态…");
+    let language = selected_language(state);
+    set_text(
+        state.controls.status,
+        if language == Language::English {
+            "Reading the latest task status…"
+        } else {
+            "正在读取最近任务状态…"
+        },
+    );
     let text = powershell_output(
         r#"$p=Join-Path $env:ProgramData 'BackupRestore\last-task.json'; if(-not(Test-Path -LiteralPath $p)){ '尚未找到最近任务记录。' } else { try { $r=Get-Content -LiteralPath $p -Raw|ConvertFrom-Json; $lines=@("任务 ID：$($r.taskId)","操作：$($r.operation)","任务目录：$($r.taskRoot)","准备日志：$($r.prepareLog)","恢复日志：$($r.recoveryLog)"); if($r.statusJson -and (Test-Path -LiteralPath $r.statusJson)){ $s=Get-Content -LiteralPath $r.statusJson -Raw|ConvertFrom-Json; $lines += "状态：$($s|ConvertTo-Json -Compress)" } else { $lines += '状态：status.json 不可读或尚未生成' }; $lines -join [Environment]::NewLine } catch { "读取任务状态失败：$($_.Exception.Message)" } }"#,
     );
+    let text = if language == Language::English {
+        text.replace("任务 ID：", "Task ID: ")
+            .replace("操作：", "Operation: ")
+            .replace("任务目录：", "Task root: ")
+            .replace("准备日志：", "Prepare log: ")
+            .replace("恢复日志：", "Recovery log: ")
+            .replace("状态：", "Status: ")
+            .replace(
+                "状态：status.json 不可读或尚未生成",
+                "Status: status.json is unavailable",
+            )
+            .replace("读取任务状态失败：", "Task status read failed: ")
+    } else {
+        text
+    };
     set_text(state.controls.status, &text);
 }
 
@@ -316,34 +497,112 @@ fn normalize_drive(value: String, label: &str) -> Result<String, String> {
 }
 
 unsafe fn read_image(state: &State) {
-    let image = match normalize_drive(get_text(state.controls.image), "镜像卷") {
-        Ok(value) => value,
-        Err(error) => {
-            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
-            return;
-        }
-    };
-    let relative = get_text(state.controls.relative).trim().to_string();
-    if let Err(error) = backuprestore_core::validate_relative_path(&relative) {
+    let language = selected_language(state);
+    let image_path = get_text(state.controls.image).trim().to_string();
+    if let Err(error) = backuprestore_core::validate_absolute_path(&image_path) {
         show_message(
             state.root,
-            &format!("镜像相对路径无效：{error}"),
-            "参数校验失败",
+            &if language == Language::English {
+                format!("Invalid image absolute path: {error}")
+            } else {
+                format!("镜像绝对路径无效：{error}")
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
             MB_OK | MB_ICONERROR,
         );
         return;
     }
     let command = format!(
-        "$p=Join-Path {} {} ; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $m=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $p) 'metadata.json') -Raw|ConvertFrom-Json; \"image=$p`nsha256=$h`nmetadata=$($m.imageSha256)`nminimumTarget=$($m.minimumTargetSize)\"",
-        powershell_single_quote(&format!("{}:\\", image)),
-        powershell_single_quote(&relative),
+        "$p={}; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $m=Get-Content -LiteralPath (Join-Path (Split-Path -Parent $p) 'metadata.json') -Raw|ConvertFrom-Json; \"image=$p`nsha256=$h`nmetadata=$($m.imageSha256)`nminimumTarget=$($m.minimumTargetSize)\"",
+        powershell_single_quote(&image_path),
     );
     let text = powershell_output(&command);
+    let text = if language == Language::English {
+        text.replace("image=", "Image: ")
+            .replace("sha256=", "SHA-256: ")
+            .replace("metadata=", "Metadata SHA-256: ")
+            .replace("minimumTarget=", "Minimum target size: ")
+    } else {
+        text.replace("image=", "镜像：")
+            .replace("sha256=", "SHA-256：")
+            .replace("metadata=", "metadata SHA-256：")
+            .replace("minimumTarget=", "最小目标容量：")
+    };
     set_text(state.controls.status, &text);
 }
 
+unsafe fn browse_image(state: &State) {
+    let language = selected_language(state);
+    let operation = selected_operation(state);
+    let mut buffer = vec![0_u16; 32768];
+    let current = get_text(state.controls.image);
+    let current_wide = wide(&current);
+    let copy_len = current_wide.len().saturating_sub(1).min(buffer.len() - 1);
+    buffer[..copy_len].copy_from_slice(&current_wide[..copy_len]);
+    let filter = wide("WIM image (*.wim)\0*.wim\0All files (*.*)\0*.*\0\0");
+    let title = wide(if operation == "backup" {
+        if language == Language::English {
+            "Choose backup image destination"
+        } else {
+            "选择备份镜像保存位置"
+        }
+    } else if language == Language::English {
+        "Choose restore image"
+    } else {
+        "选择还原镜像"
+    });
+    let extension = wide("wim");
+    let mut dialog = OpenFileNameW {
+        l_struct_size: size_of::<OpenFileNameW>() as u32,
+        hwnd_owner: state.root,
+        h_instance: null_mut(),
+        lpstr_filter: filter.as_ptr(),
+        lpstr_custom_filter: null_mut(),
+        n_max_cust_filter: 0,
+        n_filter_index: 1,
+        lpstr_file: buffer.as_mut_ptr(),
+        n_max_file: buffer.len() as u32,
+        lpstr_file_title: null_mut(),
+        n_max_file_title: 0,
+        lpstr_initial_dir: null(),
+        lpstr_title: title.as_ptr(),
+        flags: OFN_PATHMUSTEXIST
+            | if operation == "backup" {
+                OFN_OVERWRITEPROMPT
+            } else {
+                OFN_FILEMUSTEXIST
+            },
+        n_file_offset: 0,
+        n_file_extension: 0,
+        lpstr_def_ext: extension.as_ptr(),
+        l_cust_data: 0,
+        lpfn_hook: null_mut(),
+        lp_template_name: null(),
+        pv_reserved: null_mut(),
+        dw_reserved: 0,
+        flags_ex: 0,
+    };
+    let accepted = if operation == "backup" {
+        GetSaveFileNameW(&mut dialog)
+    } else {
+        GetOpenFileNameW(&mut dialog)
+    };
+    if accepted != 0 {
+        let length = buffer.iter().position(|value| *value == 0).unwrap_or(0);
+        set_text(
+            state.controls.image,
+            &String::from_utf16_lossy(&buffer[..length]),
+        );
+    }
+}
+
 unsafe fn create_task(state: &State) {
-    let operation = combo_text(state.controls.operation);
+    let language = selected_language(state);
+    let operation = selected_operation(state).to_string();
     let index = get_text(state.controls.index);
     if index
         .parse::<u32>()
@@ -353,67 +612,165 @@ unsafe fn create_task(state: &State) {
     {
         show_message(
             state.root,
-            "WIM 索引必须是大于等于 1 的整数。",
-            "参数校验失败",
+            if language == Language::English {
+                "WIM index must be a positive integer."
+            } else {
+                "WIM 索引必须是大于等于 1 的整数。"
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
             MB_OK | MB_ICONERROR,
         );
         return;
     }
-    let task_drive = match normalize_drive(get_text(state.controls.task), "任务卷") {
+    let task_drive = match normalize_drive(
+        get_text(state.controls.task),
+        if language == Language::English {
+            "Task volume"
+        } else {
+            "任务卷"
+        },
+    ) {
         Ok(value) => value,
         Err(error) => {
-            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            show_message(
+                state.root,
+                &error,
+                if language == Language::English {
+                    "Validation failed"
+                } else {
+                    "参数校验失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
             return;
         }
     };
-    let source_drive = match normalize_drive(get_text(state.controls.source), "源卷") {
+    let source_drive = match normalize_drive(
+        get_text(state.controls.source),
+        if language == Language::English {
+            "Source volume"
+        } else {
+            "源卷"
+        },
+    ) {
         Ok(value) => value,
         Err(error) => {
-            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
+            show_message(
+                state.root,
+                &error,
+                if language == Language::English {
+                    "Validation failed"
+                } else {
+                    "参数校验失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
             return;
         }
     };
-    let image_drive = match normalize_drive(get_text(state.controls.image), "镜像卷") {
-        Ok(value) => value,
-        Err(error) => {
-            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
-            return;
-        }
-    };
-    let target_drive = match normalize_drive(get_text(state.controls.target), "目标卷") {
-        Ok(value) => value,
-        Err(error) => {
-            show_message(state.root, &error, "参数校验失败", MB_OK | MB_ICONERROR);
-            return;
-        }
-    };
+    let image_path = get_text(state.controls.image).trim().to_string();
+    if operation != "probe"
+        && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
+    {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!("Invalid image absolute path: {error}")
+            } else {
+                format!("镜像绝对路径无效：{error}")
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    let image_path = image_path;
+    let image_drive = image_path
+        .chars()
+        .next()
+        .map(|value| value.to_ascii_uppercase().to_string())
+        .unwrap_or_default();
     if operation != "probe" && image_drive == source_drive {
         show_message(
             state.root,
-            "镜像卷不能与 Windows 源卷相同。",
-            "参数校验失败",
+            if language == Language::English {
+                "Image volume must differ from the Windows source volume."
+            } else {
+                "镜像卷不能与 Windows 源卷相同。"
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
             MB_OK | MB_ICONERROR,
         );
         return;
     }
-    let summary = format!(
-        "模式：{operation}\n任务卷：{}\n源卷：{}\n镜像卷：{}\n目标卷：{}\n镜像：{}\\{}\nWIM 索引：{index}",
-        task_drive,
-        source_drive,
-        image_drive,
-        target_drive,
-        image_drive,
-        get_text(state.controls.relative),
-    );
+    let target_drive = match normalize_drive(
+        get_text(state.controls.target),
+        if language == Language::English {
+            "Restore target"
+        } else {
+            "目标卷"
+        },
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            show_message(
+                state.root,
+                &error,
+                if language == Language::English {
+                    "Validation failed"
+                } else {
+                    "参数校验失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+    };
+    let summary = if language == Language::English {
+        format!(
+            "Mode: {operation}\nTask volume: {task_drive}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}",
+        )
+    } else {
+        format!(
+            "模式：{operation}\n任务卷：{task_drive}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
+        )
+    };
     if matches!(operation.as_str(), "restore-existing" | "create-secondary")
         && show_message(
             state.root,
-            &format!("{summary}\n\n目标分区将被覆盖，确认继续？"),
-            "破坏性确认",
+            &if language == Language::English {
+                format!("{summary}\n\nThe target partition will be overwritten. Continue?")
+            } else {
+                format!("{summary}\n\n目标分区将被覆盖，确认继续？")
+            },
+            if language == Language::English {
+                "Destructive confirmation"
+            } else {
+                "破坏性确认"
+            },
             MB_YESNO | MB_ICONWARNING,
         ) != IDYES
     {
-        set_text(state.controls.status, "用户取消了破坏性任务。");
+        set_text(
+            state.controls.status,
+            if language == Language::English {
+                "The destructive task was cancelled."
+            } else {
+                "用户取消了破坏性任务。"
+            },
+        );
         return;
     }
     let script = state.executable_dir.join("BackupRestore.ps1");
@@ -429,12 +786,10 @@ unsafe fn create_task(state: &State) {
         task_drive.clone(),
         "-SourceDrive".to_string(),
         source_drive,
-        "-ImageDrive".to_string(),
-        image_drive,
         "-TargetDrive".to_string(),
         target_drive,
-        "-ImageRelativePath".to_string(),
-        get_text(state.controls.relative),
+        "-ImagePath".to_string(),
+        image_path,
         "-WimIndex".to_string(),
         index,
         "-BootMenuName".to_string(),
@@ -462,7 +817,13 @@ unsafe fn create_task(state: &State) {
     if result <= 32 {
         set_text(
             state.controls.status,
-            &format!("无法启动管理员准备脚本，ShellExecute 错误码：{result}"),
+            &if language == Language::English {
+                format!(
+                    "Could not start the elevated preparation script (ShellExecute code {result})."
+                )
+            } else {
+                format!("无法启动管理员准备脚本，ShellExecute 错误码：{result}")
+            },
         );
     } else {
         set_text(
@@ -484,7 +845,23 @@ unsafe extern "system" fn window_proc(
             .and_then(|path| path.parent().map(|value| value.to_path_buf()))
             .unwrap_or_default();
         let (system_drive, task_drive, image_drive) = suggested_drive_defaults();
+        let image_path = if image_drive.is_empty() {
+            String::new()
+        } else {
+            format!(r"{}:\BackupRestore\Windows.wim", image_drive)
+        };
         let controls = Controls {
+            language: create_control(
+                hwnd,
+                "COMBOBOX",
+                "中文",
+                CBS_DROPDOWNLIST | WS_TABSTOP,
+                430,
+                18,
+                120,
+                300,
+                ID_LANGUAGE,
+            ),
             operation: create_control(
                 hwnd,
                 "COMBOBOX",
@@ -521,11 +898,11 @@ unsafe extern "system" fn window_proc(
             image: create_control(
                 hwnd,
                 "EDIT",
-                &image_drive,
+                &image_path,
                 WS_BORDER | WS_TABSTOP,
                 160,
                 160,
-                220,
+                360,
                 24,
                 ID_IMAGE,
             ),
@@ -543,7 +920,7 @@ unsafe extern "system" fn window_proc(
             relative: create_control(
                 hwnd,
                 "EDIT",
-                "BackupRestore\\Windows.wim",
+                "",
                 WS_BORDER | WS_TABSTOP,
                 160,
                 232,
@@ -585,19 +962,33 @@ unsafe extern "system" fn window_proc(
                 ID_STATUS,
             ),
         };
-        add_combo_item(controls.operation, "probe");
-        add_combo_item(controls.operation, "backup");
-        add_combo_item(controls.operation, "restore-existing");
-        add_combo_item(controls.operation, "create-secondary");
+        ShowWindow(controls.relative, 0);
+        add_combo_item(controls.language, "中文");
+        add_combo_item(controls.language, "English");
+        SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
+        add_combo_item(controls.operation, ui_text(Language::Chinese, "probe"));
+        add_combo_item(controls.operation, ui_text(Language::Chinese, "backup"));
+        add_combo_item(controls.operation, ui_text(Language::Chinese, "restore"));
+        add_combo_item(controls.operation, ui_text(Language::Chinese, "secondary"));
         SendMessageW(controls.operation, CB_SETCURSEL, 0, 0);
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
         create_control(hwnd, "STATIC", "任务卷盘符", 0, 20, 91, 130, 22, 2002);
         create_control(hwnd, "STATIC", "Windows 源盘符", 0, 20, 127, 130, 22, 2003);
-        create_control(hwnd, "STATIC", "镜像卷盘符", 0, 20, 163, 130, 22, 2004);
+        create_control(hwnd, "STATIC", "镜像绝对路径", 0, 20, 163, 130, 22, 2004);
         create_control(hwnd, "STATIC", "还原目标盘符", 0, 20, 199, 130, 22, 2005);
-        create_control(hwnd, "STATIC", "镜像相对路径", 0, 20, 235, 130, 22, 2006);
         create_control(hwnd, "STATIC", "WIM 索引", 0, 20, 271, 130, 22, 2007);
         create_control(hwnd, "STATIC", "第二系统名称", 0, 20, 307, 130, 22, 2008);
+        create_control(
+            hwnd,
+            "STATIC",
+            ui_text(Language::Chinese, "language"),
+            0,
+            430,
+            0,
+            120,
+            18,
+            ID_LANGUAGE_LABEL,
+        );
         create_control(
             hwnd,
             "BUTTON",
@@ -619,6 +1010,17 @@ unsafe extern "system" fn window_proc(
             120,
             28,
             ID_READ_IMAGE,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
+            "浏览…",
+            WS_TABSTOP,
+            525,
+            160,
+            60,
+            24,
+            ID_BROWSE_IMAGE,
         );
         create_control(
             hwnd,
@@ -647,16 +1049,25 @@ unsafe extern "system" fn window_proc(
             controls,
             executable_dir,
         });
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        let state_ptr = Box::into_raw(state);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        apply_language(&*state_ptr);
         return 0;
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
     if !state_ptr.is_null() {
         let state = &*state_ptr;
         if message == WM_COMMAND {
-            match w_param & 0xffff {
+            let control_id = w_param & 0xffff;
+            let notification = (w_param >> 16) & 0xffff;
+            if control_id == ID_LANGUAGE && notification == CBN_SELCHANGE {
+                apply_language(state);
+                return 0;
+            }
+            match control_id {
                 ID_REFRESH => refresh_environment(state),
                 ID_READ_IMAGE => read_image(state),
+                ID_BROWSE_IMAGE => browse_image(state),
                 ID_CREATE_TASK => create_task(state),
                 ID_REFRESH_TASK => refresh_task_status(state),
                 _ => {}

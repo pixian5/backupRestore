@@ -410,8 +410,9 @@ task.json
 
 用户主动选择建立双系统时，`operation` 使用 `create-secondary`，`target.role` 为
 `new-windows`，`bootPlan.mode` 为 `add-secondary`，并记录用户确认的
-启动菜单名称。所有镜像路径必须通过卷身份加相对路径表达，禁止把可变
-盘符写入任务作为唯一定位方式。
+启动菜单名称。GUI/PowerShell 接收用户选择的 Windows 绝对镜像路径（例如
+`B:\BackupRestore\Windows.wim`），同时在任务中记录镜像卷身份；为适应 WinRE
+换盘符，任务还可保存经过校验的卷内相对路径，但绝不能把可变盘符作为唯一定位方式。
 
 Recovery.exe 启动后：
 
@@ -737,7 +738,7 @@ Windows -> 临时 WinRE 副本 -> 启动器 -> Recovery.exe -> 返回原系统
 ```text
 task version
 operation
-卷身份、相对路径和目标身份
+卷身份、绝对镜像路径（以及供 WinRE 重挂载使用的受校验卷内路径）和目标身份
 WIM existence
 WIM validity
 image SHA-256

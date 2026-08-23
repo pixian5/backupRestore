@@ -26,7 +26,7 @@
 - Recovery.exe 按持久化阶段断点续跑：备份在 `capturing` 阶段重做临时 WIM；还原从 `target-erased`、`image-applied` 或 `boot-repaired` 选择性重做，并在 BCDBoot 失败时保留 BCD 回滚边界。
 - 旧版 PowerShell GUI 曾拆为“首页/环境”“备份与还原”“任务结果/日志”三个页面；当前默认入口已收口为 Rust Win32 单窗口，保留同一安全文案和四种操作模式，探测不携带破坏性开关。
 - 准备脚本在 `C:\ProgramData\BackupRestore\last-task.json` 写入最近任务指针；Rust GUI 的“刷新任务状态”可回读 task ID、任务目录、status.json、Recovery.log 和 prepare.log，并明确任务准备不等于 WinRE 恢复成功。
-- 无 Rust 可执行文件的 `Recovery.cmd` 兼容入口增加任务 ID、任务路径、镜像相对路径和保留分区类型检查；RecoveryTask.env 同步记录镜像/目标分区类型、文件系统和卷序列号。
+- 无 Rust 可执行文件的 `Recovery.cmd` 兼容入口增加任务 ID、任务路径、镜像绝对路径和保留分区类型检查；RecoveryTask.env 同步记录用户选择的 `IMAGE_ABSOLUTE_PATH`，并保留经过校验的卷内路径供 WinRE 换盘符后使用。
 - `docs/verification-matrix.md` 按每一项需求列出代码证据、离线证据与实机验收证据，后续交接不得用 AST/单元测试替代自动重启、DISM、格式化或 BCD 证据。
 - `probe` 允许任务目录与源分区相同：WinRE 先验证并挂载任务卷为 `T:`，若源与任务是同一分区则复用 `T:`，不再二次分配 `S:`；真实 backup/restore 仍拒绝任务卷与源或目标重合。
 - 2026-08-21 修复 WinRE 盘符复用：恢复主机现在先按卷 GUID 扫描 `C:` 到 `Z:` 的已有挂载，任务卷、Recovery 卷、源/镜像/目标卷和 EFI 均复用已存在盘符；只有找不到匹配卷时才执行 `mountvol`/DiskPart 分配。实际使用的盘符会回写到任务内存模型，清理原始 WinRE 也使用实际 Recovery 盘符，避免 WinRE 保留 `C:` 时重复分配 `T:` 卡死。
@@ -54,10 +54,13 @@ macOS 本地已完成：
 - 2026-08-22 Windows PowerShell 5.1 GUI 烟测首次发现 here-string 解析失败，已改为字符串数组拼接并纳入后续 ARM64 包重建门槛；macOS PowerShell 7 AST 不能替代目标 Windows PowerShell 5.1 解析。
 - 2026-08-22 GUI 技术路线纠正：用户要求 Rust 开发，`BackupRestore.exe` 已改为直接进入 `native_gui.rs` 的 Win32 原生窗口；它用 `ShellExecuteW(runas)` 调起已有管理员准备脚本，Recovery/CLI 仍共用同一 Rust 二进制。PowerShell/WPF 文件不再是默认 GUI 入口，保留仅为兼容和后端脚本调用。
 - 2026-08-22 `v0.4.6` ARM64 构建：Windows VM 使用已有 `aarch64-pc-windows-msvc` 工具链和本地 Cargo target 生成包；`BackupRestore.exe` 的 SHA-256 为 `3180d5b30f34e0c4512c44ad0c8470a0bb7cf1874f6793f97015b884f6061272`，与 `build-manifest.json` 一致，后台进程标题为 `BackupRestore - Rust GUI`。这只证明目标编译和进程烟测，不证明真实按钮、UAC、WinRE 或恢复流程。
-- 2026-08-22 Rust GUI 参数收口：原生窗口从当前系统和已挂载 NTFS 卷生成任务/镜像默认盘符；任务、源、镜像、目标盘符要求单个英文字母，镜像相对路径复用 core 的路径穿越校验；读取镜像使用 PowerShell 单引号转义，非 `probe` 模式拒绝镜像卷与源卷相同，并新增 `last-task.json` 状态刷新按钮。
+- Rust GUI 镜像选择改为绝对 Windows 路径（例如 `B:\BackupRestore\Windows.wim`）；创建任务时从路径根解析镜像卷并记录完整身份，WinRE 仍用同一卷的内部路径重建实际挂载路径。相对路径不再作为用户输入。
+- 2026-08-23 `v0.5.0` ARM64 重建：Windows 参数帮助已显示 `-ImagePath`，旧 `-ImageDrive` / `-ImageRelativePath` 不再是脚本参数；原生 GUI 增加保存/打开文件对话框。ARM64 manifest 与两个二进制哈希均为 `beb50a2f74852285f4508a3b1510ae9f5c2ab7f6dbd02f0b2ca852749ae01073`，`Recovery.exe hash` 返回 0。PowerShell 5.1 兼容前端补充 UTF-8 BOM，目标 Windows AST 解析通过，避免中文 WPF 脚本按系统 ANSI 解码后产生伪语法错误。
 - 2026-08-22 GUI 刷新反馈：环境和最近任务状态按钮在执行 PowerShell 查询前立即显示进行中状态，避免用户误以为按钮没有响应；查询完成后再替换为结果或错误文本。
 - 2026-08-22 隔离恢复收尾：使用 `v0.4.7` 在 Win11 ARM64 VM 的非启动测试卷 `S:` 和独立 EFI `E:` 完成真实 Capture/Apply/格式化/BCDBoot。备份任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 成功，WIM SHA-256 为 `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30`；还原任务 `821eb6af-f13c-46b2-8c1c-af1aa8345e42` 最终为 `success`。高完整性日志包含 `bcdboot.exe S:\Windows /s E:\ /f UEFI /v`、OS loader identifier 和成功返回；管理员 `bcdedit /store E:\EFI\Microsoft\Boot\BCD /enum all /v` 返回 0。该测试没有让 VM 从 E: 实际启动，因此不外推为真实恢复盘重启成功。
 - 2026-08-22 `v0.4.8` ARM64 构建：源码通过共享桌面压缩传输到 `C:\BackupRestoreBuild\source-v0.4.8`，使用既有 `aarch64-pc-windows-msvc` 工具链和 VM 本地 target 离线构建成功。`build-manifest.json`、`BackupRestore.exe`、`Recovery.exe` 的 SHA-256 均为 `526c612d8222920bf76f91e4fb4b04ff413cd555a7f9969f802cb6c0ca798050`；`Recovery.exe hash .\Recovery.exe` 返回 0，GUI 进程标题为 `BackupRestore - Rust GUI`。这只证明版本、架构、载荷哈希和启动烟测，不证明真实按钮、UAC、WinRE、DISM、BCDBoot 或重启。
+- 指定分区核实：正常 Windows 准备脚本通过 `-SourceDrive`、`-TargetDrive` 接收任意盘符，镜像卷由 `-ImagePath` 绝对路径的根盘符解析，并在任务 JSON 中持久化完整卷身份；Recovery 只把盘符当临时挂载提示，实际通过 volume/disk/partition GUID、偏移、容量、类型、文件系统和序列号复核。`v0.4.7` 的真实隔离 Capture/Apply 测试使用 `S:` 源/目标、`B:` 镜像和 `E:` 独立 EFI，未触碰真实 `C:`，证明当前路径不是 C: 专用。脚本中的 `C:\ProgramData`、`C:\WinRE-PoC` 仅是主机日志/WinRE 临时日志位置，不是数据源或还原目标。
+- Rust 默认 GUI 增加 `中文` / `English` 选择器：切换会更新操作项、字段标签、按钮、校验、确认和镜像/任务状态摘要；内部仍传递稳定的 `probe`、`backup`、`restore-existing`、`create-secondary` 操作值。旧 WPF 兼容前端仍以中文为主，但其环境页的 BitLocker 查询已改为跟随用户选择的源盘符，不再硬编码 C:。
 - 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 
 ## 尚未宣称完成的实机项

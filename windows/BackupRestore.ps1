@@ -7,10 +7,8 @@ param(
     [ValidatePattern('^[A-Za-z]$')]
     [string]$SourceDrive = 'C',
     [ValidatePattern('^[A-Za-z]$')]
-    [string]$ImageDrive = 'D',
-    [ValidatePattern('^[A-Za-z]$')]
     [string]$TargetDrive = 'C',
-    [string]$ImageRelativePath = 'BackupRestore\Windows.wim',
+    [string]$ImagePath = '',
     [ValidateRange(1, 2147483647)]
     [int]$WimIndex = 1,
     [string]$BootMenuName = 'Windows Backup',
@@ -64,6 +62,42 @@ function Assert-RelativeImagePath([string]$Value) {
         if ([string]::IsNullOrWhiteSpace($part) -or $part -eq '.' -or $part -eq '..') {
             throw 'ImageRelativePath contains an invalid path component.'
         }
+    }
+}
+
+function Assert-AbsoluteImagePath([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Contains([char]0)) {
+        throw 'ImagePath must be a non-empty absolute Windows path.'
+    }
+    $normalized = $Value.Replace('/', '\')
+    if ($normalized -notmatch '^[A-Za-z]:\\[^\\].*') {
+        throw 'ImagePath must use a drive-root form such as B:\\Backups\\Windows.wim.'
+    }
+    $rest = $normalized.Substring(3)
+    if ($rest.EndsWith('\')) { throw 'ImagePath must identify a file, not a volume root.' }
+    foreach ($part in ($rest -split '\\')) {
+        if ([string]::IsNullOrWhiteSpace($part) -or $part -eq '.' -or $part -eq '..') {
+            throw 'ImagePath contains an invalid path component.'
+        }
+    }
+}
+
+function Get-ImagePathInfo([string]$Value) {
+    Assert-AbsoluteImagePath $Value
+    $full = [System.IO.Path]::GetFullPath($Value.Replace('/', '\'))
+    $drive = $full.Substring(0, 1).ToUpperInvariant()
+    $identity = Get-VolumeIdentity $drive
+    $root = "$drive`:\"
+    if (-not $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ImagePath is not rooted on the selected image volume: $full"
+    }
+    $relative = $full.Substring($root.Length)
+    Assert-RelativeImagePath $relative
+    [pscustomobject]@{
+        FullPath = $full
+        Drive = $drive
+        RelativePath = $relative
+        Identity = $identity
     }
 }
 
@@ -249,7 +283,6 @@ function Invoke-Native([string]$File, [string[]]$Arguments, [string]$LogFile) {
 
 Require-Administrator
 Assert-SystemEnvironment
-Assert-RelativeImagePath $ImageRelativePath
 Assert-BootMenuName $BootMenuName
 if (-not (Test-Path $recoveryCmd) -or -not (Test-Path $recoveryLauncher) -or -not (Test-Path $recoveryShell)) { throw 'Recovery payload files are missing.' }
 Write-Log "Preparing $Operation task"
@@ -258,6 +291,7 @@ $effectiveOperation = switch ($Operation) {
     'restore' { 'restore-existing' }
     default { $Operation }
 }
+$imageInfo = if ($effectiveOperation -eq 'probe') { $null } else { Get-ImagePathInfo $ImagePath }
 $versionPath = Join-Path $scriptRoot 'VERSION'
 if (-not (Test-Path $versionPath)) { $versionPath = Join-Path $scriptRoot '..\VERSION' }
 $programVersion = (Get-Content $versionPath -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
@@ -265,7 +299,7 @@ if ([string]::IsNullOrWhiteSpace($programVersion)) { $programVersion = '0.0.0' }
 
 $task = Get-VolumeIdentity $TaskDrive
 $source = Get-VolumeIdentity $SourceDrive
-$image = if ($Operation -eq 'probe') { $task } else { Get-VolumeIdentity $ImageDrive }
+$image = if ($effectiveOperation -eq 'probe') { $task } else { $imageInfo.Identity }
 $target = Get-VolumeIdentity $TargetDrive
 $recovery = Get-RecoveryIdentity
 $efi = Get-EfiIdentity
@@ -281,7 +315,8 @@ if ($task.VolumeGuid -in @($recovery.VolumeGuid, $efi.VolumeGuid)) {
 if ($image.VolumeGuid -in @($recovery.VolumeGuid, $efi.VolumeGuid)) {
     throw 'The image volume cannot be the registered Recovery or EFI volume.'
 }
-$imagePath = Join-Path $image.Drive $ImageRelativePath
+$imagePath = if ($imageInfo) { $imageInfo.FullPath } else { '' }
+$imageRelativePath = if ($imageInfo) { $imageInfo.RelativePath } else { '' }
 $minimumTargetSize = [UInt64]0
 $sourceUsedBytes = [UInt64]($source.Size - $source.FreeBytes)
 $reservedBytes = [UInt64](2GB)
@@ -291,7 +326,7 @@ if (-not (Test-Path (Join-Path $source.Drive 'Windows\System32\config\SYSTEM')))
 }
 
 if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-    foreach ($drive in @($SourceDrive, $ImageDrive, $TargetDrive) | Select-Object -Unique) {
+    foreach ($drive in @($SourceDrive, $image.DriveLetter, $TargetDrive) | Select-Object -Unique) {
         $state = Get-BitLockerVolume -MountPoint "$drive`:" -ErrorAction SilentlyContinue
         if ($state -and "$($state.ProtectionStatus)" -match 'On') {
             throw "BitLocker protection is enabled on $drive`:. V1 will not alter or unlock it."
@@ -436,7 +471,8 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     'EFI_MOUNT='
     "EFI_DISK_NUMBER=$($efi.Partition.DiskNumber)"
     "EFI_PARTITION_NUMBER=$($efi.Partition.PartitionNumber)"
-    "IMAGE_RELATIVE_PATH=$ImageRelativePath"
+    "IMAGE_ABSOLUTE_PATH=$imagePath"
+    "IMAGE_RELATIVE_PATH=$imageRelativePath"
     "IMAGE_SHA256=$(if (Test-Path $imagePath) { Get-Sha256 $imagePath } else { '' })"
     "MINIMUM_TARGET_SIZE=$minimumTargetSize"
     "WIM_INDEX=$WimIndex"
@@ -450,7 +486,7 @@ $created = (Get-Date).ToUniversalTime().ToString('o')
     "BOOT_MENU_NAME=$($BootMenuName.Trim())"
 ) | Set-Content (Join-Path $payload 'RecoveryTask.env') -Encoding ascii
 
-$imageRelative = $ImageRelativePath.Replace('/', '\\')
+$imageRelative = $imageRelativePath.Replace('/', '\\')
 $taskJsonPath = Join-Path $taskRoot 'task.json'
 $taskJson = [ordered]@{
     taskId = $taskId
@@ -460,12 +496,13 @@ $taskJson = [ordered]@{
     taskVolume = Convert-Identity $task
     image = if ($effectiveOperation -in @('restore-existing', 'create-secondary')) { [ordered]@{
         volume = Convert-Identity $image
+        absolutePath = $imagePath
         relativePath = $imageRelative
-        sha256 = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Sha256 (Join-Path $image.Drive $imageRelative)).ToLowerInvariant() } else { '0' * 64 }
-        sizeBytes = if (Test-Path (Join-Path $image.Drive $imageRelative)) { (Get-Item (Join-Path $image.Drive $imageRelative)).Length } else { 0 }
+        sha256 = if (Test-Path $imagePath) { (Get-Sha256 $imagePath).ToLowerInvariant() } else { '0' * 64 }
+        sizeBytes = if (Test-Path $imagePath) { (Get-Item $imagePath).Length } else { 0 }
         index = $WimIndex
     } } else { $null }
-    destination = if ($effectiveOperation -eq 'backup') { [ordered]@{ volume = Convert-Identity $image; relativePath = $imageRelative } } else { $null }
+    destination = if ($effectiveOperation -eq 'backup') { [ordered]@{ volume = Convert-Identity $image; absolutePath = $imagePath; relativePath = $imageRelative } } else { $null }
     target = if ($effectiveOperation -in @('restore-existing', 'create-secondary')) { [ordered]@{
         volume = Convert-Identity $target
         role = if ($effectiveOperation -eq 'create-secondary') { 'new-windows' } else { 'existing-windows' }
