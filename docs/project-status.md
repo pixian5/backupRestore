@@ -162,3 +162,23 @@ git diff --check
 2026-08-25 `v0.6.5` 最终客体验收：ARM64 包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.6.5` 已用既有工具链重建，`BackupRestore.exe` PID `9868`，SHA-256 `ddbedf79f00bf209453162f94433eab1c2d235ff014c1d8d400bfd0a577d0bd4`。通过 Windows Console 会话内的 Win32 坐标读取逐页检查：探测页按钮 y=577；备份页镜像 y=577、按钮 y=627；单系统还原/新增第二系统镜像 y=683、WIM/启动名 y=717、按钮 y=757；第二系统最终截图 `.test-artifacts/root-captures/v0.6.5-guest-secondary.png` 确认完整卷 GUID/分区 GUID、镜像路径和按钮均在客户区内，未被任务栏截断。所有客体验证均通过 `prlctl`/Windows 会话完成，没有把 Parallels 控制中心截图当作客体证据。
 
 快照复核同日完成：当前仅保留 `before-v0.3.8-fixture-restore`（`c166ae4e-d976-494a-87dd-03b74de283af`）和当前 `before-v0.3.9-isolated-restore`（`973526bc-e905-4f38-9cf1-2d8037ffef5b`）。两者分别是隔离还原前基线和当前子快照，不属于无用快照；本轮未执行删除或回滚。
+
+2026-08-25 `v0.6.6` WIM 读取修复：Windows 客体中 PowerShell `Get-WindowsImage` 对单索引 WIM 可能返回单对象而非数组，GUI 原先只解析数组分支，误报“WIM contains no selectable image indexes”。新增数组、单对象和 `images` 包装对象的统一解析；用 `B:\BackupRestore\Windows.wim` 的原始 JSON（索引 1、SHA-256 `c08c4e7a...`）复核根因，待新包重新点击“读取镜像”确认下拉框显示索引。
+
+2026-08-25 `v0.6.7` WIM 诊断增强：`v0.6.6` 实机重新点击“读取镜像”仍显示无索引，未宣称修复成功。错误状态现在会把最多 4096 字节的原始索引 JSON 写入中部提示框，下一次客体复核可区分普通权限空结果、包装结构或解析错误。
+
+2026-08-25 `v0.6.8` WIM DISM 回退：实机诊断确认普通 GUI 令牌下 `Get-WindowsImage` 返回 `[]`，而同一客体 `dism /English /Get-WimInfo /WimFile:B:\BackupRestore\Windows.wim` 返回索引 1。新增 DISM 文本解析回退（索引、名称、描述、大小），避免依赖隐藏 UAC 的 PowerShell JSON。待新 ARM64 包点击“读取镜像”确认下拉框显示索引 1。
+
+2026-08-25 `v0.6.9` Windows 编译修复：`v0.6.8` ARM64 构建实际失败，原因是 `Option<u64>` 返回函数中对 `Result` 使用了 `?`；macOS 不编译 Windows 模块，因此离线检查未暴露。已改为 `.ok()?`，必须重新进行 ARM64 构建和 WIM 回退验收。
+
+2026-08-25 `v0.7.0` DISM 回退诊断：`v0.6.9` ARM64 构建成功但 GUI 仍未显示索引，新增回退命令的 stdout/stderr 诊断；后续必须在 Windows ARM64 实机确认命令实际执行与解析结果，不能依据 macOS 检查或独立 PowerShell 命令替代。
+
+2026-08-25 `v0.7.1` GUI 自提升：WIM 回退诊断显示 DISM 错误 740，而 VM UAC 策略是管理员自动提升、无安全桌面提示（`ConsentPromptBehaviorAdmin=0`）。`BackupRestore.exe` GUI 启动时现在读取令牌 elevation；非提升令牌使用 `ShellExecuteW("runas")` 自提升并退出，提升后的 GUI 才创建窗口。待 ARM64 实机确认高完整性令牌和 WIM 索引读取。
+
+2026-08-25 `v0.7.2` 英文标签修复：英语模式原先直接使用内部操作全名，固定标签宽度导致文字裁剪。改为完整可见的简短 UI 名称 `Inspect / Backup / Restore / Second system`；详细行为仍显示在中部说明框，避免丢失语义。
+
+2026-08-25 `v0.7.3` 英文纯净性修复：Windows ARM64 英语截图确认四个简短标签已完整显示，但语言标签仍为 `Language / 语言`。改为英语模式纯 `Language`；中文模式保持 `语言`。
+
+2026-08-25 `v0.7.4` PowerShell 中文输出修复：中文“刷新任务状态”实机显示乱码，根因是 Windows PowerShell 5.1 原生输出代码页被 Rust 以 UTF-8 读取。`powershell_output` 现在在所有隐藏查询前显式设定无 BOM UTF-8 `Console.OutputEncoding` 和 `$OutputEncoding`；待 ARM64 实机重新刷新任务状态验证中文可读。
+
+2026-08-25 `v0.7.4` ARM64 实机收口：使用 Windows ARM64 VM 重新构建并启动最新 GUI，管理员 GUI 读取 B 镜像成功，状态框显示镜像路径、WIM SHA-256 `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30`、metadata SHA-256、最小目标容量和“已读取 1 个 WIM 索引”；单系统还原页下拉框显示 `Index 1 | Windows Backup`。英文模式截图确认四标签为 `Inspect / Backup / Restore / Second system`、语言标签纯 `Language`；中文模式刷新任务状态显示 `任务 ID/操作/任务目录/准备日志/恢复日志` 可读。最新前台进程为 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.7.4\BackupRestore.exe`（PID `2888`）。

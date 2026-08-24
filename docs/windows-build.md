@@ -1,5 +1,9 @@
 # Windows ARM64 主线构建
 
+本项目的运行验收固定在 Windows 11 ARM64 虚拟机完成：每次代码修改都必须使用 VM 已安装的
+`aarch64-pc-windows-msvc` 工具链重新编译，并启动最新 ARM64 GUI 前台检查。macOS 仅用于离线
+格式化、测试和静态检查，不能替代 Windows ARM64 编译/运行证据。
+
 Windows 二进制不能做成同一个“通用 exe”。本项目采用两个独立产物，当前先开发
 ARM64；x64 只保留构建配置，暂不作为默认目标：
 

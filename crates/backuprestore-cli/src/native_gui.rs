@@ -89,6 +89,8 @@ const OFN_FILEMUSTEXIST: u32 = 0x00001000;
 const OFN_OVERWRITEPROMPT: u32 = 0x00000002;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const DEFAULT_GUI_FONT: i32 = 17;
+const TOKEN_QUERY: u32 = 0x0008;
+const TOKEN_ELEVATION_CLASS: u32 = 20;
 
 #[repr(C)]
 struct Point {
@@ -205,6 +207,20 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetModuleHandleW(name: *const u16) -> HInstance;
+    fn GetCurrentProcess() -> Handle;
+    fn CloseHandle(handle: Handle) -> i32;
+}
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(process: Handle, desired_access: u32, token: *mut Handle) -> i32;
+    fn GetTokenInformation(
+        token: Handle,
+        information_class: u32,
+        information: *mut c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
 }
 
 #[link(name = "shell32")]
@@ -220,6 +236,11 @@ unsafe extern "system" {
 }
 
 const GWLP_USERDATA: i32 = -21;
+
+#[repr(C)]
+struct TokenElevation {
+    token_is_elevated: u32,
+}
 
 struct Controls {
     language: Hwnd,
@@ -320,7 +341,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "relative") => "Image absolute path",
         (Language::English, "index") => "WIM index",
         (Language::English, "menu") => "Secondary boot name",
-        (Language::English, "language") => "Language / 语言",
+        (Language::English, "language") => "Language",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
         (Language::English, "browse") => "Browse…",
@@ -329,10 +350,10 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "initial_status") => {
             "Click Refresh environment to inspect Windows, WinRE and volume identities. Default mode is non-destructive probe."
         }
-        (Language::English, "probe") => "probe (inspect only)",
-        (Language::English, "backup") => "backup",
-        (Language::English, "restore") => "restore-existing (replace current)",
-        (Language::English, "secondary") => "create-secondary (add another)",
+        (Language::English, "probe") => "Inspect",
+        (Language::English, "backup") => "Backup",
+        (Language::English, "restore") => "Restore",
+        (Language::English, "secondary") => "Second system",
         (Language::English, "probe_hint") => {
             "probe is a non-destructive check: refresh the volumes, keep this mode, then create a task to validate task files and WinRE payloads. No backup, restore, format or reboot."
         }
@@ -478,10 +499,10 @@ fn operation_display(language: Language, operation: &str) -> &'static str {
         (Language::Chinese, "backup") => "备份",
         (Language::Chinese, "restore-existing") => "单系统还原",
         (Language::Chinese, "create-secondary") => "新增第二系统",
-        (Language::English, "probe") => "probe (inspect only)",
-        (Language::English, "backup") => "backup",
-        (Language::English, "restore-existing") => "restore-existing (replace current)",
-        (Language::English, "create-secondary") => "create-secondary (add another)",
+        (Language::English, "probe") => "Inspect",
+        (Language::English, "backup") => "Backup",
+        (Language::English, "restore-existing") => "Restore",
+        (Language::English, "create-secondary") => "Second system",
         _ => "",
     }
 }
@@ -1053,13 +1074,7 @@ fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> {
 fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
     let value: serde_json::Value = serde_json::from_str(output)
         .map_err(|error| format!("WIM metadata JSON parse failed: {error}"))?;
-    let items = if let Some(items) = value.as_array() {
-        items.clone()
-    } else if value.get("ImageIndex").is_some() {
-        vec![value]
-    } else {
-        return Err("WIM metadata did not return an image object or array".to_string());
-    };
+    let items = wim_image_items(&value)?;
     let mut images = Vec::with_capacity(items.len());
     for item in items {
         let index = json_text(&item, "ImageIndex")
@@ -1086,12 +1101,109 @@ fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
     Ok(images)
 }
 
-fn report_has_wim_images(report: &serde_json::Value) -> bool {
-    match report.get("images") {
-        Some(serde_json::Value::Array(items)) => !items.is_empty(),
-        Some(serde_json::Value::Object(item)) => item.get("ImageIndex").is_some(),
-        _ => false,
+fn parse_dism_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
+    let mut images = Vec::new();
+    let mut index = None;
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut size_bytes = None;
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim().to_ascii_lowercase().as_str() {
+            "index" => {
+                if let Some(previous) = index.take() {
+                    images.push(WimImageInfo {
+                        index: previous,
+                        name: std::mem::take(&mut name),
+                        description: std::mem::take(&mut description),
+                        version: String::new(),
+                        architecture: String::new(),
+                        edition: String::new(),
+                        installation_type: String::new(),
+                        size_bytes,
+                    });
+                    size_bytes = None;
+                }
+                index = value.parse::<u32>().ok().filter(|value| *value > 0);
+            }
+            "name" => name = value.to_string(),
+            "description" => description = value.to_string(),
+            "size" => size_bytes = parse_dism_size(value),
+            _ => {}
+        }
     }
+    if let Some(previous) = index {
+        images.push(WimImageInfo {
+            index: previous,
+            name,
+            description,
+            version: String::new(),
+            architecture: String::new(),
+            edition: String::new(),
+            installation_type: String::new(),
+            size_bytes,
+        });
+    }
+    if images.is_empty() {
+        Err("DISM returned no WIM image indexes".to_string())
+    } else {
+        Ok(images)
+    }
+}
+
+fn parse_dism_size(value: &str) -> Option<u64> {
+    let numeric = value
+        .split_whitespace()
+        .next()?
+        .replace(',', "")
+        .parse::<u64>()
+        .ok()?;
+    if value.to_ascii_lowercase().contains("kb") {
+        Some(numeric.saturating_mul(1024))
+    } else if value.to_ascii_lowercase().contains("mb") {
+        Some(numeric.saturating_mul(1024 * 1024))
+    } else if value.to_ascii_lowercase().contains("gb") {
+        Some(numeric.saturating_mul(1024 * 1024 * 1024))
+    } else {
+        Some(numeric)
+    }
+}
+
+fn wim_image_items(value: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(items) = value.as_array() {
+        return Ok(items.clone());
+    }
+    if value.get("ImageIndex").is_some() || value.get("imageIndex").is_some() {
+        return Ok(vec![value.clone()]);
+    }
+    if let Some(images) = value.get("images") {
+        return wim_image_items(images);
+    }
+    Err("WIM metadata did not return an image object, array or images wrapper".to_string())
+}
+
+fn report_has_wim_images(report: &serde_json::Value) -> bool {
+    wim_image_items(report)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+}
+
+fn report_images_value(report: &serde_json::Value) -> serde_json::Value {
+    report
+        .get("images")
+        .cloned()
+        .or_else(|| {
+            if report.get("ImageIndex").is_some() || report.get("imageIndex").is_some() {
+                Some(report.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
 }
 
 fn format_bytes(size: Option<u64>) -> String {
@@ -1302,9 +1414,11 @@ fn powershell_output_elevated(command: &str) -> String {
 }
 
 fn powershell_output(command: &str) -> String {
+    let utf8_prefix = "$utf8 = New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; ";
+    let command = format!("{utf8_prefix}{command}");
     match Command::new("powershell.exe")
         .creation_flags(CREATE_NO_WINDOW)
-        .args(["-NoProfile", "-NonInteractive", "-Command", command])
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
         .output()
     {
         Ok(output) => {
@@ -1322,6 +1436,47 @@ unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32
     let text = wide(text);
     let caption = wide(caption);
     MessageBoxW(hwnd, text.as_ptr(), caption.as_ptr(), flags)
+}
+
+unsafe fn is_elevated() -> bool {
+    let mut token = null_mut();
+    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 || token.is_null() {
+        return false;
+    }
+    let mut elevation = TokenElevation {
+        token_is_elevated: 0,
+    };
+    let mut returned = 0;
+    let result = GetTokenInformation(
+        token,
+        TOKEN_ELEVATION_CLASS,
+        &mut elevation as *mut TokenElevation as *mut c_void,
+        size_of::<TokenElevation>() as u32,
+        &mut returned,
+    );
+    CloseHandle(token);
+    result != 0 && elevation.token_is_elevated != 0
+}
+
+unsafe fn relaunch_elevated() -> Result<(), super::TaskError> {
+    let executable = std::env::current_exe()
+        .map_err(|error| super::err(&format!("cannot resolve current executable: {error}")))?;
+    let executable = wide(&executable.to_string_lossy());
+    let verb = wide("runas");
+    let result = ShellExecuteW(
+        null_mut(),
+        verb.as_ptr(),
+        executable.as_ptr(),
+        null(),
+        null(),
+        SW_MAXIMIZE,
+    );
+    if result <= 32 {
+        return Err(super::err(&format!(
+            "elevated GUI launch failed with ShellExecute code {result}"
+        )));
+    }
+    Ok(())
 }
 
 unsafe fn refresh_environment(state: &mut State) {
@@ -1469,6 +1624,7 @@ unsafe fn read_image(state: &mut State) {
     );
     let mut text = powershell_output(&command);
     let mut report_result = serde_json::from_str::<serde_json::Value>(&text);
+    let mut dism_diagnostic = String::new();
     let needs_elevation = report_result
         .as_ref()
         .map(|report| !report_has_wim_images(report))
@@ -1478,6 +1634,48 @@ unsafe fn read_image(state: &mut State) {
         if let Ok(elevated_report) = serde_json::from_str::<serde_json::Value>(&elevated_text) {
             text = elevated_text;
             report_result = Ok(elevated_report);
+        }
+    }
+    if report_result
+        .as_ref()
+        .map(|report| !report_has_wim_images(report))
+        .unwrap_or(true)
+    {
+        let dism_command = format!(
+            "$ErrorActionPreference='Stop'; & (Join-Path $env:WINDIR 'System32\\dism.exe') /English /Get-WimInfo (\"/WimFile:\" + {}) 2>&1 | Out-String",
+            powershell_single_quote(&image_path)
+        );
+        let dism_text = powershell_output(&dism_command);
+        if let Ok(images) = parse_dism_wim_images(&dism_text) {
+            let count = images.len();
+            state.wim_images = images;
+            set_wim_items(state);
+            let sha256 = report_result
+                .as_ref()
+                .ok()
+                .map(|report| json_text(report, "sha256"))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "未知".to_string());
+            set_text(
+                state.controls.status,
+                &if language == Language::English {
+                    format!(
+                        "Loaded {count} WIM image indexes via DISM fallback.\nSHA-256: {sha256}\nSelect an index from the dropdown."
+                    )
+                } else {
+                    format!(
+                        "已通过 DISM 兼容路径读取 {count} 个 WIM 索引。\nSHA-256：{sha256}\n请从下拉框选择索引。"
+                    )
+                },
+            );
+            return;
+        } else {
+            let shown = if dism_text.len() > 4096 {
+                format!("{}…", &dism_text[..4096])
+            } else {
+                dism_text
+            };
+            dism_diagnostic = format!("\nDISM 回退输出：{shown}");
         }
     }
     let report: serde_json::Value = match report_result {
@@ -1496,10 +1694,7 @@ unsafe fn read_image(state: &mut State) {
             return;
         }
     };
-    let images_json = report
-        .get("images")
-        .cloned()
-        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let images_json = report_images_value(&report);
     let images_text = match serde_json::to_string(&images_json) {
         Ok(value) => value,
         Err(error) => {
@@ -1554,12 +1749,19 @@ unsafe fn read_image(state: &mut State) {
         Err(error) => {
             state.wim_images.clear();
             set_wim_items(state);
+            let diagnostic = if images_text.len() > 4096 {
+                format!("{}…", &images_text[..4096])
+            } else {
+                images_text
+            };
             set_text(
                 state.controls.status,
                 &if language == Language::English {
-                    format!("Could not parse WIM indexes: {error}")
+                    format!("Could not parse WIM indexes: {error}\nRaw index JSON: {diagnostic}")
                 } else {
-                    format!("无法解析 WIM 索引：{error}")
+                    format!(
+                        "无法解析 WIM 索引：{error}\n原始索引 JSON：{diagnostic}{dism_diagnostic}"
+                    )
                 },
             );
         }
@@ -2241,6 +2443,9 @@ unsafe extern "system" fn window_proc(
 
 pub fn run() -> Result<(), super::TaskError> {
     unsafe {
+        if !is_elevated() {
+            return relaunch_elevated();
+        }
         let instance = GetModuleHandleW(null());
         if instance.is_null() {
             return Err(super::err("GetModuleHandleW failed"));

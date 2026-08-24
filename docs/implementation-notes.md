@@ -82,6 +82,16 @@ macOS 本地已完成：
 - 2026-08-25 `v0.6.5` 客户区高度修复：实机截图确认第二系统页按钮仍被任务栏覆盖；继续压缩到详情 112、行距 8、状态框 64，并缩短状态/镜像/按钮间隔。通过客体控件矩形和截图双重检查，不能只凭逻辑坐标判断可见性。
 - 2026-08-25 `v0.6.5` 最终验证：探测/备份/单系统还原/新增第二系统均在 Windows Console 会话切换并读取实际控件矩形，确认按钮和模式专属字段不重叠；第二系统截图确认卷详情 6 行身份信息、镜像路径、WIM 索引、启动项名称和按钮完整可见。Parallels 控制中心与 Windows 客体画面严格区分，客体证据只来自 `prlctl capture` 和 Windows 会话。
 - 2026-08-25 快照清理复核：`prlctl snapshot-list` 只返回两个有明确用途的快照，未发现可安全删除的无用快照，因此不执行删除，避免破坏隔离还原回滚基线。
+- 2026-08-25 GUI 只读按钮复核：`刷新环境` 能更新 Windows/固件/NTFS 信息；`读取镜像` 在现有 WIM 上暴露单索引 JSON 解析缺陷，未把误报当成功。修复后必须重新构建并验证索引下拉框及镜像 SHA-256/metadata 状态；不触发创建任务。
+- 2026-08-25 `v0.6.7` 诊断边界：兼容数组/对象/`images` 包装后，实机仍返回无索引。新增受限原始 JSON 诊断到状态栏；这只是定位措施，不是功能成功证明。
+- 2026-08-25 `v0.6.8` WIM 回退修复：普通令牌 `Get-WindowsImage` 空结果不是 WIM 损坏；同一 WIM 的 DISM 文本输出包含 Index/Name/Size。GUI 现在在 JSON 无索引时调用 DISM `/English /Get-WimInfo` 并解析索引下拉项，仍只读，不触发恢复。
+- 2026-08-25 `v0.6.9` Windows-only 编译坑：`parse_dism_size` 返回 `Option` 时不能直接对 `Result` 使用 `?`；应为 `.parse::<u64>().ok()?`。macOS 的 `cfg(windows)` 排除了该模块，必须把目标 ARM64 构建作为该类修改的必要检查。
+- 2026-08-25 `v0.7.0` WIM 回退诊断：v0.6.9 实机仍显示空索引，不能假定 DISM 回退成功；现在错误状态同时记录回退 DISM 输出，区分路径、权限、stderr 和文本解析失败。
+- 2026-08-25 `v0.7.1` 提权策略：DISM 740 表明 GUI 不能依赖隐藏子 PowerShell 获得管理员令牌。前端进程本身在创建窗口前检查 `TokenElevation`，非提升时以 `runas` 重启；这覆盖只读 WIM、环境查询和管理员任务准备的一致令牌边界。VM 自动提升策略仍需以实际令牌读取验证。
+- 2026-08-25 `v0.7.2` 英文布局：顶部标签宽度按中文设计，不能容纳内部 CLI 名称。英文改为短 UI 名称，说明框承担完整语义；以后不得把 CLI operation key 直接当作固定宽度按钮文字。
+- 2026-08-25 `v0.7.3` 多语言细节：英语截图仍暴露 `Language / 语言` 的混合标签，英语 UI 改为纯 `Language`。语言切换的每个静态标签都需同目标语言一致。
+- 2026-08-25 `v0.7.4` PowerShell 5.1 编码：隐藏查询的 stdout 默认使用系统代码页，Rust `from_utf8_lossy` 会把中文任务状态显示为乱码。所有 `powershell_output` 调用统一在脚本前设置无 BOM UTF-8 输出；必须用真实中文任务状态复验。
+- 2026-08-25 `v0.7.4` 实机确认：Windows ARM64 最新包在高完整性 GUI 中成功读取 WIM 索引 1，英文标签与 `Language` 纯英文；切回中文后任务状态字段显示正常中文。所有证据通过 Windows 客体会话和 `prlctl capture` 获取，未操作 Parallels 控制中心作为客体。
 - 2026-08-24 快照清理：Windows 11 VM 原有 7 层串联快照，已删除 5 个早期冗余点（`before-winre-auto-launch`、`backupRestore-before-winre-validation`、`快照 1`、`before-v0.3.6-winre-probe`、`before-v0.3.6-backup-fixture`），保留 `before-v0.3.8-fixture-restore` 和当前 `before-v0.3.9-isolated-restore`。快照目录从约 22 GiB 降到 6.8 GiB；VM 停止/启动状态均未改动测试磁盘内容。
 - 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 

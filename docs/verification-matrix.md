@@ -28,6 +28,11 @@
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
 | Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | **实机已验证（GUI 范围）**：`v0.6.5` 客户区动态排版在每次标签切换后重排，详情框 112 高度、行距 8、状态框 64；逐页实际矩形确认探测/备份/单系统还原/第二系统的字段显隐、镜像/按钮不重叠，第二系统按钮位于客户区内 | 包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.6.5`，SHA-256 `ddbedf79f00bf209453162f94433eab1c2d235ff014c1d8d400bfd0a577d0bd4`；截图 `.test-artifacts/root-captures/v0.6.5-guest-secondary.png`。不包括 UAC、任务创建、WinRE 或磁盘写入 |
+| WIM 单索引读取与下拉显示 | `parse_wim_images`、`parse_dism_wim_images`、`report_images_value` | **实机已验证（v0.7.4 ARM64）** | 高完整性 GUI 读取 B 镜像成功；状态框显示 SHA-256/metadata/最小容量，单系统还原页下拉框显示 `Index 1 | Windows Backup` |
+| GUI 管理员令牌与 WIM 读取 | `is_elevated`、`relaunch_elevated`、`ShellExecuteW("runas")` | `v0.7.1` 代码已覆盖，ARM64 实机待验证 | 最新 GUI 进程需为高完整性；读取 B 镜像应显示索引 1，不再有 DISM 740 |
+| 英文标签可见性 | `ui_text`、`operation_display` | `v0.7.2` 代码已缩短标签，ARM64 实机待验证 | 英文模式四个顶部标签完整显示，不裁剪；详细语义由说明框显示 |
+| 英文 UI 纯净性 | `ui_text(Language::English, "language")` | `v0.7.3` 代码已修正，ARM64 实机待验证 | 英语模式显示 `Language`，不残留中文；中文模式仍显示 `语言` |
+| 中文任务状态编码 | `powershell_output` UTF-8 前缀 | **实机已验证（v0.7.4 ARM64）** | 点击“刷新任务状态”后，任务 ID、操作、任务目录、准备日志和恢复日志中文标签可读，无乱码 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | 自动 probe 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 的 `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；新 `-NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 保持 `prepared`，dry-run 不会伪造成功 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
 
