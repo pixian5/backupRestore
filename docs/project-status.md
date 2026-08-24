@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-23
-当前开发版本：`0.5.3`
+更新时间：2026-08-24
+当前开发版本：`0.5.5`
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -102,7 +102,8 @@ git diff --check
 2026-08-23 `v0.5.0` 绝对镜像路径收口：GUI 和 PowerShell 参数改为 `ImagePath`，例如 `B:\BackupRestore\Windows.wim`；脚本从路径根解析镜像卷身份，任务 JSON 同时记录 `absolutePath` 和经校验的卷内路径，RecoveryTask.env 记录 `IMAGE_ABSOLUTE_PATH` 并在 WinRE 重新校验。原生 GUI 增加保存/打开文件对话框，备份使用保存对话框，还原使用打开对话框。ARM64 VM 已用既有工具链重建，`build-manifest.json`、`BackupRestore.exe`、`Recovery.exe` SHA-256 均为 `beb50a2f74852285f4508a3b1510ae9f5c2ab7f6dbd02f0b2ca852749ae01073`，`Recovery.exe hash` 返回 0；`BackupRestore.ps1 -?` 已显示 `ImagePath` 且不再显示 `ImageDrive`/`ImageRelativePath`。这仍不替代真实备份/还原重启验收。
 
 2026-08-23 `v0.5.2` GUI/WIM 收口：修复 WIM 多索引 JSON 数组分支的 Rust 借用错误，并同步两个 Cargo manifest、`Cargo.lock` 与 `VERSION` 到 `0.5.2`。ARM64 VM 使用已有工具链在浅层目录 `C:\BackupRestoreBuild\src`、`C:\BackupRestoreBuild\target`、`C:\BackupRestoreBuild\package` 构建成功，输出为 `BackupRestore-windows-arm64-v0.5.2`；没有重新下载工具链。`BackupRestore.exe` 继续使用 `WINDOWS_GUI` 子系统，WIM 索引下拉项同时展示序号和详细元数据。构建/哈希/启动证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
-2026-08-24 `v0.5.4` probe 准备修复：修正镜像路径为空时的 `Test-Path` 和 `metadataPath` 生成逻辑，避免 `probe -NoReboot` 因空路径绑定错误失败。本机 AST、fmt、clippy、Rust 测试和 diff 检查均已通过；Windows VM 实测因宿主机发热已暂停，VM 当前为安全挂起状态，恢复后需重新执行 probe。
+2026-08-24 `v0.5.4` probe 准备修复：修正镜像路径为空时的 `Test-Path` 和 `metadataPath` 生成逻辑，避免 `probe -NoReboot` 因空路径绑定错误失败；本机 AST、fmt、clippy、Rust 测试和 diff 检查均已通过，后续 VM 实测证据见下一条记录。
+2026-08-24 VM 低负载实测补充：恢复挂起的 ARM64 VM 后，`probe -NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 成功，`validate-task`、manifest/payload 哈希和原始/注册 WinRE 哈希均通过；`recover --dry-run` 保持 `prepared`。容量不足的 backup 和未授权的 restore-existing 分支均按预期拒绝，未写入 `.partial`、未替换 WinRE、未格式化目标。测试完成后不执行真实重启，VM 可再次挂起以控制温度。
 
 2026-08-23 `v0.5.3` WIM 权限回退：实测发现普通令牌下 `Get-WindowsImage` 可能返回可解析但没有索引的 JSON，GUI 因此不会触发管理员读取；现改为检测“索引为空”同样启动隐藏 `runas` 重试。ARM64 包已在 VM 重建并启动，`BackupRestore.exe`/`Recovery.exe` SHA-256 均为 `1e097ab33b01348db5515f41b25b56313f88f5b4ed9485e2782b7d4905ffc6dd`；点击“读取镜像”后真实下拉框显示索引 1（Windows Backup、162.9 MiB），操作模式提示分别解释当前系统覆盖还原和新增第二系统。该 GUI/UAC 读取证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
 

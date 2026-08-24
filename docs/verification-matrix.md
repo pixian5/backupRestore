@@ -17,7 +17,7 @@
 | 镜像使用绝对路径 | `ImagePath`、`validate_absolute_path`、task `absolutePath`、`IMAGE_ABSOLUTE_PATH` | `v0.5.0` 代码和 ARM64 参数帮助已验证；Recovery 仍按 GUID 重挂载后使用卷内路径 | Windows GUI 选择 `B:\...\Windows.wim`，换盘符后必须仍解析到同一镜像卷 |
 | probe 任务/源卷相同 | `recover-env` 按卷 GUID 扫描已有挂载，任务/源同卷时复用实际盘符 | 实机已验证（Win11 ARM64 probe） | 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 在 WinRE 记录 `TASK volume already mounted at C:; reusing it`，随后为 `success` |
 | EFI/MSR/Recovery 保护 | core `is_reserved_partition`、PowerShell、`Recovery.cmd` | 离线已验证 | 实盘尝试选中三类分区都被拒绝 |
-| 备份 `.partial`、WIM 校验、SHA-256、metadata | `recover_windows` backup、`BackupMetadata`、原生输出按字节日志 | 实机已验证（隔离源卷/镜像卷） | `v0.4.7` 任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 为 `success`；WIM `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30` 与 metadata 一致，`.partial` 已原子替换 |
+| 备份 `.partial`、WIM 校验、SHA-256、metadata | `recover_windows` backup、`BackupMetadata`、原生输出按字节日志 | 实机已验证（隔离源卷/镜像卷）；容量拒绝分支已验证 | `v0.4.7` 任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 为 `success`；WIM `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30` 与 metadata 一致。新一轮 C: -> B: 因 24.0 GB < 250.4 GB 被拒绝，`.partial` 不存在 |
 | 镜像容量不是目标容量 | metadata `required_target_size`、PowerShell/Recovery 双重检查 | 离线已验证 | 小目标卷在格式化前拒绝 |
 | BitLocker 不自动修改 | PowerShell `Get-BitLockerVolume` 检查 | 代码已覆盖 | 开启保护的源/镜像/目标任务拒绝且状态不变 |
 | 临时 WinRE 副本和原始 hash | `BackupRestore.ps1`、manifest、`WinreRestoreGuard` | 实机已验证（Win11 ARM64 probe） | 任务原始与重启返回 Windows 后注册 `Winre.wim` 均为 `0cbc86b44994065c7295f0322df670cf0b6c9e4a7be5099cfd962ddec956fda1` |
@@ -28,7 +28,7 @@
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
 | Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | `v0.5.3` ARM64 包已在 VM 启动；无控制台子系统、中文模式提示、WIM 索引下拉框和隐藏管理员读取已通过真实窗口点测；破坏性任务、完整语言切换和日志刷新仍待验收 | `BackupRestore - Rust GUI` 窗口真实显示；读取 `B:\BackupRestore\Windows.wim` 后显示索引 1/Windows Backup/162.9 MiB；操作模式切换显示“还原当前系统”和“新增第二系统”说明 |
-| 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；日志顺序可复核 |
+| 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | 自动 probe 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 的 `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；新 `-NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 保持 `prepared`，dry-run 不会伪造成功 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
 
 ## 当前强制实机顺序
