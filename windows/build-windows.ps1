@@ -116,7 +116,6 @@ foreach ($arch in $architectures) {
     }
     foreach ($file in @(
         'BackupRestore.cmd',
-        'BackupRestore.Gui.ps1',
         'BackupRestore.ps1',
         'Recovery.cmd',
         'RecoveryLauncher.cmd',

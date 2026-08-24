@@ -26,7 +26,7 @@
 | “没有热点/没有 Wi-Fi 时先把不需要流量的代码写完” | 本轮只使用已有本地工具和离线 Cargo 缓存；不安装 Rust target、Visual Studio、SDK 或其他大文件。 |
 | “以后工具链好了要直接编译运行” | `windows/build-windows.ps1` 不自动下载，目标架构、Cargo target 目录、产物文件名和运行入口已固定；交接文档给出唯一构建顺序。 |
 | “热点每次下载前重新授权，Wi-Fi 不需要反复问” | 工作流技能按每个独立下载执行 `check_network.py`；热点授权不跨下载继承，Wi-Fi/有线不重复询问。 |
-| “所有页面、功能、恢复流程都设计完整” | Rust Win32 GUI 单窗口覆盖环境、备份/还原、镜像信息和任务结果状态；旧 WPF 三页仍保留兼容实现；core、PowerShell、WinRE launcher、Recovery.exe 和 fallback cmd 的职责均已写入文档。 |
+| “所有页面、功能、恢复流程都设计完整” | Rust Win32 GUI 单窗口是唯一桌面前端，覆盖环境、备份/还原、镜像信息和任务结果状态；core、PowerShell 后端、WinRE launcher、Recovery.exe 和 cmd 启动器职责均已写入文档。 |
 | “让其它 AI 接手后直接继续” | `docs/README.md`、`project-status.md`、本文、`implementation-notes.md`、`windows-build.md` 和 `verification-matrix.md` 分别记录入口、进度、文件结构、决策、构建和证据。 |
 | “工具链完成后直接继续开发” | 已通过 Parallels 共享桌面传入当前工作树，ARM64 构建脚本可以在 VM 本地 target 目录直接产出包；本轮不执行破坏性恢复。 |
 
@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.5.5`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.5.6`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -48,7 +48,6 @@ crates/backuprestore-core/src/lib.rs       纯 Rust 任务模型、身份、安�
 crates/backuprestore-cli/src/main.rs       BackupRestore.exe GUI/Recovery.exe CLI 入口
 crates/backuprestore-cli/src/native_gui.rs Rust Win32 GUI：窗口、字段、确认、状态和管理员脚本启动
 windows/BackupRestore.ps1                  正常 Windows 管理员准备任务、复制/挂载 WinRE
-windows/BackupRestore.Gui.ps1              旧版 PowerShell/WPF 兼容前端（不再由 BackupRestore.exe 默认启动）
 windows/RecoveryLauncher.cmd               WinRE 自动入口和载荷哈希检查
 windows/Recovery.cmd                      无 Recovery.exe 时仅限 probe 的兼容入口
 windows/winpeshl.ini                       WinRE [LaunchApps] 自动启动入口
@@ -60,7 +59,7 @@ docs/project-status.md                      当前进度、对话决策和继续
 docs/README.md                              文档阅读入口
 ```
 
-`BackupRestore.exe` 的文件名会被 Rust 程序识别为 GUI 启动器；它旁边必须有 `BackupRestore.ps1`，旧 `BackupRestore.Gui.ps1` 仅供兼容调用。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。GUI 的语言选择器支持中文和 English；源、镜像、目标卷均为可编辑的指定盘符，数据身份仍由 GUID 快照决定。
+`BackupRestore.exe` 的文件名会被 Rust 程序识别为唯一桌面 GUI 启动器；它旁边必须有 `BackupRestore.ps1` 后端脚本。同一个二进制复制为 `Recovery.exe` 后，使用 `recover-env <RecoveryTask.env>` 进入 WinRE 恢复路径。构建脚本生成架构专用目录，x64 和 ARM64 不能混用。GUI 的语言选择器支持中文和 English；任务、源、目标卷使用带详细容量和身份信息的下拉框，数据身份仍由 GUID 快照决定。
 
 ## 4. 已实现的安全与功能约束
 
@@ -101,12 +100,12 @@ docs/README.md                              文档阅读入口
 
 `BackupRestore.exe` 当前默认进入 `crates/backuprestore-cli/src/native_gui.rs` 的 Rust Win32 单窗口，使用 Windows SDK 原生 API，不依赖新的 GUI crate：
 
-1. **任务参数区**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；可切换中文/English，填写任务卷、源卷、镜像绝对路径、目标卷、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`，启动时从当前系统及已挂载 NTFS 卷建议任务盘符和镜像路径，不伪造固定 `D:`。
+1. **任务参数区**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；可切换中文/English，从显示文件系统、容量、剩余空间和磁盘/分区号的下拉框选择任务卷、源卷和目标卷，再选择镜像绝对路径、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`，启动时从当前系统及已挂载数据卷建议默认值，不伪造固定 `D:`。
 2. **环境与镜像操作**：`刷新环境` 显示 Windows/build、架构、固件和 NTFS 卷；`读取镜像` 读取绝对路径指向的 WIM SHA-256 与 metadata 摘要。镜像路径必须是单盘符根路径，例如 `B:\BackupRestore\Windows.wim`；创建任务时从该路径解析镜像卷并复核 GUID，非 `probe` 模式拒绝镜像卷与源卷相同。
 3. **任务状态区**：`刷新任务状态` 读取 `C:\ProgramData\BackupRestore\last-task.json`，展示任务 ID、任务目录、准备日志、恢复日志及可读的 `status.json`；文案明确任务准备不等于 WinRE 重启后的真实成功。
 4. **破坏性边界**：`restore-existing` 和 `create-secondary` 创建前显示目标卷摘要并要求二次确认；随后用 `ShellExecuteW("runas")` 启动管理员 PowerShell 准备脚本。GUI 只报告启动结果，不把 UAC 接受或准备成功当作恢复成功。
 
-旧 `windows/BackupRestore.Gui.ps1` 仍保留为兼容前端和脚本级回归对象；本机只能做 AST/离线检查，Rust GUI 的真实按钮、UAC 和日志刷新仍须在 Windows VM 中验收。
+旧脚本前端已移除，不再提供兼容入口；本机只能做 Rust/脚本离线检查，Rust GUI 的真实按钮、UAC 和日志刷新仍须在 Windows VM 中验收。
 
 ## 6. 已踩坑与不要重复犯的错误
 
@@ -154,7 +153,7 @@ docs/README.md                              文档阅读入口
 cargo fmt --all
 cargo test --workspace --all-targets --offline
 cargo clippy --workspace --all-targets --offline -- -D warnings
-pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestore.ps1","windows/BackupRestore.Gui.ps1","windows/build-windows.ps1"); foreach($f in $files){$tokens=$null;$errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $f),[ref]$tokens,[ref]$errors)|Out-Null; if($errors.Count){$errors|% Message; exit 1}; "AST OK $f"}'
+pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestore.ps1","windows/build-windows.ps1"); foreach($f in $files){$tokens=$null;$errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $f),[ref]$tokens,[ref]$errors)|Out-Null; if($errors.Count){$errors|% Message; exit 1}; "AST OK $f"}'
 git diff --check
 ```
 

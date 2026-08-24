@@ -11,6 +11,7 @@
 use std::ffi::c_void;
 use std::fs;
 use std::mem::size_of;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::ptr::{null, null_mut};
@@ -69,9 +70,11 @@ const ID_MENU: usize = 1107;
 const ID_STATUS: usize = 1200;
 const ID_LANGUAGE_LABEL: usize = 2009;
 const ID_OPERATION_HINT: usize = 2010;
+const ID_VOLUME_HINT: usize = 2011;
 const OFN_PATHMUSTEXIST: u32 = 0x00000800;
 const OFN_FILEMUSTEXIST: u32 = 0x00001000;
 const OFN_OVERWRITEPROMPT: u32 = 0x00000002;
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[repr(C)]
 struct Point {
@@ -200,6 +203,7 @@ struct Controls {
     index: Hwnd,
     menu: Hwnd,
     operation_hint: Hwnd,
+    volume_hint: Hwnd,
     status: Hwnd,
 }
 
@@ -208,6 +212,7 @@ struct State {
     controls: Controls,
     executable_dir: PathBuf,
     wim_images: Vec<WimImageInfo>,
+    drives: Vec<DriveInfo>,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +225,19 @@ struct WimImageInfo {
     edition: String,
     installation_type: String,
     size_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct DriveInfo {
+    letter: String,
+    label: String,
+    filesystem: String,
+    size_bytes: Option<u64>,
+    free_bytes: Option<u64>,
+    volume_guid: String,
+    disk_number: Option<u32>,
+    partition_number: Option<u32>,
+    partition_type_guid: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -247,11 +265,13 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "initial_status") => {
             "先点击“刷新环境”确认 Windows、WinRE 和卷身份。默认模式为无破坏 probe。"
         }
-        (Language::Chinese, "probe") => "probe（探测）",
+        (Language::Chinese, "probe") => "probe（探测，仅检查）",
         (Language::Chinese, "backup") => "backup（备份）",
         (Language::Chinese, "restore") => "restore-existing（还原当前系统）",
         (Language::Chinese, "secondary") => "create-secondary（新增第二系统）",
-        (Language::Chinese, "probe_hint") => "只检查环境和 WinRE，不会备份、还原或重启。",
+        (Language::Chinese, "probe_hint") => {
+            "probe 用于无破坏检查：先点“刷新环境”确认卷，再保持此模式点“创建任务”；只生成并校验任务和 WinRE 载荷，不备份、不还原、不格式化、不重启。"
+        }
         (Language::Chinese, "backup_hint") => {
             "备份指定源分区；准备完成后进入 WinRE 执行 DISM Capture。"
         }
@@ -278,12 +298,12 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "initial_status") => {
             "Click Refresh environment to inspect Windows, WinRE and volume identities. Default mode is non-destructive probe."
         }
-        (Language::English, "probe") => "probe",
+        (Language::English, "probe") => "probe (inspect only)",
         (Language::English, "backup") => "backup",
         (Language::English, "restore") => "restore-existing (replace current)",
         (Language::English, "secondary") => "create-secondary (add another)",
         (Language::English, "probe_hint") => {
-            "Inspect environment and WinRE only; no backup, restore or reboot."
+            "probe is a non-destructive check: refresh the volumes, keep this mode, then create a task to validate task files and WinRE payloads. No backup, restore, format or reboot."
         }
         (Language::English, "backup_hint") => {
             "Back up the selected source partition; WinRE performs DISM Capture after preparation."
@@ -357,6 +377,15 @@ unsafe fn combo_index(hwnd: Hwnd) -> usize {
     if index < 0 { 0 } else { index as usize }
 }
 
+unsafe fn combo_selection(hwnd: Hwnd) -> Option<usize> {
+    let index = SendMessageW(hwnd, CB_GETCURSEL, 0, 0);
+    if index < 0 {
+        None
+    } else {
+        Some(index as usize)
+    }
+}
+
 unsafe fn selected_language(state: &State) -> Language {
     if combo_index(state.controls.language) == 1 {
         Language::English
@@ -407,6 +436,187 @@ unsafe fn set_operation_hint(state: &State) {
     );
 }
 
+unsafe fn selected_drive_letter(state: &State, control: Hwnd) -> Option<String> {
+    combo_selection(control)
+        .and_then(|index| state.drives.get(index))
+        .map(|drive| drive.letter.clone())
+}
+
+fn drive_display(drive: &DriveInfo, language: Language) -> String {
+    let label = if drive.label.is_empty() {
+        if language == Language::English {
+            "no label"
+        } else {
+            "无卷标"
+        }
+    } else {
+        &drive.label
+    };
+    let disk = drive
+        .disk_number
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let partition = drive
+        .partition_number
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    if language == Language::English {
+        format!(
+            "{}: | {} | {} | total {} | free {} | disk {}/partition {}",
+            drive.letter,
+            drive.filesystem,
+            label,
+            format_bytes(drive.size_bytes),
+            format_bytes(drive.free_bytes),
+            disk,
+            partition,
+        )
+    } else {
+        format!(
+            "{}: | {} | 卷标 {} | 总容量 {} | 可用 {} | 磁盘 {}/分区 {}",
+            drive.letter,
+            drive.filesystem,
+            label,
+            format_bytes(drive.size_bytes),
+            format_bytes(drive.free_bytes),
+            disk,
+            partition,
+        )
+    }
+}
+
+fn drive_details(drive: &DriveInfo, language: Language) -> String {
+    let disk = drive
+        .disk_number
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let partition = drive
+        .partition_number
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    if language == Language::English {
+        format!(
+            "{}: {}\nFile system: {}\nTotal: {} | Free: {}\nDisk/partition: {}/{}\nPartition type: {}\nVolume GUID: {}",
+            drive.letter,
+            if drive.label.is_empty() {
+                "no label"
+            } else {
+                &drive.label
+            },
+            drive.filesystem,
+            format_bytes(drive.size_bytes),
+            format_bytes(drive.free_bytes),
+            disk,
+            partition,
+            drive.partition_type_guid,
+            drive.volume_guid,
+        )
+    } else {
+        format!(
+            "{}: {}\n文件系统：{}\n总容量：{} | 可用：{}\n磁盘/分区：{}/{}\n分区类型：{}\n卷 GUID：{}",
+            drive.letter,
+            if drive.label.is_empty() {
+                "无卷标"
+            } else {
+                &drive.label
+            },
+            drive.filesystem,
+            format_bytes(drive.size_bytes),
+            format_bytes(drive.free_bytes),
+            disk,
+            partition,
+            drive.partition_type_guid,
+            drive.volume_guid,
+        )
+    }
+}
+
+unsafe fn set_drive_hint(state: &State) {
+    let language = selected_language(state);
+    let selected = [
+        ("task", selected_drive_letter(state, state.controls.task)),
+        (
+            "source",
+            selected_drive_letter(state, state.controls.source),
+        ),
+        (
+            "target",
+            selected_drive_letter(state, state.controls.target),
+        ),
+    ];
+    let mut lines = Vec::new();
+    for (role, letter) in selected {
+        let Some(letter) = letter else { continue };
+        let Some(drive) = state.drives.iter().find(|item| item.letter == letter) else {
+            continue;
+        };
+        let role_name = if language == Language::English {
+            match role {
+                "task" => "Task",
+                "source" => "Source",
+                _ => "Target",
+            }
+        } else {
+            match role {
+                "task" => "任务卷",
+                "source" => "源卷",
+                _ => "目标卷",
+            }
+        };
+        lines.push(format!("{role_name}:\n{}", drive_details(drive, language)));
+    }
+    if lines.is_empty() {
+        lines.push(if language == Language::English {
+            "No eligible mounted volumes found.".to_string()
+        } else {
+            "没有找到可选择的已挂载数据卷。".to_string()
+        });
+    }
+    set_text(state.controls.volume_hint, &lines.join("\n"));
+}
+
+unsafe fn set_drive_items(state: &State, desired: [Option<String>; 3]) {
+    let controls = [
+        state.controls.task,
+        state.controls.source,
+        state.controls.target,
+    ];
+    for control in controls {
+        reset_combo(control);
+        if state.drives.is_empty() {
+            add_combo_item(
+                control,
+                if selected_language(state) == Language::English {
+                    "No eligible mounted volume"
+                } else {
+                    "没有可选择的已挂载卷"
+                },
+            );
+            SendMessageW(control, CB_SETCURSEL, 0, 0);
+            continue;
+        }
+        for drive in &state.drives {
+            add_combo_item(control, &drive_display(drive, selected_language(state)));
+        }
+    }
+    for (control, wanted) in controls.into_iter().zip(desired) {
+        let position = wanted
+            .and_then(|letter| state.drives.iter().position(|drive| drive.letter == letter))
+            .unwrap_or(0);
+        SendMessageW(control, CB_SETCURSEL, position, 0);
+    }
+}
+
+unsafe fn select_drive(state: &State, control: Hwnd, letter: &str) {
+    if let Some(position) = state
+        .drives
+        .iter()
+        .position(|drive| drive.letter.eq_ignore_ascii_case(letter))
+    {
+        SendMessageW(control, CB_SETCURSEL, position, 0);
+    }
+}
+
 unsafe fn selected_wim_index(state: &State) -> Option<u32> {
     if let Some(image) = state.wim_images.get(combo_index(state.controls.index)) {
         return Some(image.index);
@@ -428,6 +638,45 @@ fn json_text(value: &serde_json::Value, key: &str) -> String {
                 .or_else(|| item.as_i64().map(|number| number.to_string()))
         })
         .unwrap_or_default()
+}
+
+fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> {
+    let value: serde_json::Value = serde_json::from_str(output)
+        .map_err(|error| format!("volume metadata JSON parse failed: {error}"))?;
+    let items = if let Some(items) = value.as_array() {
+        items.clone()
+    } else if value.get("letter").is_some() {
+        vec![value]
+    } else {
+        return Err("volume metadata did not return a volume object or array".to_string());
+    };
+    let mut drives = Vec::with_capacity(items.len());
+    for item in items {
+        let letter = json_text(&item, "letter")
+            .trim()
+            .trim_end_matches(':')
+            .to_ascii_uppercase();
+        if letter.len() != 1 || !letter.as_bytes()[0].is_ascii_alphabetic() {
+            continue;
+        }
+        drives.push(DriveInfo {
+            letter,
+            label: json_text(&item, "label"),
+            filesystem: json_text(&item, "filesystem"),
+            size_bytes: json_text(&item, "sizeBytes").parse::<u64>().ok(),
+            free_bytes: json_text(&item, "freeBytes").parse::<u64>().ok(),
+            volume_guid: json_text(&item, "volumeGuid"),
+            disk_number: json_text(&item, "diskNumber").parse::<u32>().ok(),
+            partition_number: json_text(&item, "partitionNumber").parse::<u32>().ok(),
+            partition_type_guid: json_text(&item, "partitionTypeGuid"),
+        });
+    }
+    drives.sort_by(|left, right| left.letter.cmp(&right.letter));
+    drives.dedup_by(|left, right| left.letter == right.letter);
+    if drives.is_empty() {
+        return Err("no eligible mounted volumes were returned".to_string());
+    }
+    Ok(drives)
 }
 
 fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
@@ -587,6 +836,12 @@ unsafe fn set_wim_items(state: &State) {
 unsafe fn apply_language(state: &State) {
     let language = selected_language(state);
     set_operation_items(state, language);
+    let desired = [
+        selected_drive_letter(state, state.controls.task),
+        selected_drive_letter(state, state.controls.source),
+        selected_drive_letter(state, state.controls.target),
+    ];
+    set_drive_items(state, desired);
     set_wim_items(state);
     for (id, key) in [
         (2001, "operation"),
@@ -611,6 +866,7 @@ unsafe fn apply_language(state: &State) {
         set_child_text(state.root, id, ui_text(language, key));
     }
     set_operation_hint(state);
+    set_drive_hint(state);
     if state.wim_images.is_empty() {
         set_text(state.controls.status, ui_text(language, "initial_status"));
     }
@@ -646,6 +902,7 @@ fn powershell_output_elevated(command: &str) -> String {
         script = powershell_single_quote(&script_path.to_string_lossy()),
     );
     let launch_result = Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -675,6 +932,7 @@ fn powershell_output_elevated(command: &str) -> String {
 
 fn powershell_output(command: &str) -> String {
     match Command::new("powershell.exe")
+        .creation_flags(CREATE_NO_WINDOW)
         .args(["-NoProfile", "-NonInteractive", "-Command", command])
         .output()
     {
@@ -695,8 +953,13 @@ unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32
     MessageBoxW(hwnd, text.as_ptr(), caption.as_ptr(), flags)
 }
 
-unsafe fn refresh_environment(state: &State) {
+unsafe fn refresh_environment(state: &mut State) {
     let language = selected_language(state);
+    let desired = [
+        selected_drive_letter(state, state.controls.task),
+        selected_drive_letter(state, state.controls.source),
+        selected_drive_letter(state, state.controls.target),
+    ];
     set_text(
         state.controls.status,
         if language == Language::English {
@@ -705,6 +968,9 @@ unsafe fn refresh_environment(state: &State) {
             "正在刷新 Windows、WinRE 和 NTFS 卷信息…"
         },
     );
+    state.drives = discover_drives();
+    set_drive_items(state, desired);
+    set_drive_hint(state);
     let text = powershell_output(
         r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:') + $vol -join [Environment]::NewLine"#,
     );
@@ -715,7 +981,34 @@ unsafe fn refresh_environment(state: &State) {
             .replace("Firmware:", "固件：")
             .replace("NTFS volumes:", "NTFS 卷：")
     };
-    set_text(state.controls.status, &text);
+    let volume_details = if state.drives.is_empty() {
+        if language == Language::English {
+            "\n\nEligible volumes: none".to_string()
+        } else {
+            "\n\n可选择卷：无".to_string()
+        }
+    } else if language == Language::English {
+        format!(
+            "\n\nEligible volumes:\n{}",
+            state
+                .drives
+                .iter()
+                .map(|drive| drive_display(drive, language))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    } else {
+        format!(
+            "\n\n可选择卷：\n{}",
+            state
+                .drives
+                .iter()
+                .map(|drive| drive_display(drive, language))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    set_text(state.controls.status, &(text + &volume_details));
 }
 
 unsafe fn refresh_task_status(state: &State) {
@@ -749,33 +1042,34 @@ unsafe fn refresh_task_status(state: &State) {
     set_text(state.controls.status, &text);
 }
 
-fn suggested_drive_defaults() -> (String, String, String) {
+fn discover_drives() -> Vec<DriveInfo> {
+    let output = powershell_output(
+        r#"$reserved=@('{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}','{e3c9e316-0b5c-4db8-817d-f92df00215ae}','{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'); $items=@(Get-Volume -ErrorAction SilentlyContinue | ? { $_.DriveLetter -and $_.FileSystem } | % { $v=$_; $p=Get-Partition -DriveLetter $v.DriveLetter -ErrorAction SilentlyContinue; if($p -and $reserved -notcontains "$($p.GptType)") { [ordered]@{letter="$($v.DriveLetter)";label="$($v.FileSystemLabel)";filesystem="$($v.FileSystem)";sizeBytes=[UInt64]$v.Size;freeBytes=[UInt64]$v.SizeRemaining;volumeGuid="$($v.UniqueId)";diskNumber=[int]$p.DiskNumber;partitionNumber=[int]$p.PartitionNumber;partitionTypeGuid="$($p.GptType)"} } }); $items | ConvertTo-Json -Compress -Depth 4"#,
+    );
+    parse_drive_infos(&output).unwrap_or_default()
+}
+
+fn suggested_drive_defaults(drives: &[DriveInfo]) -> (String, String, String) {
     let system = std::env::var("SystemDrive")
         .unwrap_or_else(|_| "C:".to_string())
         .trim()
         .trim_end_matches(':')
         .to_ascii_uppercase();
-    let output = powershell_output(
-        r#"$system=$env:SystemDrive.TrimEnd(':').ToUpperInvariant(); $candidates=@(Get-Volume -ErrorAction SilentlyContinue | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { $p=Get-Partition -DriveLetter $_.DriveLetter -ErrorAction SilentlyContinue; if($p -and $p.Type -notin @('Recovery','System','Reserved')) { "$($_.DriveLetter)".ToUpperInvariant() } } | sort -Unique); $image=$candidates|? { Test-Path -LiteralPath "$_`:\BackupRestore\Windows.wim" }|select -First 1; $task=$candidates|? { $_ -ne $system -and $_ -ne $image }|select -First 1; if(-not $image) { $image=$candidates|? { $_ -ne $system -and $_ -ne $task }|select -First 1 }; "$system|$task|$image""#,
-    );
-    let parts = output.split('|').map(str::trim).collect::<Vec<_>>();
-    if parts.len() == 3 && parts[0].len() == 1 && parts[1].len() <= 1 && parts[2].len() <= 1 {
-        return (
-            parts[0].to_string(),
-            parts[1].to_string(),
-            parts[2].to_string(),
-        );
-    }
-    (system, String::new(), String::new())
-}
-
-fn normalize_drive(value: String, label: &str) -> Result<String, String> {
-    let value = value.trim().trim_end_matches(':').to_ascii_uppercase();
-    if value.len() == 1 && value.as_bytes()[0].is_ascii_alphabetic() {
-        Ok(value)
-    } else {
-        Err(format!("{label}必须是单个盘符，例如 C。"))
-    }
+    let is_image = |drive: &DriveInfo| {
+        PathBuf::from(format!(r"{}:\BackupRestore\Windows.wim", drive.letter)).exists()
+    };
+    let image = drives
+        .iter()
+        .find(|drive| is_image(drive))
+        .or_else(|| drives.iter().find(|drive| drive.letter != system));
+    let task = drives.iter().find(|drive| {
+        drive.letter != system && image.is_none_or(|image| image.letter != drive.letter)
+    });
+    (
+        system,
+        task.map(|drive| drive.letter.clone()).unwrap_or_default(),
+        image.map(|drive| drive.letter.clone()).unwrap_or_default(),
+    )
 }
 
 unsafe fn read_image(state: &mut State) {
@@ -988,8 +1282,12 @@ unsafe fn create_task(state: &State) {
         return;
     }
     let index = index.unwrap_or(1).to_string();
-    let task_drive = match normalize_drive(
-        get_text(state.controls.task),
+    let selected_or_error = |control: Hwnd, label: &str| {
+        selected_drive_letter(state, control)
+            .ok_or_else(|| format!("{label}必须从下拉框选择一个可用卷。"))
+    };
+    let task_drive = match selected_or_error(
+        state.controls.task,
         if language == Language::English {
             "Task volume"
         } else {
@@ -1011,8 +1309,8 @@ unsafe fn create_task(state: &State) {
             return;
         }
     };
-    let source_drive = match normalize_drive(
-        get_text(state.controls.source),
+    let source_drive = match selected_or_error(
+        state.controls.source,
         if language == Language::English {
             "Source volume"
         } else {
@@ -1077,8 +1375,8 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
-    let target_drive = match normalize_drive(
-        get_text(state.controls.target),
+    let target_drive = match selected_or_error(
+        state.controls.target,
         if language == Language::English {
             "Restore target"
         } else {
@@ -1162,6 +1460,9 @@ unsafe fn create_task(state: &State) {
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
         arguments.push("-AllowDestructive".to_string());
     }
+    if operation == "probe" {
+        arguments.push("-NoReboot".to_string());
+    }
     let params = arguments
         .iter()
         .map(|argument| quote_argument(argument))
@@ -1192,7 +1493,17 @@ unsafe fn create_task(state: &State) {
     } else {
         set_text(
             state.controls.status,
-            "已启动管理员准备脚本。请在任务结果中查看 status.json、prepare.log 和 Recovery.log；这不是恢复成功证明。",
+            if operation == "probe" {
+                if language == Language::English {
+                    "Probe preparation started with -NoReboot. Check status.json and logs; no backup, restore or reboot will run."
+                } else {
+                    "已启动 probe（NoReboot）准备流程。请查看 status.json 和日志；不会备份、还原或重启。"
+                }
+            } else if language == Language::English {
+                "Elevated preparation started. Check status.json, prepare.log and Recovery.log; this is not recovery success."
+            } else {
+                "已启动管理员准备脚本。请在任务结果中查看 status.json、prepare.log 和 Recovery.log；这不是恢复成功证明。"
+            },
         );
     }
 }
@@ -1208,7 +1519,8 @@ unsafe extern "system" fn window_proc(
             .ok()
             .and_then(|path| path.parent().map(|value| value.to_path_buf()))
             .unwrap_or_default();
-        let (system_drive, task_drive, image_drive) = suggested_drive_defaults();
+        let drives = discover_drives();
+        let (system_drive, task_drive, image_drive) = suggested_drive_defaults(&drives);
         let image_path = if image_drive.is_empty() {
             String::new()
         } else {
@@ -1239,24 +1551,24 @@ unsafe extern "system" fn window_proc(
             ),
             task: create_control(
                 hwnd,
-                "EDIT",
-                &task_drive,
-                WS_BORDER | WS_TABSTOP,
+                "COMBOBOX",
+                "",
+                CBS_DROPDOWNLIST | WS_TABSTOP,
                 160,
                 88,
+                300,
                 220,
-                24,
                 ID_TASK,
             ),
             source: create_control(
                 hwnd,
-                "EDIT",
-                &system_drive,
-                WS_BORDER | WS_TABSTOP,
+                "COMBOBOX",
+                "",
+                CBS_DROPDOWNLIST | WS_TABSTOP,
                 160,
                 124,
+                300,
                 220,
-                24,
                 ID_SOURCE,
             ),
             image: create_control(
@@ -1272,13 +1584,13 @@ unsafe extern "system" fn window_proc(
             ),
             target: create_control(
                 hwnd,
-                "EDIT",
-                &system_drive,
-                WS_BORDER | WS_TABSTOP,
+                "COMBOBOX",
+                "",
+                CBS_DROPDOWNLIST | WS_TABSTOP,
                 160,
                 196,
+                300,
                 220,
-                24,
                 ID_TARGET,
             ),
             relative: create_control(
@@ -1325,6 +1637,7 @@ unsafe extern "system" fn window_proc(
                 50,
                 ID_OPERATION_HINT,
             ),
+            volume_hint: create_control(hwnd, "STATIC", "", 0, 480, 108, 310, 180, ID_VOLUME_HINT),
             status: create_control(
                 hwnd,
                 "EDIT",
@@ -1424,9 +1737,18 @@ unsafe extern "system" fn window_proc(
             controls,
             executable_dir,
             wim_images: Vec::new(),
+            drives,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        set_drive_items(
+            &*state_ptr,
+            [
+                Some(task_drive),
+                Some(system_drive.clone()),
+                Some(system_drive),
+            ],
+        );
         apply_language(&*state_ptr);
         return 0;
     }
@@ -1442,6 +1764,24 @@ unsafe extern "system" fn window_proc(
             }
             if control_id == ID_OPERATION && notification == CBN_SELCHANGE {
                 set_operation_hint(state);
+                if selected_operation(state) == "restore-existing"
+                    && let Some(source) = selected_drive_letter(state, state.controls.source)
+                {
+                    select_drive(state, state.controls.target, &source);
+                    set_drive_hint(state);
+                }
+                return 0;
+            }
+            if matches!(control_id, ID_TASK | ID_SOURCE | ID_TARGET)
+                && notification == CBN_SELCHANGE
+            {
+                if control_id == ID_SOURCE
+                    && selected_operation(state) == "restore-existing"
+                    && let Some(source) = selected_drive_letter(state, state.controls.source)
+                {
+                    select_drive(state, state.controls.target, &source);
+                }
+                set_drive_hint(state);
                 return 0;
             }
             match control_id {

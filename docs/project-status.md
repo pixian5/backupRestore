@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-24
-当前开发版本：`0.5.5`
+当前开发版本：`0.5.6`
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -58,7 +58,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 自动入口已实机完成；隔离测试卷上的 Capture、Apply、格式化和独立 EFI BCDBoot 已实机完成；真实恢复卷启动回归仍待验证 |
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用任务卷实际盘符。真实备份/还原仍要求任务卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
-| GUI | Rust Win32 原生单窗口负责操作模式、任务/源/镜像/目标卷、WIM 索引、镜像读取、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径；旧 PowerShell/WPF 页面保留兼容但不再是默认入口。WIM 索引使用下拉框，条目显示序号、名称、描述、版本、架构、Edition、安装类型和大小；非管理员返回空索引时会自动重试隐藏管理员读取。 | `v0.5.3` ARM64 包已在 VM 重建并真实启动 GUI；点击“读取镜像”后下拉框显示 `索引 1 | Windows Backup | ... | 大小 162.9 MiB`，单系统/第二系统模式说明均在窗口显示。UAC/WinRE 仍按证据矩阵验收 |
+| GUI | Rust Win32 原生单窗口是唯一桌面前端，负责操作模式、任务/源/目标卷详细下拉框、镜像读取、WIM 索引、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径。WIM 索引条目显示序号、名称、描述、版本、架构、Edition、安装类型和大小；非管理员返回空索引时会自动重试隐藏管理员读取。PowerShell 仅作为隐藏后端脚本。 | `v0.5.6` ARM64 包已使用现有工具链重建，包内无旧前端；`validate-task` 和 `recover --dry-run` 通过。盘符下拉框需下一次低负载 VM 窗口验收。已有 `v0.5.3` ARM64 包真实启动 GUI 并读取 WIM 索引。UAC/WinRE 仍按证据矩阵验收 |
 | 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v0.4.8` ARM64 包已在 VM 使用既有工具链离线构建，manifest 与二进制 SHA-256 一致；`v0.4.7` 的管理员 GUI/UAC、Capture、Apply、格式化和独立 EFI BCDBoot 实测证据仍保留 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
@@ -70,7 +70,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 cargo fmt --all -- --check
 cargo test --workspace --all-targets --offline
 cargo clippy --workspace --all-targets --offline -- -D warnings
-pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestore.ps1","windows/BackupRestore.Gui.ps1","windows/build-windows.ps1"); foreach($f in $files){$tokens=$null;$errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $f),[ref]$tokens,[ref]$errors)|Out-Null; if($errors.Count){$errors|% Message; exit 1}; "AST OK $f"}'
+pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestore.ps1","windows/build-windows.ps1"); foreach($f in $files){$tokens=$null;$errors=$null; [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $f),[ref]$tokens,[ref]$errors)|Out-Null; if($errors.Count){$errors|% Message; exit 1}; "AST OK $f"}'
 git diff --check
 ```
 
@@ -95,7 +95,7 @@ git diff --check
 
 同日根因记录：早期精简 fixture 使用 WinSxS 下 3224 字节的 `BCD-Template`，BCDBoot 依次暴露缺少 EFI_EX/BOOTRES、Fonts、bootstr 资源以及模板加载错误；使用管理员环境中实际的 `C:\Windows\System32\config\BCD-Template`（20480 字节）后，Capture/Apply/BCDBoot 全链路通过。测试 fixture 脚本已同步优先检查系统实际模板；该脚本位于被 `.gitignore` 忽略的本地测试目录，不作为产品 payload。
 
-2026-08-22 GUI 收口：Rust `native_gui.rs` 接管 `BackupRestore.exe` 默认窗口，使用 Windows SDK Win32 API，不下载 GUI crate；窗口包含操作模式、任务/源/镜像/目标卷、镜像路径、WIM 索引、第二系统名称、环境刷新、镜像读取、最近任务状态刷新和管理员创建任务。默认值从当前系统及已挂载 NTFS 卷建议，所有盘符和镜像相对路径在本地先校验；镜像卷与源卷在非 probe 模式下不得相同；环境和任务刷新会先显示进行中状态。旧 `BackupRestore.Gui.ps1` 仅作为兼容前端保留。`v0.4.6` ARM64 包已重建并启动烟测通过，窗口标题为 `BackupRestore - Rust GUI`；按钮交互、UAC、日志刷新仍待真实 VM UI 验收，不能用进程存活代替完整 GUI 验收。
+2026-08-22 GUI 收口：Rust `native_gui.rs` 接管 `BackupRestore.exe` 唯一桌面窗口，使用 Windows SDK Win32 API，不下载 GUI crate；窗口包含操作模式、任务/源/镜像/目标卷、镜像路径、WIM 索引、第二系统名称、环境刷新、镜像读取、最近任务状态刷新和管理员创建任务。默认值从当前系统及已挂载数据卷建议，所有盘符和镜像绝对路径在本地先校验；镜像卷与源卷在非 probe 模式下不得相同；环境和任务刷新会先显示进行中状态。`v0.4.6` ARM64 包已重建并启动烟测通过，窗口标题为 `BackupRestore - Rust GUI`；按钮交互、UAC、日志刷新仍待真实 VM UI 验收，不能用进程存活代替完整 GUI 验收。
 
 2026-08-22 `v0.4.8` ARM64 构建收口：源码压缩包通过 Parallels 共享桌面传入 `C:\BackupRestoreBuild\source-v0.4.8`，未下载任何新工具链；使用已有 `aarch64-pc-windows-msvc` 工具链和 VM 本地 `C:\BackupRestoreBuild\target-v0.4.8` 构建成功。输出包为 `BackupRestore-windows-arm64-v0.4.8`，`build-manifest.json` 的 `binarySha256` 与 `BackupRestore.exe`、`Recovery.exe` 实际 SHA-256 均为 `526c612d8222920bf76f91e4fb4b04ff413cd555a7f9969f802cb6c0ca798050`；`Recovery.exe hash .\Recovery.exe` 返回 0，`BackupRestore.exe` 进程烟测窗口标题为 `BackupRestore - Rust GUI`。这些证据只覆盖 ARM64 构建、哈希和进程启动，不替代 WinRE、DISM、BCDBoot 或真实重启验收。
 
@@ -104,6 +104,7 @@ git diff --check
 2026-08-23 `v0.5.2` GUI/WIM 收口：修复 WIM 多索引 JSON 数组分支的 Rust 借用错误，并同步两个 Cargo manifest、`Cargo.lock` 与 `VERSION` 到 `0.5.2`。ARM64 VM 使用已有工具链在浅层目录 `C:\BackupRestoreBuild\src`、`C:\BackupRestoreBuild\target`、`C:\BackupRestoreBuild\package` 构建成功，输出为 `BackupRestore-windows-arm64-v0.5.2`；没有重新下载工具链。`BackupRestore.exe` 继续使用 `WINDOWS_GUI` 子系统，WIM 索引下拉项同时展示序号和详细元数据。构建/哈希/启动证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
 2026-08-24 `v0.5.4` probe 准备修复：修正镜像路径为空时的 `Test-Path` 和 `metadataPath` 生成逻辑，避免 `probe -NoReboot` 因空路径绑定错误失败；本机 AST、fmt、clippy、Rust 测试和 diff 检查均已通过，后续 VM 实测证据见下一条记录。
 2026-08-24 VM 低负载实测补充：恢复挂起的 ARM64 VM 后，`probe -NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 成功，`validate-task`、manifest/payload 哈希和原始/注册 WinRE 哈希均通过；`recover --dry-run` 保持 `prepared`。容量不足的 backup 和未授权的 restore-existing 分支均按预期拒绝，未写入 `.partial`、未替换 WinRE、未格式化目标。测试完成后不执行真实重启，VM 可再次挂起以控制温度。
+2026-08-24 `v0.5.6` GUI 改动：移除旧桌面前端，构建包只包含 Rust `BackupRestore.exe`、后端 PowerShell 和 WinRE 载荷；所有 PowerShell 查询隐藏运行。任务卷、源卷、目标卷改为详细下拉框，`probe` 创建任务固定使用 `-NoReboot`。VM 已重建 `v0.5.6` ARM64 包并验证 `validate-task`/`recover --dry-run`，盘符下拉框需下一次低负载窗口检查。
 
 2026-08-23 `v0.5.3` WIM 权限回退：实测发现普通令牌下 `Get-WindowsImage` 可能返回可解析但没有索引的 JSON，GUI 因此不会触发管理员读取；现改为检测“索引为空”同样启动隐藏 `runas` 重试。ARM64 包已在 VM 重建并启动，`BackupRestore.exe`/`Recovery.exe` SHA-256 均为 `1e097ab33b01348db5515f41b25b56313f88f5b4ed9485e2782b7d4905ffc6dd`；点击“读取镜像”后真实下拉框显示索引 1（Windows Backup、162.9 MiB），操作模式提示分别解释当前系统覆盖还原和新增第二系统。该 GUI/UAC 读取证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
 

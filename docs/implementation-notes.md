@@ -40,7 +40,7 @@ macOS 本地已完成：
 
 - `cargo test --workspace --all-targets --offline`：核心 crate 12 项测试通过；
 - `cargo fmt --all -- --check`：通过；
-- PowerShell AST 解析：`windows/BackupRestore.ps1`、`windows/BackupRestore.Gui.ps1`、`windows/build-windows.ps1` 均通过；Win11 ARM64 的 Windows PowerShell 5.1 输出也已覆盖 UTF-8 BOM JSON 读取。
+- PowerShell AST 解析：`windows/BackupRestore.ps1`、`windows/build-windows.ps1` 均通过；Win11 ARM64 的 Windows PowerShell 5.1 输出也已覆盖 UTF-8 BOM JSON 读取。
 - Windows VM 曾生成 `BackupRestore-windows-arm64-v0.2.8`；上一轮已编译 `BackupRestore-windows-arm64-v0.2.9`，包含状态一致性修复。本轮已编译 `v0.3.0` ARM64 包，包含 probe 状态机修复。这类产物只是编译/打包证据，不是 WinRE 运行验收。
 - 2026-08-21 `v0.3.0` ARM64 包已在 Windows VM 内实际启动：`Recovery.exe hash` 返回 `dad44f85e4ba78044a56399625934b61e2548c8e471633fb6a03435e04772631`，与 `build-manifest.json` 一致；`validate-task` 对现有任务 fixture 通过。该证据覆盖 ARM64 进程启动和 schema 入口，不覆盖管理员 WinRE、DISM、BCDBoot 或重启。
 - 2026-08-21 管理员 `probe -NoReboot` 实测完成了 BCD 快照、原始 WinRE 复制、DISM 挂载/提交、manifest/status 写入，并确认原始 WinRE hash 未改变；首次实测发现 probe 未携带同目录 `Recovery.exe`，已修复脚本默认路径，使所有操作优先复制同架构 Recovery.exe，只有探针包确实缺少 exe 时才保留兼容入口。
@@ -50,9 +50,9 @@ macOS 本地已完成：
 - 2026-08-21 Win11 ARM64 自动 probe 实测通过：`v0.3.6` 的任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 从正常 Windows 进入任务 WinRE，`RecoveryLauncher.cmd` 记录启动 `Recovery.exe`；Recovery 日志记录 probe 完成、原始注册 WinRE 恢复并校验、最终写入 `success` 和 `wpeutil reboot`。返回 Windows 后注册镜像 SHA-256 与任务原始副本一致。该证据只覆盖 probe，不覆盖任何磁盘格式化、DISM Capture/Apply、BCDBoot 或双系统写入。
 - 2026-08-22 备份实测发现：中文 Windows 的 DISM 输出可能使用系统代码页而不是 UTF-8；Recovery 原先用 UTF-8 `read_line` 读取原生输出，导致 Capture 已启动后日志线程因 `stream did not contain valid UTF-8` 使任务失败。`v0.3.7` 改为按字节读取、UTF-8 lossless replacement 写日志，不能让日志编码问题中断已经开始的 DISM/BCDBoot。
 - 2026-08-22 隔离 EFI 诊断：`prlctl exec --current-user` 对应 `P8B6\\x` 本地管理员账户，但普通进程是 UAC medium token。它调用 `bcdboot S:\Windows /s E: /f UEFI /v` 时，源端 ARM64 `bcdboot.exe`、`bootmgfw.efi` 与 `winload.efi` 一致，随后因对隔离 `HarddiskVolume9` 的 `0x5 Access denied` 失败。`v0.4.1` 改用 `target_root.join("Windows")` 构造源路径，并永久传入 `/v`，使高完整性实测能够保留 BFSVC 细节；仍须用 `x` 的 RunAs 令牌验收，不能使用来宾账户替代。
-- 2026-08-22 GUI 收口：测试产物不再放在仓库根目录或桌面；历史项目压缩包/构建文件集中到 `.test-artifacts/desktop-archive/2026-08-22`，历史截图集中到 `.test-artifacts/root-captures/2026-08-22`，两者均被 `.gitignore` 忽略。WPF GUI 默认从无破坏 `probe` 开始，自动提出卷建议并新增 WIM 索引字段；提交时将索引传入 `BackupRestore.ps1 -WimIndex`。
+- 2026-08-22 GUI 收口：测试产物不再放在仓库根目录或桌面；历史项目压缩包/构建文件集中到 `.test-artifacts/desktop-archive/2026-08-22`，历史截图集中到 `.test-artifacts/root-captures/2026-08-22`，两者均被 `.gitignore` 忽略。Rust GUI 默认从无破坏 `probe` 开始，自动提出卷建议并新增 WIM 索引字段；提交时将索引传入 `BackupRestore.ps1 -WimIndex`。
 - 2026-08-22 Windows PowerShell 5.1 GUI 烟测首次发现 here-string 解析失败，已改为字符串数组拼接并纳入后续 ARM64 包重建门槛；macOS PowerShell 7 AST 不能替代目标 Windows PowerShell 5.1 解析。
-- 2026-08-22 GUI 技术路线纠正：用户要求 Rust 开发，`BackupRestore.exe` 已改为直接进入 `native_gui.rs` 的 Win32 原生窗口；它用 `ShellExecuteW(runas)` 调起已有管理员准备脚本，Recovery/CLI 仍共用同一 Rust 二进制。PowerShell/WPF 文件不再是默认 GUI 入口，保留仅为兼容和后端脚本调用。
+- 2026-08-22 GUI 技术路线纠正：用户要求 Rust 开发，`BackupRestore.exe` 已改为直接进入 `native_gui.rs` 的 Win32 原生窗口；它用 `ShellExecuteW(runas)` 调起已有管理员准备脚本，Recovery/CLI 仍共用同一 Rust 二进制。旧桌面前端已删除，PowerShell 只保留为隐藏后端脚本。
 - 2026-08-22 `v0.4.6` ARM64 构建：Windows VM 使用已有 `aarch64-pc-windows-msvc` 工具链和本地 Cargo target 生成包；`BackupRestore.exe` 的 SHA-256 为 `3180d5b30f34e0c4512c44ad0c8470a0bb7cf1874f6793f97015b884f6061272`，与 `build-manifest.json` 一致，后台进程标题为 `BackupRestore - Rust GUI`。这只证明目标编译和进程烟测，不证明真实按钮、UAC、WinRE 或恢复流程。
 - Rust GUI 镜像选择改为绝对 Windows 路径（例如 `B:\BackupRestore\Windows.wim`）；创建任务时从路径根解析镜像卷并记录完整身份，WinRE 仍用同一卷的内部路径重建实际挂载路径。相对路径不再作为用户输入。
 - Rust GUI 的正常 Windows 启动改为 Windows 子系统，管理员准备 PowerShell 使用隐藏窗口；WIM 读取通过 `Get-WindowsImage` 加载索引详情，下拉项展示序号、名称、描述、版本、架构、版本类型和大小。
@@ -63,12 +63,13 @@ macOS 本地已完成：
 - 2026-08-24 VM 降温记录：测试期间 Parallels `prl_vm_app` 约 92–104% CPU、约 6.8 GiB 内存，WindowServer 约 60%，而 `pmset -g therm` 未报告 thermal/performance warning。已安全挂起 `Windows 11` VM；挂起后 CPU idle 约 86%、可用内存约 6.4 GiB。恢复 VM 前不要继续高频截图或实机压测。
 - 2026-08-24 `v0.5.4` VM 无破坏验证：恢复降温后的 Windows 11 ARM64 VM，使用修复后的 `BackupRestore.ps1` 执行 `probe -NoReboot` 成功，任务 `760fcfe1-392d-4142-94af-b830f4286296` 写入 `task.json`、`status.json`、`manifest.json`、`RecoveryTask.env` 和 payload；`BackupRestore.exe validate-task` 退出码为 0，原始 WinRE 与注册 `R:\Recovery\WindowsRE\Winre.wim` 均为 `0CBC86B44994065C7295F0322DF670CF0B6C9E4A7BE5099CFD962DDEC956FDA1`。`recover --dry-run` 退出码为 0，状态仍为 `prepared`，没有执行恢复操作。
 - 同一 VM 的容量/破坏性守卫验证：`backup` 从 C: 捕获到 B: 因可用 `24,038,313,984` 字节小于所需 `250,431,545,344` 字节而退出码 1；`Test.wim.partial` 不存在，注册 WinRE 哈希未变。`restore-existing` 未传 `-AllowDestructive` 时退出码 1 并报告 `Restore requires -AllowDestructive.`，没有进入格式化、DISM Apply 或 BCDBoot。
-- 2026-08-23 `v0.5.0` ARM64 重建：Windows 参数帮助已显示 `-ImagePath`，旧 `-ImageDrive` / `-ImageRelativePath` 不再是脚本参数；原生 GUI 增加保存/打开文件对话框。ARM64 manifest 与两个二进制哈希均为 `beb50a2f74852285f4508a3b1510ae9f5c2ab7f6dbd02f0b2ca852749ae01073`，`Recovery.exe hash` 返回 0。PowerShell 5.1 兼容前端补充 UTF-8 BOM，目标 Windows AST 解析通过，避免中文 WPF 脚本按系统 ANSI 解码后产生伪语法错误。
-- 2026-08-22 GUI 刷新反馈：环境和最近任务状态按钮在执行 PowerShell 查询前立即显示进行中状态，避免用户误以为按钮没有响应；查询完成后再替换为结果或错误文本。
+- 2026-08-23 `v0.5.0` ARM64 重建：Windows 参数帮助已显示 `-ImagePath`，旧 `-ImageDrive` / `-ImageRelativePath` 不再是脚本参数；Rust GUI 增加保存/打开文件对话框。ARM64 manifest 与两个二进制哈希均为 `beb50a2f74852285f4508a3b1510ae9f5c2ab7f6dbd02f0b2ca852749ae01073`，`Recovery.exe hash` 返回 0。PowerShell 5.1 后端补充 UTF-8 BOM，目标 Windows AST 解析通过。
+- 2026-08-22 GUI 刷新反馈：环境和最近任务状态按钮在执行隐藏 PowerShell 查询前立即显示进行中状态，避免用户误以为按钮没有响应；查询完成后再替换为结果或错误文本。
 - 2026-08-22 隔离恢复收尾：使用 `v0.4.7` 在 Win11 ARM64 VM 的非启动测试卷 `S:` 和独立 EFI `E:` 完成真实 Capture/Apply/格式化/BCDBoot。备份任务 `ff6b645b-b9e4-4b4e-945a-1fb406923b0d` 成功，WIM SHA-256 为 `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30`；还原任务 `821eb6af-f13c-46b2-8c1c-af1aa8345e42` 最终为 `success`。高完整性日志包含 `bcdboot.exe S:\Windows /s E:\ /f UEFI /v`、OS loader identifier 和成功返回；管理员 `bcdedit /store E:\EFI\Microsoft\Boot\BCD /enum all /v` 返回 0。该测试没有让 VM 从 E: 实际启动，因此不外推为真实恢复盘重启成功。
 - 2026-08-22 `v0.4.8` ARM64 构建：源码通过共享桌面压缩传输到 `C:\BackupRestoreBuild\source-v0.4.8`，使用既有 `aarch64-pc-windows-msvc` 工具链和 VM 本地 target 离线构建成功。`build-manifest.json`、`BackupRestore.exe`、`Recovery.exe` 的 SHA-256 均为 `526c612d8222920bf76f91e4fb4b04ff413cd555a7f9969f802cb6c0ca798050`；`Recovery.exe hash .\Recovery.exe` 返回 0，GUI 进程标题为 `BackupRestore - Rust GUI`。这只证明版本、架构、载荷哈希和启动烟测，不证明真实按钮、UAC、WinRE、DISM、BCDBoot 或重启。
 - 指定分区核实：正常 Windows 准备脚本通过 `-SourceDrive`、`-TargetDrive` 接收任意盘符，镜像卷由 `-ImagePath` 绝对路径的根盘符解析，并在任务 JSON 中持久化完整卷身份；Recovery 只把盘符当临时挂载提示，实际通过 volume/disk/partition GUID、偏移、容量、类型、文件系统和序列号复核。`v0.4.7` 的真实隔离 Capture/Apply 测试使用 `S:` 源/目标、`B:` 镜像和 `E:` 独立 EFI，未触碰真实 `C:`，证明当前路径不是 C: 专用。脚本中的 `C:\ProgramData`、`C:\WinRE-PoC` 仅是主机日志/WinRE 临时日志位置，不是数据源或还原目标。
-- Rust 默认 GUI 增加 `中文` / `English` 选择器：切换会更新操作项、字段标签、按钮、校验、确认和镜像/任务状态摘要；内部仍传递稳定的 `probe`、`backup`、`restore-existing`、`create-secondary` 操作值。旧 WPF 兼容前端仍以中文为主，但其环境页的 BitLocker 查询已改为跟随用户选择的源盘符，不再硬编码 C:。
+- Rust 默认 GUI 增加 `中文` / `English` 选择器：切换会更新操作项、字段标签、按钮、校验、确认和镜像/任务状态摘要；内部仍传递稳定的 `probe`、`backup`、`restore-existing`、`create-secondary` 操作值。
+- 2026-08-24 `v0.5.6` Rust GUI 收口：删除旧桌面前端和构建复制规则，`BackupRestore.exe` 成为唯一桌面 UI；PowerShell 查询统一使用 `CREATE_NO_WINDOW`，管理员调用使用 `-WindowStyle Hidden`。任务、源、目标分区改为详细下拉框，条目显示盘符、文件系统、卷标、总容量、剩余容量、磁盘/分区号，身份区显示卷 GUID；`probe` 创建任务强制追加 `-NoReboot`。
 - 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 
 ## 尚未宣称完成的实机项
