@@ -70,6 +70,13 @@ macOS 本地已完成：
 - 指定分区核实：正常 Windows 准备脚本通过 `-SourceDrive`、`-TargetDrive` 接收任意盘符，镜像卷由 `-ImagePath` 绝对路径的根盘符解析，并在任务 JSON 中持久化完整卷身份；Recovery 只把盘符当临时挂载提示，实际通过 volume/disk/partition GUID、偏移、容量、类型、文件系统和序列号复核。`v0.4.7` 的真实隔离 Capture/Apply 测试使用 `S:` 源/目标、`B:` 镜像和 `E:` 独立 EFI，未触碰真实 `C:`，证明当前路径不是 C: 专用。脚本中的 `C:\ProgramData`、`C:\WinRE-PoC` 仅是主机日志/WinRE 临时日志位置，不是数据源或还原目标。
 - Rust 默认 GUI 增加 `中文` / `English` 选择器：切换会更新操作项、字段标签、按钮、校验、确认和镜像/任务状态摘要；内部仍传递稳定的 `probe`、`backup`、`restore-existing`、`create-secondary` 操作值。
 - 2026-08-24 `v0.5.6` Rust GUI 收口：删除旧桌面前端和构建复制规则，`BackupRestore.exe` 成为唯一桌面 UI；PowerShell 查询统一使用 `CREATE_NO_WINDOW`，管理员调用使用 `-WindowStyle Hidden`。任务、源、目标分区改为详细下拉框，条目显示盘符、文件系统、卷标、总容量、剩余容量、磁盘/分区号，身份区显示卷 GUID；`probe` 创建任务强制追加 `-NoReboot`。
+- 2026-08-24 `v0.5.7` 中文 UI 修复：中文模式不再显示内部英文操作名或“语言 / Language”；操作项显示“探测（仅检查）/备份/单系统还原/新增第二系统”。右侧操作说明和卷身份改为可换行只读多行控件，窗口扩大并重新分栏，避免说明覆盖 WIM 下拉框或被裁剪。
+- 2026-08-24 `v0.5.8` UI 结构修复：操作模式改为顶部四个可点击标签按钮，不再使用操作下拉框；任务卷、源卷、目标卷完整信息移动到窗口底部三栏，分别显示卷标、文件系统、容量、剩余空间、磁盘/分区、分区类型和卷 GUID；所有控件统一显式使用 Windows `DEFAULT_GUI_FONT`。
+- 2026-08-24 `v0.5.9` 布局收口：去掉右上角说明框，模式提示改由中部白色状态框承载。任务卷、源卷、目标卷按原始交互逻辑恢复为纵向三段：左侧标签说明用途，下拉框完整展示分区摘要，详情框直接位于对应下方。详情首段不只写名称，而是按 `probe`、备份、单系统还原和新增第二系统解释用途与破坏性边界；无关字段按模式隐藏，窗口创建后最大化，语言选择器与模式标签同一行。`set_text` 把所有逻辑换行规范为 Windows `CRLF`，避免 EDIT 控件把说明挤成一行。
+- 2026-08-24 `v0.6.0` GUI 实机点检：Win11 ARM64 Console 会话中由 `BackupRestore.exe` 最大化启动，确认语言选择器同操作模式一行；任务卷和源卷纵向选择区的标签、完整下拉摘要和对应说明详情框均可见。编译只使用 VM 已有 ARM64 Rust/MSVC 工具链，没有下载。
+- 2026-08-24 `v0.6.1` 反思修复：探测模式隐藏 WIM 索引，不能凭 probe 截图推断还原模式没有控件覆盖。通过逐项检查坐标发现旧索引位置仍在中部提示框内，现已移动到镜像路径之后；以后任何 `ShowWindow` 条件显示的控件均须切换到可见模式做实机截图验收。
+- 2026-08-24 `v0.6.1` 完整 GUI 点检：为避免 Parallels 前台鼠标映射把光标送到客体却不触发控件，使用同一 Console 会话的临时 Win32 `SendMessage(WM_COMMAND)` 辅助程序，仅向 `BackupRestoreNativeGui` 发送四个标签的命令 ID。逐页截图确认：探测只保留任务/源，备份显示镜像路径，还原显示目标与 WIM 索引，第二系统再显示启动项名称；没有创建任务、执行 UAC、格式化或重启。临时源码传输压缩包已从桌面移入项目忽略的 `.test-artifacts/desktop-archive/2026-08-24/`。
+- 2026-08-24 快照清理：Windows 11 VM 原有 7 层串联快照，已删除 5 个早期冗余点（`before-winre-auto-launch`、`backupRestore-before-winre-validation`、`快照 1`、`before-v0.3.6-winre-probe`、`before-v0.3.6-backup-fixture`），保留 `before-v0.3.8-fixture-restore` 和当前 `before-v0.3.9-isolated-restore`。快照目录从约 22 GiB 降到 6.8 GiB；VM 停止/启动状态均未改动测试磁盘内容。
 - 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 
 ## 尚未宣称完成的实机项

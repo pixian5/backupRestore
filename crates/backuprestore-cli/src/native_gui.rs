@@ -39,14 +39,22 @@ const WS_TABSTOP: u32 = 0x00010000;
 const WS_VSCROLL: u32 = 0x00200000;
 const ES_MULTILINE: u32 = 0x0004;
 const ES_AUTOVSCROLL: u32 = 0x0040;
+const ES_READONLY: u32 = 0x0800;
 const CBS_DROPDOWNLIST: u32 = 0x0003;
+const BS_AUTORADIOBUTTON: u32 = 0x0009;
+const BS_PUSHLIKE: u32 = 0x1000;
 const CB_ADDSTRING: u32 = 0x0143;
 const CB_RESETCONTENT: u32 = 0x014b;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
+const BM_SETCHECK: u32 = 0x00f1;
+const BST_UNCHECKED: usize = 0;
+const BST_CHECKED: usize = 1;
 const CBN_SELCHANGE: usize = 1;
+const WM_SETFONT: u32 = 0x0030;
 const SW_HIDE: i32 = 0;
-const SW_SHOWNORMAL: i32 = 1;
+const SW_SHOW: i32 = 5;
+const SW_MAXIMIZE: i32 = 3;
 const MB_OK: u32 = 0x00000000;
 const MB_ICONERROR: u32 = 0x00000010;
 const MB_YESNO: u32 = 0x00000004;
@@ -59,22 +67,27 @@ const ID_CREATE_TASK: usize = 1003;
 const ID_REFRESH_TASK: usize = 1004;
 const ID_LANGUAGE: usize = 1005;
 const ID_BROWSE_IMAGE: usize = 1006;
-const ID_OPERATION: usize = 1100;
-const ID_TASK: usize = 1101;
-const ID_SOURCE: usize = 1102;
-const ID_IMAGE: usize = 1103;
-const ID_TARGET: usize = 1104;
-const ID_RELATIVE: usize = 1105;
-const ID_INDEX: usize = 1106;
-const ID_MENU: usize = 1107;
-const ID_STATUS: usize = 1200;
+const ID_OPERATION_PROBE: usize = 1100;
+const ID_OPERATION_BACKUP: usize = 1101;
+const ID_OPERATION_RESTORE: usize = 1102;
+const ID_OPERATION_SECONDARY: usize = 1103;
+const ID_TASK: usize = 1201;
+const ID_SOURCE: usize = 1202;
+const ID_IMAGE: usize = 1203;
+const ID_TARGET: usize = 1204;
+const ID_RELATIVE: usize = 1205;
+const ID_INDEX: usize = 1206;
+const ID_MENU: usize = 1207;
+const ID_STATUS: usize = 1300;
 const ID_LANGUAGE_LABEL: usize = 2009;
-const ID_OPERATION_HINT: usize = 2010;
-const ID_VOLUME_HINT: usize = 2011;
+const ID_TASK_DETAILS: usize = 2011;
+const ID_SOURCE_DETAILS: usize = 2012;
+const ID_TARGET_DETAILS: usize = 2013;
 const OFN_PATHMUSTEXIST: u32 = 0x00000800;
 const OFN_FILEMUSTEXIST: u32 = 0x00001000;
 const OFN_OVERWRITEPROMPT: u32 = 0x00000002;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const DEFAULT_GUI_FONT: i32 = 17;
 
 #[repr(C)]
 struct Point {
@@ -167,6 +180,11 @@ unsafe extern "system" {
     fn TranslateMessage(message: *const Msg) -> i32;
 }
 
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn GetStockObject(index: i32) -> Handle;
+}
+
 #[link(name = "comdlg32")]
 unsafe extern "system" {
     fn GetOpenFileNameW(file_name: *mut OpenFileNameW) -> i32;
@@ -194,7 +212,7 @@ const GWLP_USERDATA: i32 = -21;
 
 struct Controls {
     language: Hwnd,
-    operation: Hwnd,
+    operation_tabs: [Hwnd; 4],
     task: Hwnd,
     source: Hwnd,
     image: Hwnd,
@@ -202,8 +220,9 @@ struct Controls {
     relative: Hwnd,
     index: Hwnd,
     menu: Hwnd,
-    operation_hint: Hwnd,
-    volume_hint: Hwnd,
+    task_details: Hwnd,
+    source_details: Hwnd,
+    target_details: Hwnd,
     status: Hwnd,
 }
 
@@ -213,6 +232,7 @@ struct State {
     executable_dir: PathBuf,
     wim_images: Vec<WimImageInfo>,
     drives: Vec<DriveInfo>,
+    operation_index: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -249,37 +269,37 @@ enum Language {
 fn ui_text(language: Language, key: &str) -> &'static str {
     match (language, key) {
         (Language::Chinese, "operation") => "操作模式",
-        (Language::Chinese, "task") => "任务卷盘符",
-        (Language::Chinese, "source") => "Windows 源盘符",
+        (Language::Chinese, "task") => "任务卷",
+        (Language::Chinese, "source") => "源卷",
         (Language::Chinese, "image") => "镜像绝对路径",
-        (Language::Chinese, "target") => "还原目标盘符",
+        (Language::Chinese, "target") => "目标卷",
         (Language::Chinese, "relative") => "镜像绝对路径",
         (Language::Chinese, "index") => "WIM 索引",
         (Language::Chinese, "menu") => "第二系统名称",
-        (Language::Chinese, "language") => "语言 / Language",
+        (Language::Chinese, "language") => "语言",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
         (Language::Chinese, "browse") => "浏览…",
         (Language::Chinese, "create_task") => "创建任务",
         (Language::Chinese, "refresh_task") => "刷新任务状态",
         (Language::Chinese, "initial_status") => {
-            "先点击“刷新环境”确认 Windows、WinRE 和卷身份。默认模式为无破坏 probe。"
+            "先点击“刷新环境”确认 Windows、恢复环境和卷身份。默认模式为无破坏探测。"
         }
-        (Language::Chinese, "probe") => "probe（探测，仅检查）",
-        (Language::Chinese, "backup") => "backup（备份）",
-        (Language::Chinese, "restore") => "restore-existing（还原当前系统）",
-        (Language::Chinese, "secondary") => "create-secondary（新增第二系统）",
+        (Language::Chinese, "probe") => "探测（仅检查）",
+        (Language::Chinese, "backup") => "备份",
+        (Language::Chinese, "restore") => "单系统还原",
+        (Language::Chinese, "secondary") => "新增第二系统",
         (Language::Chinese, "probe_hint") => {
-            "probe 用于无破坏检查：先点“刷新环境”确认卷，再保持此模式点“创建任务”；只生成并校验任务和 WinRE 载荷，不备份、不还原、不格式化、不重启。"
+            "探测：只检查 Windows、恢复环境和卷身份；创建任务仅生成并校验任务文件及恢复环境载荷，不备份、不还原、不格式化、不重启。"
         }
         (Language::Chinese, "backup_hint") => {
-            "备份指定源分区；准备完成后进入 WinRE 执行 DISM Capture。"
+            "备份：准备完成后进入 Windows 恢复环境，使用 DISM 捕获指定源分区。"
         }
         (Language::Chinese, "restore_hint") => {
-            "单系统还原：覆盖目标分区，把它作为唯一 Windows 系统启动。"
+            "单系统还原：覆盖目标分区，把镜像系统作为唯一 Windows 系统启动。"
         }
         (Language::Chinese, "secondary_hint") => {
-            "第二系统：保留当前 Windows，把镜像部署到另一个分区并新增启动项。"
+            "新增第二系统：保留当前 Windows，把镜像部署到另一个分区并新增启动项。"
         }
         (Language::English, "operation") => "Operation",
         (Language::English, "task") => "Task volume",
@@ -335,7 +355,7 @@ unsafe fn create_control(
 ) -> Hwnd {
     let class = wide(class);
     let text = wide(text);
-    CreateWindowExW(
+    let handle = CreateWindowExW(
         0,
         class.as_ptr(),
         text.as_ptr(),
@@ -348,11 +368,20 @@ unsafe fn create_control(
         id as HMenu,
         null_mut(),
         null_mut(),
-    )
+    );
+    let font = GetStockObject(DEFAULT_GUI_FONT);
+    if !handle.is_null() && !font.is_null() {
+        SendMessageW(handle, WM_SETFONT, font as usize, 1);
+    }
+    handle
 }
 
 unsafe fn set_text(hwnd: Hwnd, value: &str) {
-    let value = wide(value);
+    // Win32 EDIT controls require CRLF for explicit line breaks. Keeping the
+    // conversion here makes guidance/details boxes render logical lines
+    // consistently instead of depending on automatic wrapping.
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    let value = wide(&normalized.replace('\n', "\r\n"));
     SetWindowTextW(hwnd, value.as_ptr());
 }
 
@@ -401,21 +430,48 @@ unsafe fn set_child_text(parent: Hwnd, id: usize, value: &str) {
     }
 }
 
-unsafe fn set_operation_items(state: &State, language: Language) {
-    let selected = combo_index(state.controls.operation);
-    reset_combo(state.controls.operation);
-    for key in ["probe", "backup", "restore", "secondary"] {
-        add_combo_item(state.controls.operation, ui_text(language, key));
-    }
-    SendMessageW(state.controls.operation, CB_SETCURSEL, selected.min(3), 0);
-}
-
 unsafe fn selected_operation(state: &State) -> &'static str {
-    match combo_index(state.controls.operation) {
+    match state.operation_index {
         1 => "backup",
         2 => "restore-existing",
         3 => "create-secondary",
         _ => "probe",
+    }
+}
+
+unsafe fn set_operation_tabs(state: &State, language: Language) {
+    for (index, (button, key)) in state
+        .controls
+        .operation_tabs
+        .iter()
+        .zip(["probe", "backup", "restore", "secondary"])
+        .enumerate()
+    {
+        set_text(*button, ui_text(language, key));
+        SendMessageW(
+            *button,
+            BM_SETCHECK,
+            if index == state.operation_index {
+                BST_CHECKED
+            } else {
+                BST_UNCHECKED
+            },
+            0,
+        );
+    }
+}
+
+fn operation_display(language: Language, operation: &str) -> &'static str {
+    match (language, operation) {
+        (Language::Chinese, "probe") => "探测（仅检查）",
+        (Language::Chinese, "backup") => "备份",
+        (Language::Chinese, "restore-existing") => "单系统还原",
+        (Language::Chinese, "create-secondary") => "新增第二系统",
+        (Language::English, "probe") => "probe (inspect only)",
+        (Language::English, "backup") => "backup",
+        (Language::English, "restore-existing") => "restore-existing (replace current)",
+        (Language::English, "create-secondary") => "create-secondary (add another)",
+        _ => "",
     }
 }
 
@@ -428,12 +484,103 @@ fn operation_hint_key(operation: &str) -> &'static str {
     }
 }
 
-unsafe fn set_operation_hint(state: &State) {
+unsafe fn set_operation_guidance(state: &State) {
     let language = selected_language(state);
     set_text(
-        state.controls.operation_hint,
+        state.controls.status,
         ui_text(language, operation_hint_key(selected_operation(state))),
     );
+}
+
+unsafe fn set_operation_visibility(state: &State) {
+    let operation = selected_operation(state);
+    let show_image = operation != "probe";
+    let show_target = matches!(operation, "restore-existing" | "create-secondary");
+    let show_index = matches!(operation, "restore-existing" | "create-secondary");
+    let show_menu = operation == "create-secondary";
+    let set_visible = |hwnd: Hwnd, visible: bool| {
+        ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
+    };
+    let set_child_visible = |id: i32, visible: bool| {
+        set_visible(GetDlgItem(state.root, id), visible);
+    };
+
+    set_visible(state.controls.image, show_image);
+    set_child_visible(ID_BROWSE_IMAGE as i32, show_image);
+    set_child_visible(2004, show_image);
+
+    set_visible(state.controls.index, show_index);
+    set_child_visible(2007, show_index);
+    set_visible(state.controls.menu, show_menu);
+    set_child_visible(2008, show_menu);
+
+    set_visible(state.controls.target, show_target);
+    set_visible(state.controls.target_details, show_target);
+    set_child_visible(2005, show_target);
+}
+
+unsafe fn set_volume_labels(state: &State) {
+    let language = selected_language(state);
+    let operation = selected_operation(state);
+    let (task, source, target) = match (language, operation) {
+        (Language::Chinese, "backup") => (
+            "任务卷（保存任务、WinRE 与日志）",
+            "源卷（要备份的 Windows 分区）",
+            "目标卷",
+        ),
+        (Language::Chinese, "restore-existing") => (
+            "任务卷（保存任务、WinRE 与日志）",
+            "源卷（要替换的当前 Windows）",
+            "目标卷（写入镜像；必须等于源卷）",
+        ),
+        (Language::Chinese, "create-secondary") => (
+            "任务卷（保存任务、WinRE 与日志）",
+            "源卷（保留的当前 Windows）",
+            "目标卷（写入第二系统；将格式化）",
+        ),
+        (Language::Chinese, _) => (
+            "任务卷（保存任务、WinRE 与日志）",
+            "源卷（只核验当前 Windows 身份）",
+            "目标卷",
+        ),
+        (Language::English, "backup") => (
+            "Task volume (task, WinRE and logs)",
+            "Source volume (Windows to back up)",
+            "Target volume",
+        ),
+        (Language::English, "restore-existing") => (
+            "Task volume (task, WinRE and logs)",
+            "Source volume (current Windows to replace)",
+            "Target volume (receives image; must match source)",
+        ),
+        (Language::English, "create-secondary") => (
+            "Task volume (task, WinRE and logs)",
+            "Source volume (current Windows to keep)",
+            "Target volume (second system; will be formatted)",
+        ),
+        (Language::English, _) => (
+            "Task volume (task, WinRE and logs)",
+            "Source volume (only checks current Windows identity)",
+            "Target volume",
+        ),
+    };
+    set_child_text(state.root, 2002, task);
+    set_child_text(state.root, 2003, source);
+    set_child_text(state.root, 2005, target);
+}
+
+unsafe fn select_operation(state: &mut State, index: usize) {
+    state.operation_index = index.min(3);
+    set_operation_tabs(state, selected_language(state));
+    if selected_operation(state) == "restore-existing"
+        && let Some(source) = selected_drive_letter(state, state.controls.source)
+    {
+        select_drive(state, state.controls.target, &source);
+    }
+    set_operation_visibility(state);
+    set_volume_labels(state);
+    set_operation_guidance(state);
+    set_drive_details(state);
 }
 
 unsafe fn selected_drive_letter(state: &State, control: Hwnd) -> Option<String> {
@@ -531,7 +678,67 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
     }
 }
 
-unsafe fn set_drive_hint(state: &State) {
+fn drive_role_description(role: &str, operation: &str, language: Language) -> &'static str {
+    match (language, role, operation) {
+        (Language::Chinese, "task", _) => {
+            "任务卷用途：保存任务状态、恢复环境载荷和日志。备份/还原时不能与源卷或目标卷相同；禁止 EFI、MSR、恢复分区。"
+        }
+        (Language::Chinese, "source", "backup") => {
+            "源卷用途：备份时从这里捕获 Windows 分区；镜像不能保存到这个卷。"
+        }
+        (Language::Chinese, "source", "restore-existing") => {
+            "源卷用途：当前要替换的 Windows 分区；单系统还原会强制目标卷与它相同。"
+        }
+        (Language::Chinese, "source", "create-secondary") => {
+            "源卷用途：当前保留不覆盖的 Windows 分区；新增第二系统时目标卷必须与它不同。"
+        }
+        (Language::Chinese, "source", _) => {
+            "源卷用途：探测时只核验当前 Windows 分区身份；不会备份、还原或写入。"
+        }
+        (Language::Chinese, "target", "restore-existing") => {
+            "目标卷用途：将被格式化并写入镜像；单系统还原必须选择与源卷相同的分区。"
+        }
+        (Language::Chinese, "target", "create-secondary") => {
+            "目标卷用途：将被格式化并写入镜像作为第二个 Windows；必须不同于源卷和任务卷。"
+        }
+        (Language::Chinese, "target", "backup") => {
+            "目标卷用途：备份模式不会写入此卷；镜像保存位置由“镜像绝对路径”决定。"
+        }
+        (Language::Chinese, "target", _) => {
+            "目标卷用途：探测模式只核验身份；不会备份、还原、格式化或写入。"
+        }
+        (Language::English, "task", _) => {
+            "Purpose: stores task state, WinRE payload and logs. For backup/restore it must differ from source and target; EFI, MSR and Recovery are forbidden."
+        }
+        (Language::English, "source", "backup") => {
+            "Purpose: backup captures the Windows partition here; the image cannot be stored on this volume."
+        }
+        (Language::English, "source", "restore-existing") => {
+            "Purpose: current Windows partition to replace; single-system restore forces target to match it."
+        }
+        (Language::English, "source", "create-secondary") => {
+            "Purpose: current Windows to keep; a secondary-system target must differ from it."
+        }
+        (Language::English, "source", _) => {
+            "Purpose: probe only checks the current Windows volume identity; it never writes the volume."
+        }
+        (Language::English, "target", "restore-existing") => {
+            "Purpose: will be formatted and receive the image; single-system restore must select the source partition."
+        }
+        (Language::English, "target", "create-secondary") => {
+            "Purpose: will be formatted and receive the second Windows; it must differ from source and task."
+        }
+        (Language::English, "target", "backup") => {
+            "Purpose: backup does not write this volume; image storage comes from Image absolute path."
+        }
+        (Language::English, "target", _) => {
+            "Purpose: probe only checks identity; it never backs up, restores, formats or writes this volume."
+        }
+        _ => "",
+    }
+}
+
+unsafe fn set_drive_details(state: &State) {
     let language = selected_language(state);
     let selected = [
         ("task", selected_drive_letter(state, state.controls.task)),
@@ -544,35 +751,42 @@ unsafe fn set_drive_hint(state: &State) {
             selected_drive_letter(state, state.controls.target),
         ),
     ];
-    let mut lines = Vec::new();
+    let detail_controls = [
+        state.controls.task_details,
+        state.controls.source_details,
+        state.controls.target_details,
+    ];
+    let operation = selected_operation(state);
     for (role, letter) in selected {
-        let Some(letter) = letter else { continue };
-        let Some(drive) = state.drives.iter().find(|item| item.letter == letter) else {
-            continue;
+        let index = match role {
+            "task" => 0,
+            "source" => 1,
+            _ => 2,
         };
-        let role_name = if language == Language::English {
-            match role {
-                "task" => "Task",
-                "source" => "Source",
-                _ => "Target",
-            }
-        } else {
-            match role {
-                "task" => "任务卷",
-                "source" => "源卷",
-                _ => "目标卷",
-            }
-        };
-        lines.push(format!("{role_name}:\n{}", drive_details(drive, language)));
+        let text = letter
+            .and_then(|letter| state.drives.iter().find(|item| item.letter == letter))
+            .map(|drive| {
+                format!(
+                    "{}\n\n{}",
+                    drive_role_description(role, operation, language),
+                    drive_details(drive, language)
+                )
+            })
+            .unwrap_or_else(|| {
+                if language == Language::English {
+                    format!(
+                        "{}\n\nNo volume selected.",
+                        drive_role_description(role, operation, language)
+                    )
+                } else {
+                    format!(
+                        "{}\n\n未选择卷。",
+                        drive_role_description(role, operation, language)
+                    )
+                }
+            });
+        set_text(detail_controls[index], &text);
     }
-    if lines.is_empty() {
-        lines.push(if language == Language::English {
-            "No eligible mounted volumes found.".to_string()
-        } else {
-            "没有找到可选择的已挂载数据卷。".to_string()
-        });
-    }
-    set_text(state.controls.volume_hint, &lines.join("\n"));
 }
 
 unsafe fn set_drive_items(state: &State, desired: [Option<String>; 3]) {
@@ -835,7 +1049,7 @@ unsafe fn set_wim_items(state: &State) {
 
 unsafe fn apply_language(state: &State) {
     let language = selected_language(state);
-    set_operation_items(state, language);
+    set_operation_tabs(state, language);
     let desired = [
         selected_drive_letter(state, state.controls.task),
         selected_drive_letter(state, state.controls.source),
@@ -865,11 +1079,10 @@ unsafe fn apply_language(state: &State) {
     ] {
         set_child_text(state.root, id, ui_text(language, key));
     }
-    set_operation_hint(state);
-    set_drive_hint(state);
-    if state.wim_images.is_empty() {
-        set_text(state.controls.status, ui_text(language, "initial_status"));
-    }
+    set_drive_details(state);
+    set_volume_labels(state);
+    set_operation_visibility(state);
+    set_operation_guidance(state);
 }
 
 fn quote_argument(value: &str) -> String {
@@ -970,7 +1183,7 @@ unsafe fn refresh_environment(state: &mut State) {
     );
     state.drives = discover_drives();
     set_drive_items(state, desired);
-    set_drive_hint(state);
+    set_drive_details(state);
     let text = powershell_output(
         r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:') + $vol -join [Environment]::NewLine"#,
     );
@@ -1398,13 +1611,14 @@ unsafe fn create_task(state: &State) {
             return;
         }
     };
+    let operation_label = operation_display(language, &operation);
     let summary = if language == Language::English {
         format!(
-            "Mode: {operation}\nTask volume: {task_drive}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}",
+            "Mode: {operation_label}\nTask volume: {task_drive}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}",
         )
     } else {
         format!(
-            "模式：{operation}\n任务卷：{task_drive}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
+            "模式：{operation_label}\n任务卷：{task_drive}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
         )
     };
     if matches!(operation.as_str(), "restore-existing" | "create-secondary")
@@ -1497,7 +1711,7 @@ unsafe fn create_task(state: &State) {
                 if language == Language::English {
                     "Probe preparation started with -NoReboot. Check status.json and logs; no backup, restore or reboot will run."
                 } else {
-                    "已启动 probe（NoReboot）准备流程。请查看 status.json 和日志；不会备份、还原或重启。"
+                    "已启动探测准备流程（不重启）。请查看任务状态和日志；不会备份、还原或格式化。"
                 }
             } else if language == Language::English {
                 "Elevated preparation started. Check status.json, prepare.log and Recovery.log; this is not recovery success."
@@ -1532,31 +1746,66 @@ unsafe extern "system" fn window_proc(
                 "COMBOBOX",
                 "中文",
                 CBS_DROPDOWNLIST | WS_TABSTOP,
-                430,
-                18,
-                120,
+                755,
+                60,
+                225,
                 300,
                 ID_LANGUAGE,
             ),
-            operation: create_control(
-                hwnd,
-                "COMBOBOX",
-                "probe",
-                CBS_DROPDOWNLIST | WS_TABSTOP,
-                160,
-                52,
-                300,
-                300,
-                ID_OPERATION,
-            ),
+            operation_tabs: [
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    180,
+                    60,
+                    115,
+                    32,
+                    ID_OPERATION_PROBE,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    300,
+                    60,
+                    115,
+                    32,
+                    ID_OPERATION_BACKUP,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    420,
+                    60,
+                    115,
+                    32,
+                    ID_OPERATION_RESTORE,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    540,
+                    60,
+                    115,
+                    32,
+                    ID_OPERATION_SECONDARY,
+                ),
+            ],
             task: create_control(
                 hwnd,
                 "COMBOBOX",
                 "",
                 CBS_DROPDOWNLIST | WS_TABSTOP,
-                160,
-                88,
-                300,
+                180,
+                110,
+                800,
                 220,
                 ID_TASK,
             ),
@@ -1565,9 +1814,9 @@ unsafe extern "system" fn window_proc(
                 "COMBOBOX",
                 "",
                 CBS_DROPDOWNLIST | WS_TABSTOP,
-                160,
-                124,
-                300,
+                180,
+                220,
+                800,
                 220,
                 ID_SOURCE,
             ),
@@ -1576,9 +1825,9 @@ unsafe extern "system" fn window_proc(
                 "EDIT",
                 &image_path,
                 WS_BORDER | WS_TABSTOP,
-                160,
-                160,
-                540,
+                180,
+                545,
+                800,
                 24,
                 ID_IMAGE,
             ),
@@ -1587,9 +1836,9 @@ unsafe extern "system" fn window_proc(
                 "COMBOBOX",
                 "",
                 CBS_DROPDOWNLIST | WS_TABSTOP,
-                160,
-                196,
-                300,
+                180,
+                330,
+                800,
                 220,
                 ID_TARGET,
             ),
@@ -1598,8 +1847,8 @@ unsafe extern "system" fn window_proc(
                 "EDIT",
                 "",
                 WS_BORDER | WS_TABSTOP,
-                160,
-                232,
+                180,
+                585,
                 300,
                 24,
                 ID_RELATIVE,
@@ -1609,9 +1858,9 @@ unsafe extern "system" fn window_proc(
                 "COMBOBOX",
                 "",
                 CBS_DROPDOWNLIST | WS_TABSTOP,
-                160,
-                268,
-                650,
+                180,
+                585,
+                300,
                 220,
                 ID_INDEX,
             ),
@@ -1620,33 +1869,54 @@ unsafe extern "system" fn window_proc(
                 "EDIT",
                 "Windows Backup",
                 WS_BORDER | WS_TABSTOP,
-                160,
-                304,
-                300,
+                600,
+                585,
+                380,
                 24,
                 ID_MENU,
             ),
-            operation_hint: create_control(
+            task_details: create_control(
                 hwnd,
-                "STATIC",
+                "EDIT",
                 "",
-                0,
-                480,
-                52,
-                310,
-                50,
-                ID_OPERATION_HINT,
+                WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+                180,
+                140,
+                800,
+                70,
+                ID_TASK_DETAILS,
             ),
-            volume_hint: create_control(hwnd, "STATIC", "", 0, 480, 108, 310, 180, ID_VOLUME_HINT),
+            source_details: create_control(
+                hwnd,
+                "EDIT",
+                "",
+                WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+                180,
+                250,
+                800,
+                70,
+                ID_SOURCE_DETAILS,
+            ),
+            target_details: create_control(
+                hwnd,
+                "EDIT",
+                "",
+                WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+                180,
+                360,
+                800,
+                70,
+                ID_TARGET_DETAILS,
+            ),
             status: create_control(
                 hwnd,
                 "EDIT",
-                "先点击“刷新环境”确认 Windows、WinRE 和卷身份。默认模式为无破坏 probe。",
+                "先点击“刷新环境”确认系统、恢复环境和卷身份。默认模式为无破坏探测。",
                 WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
                 20,
-                390,
-                760,
-                150,
+                440,
+                960,
+                90,
                 ID_STATUS,
             ),
         };
@@ -1654,26 +1924,22 @@ unsafe extern "system" fn window_proc(
         add_combo_item(controls.language, "中文");
         add_combo_item(controls.language, "English");
         SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
-        add_combo_item(controls.operation, ui_text(Language::Chinese, "probe"));
-        add_combo_item(controls.operation, ui_text(Language::Chinese, "backup"));
-        add_combo_item(controls.operation, ui_text(Language::Chinese, "restore"));
-        add_combo_item(controls.operation, ui_text(Language::Chinese, "secondary"));
-        SendMessageW(controls.operation, CB_SETCURSEL, 0, 0);
+        SendMessageW(controls.operation_tabs[0], BM_SETCHECK, BST_CHECKED, 0);
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
-        create_control(hwnd, "STATIC", "任务卷盘符", 0, 20, 91, 130, 22, 2002);
-        create_control(hwnd, "STATIC", "Windows 源盘符", 0, 20, 127, 130, 22, 2003);
-        create_control(hwnd, "STATIC", "镜像绝对路径", 0, 20, 163, 130, 22, 2004);
-        create_control(hwnd, "STATIC", "还原目标盘符", 0, 20, 199, 130, 22, 2005);
-        create_control(hwnd, "STATIC", "WIM 索引", 0, 20, 271, 130, 22, 2007);
-        create_control(hwnd, "STATIC", "第二系统名称", 0, 20, 307, 130, 22, 2008);
+        create_control(hwnd, "STATIC", "任务卷", 0, 20, 112, 150, 26, 2002);
+        create_control(hwnd, "STATIC", "源卷", 0, 20, 222, 150, 26, 2003);
+        create_control(hwnd, "STATIC", "目标卷", 0, 20, 332, 150, 26, 2005);
+        create_control(hwnd, "STATIC", "镜像绝对路径", 0, 20, 550, 130, 22, 2004);
+        create_control(hwnd, "STATIC", "WIM 索引", 0, 20, 590, 130, 22, 2007);
+        create_control(hwnd, "STATIC", "第二系统名称", 0, 490, 590, 100, 22, 2008);
         create_control(
             hwnd,
             "STATIC",
             ui_text(Language::Chinese, "language"),
             0,
-            430,
-            0,
-            120,
+            690,
+            67,
+            55,
             18,
             ID_LANGUAGE_LABEL,
         );
@@ -1683,7 +1949,7 @@ unsafe extern "system" fn window_proc(
             "刷新环境",
             WS_TABSTOP,
             20,
-            350,
+            630,
             120,
             28,
             ID_REFRESH,
@@ -1694,7 +1960,7 @@ unsafe extern "system" fn window_proc(
             "读取镜像",
             WS_TABSTOP,
             150,
-            350,
+            630,
             120,
             28,
             ID_READ_IMAGE,
@@ -1704,9 +1970,9 @@ unsafe extern "system" fn window_proc(
             "BUTTON",
             "浏览…",
             WS_TABSTOP,
-            710,
-            160,
-            60,
+            910,
+            545,
+            80,
             24,
             ID_BROWSE_IMAGE,
         );
@@ -1716,7 +1982,7 @@ unsafe extern "system" fn window_proc(
             "创建任务",
             WS_TABSTOP,
             280,
-            350,
+            630,
             120,
             28,
             ID_CREATE_TASK,
@@ -1727,7 +1993,7 @@ unsafe extern "system" fn window_proc(
             "刷新任务状态",
             WS_TABSTOP,
             410,
-            350,
+            630,
             140,
             28,
             ID_REFRESH_TASK,
@@ -1738,6 +2004,7 @@ unsafe extern "system" fn window_proc(
             executable_dir,
             wim_images: Vec::new(),
             drives,
+            operation_index: 0,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -1762,14 +2029,14 @@ unsafe extern "system" fn window_proc(
                 apply_language(state);
                 return 0;
             }
-            if control_id == ID_OPERATION && notification == CBN_SELCHANGE {
-                set_operation_hint(state);
-                if selected_operation(state) == "restore-existing"
-                    && let Some(source) = selected_drive_letter(state, state.controls.source)
-                {
-                    select_drive(state, state.controls.target, &source);
-                    set_drive_hint(state);
-                }
+            if let Some(index) = match control_id {
+                ID_OPERATION_PROBE => Some(0),
+                ID_OPERATION_BACKUP => Some(1),
+                ID_OPERATION_RESTORE => Some(2),
+                ID_OPERATION_SECONDARY => Some(3),
+                _ => None,
+            } {
+                select_operation(state, index);
                 return 0;
             }
             if matches!(control_id, ID_TASK | ID_SOURCE | ID_TARGET)
@@ -1781,7 +2048,7 @@ unsafe extern "system" fn window_proc(
                 {
                     select_drive(state, state.controls.target, &source);
                 }
-                set_drive_hint(state);
+                set_drive_details(state);
                 return 0;
             }
             match control_id {
@@ -1842,8 +2109,8 @@ pub fn run() -> Result<(), super::TaskError> {
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             120,
             80,
-            820,
-            610,
+            1020,
+            760,
             null_mut(),
             null_mut(),
             instance,
@@ -1852,7 +2119,7 @@ pub fn run() -> Result<(), super::TaskError> {
         if window.is_null() {
             return Err(super::err("CreateWindowExW failed"));
         }
-        ShowWindow(window, SW_SHOWNORMAL);
+        ShowWindow(window, SW_MAXIMIZE);
         let mut message = Msg {
             hwnd: null_mut(),
             message: 0,

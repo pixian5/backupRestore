@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-24
-当前开发版本：`0.5.6`
+当前开发版本：`0.5.8`
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -104,7 +104,9 @@ git diff --check
 2026-08-23 `v0.5.2` GUI/WIM 收口：修复 WIM 多索引 JSON 数组分支的 Rust 借用错误，并同步两个 Cargo manifest、`Cargo.lock` 与 `VERSION` 到 `0.5.2`。ARM64 VM 使用已有工具链在浅层目录 `C:\BackupRestoreBuild\src`、`C:\BackupRestoreBuild\target`、`C:\BackupRestoreBuild\package` 构建成功，输出为 `BackupRestore-windows-arm64-v0.5.2`；没有重新下载工具链。`BackupRestore.exe` 继续使用 `WINDOWS_GUI` 子系统，WIM 索引下拉项同时展示序号和详细元数据。构建/哈希/启动证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
 2026-08-24 `v0.5.4` probe 准备修复：修正镜像路径为空时的 `Test-Path` 和 `metadataPath` 生成逻辑，避免 `probe -NoReboot` 因空路径绑定错误失败；本机 AST、fmt、clippy、Rust 测试和 diff 检查均已通过，后续 VM 实测证据见下一条记录。
 2026-08-24 VM 低负载实测补充：恢复挂起的 ARM64 VM 后，`probe -NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 成功，`validate-task`、manifest/payload 哈希和原始/注册 WinRE 哈希均通过；`recover --dry-run` 保持 `prepared`。容量不足的 backup 和未授权的 restore-existing 分支均按预期拒绝，未写入 `.partial`、未替换 WinRE、未格式化目标。测试完成后不执行真实重启，VM 可再次挂起以控制温度。
-2026-08-24 `v0.5.6` GUI 改动：移除旧桌面前端，构建包只包含 Rust `BackupRestore.exe`、后端 PowerShell 和 WinRE 载荷；所有 PowerShell 查询隐藏运行。任务卷、源卷、目标卷改为详细下拉框，`probe` 创建任务固定使用 `-NoReboot`。VM 已重建 `v0.5.6` ARM64 包并验证 `validate-task`/`recover --dry-run`，盘符下拉框需下一次低负载窗口检查。
+2026-08-24 `v0.5.6` GUI 改动：移除旧桌面前端，构建包只包含 Rust `BackupRestore.exe`、后端 PowerShell 和 WinRE 载荷；所有 PowerShell 查询隐藏运行。任务卷、源卷、目标卷改为详细下拉框，`probe` 创建任务固定使用 `-NoReboot`。VM 已重建 `v0.5.6` ARM64 包并验证 `validate-task`/`recover --dry-run`。
+2026-08-24 `v0.5.7` 中文 UI 修复：中文模式操作项和语言标签纯中文；右侧说明与卷详情使用可换行多行控件，窗口重新分栏并扩大，避免文字裁剪/覆盖 WIM 区域。
+2026-08-24 `v0.5.8` UI 结构修复：操作模式改为四个可点击标签按钮；完整任务/源/目标卷信息移到窗口底部三栏；全部控件显式使用系统默认 GUI 字体。ARM64 包待 Mac 解锁后补最终前台截图验收。
 
 2026-08-23 `v0.5.3` WIM 权限回退：实测发现普通令牌下 `Get-WindowsImage` 可能返回可解析但没有索引的 JSON，GUI 因此不会触发管理员读取；现改为检测“索引为空”同样启动隐藏 `runas` 重试。ARM64 包已在 VM 重建并启动，`BackupRestore.exe`/`Recovery.exe` SHA-256 均为 `1e097ab33b01348db5515f41b25b56313f88f5b4ed9485e2782b7d4905ffc6dd`；点击“读取镜像”后真实下拉框显示索引 1（Windows Backup、162.9 MiB），操作模式提示分别解释当前系统覆盖还原和新增第二系统。该 GUI/UAC 读取证据不替代真实 WinRE、DISM、BCDBoot 或重启验收。
 
@@ -142,3 +144,9 @@ git diff --check
 | 本文件 | 记录当前进度、用户决策和继续工作的门槛。 |
 
 状态术语固定为“代码已覆盖”“离线已验证”“实机待验证”“实机已验证”“不在 V1”。只有带有 Windows VM 实际日志、持久化文件或可复核快照证据的项目可以从“实机待验证”变更为“实机已验证”。
+
+2026-08-24 `v0.5.9` GUI 布局调整：移除右上角独立说明框。四个模式的提示统一显示在中部白色提示框；任务卷、源卷、目标卷恢复为纵向三段，每段的左侧标签说明用途，下拉框显示完整一行分区摘要，只读详情框紧随该下拉框。详情首段按当前模式明确说明该卷的用途、会发生的动作和限制，再显示卷标、文件系统、容量、磁盘/分区、分区类型与卷 GUID。字段按模式收紧：探测仅任务卷/源卷；备份增加镜像绝对路径；单系统还原增加目标卷和 WIM 索引；新增第二系统才增加启动项名称。窗口启动即最大化，语言选择器与操作模式处于同一行；所有多行说明文本统一写入 Windows `CRLF`，确保不依赖自动换行。ARM64 实机截图点检待本轮最终重建后补充。
+
+2026-08-24 `v0.6.0` 最终 UI 点检：ARM64 VM 已用既有工具链构建并在用户 Console 会话前台最大化运行。下拉框保留完整分区摘要；任务卷、源卷和目标卷的说明框按显式 `CRLF` 逐行显示，且分别紧随自己的下拉框。语言选择器与操作模式位于同一行。实机包、哈希和截图仅证明本轮 GUI 布局/启动，不替代 WinRE、DISM、BCDBoot 或重启验收。
+
+2026-08-24 `v0.6.1` 模式坐标修正和前台验收：实查发现探测页会隐藏 WIM 索引，因此 `v0.6.0` 截图不能证明还原页布局。已把 WIM 索引移动到镜像路径下方、提示框之后，与第二系统名称同一行；避免单系统还原/新增第二系统显示时覆盖中部提示框。ARM64 VM 已用既有工具链构建，`BackupRestore.exe` 在 Console 会话以最大化前台运行（PID `4080`），包位于 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.6.1`，二进制 SHA-256 为 `54d9fe3e50fabb4855089f1ec9f479b3164768fe88f07ce870a6a9bfbfcadb2c`。通过最小 Win32 `WM_COMMAND` 辅助程序逐一切换四个真实 GUI 标签：探测仅显示任务/源；备份显示任务/源和镜像；单系统还原显示任务/源/目标、镜像和 WIM 索引；新增第二系统再显示启动项名称。每页无控件覆盖，说明框按 `CRLF` 逐行显示；最终截图保存于 `.test-artifacts/root-captures/v0.6.1-ui-secondary-final.png`。这些证据只覆盖 GUI 布局、字段显隐、最大化启动和标签切换，不替代 WinRE、DISM、BCDBoot 或重启验收。

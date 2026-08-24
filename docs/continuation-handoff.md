@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.5.6`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.6.1`。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。
@@ -100,7 +100,7 @@ docs/README.md                              文档阅读入口
 
 `BackupRestore.exe` 当前默认进入 `crates/backuprestore-cli/src/native_gui.rs` 的 Rust Win32 单窗口，使用 Windows SDK 原生 API，不依赖新的 GUI crate：
 
-1. **任务参数区**：选择 `probe`、`backup`、`restore-existing` 或 `create-secondary`；可切换中文/English，从显示文件系统、容量、剩余空间和磁盘/分区号的下拉框选择任务卷、源卷和目标卷，再选择镜像绝对路径、WIM 索引和第二系统名称。窗口默认进入无破坏 `probe`，启动时从当前系统及已挂载数据卷建议默认值，不伪造固定 `D:`。
+1. **任务参数区**：点击顶部 `探测`、`备份`、`单系统还原` 或 `新增第二系统` 标签切换模式；语言选择器与操作标签同一行。任务卷、源卷、目标卷按纵向三段选择，每段左侧标签解释用途，下拉框下方直接显示用途和完整卷身份；无关字段按模式隐藏。窗口默认进入无破坏 `probe`，启动时最大化，并从当前系统及已挂载数据卷建议默认值，不伪造固定 `D:`。
 2. **环境与镜像操作**：`刷新环境` 显示 Windows/build、架构、固件和 NTFS 卷；`读取镜像` 读取绝对路径指向的 WIM SHA-256 与 metadata 摘要。镜像路径必须是单盘符根路径，例如 `B:\BackupRestore\Windows.wim`；创建任务时从该路径解析镜像卷并复核 GUID，非 `probe` 模式拒绝镜像卷与源卷相同。
 3. **任务状态区**：`刷新任务状态` 读取 `C:\ProgramData\BackupRestore\last-task.json`，展示任务 ID、任务目录、准备日志、恢复日志及可读的 `status.json`；文案明确任务准备不等于 WinRE 重启后的真实成功。
 4. **破坏性边界**：`restore-existing` 和 `create-secondary` 创建前显示目标卷摘要并要求二次确认；随后用 `ShellExecuteW("runas")` 启动管理员 PowerShell 准备脚本。GUI 只报告启动结果，不把 UAC 接受或准备成功当作恢复成功。
