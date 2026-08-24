@@ -27,7 +27,7 @@
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
-| Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | **实机已验证（GUI 范围）**：`v0.6.1` ARM64 包在 Console 会话前台最大化启动。任务/源/目标卷按纵向三段排列，每个左侧标签解释用途、下拉框下方直接显示当前模式相关用途与完整卷身份；模式提示位于中部白色状态框。通过真实 `WM_COMMAND` 分别切换探测、备份、单系统还原、第二系统：每页仅显示需要字段，WIM 索引/第二系统名称不覆盖提示框，说明框以 `CRLF` 逐行显示 | 截图 `.test-artifacts/root-captures/v0.6.1-ui-secondary-final.png`；包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.6.1`，SHA-256 `54d9fe3e50fabb4855089f1ec9f479b3164768fe88f07ce870a6a9bfbfcadb2c`。不包括 UAC、任务创建、WinRE 或磁盘写入 |
+| Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | **实机已验证（GUI 范围）**：`v0.6.5` 客户区动态排版在每次标签切换后重排，详情框 112 高度、行距 8、状态框 64；逐页实际矩形确认探测/备份/单系统还原/第二系统的字段显隐、镜像/按钮不重叠，第二系统按钮位于客户区内 | 包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.6.5`，SHA-256 `ddbedf79f00bf209453162f94433eab1c2d235ff014c1d8d400bfd0a577d0bd4`；截图 `.test-artifacts/root-captures/v0.6.5-guest-secondary.png`。不包括 UAC、任务创建、WinRE 或磁盘写入 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | 自动 probe 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 的 `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；新 `-NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 保持 `prepared`，dry-run 不会伪造成功 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
 

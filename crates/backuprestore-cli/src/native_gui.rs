@@ -52,6 +52,7 @@ const BST_UNCHECKED: usize = 0;
 const BST_CHECKED: usize = 1;
 const CBN_SELCHANGE: usize = 1;
 const WM_SETFONT: u32 = 0x0030;
+const WM_SIZE: u32 = 0x0005;
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
 const SW_MAXIMIZE: i32 = 3;
@@ -93,6 +94,14 @@ const DEFAULT_GUI_FONT: i32 = 17;
 struct Point {
     x: i32,
     y: i32,
+}
+
+#[repr(C)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
 }
 
 #[repr(C)]
@@ -177,6 +186,8 @@ unsafe extern "system" {
     fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, value: isize) -> isize;
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
     fn ShowWindow(hwnd: Hwnd, command: i32) -> i32;
+    fn MoveWindow(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
+    fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
     fn TranslateMessage(message: *const Msg) -> i32;
 }
 
@@ -519,6 +530,151 @@ unsafe fn set_operation_visibility(state: &State) {
     set_child_visible(2005, show_target);
 }
 
+unsafe fn layout_operation(state: &State) {
+    let mut rect = Rect {
+        left: 0,
+        top: 0,
+        right: 1020,
+        bottom: 760,
+    };
+    GetClientRect(state.root, &mut rect);
+    let client_width = (rect.right - rect.left).max(1020);
+    let field_x = 180;
+    let field_width = (client_width - field_x - 24).max(700);
+    let details_height = 112;
+    let row_gap = 8;
+    let task_combo_y = 100;
+    let task_details_y = task_combo_y + 36;
+    let source_combo_y = task_details_y + details_height + row_gap;
+    let source_details_y = source_combo_y + 36;
+    let target_combo_y = source_details_y + details_height + row_gap;
+    let target_details_y = target_combo_y + 36;
+    let target_visible = matches!(
+        selected_operation(state),
+        "restore-existing" | "create-secondary"
+    );
+    let image_visible = selected_operation(state) != "probe";
+    let index_visible = matches!(
+        selected_operation(state),
+        "restore-existing" | "create-secondary"
+    );
+    let last_details_y = if target_visible {
+        target_details_y + details_height
+    } else {
+        source_details_y + details_height
+    };
+    let status_y = last_details_y + 16;
+    let image_y = status_y + 84;
+    let secondary_y = image_y + 34;
+    let buttons_y = if index_visible {
+        secondary_y + 40
+    } else if image_visible {
+        image_y + 40
+    } else {
+        status_y + 84
+    };
+
+    let reposition = |hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32| {
+        if !hwnd.is_null() {
+            MoveWindow(hwnd, x, y, width, height, 1);
+        }
+    };
+    reposition(state.controls.task, field_x, task_combo_y, field_width, 220);
+    reposition(
+        state.controls.task_details,
+        field_x,
+        task_details_y,
+        field_width,
+        details_height,
+    );
+    reposition(
+        state.controls.source,
+        field_x,
+        source_combo_y,
+        field_width,
+        220,
+    );
+    reposition(
+        state.controls.source_details,
+        field_x,
+        source_details_y,
+        field_width,
+        details_height,
+    );
+    reposition(
+        state.controls.target,
+        field_x,
+        target_combo_y,
+        field_width,
+        220,
+    );
+    reposition(
+        state.controls.target_details,
+        field_x,
+        target_details_y,
+        field_width,
+        details_height,
+    );
+    reposition(state.controls.status, 20, status_y, client_width - 40, 64);
+
+    let image_width = (field_width - 90).max(400);
+    reposition(state.controls.image, field_x, image_y, image_width, 24);
+    reposition(
+        GetDlgItem(state.root, ID_BROWSE_IMAGE as i32),
+        field_x + image_width + 10,
+        image_y,
+        80,
+        24,
+    );
+    reposition(state.controls.index, field_x, secondary_y, 440, 220);
+    reposition(
+        state.controls.menu,
+        field_x + 500,
+        secondary_y,
+        (field_width - 500).max(300),
+        24,
+    );
+
+    reposition(GetDlgItem(state.root, 2002), 20, task_combo_y + 2, 150, 40);
+    reposition(
+        GetDlgItem(state.root, 2003),
+        20,
+        source_combo_y + 2,
+        150,
+        40,
+    );
+    reposition(
+        GetDlgItem(state.root, 2005),
+        20,
+        target_combo_y + 2,
+        150,
+        40,
+    );
+    reposition(GetDlgItem(state.root, 2004), 20, image_y + 2, 150, 24);
+    reposition(GetDlgItem(state.root, 2007), 20, secondary_y + 2, 150, 24);
+    reposition(
+        GetDlgItem(state.root, 2008),
+        field_x + 500 - 110,
+        secondary_y + 2,
+        100,
+        24,
+    );
+    for (id, x) in [
+        (ID_REFRESH, 20),
+        (ID_READ_IMAGE, 150),
+        (ID_CREATE_TASK, 280),
+        (ID_REFRESH_TASK, 410),
+    ] {
+        reposition(
+            GetDlgItem(state.root, id as i32),
+            x,
+            buttons_y,
+            if id == ID_REFRESH_TASK { 140 } else { 120 },
+            28,
+        );
+    }
+}
+
 unsafe fn set_volume_labels(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state);
@@ -579,6 +735,7 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     }
     set_operation_visibility(state);
     set_volume_labels(state);
+    layout_operation(state);
     set_operation_guidance(state);
     set_drive_details(state);
 }
@@ -1082,6 +1239,7 @@ unsafe fn apply_language(state: &State) {
     set_drive_details(state);
     set_volume_labels(state);
     set_operation_visibility(state);
+    layout_operation(state);
     set_operation_guidance(state);
 }
 
@@ -2022,6 +2180,10 @@ unsafe extern "system" fn window_proc(
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
     if !state_ptr.is_null() {
         let state = &mut *state_ptr;
+        if message == WM_SIZE {
+            layout_operation(state);
+            return 0;
+        }
         if message == WM_COMMAND {
             let control_id = w_param & 0xffff;
             let notification = (w_param >> 16) & 0xffff;
