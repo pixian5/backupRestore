@@ -289,6 +289,7 @@ fn prepare_task(
         image_path.as_deref(),
         &options,
     )?;
+    ensure_workspace_capacity(workspace, &recovery)?;
 
     let store = TaskStore::new(executable_dir);
     let boot_plan = match options.operation {
@@ -366,6 +367,7 @@ fn prepare_task(
     let _ = fs::remove_file(&bootstrap_bcd);
     if let Err(error) = result {
         if task_dir.exists() {
+            let _ = store.write_failure(&mut task, 1, error.to_string());
             let _ = append_log(&prepare_log, &format!("Preparation failed: {error}"));
         }
         return Err(error);
@@ -690,6 +692,28 @@ fn write_recovery_env(
     put_value(&mut values, "WORKSPACE_ROOT_REL", task_root_rel);
     insert_identity(&mut values, "RECOVERY", recovery);
     insert_identity(&mut values, "SOURCE", source);
+    if let Some(source_drive) = source.drive_letter {
+        let source_free = volume_free_bytes(source_drive)?;
+        put_value(
+            &mut values,
+            "SOURCE_USED_BYTES",
+            source
+                .partition_size
+                .saturating_sub(source_free)
+                .to_string(),
+        );
+    }
+    put_value(&mut values, "RESERVED_BYTES", RESERVED_BYTES.to_string());
+    if task.operation == Operation::Backup {
+        put_value(
+            &mut values,
+            "MINIMUM_TARGET_SIZE",
+            source.partition_size.to_string(),
+        );
+    }
+    if let Ok(computer) = env::var("COMPUTERNAME") {
+        put_value(&mut values, "COMPUTERNAME", computer);
+    }
     insert_identity(&mut values, "EFI", efi);
     if let Some(destination) = task.destination.as_ref() {
         insert_identity(&mut values, "IMAGE", &destination.volume);
@@ -883,6 +907,33 @@ fn assert_bitlocker_off(letter: char) -> Result<(), TaskError> {
             "BitLocker protection is enabled or volume state is unknown on {letter}:"
         )))
     }
+}
+
+fn ensure_workspace_capacity(
+    workspace: &VolumeIdentity,
+    recovery: &VolumeIdentity,
+) -> Result<(), TaskError> {
+    let workspace_letter = workspace
+        .drive_letter
+        .ok_or_else(|| err("workspace volume has no drive letter"))?;
+    let recovery_letter = recovery
+        .drive_letter
+        .ok_or_else(|| err("Recovery volume has no drive letter"))?;
+    let registered_wim = PathBuf::from(format!(
+        r"{}:\Recovery\WindowsRE\Winre.wim",
+        recovery_letter
+    ));
+    let wim_size = fs::metadata(&registered_wim)
+        .map_err(|_| err("registered WinRE image is unavailable for workspace capacity check"))?
+        .len();
+    let required = wim_size.saturating_mul(2).saturating_add(256 * 1024 * 1024);
+    let available = volume_free_bytes(workspace_letter)?;
+    if available < required {
+        return Err(err(&format!(
+            "program directory volume has insufficient free space for WinRE staging: {available} < {required}"
+        )));
+    }
+    Ok(())
 }
 
 fn executable_dir() -> Result<PathBuf, TaskError> {
