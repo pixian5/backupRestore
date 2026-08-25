@@ -38,6 +38,7 @@ PowerShell 仅可作为开发机上的构建脚本宿主，不属于产品运行
 - Windows ARM64 Rust `wim-info`：多索引 WIM 返回 Index 1/2；
 - Windows ARM64 Rust `prepare --operation restore-existing --source-drive C --target-drive C`：在任务创建前阻止，未修改 WinRE/BCD、未请求重启；
 - Windows ARM64 Rust `prepare --operation probe --no-reboot`：成功生成任务；`validate-task` 和 `recover --dry-run` 通过。
+- Windows ARM64 Rust 自动 probe：程序目录位于 `T:\BRRustV080` 的任务 `dcff7126-aa6b-4a5b-910c-d5acbbcbdebe` 已完成 Windows → WinRE → `Recovery.exe recover-env` → 原始 WinRE hash 恢复 → Windows；`status.json=success`，`Recovery.log` 记录 `wpeutil.exe reboot`，注册 `Winre.wim` 回到 `0cbc86...6fda1`。
 
 ## 尚未宣称完成
 

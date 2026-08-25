@@ -23,6 +23,7 @@
 | 临时 WinRE 副本和原始 hash | Rust `prepare`、manifest、`WinreRestoreGuard` | 旧流程实机已验证；本轮 Rust prepare 已完成无重启 probe，自动重启待复验 | 任务原始与重启返回 Windows 后注册 `Winre.wim` hash 一致 |
 | WinRE 自动启动 Recovery.exe | `winpeshl.ini`、`RecoveryLauncher.cmd` | 实机已验证（Win11 ARM64 probe） | `Recovery-launcher.log` 记录 `Recovery.exe present` 与 `starting Recovery.exe`；`recovery.log` 记录 Recovery.exe 从 env 启动 |
 | 一次性启动后返回正常 Windows | `reagentc /boottore`、清理/重启路径 | 实机已验证（Win11 ARM64 probe） | `recovery.log` 记录 `wpeutil.exe reboot`；VM 屏幕和 Guest Tools 均确认已回到正常 Windows，未出现 WinRE 循环 |
+| Rust prepare 自动进入 WinRE | Rust `prepare`、`RecoveryLauncher.cmd`、Rust `recover-env` | **实机已验证（v0.8.0 ARM64 probe）** | 任务 `dcff7126-aa6b-4a5b-910c-d5acbbcbdebe` 从 T: 程序目录完成自动 probe；`status.json=success`，原始 WinRE hash 已恢复。 |
 | 单系统还原 | `restore-existing`、DiskPart format、Apply-Image、BCDBoot `/v` | **实机已验证（非 C、多索引 Index 2、ARM64）** | 任务 `375f4422-7c17-4397-9560-6c83d7ca9ff4` 为 `success`；U: 目标 SYSTEM 与 fixture 源 hash 相同；E: BCD、`bootmgfw.efi`、`bootaa64.efi` 存在；Recovery 日志确认 `/Index:2` 和 `bcdboot ... /s Z:`。不证明从 E: 实际重启进入 U: |
 | 独立 EFI 实际引导 | Parallels `hdd2` 首启动、EFI E:、U: 已 Apply Windows | **实机失败（ARM64，已复测）** | `before-v0.7.8-efi-bcd` 中管理员读取并重建 E: BCD（默认 loader `device/osdevice=partition=U:`，`bcdboot U:\Windows /s E: /f UEFI /v` 成功）后，hdd2 首启动仍进入 Recovery `0xc0430001`；启动顺序已恢复，不能把 BCDBoot 文件存在误报为可启动 |
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
