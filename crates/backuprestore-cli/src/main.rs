@@ -162,6 +162,30 @@ fn err(message: &str) -> TaskError {
     TaskError::Invalid(message.into())
 }
 
+/// Parse the workspace-relative task path written into `RecoveryTask.env`.
+///
+/// The value is deliberately relative to the root of the workspace volume,
+/// for example `Tools\\BackupRestore\\tasks\\<task-id>`.  We split at the
+/// *last* `\\tasks\\` marker so a perfectly valid program directory such as
+/// `D:\\tasks` or `D:\\Tools\\tasks\\BackupRestore` is not confused with the
+/// task-store suffix.  The old implementation rejected `store_rel == "tasks"`,
+/// which made `D:\\tasks` unusable even though it is an ordinary directory.
+#[cfg(any(windows, test))]
+fn split_workspace_root_rel(value: &str, task_id: &str) -> Result<String, TaskError> {
+    backuprestore_core::validate_relative_path(value)?;
+    let normalized = value.replace('/', "\\");
+    let (store_rel, relative_id) = normalized
+        .rsplit_once("\\tasks\\")
+        .ok_or_else(|| err("WORKSPACE_ROOT_REL must contain \\tasks\\"))?;
+    if store_rel.is_empty() {
+        return Err(err("WORKSPACE_ROOT_REL has an empty workspace path"));
+    }
+    if relative_id != task_id {
+        return Err(err("WORKSPACE_ROOT_REL task id does not match TASK_ID"));
+    }
+    Ok(store_rel.to_string())
+}
+
 fn validate_task(path: String) -> Result<(), TaskError> {
     let task: Task = read_json(&path)?;
     task.validate()?;
@@ -290,17 +314,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let task_id = env_required(&values, "TASK_ID")?;
     validate_task_id(&task_id)?;
     let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
-    backuprestore_core::validate_relative_path(&workspace_root_rel)?;
-    let normalized_workspace_root = workspace_root_rel.replace('/', "\\");
-    let (store_rel, relative_id) = normalized_workspace_root
-        .rsplit_once("\\tasks\\")
-        .ok_or_else(|| err("WORKSPACE_ROOT_REL must contain \\tasks\\"))?;
-    if store_rel.is_empty() || store_rel.eq_ignore_ascii_case("tasks") {
-        return Err(err("WORKSPACE_ROOT_REL has an invalid workspace path"));
-    }
-    if relative_id != task_id {
-        return Err(err("WORKSPACE_ROOT_REL task id does not match TASK_ID"));
-    }
+    let store_rel = split_workspace_root_rel(&workspace_root_rel, &task_id)?;
     // Until the workspace volume is mounted only an ephemeral WinRE path is
     // available.  Switch to the task directory immediately after mounting;
     // all task/recovery logs that survive WinRE are stored there.
@@ -1468,7 +1482,7 @@ fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{diskpart_format_script, parse_recover_options};
+    use super::{diskpart_format_script, parse_recover_options, split_workspace_root_rel};
 
     #[test]
     fn recover_options_accept_explicit_efi_root() {
@@ -1494,6 +1508,34 @@ mod tests {
         assert!(diskpart_format_script(None, Some(2)).is_err());
         assert!(diskpart_format_script(Some(3), None).is_err());
         assert!(diskpart_format_script(Some(3), Some(0)).is_err());
+    }
+
+    #[test]
+    fn workspace_path_allows_directory_named_tasks() {
+        let task_id = "11111111-1111-4111-8111-111111111111";
+        assert_eq!(
+            split_workspace_root_rel(&format!("tasks\\tasks\\{task_id}"), task_id).unwrap(),
+            "tasks"
+        );
+        assert_eq!(
+            split_workspace_root_rel(
+                &format!("Tools\\tasks\\BackupRestore\\tasks\\{task_id}"),
+                task_id
+            )
+            .unwrap(),
+            "Tools\\tasks\\BackupRestore"
+        );
+        assert!(
+            split_workspace_root_rel("..\\tasks\\11111111-1111-4111-8111-111111111111", task_id)
+                .is_err()
+        );
+        assert!(
+            split_workspace_root_rel(
+                "tasks\\tasks\\22222222-2222-4222-8222-222222222222",
+                task_id
+            )
+            .is_err()
+        );
     }
 
     #[cfg(windows)]

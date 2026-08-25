@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-25
-当前开发版本：`0.7.7`
+更新时间：2026-08-26
+当前开发版本：`0.9.3`（本轮修复工作目录路径边界、原生卷号读取、GUI 多语言布局和 Windows 版本摘要编码）
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -55,11 +55,11 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | 任务与安全模型 | UUID 任务目录、原子 JSON、状态机、卷完整身份、相对路径限制、EFI/MSR/Recovery 排除、容量和 BitLocker 拒绝规则。 | Rust 单元测试已覆盖关键规则 |
 | 工作目录所在卷防替换 | 新任务记录 `workspaceVolume`；WinRE 复核任务、源、镜像和目标的 GUID、分区位置、大小、类型、文件系统与序列号。 | 代码与离线测试已覆盖 |
 | WinRE 载荷完整性 | 原始/暂存 WinRE、任务专用 payload manifest、每个载荷的 SHA-256、`RecoveryTask.env` 二次 hash 校验。 | 代码已覆盖 |
-| 正常 Windows 准备 | 环境、UEFI/GPT、WinRE、Secure Boot、BitLocker 检查；注册 Recovery 分区定位；EFI 选择；WIM 注入；BCD 快照；`last-task.json`。 | PowerShell AST 已通过 |
+| 正常 Windows 准备 | 环境、UEFI/GPT、WinRE、Secure Boot、BitLocker 检查；注册 Recovery 分区定位；EFI 选择；WIM 注入；BCD 快照；`last-task.json`。 | Rust 代码、离线测试和运行时边界审计已通过；ARM64 实机证据见下文 |
 | WinRE 恢复 | 固定盘符重新挂载、镜像和 metadata 校验、DISM Capture/Apply、BCDBoot、阶段续跑、BCD 失败回滚、原始 WinRE 清理守卫。 | probe 自动入口已实机完成；隔离测试卷上的 Capture、Apply、格式化和独立 EFI BCDBoot 已实机完成；真实恢复卷启动回归仍待验证 |
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用工作目录所在卷实际盘符。真实备份/还原仍要求工作目录所在卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
-| GUI | Rust Win32 原生单窗口是唯一桌面前端，负责操作模式、任务/源/目标卷详细下拉框、镜像读取、WIM 索引、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径。WIM 索引条目显示序号、名称、描述、版本、架构、Edition、安装类型和大小；非管理员返回空索引时会自动重试隐藏管理员读取。PowerShell 仅作为隐藏后端脚本。 | `v0.5.6` ARM64 包已使用现有工具链重建，包内无旧前端；`validate-task` 和 `recover --dry-run` 通过。盘符下拉框需下一次低负载 VM 窗口验收。已有 `v0.5.3` ARM64 包真实启动 GUI 并读取 WIM 索引。UAC/WinRE 仍按证据矩阵验收 |
+| GUI | Rust Win32 原生单窗口是唯一桌面前端，负责操作模式、源/目标卷详细下拉框、镜像读取、WIM 索引、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径。WIM 索引条目显示序号、名称、描述、版本、架构、Edition、安装类型和大小。产品运行时不调用 PowerShell。 | `v0.8.x` ARM64 包已使用现有工具链重建并完成 GUI 前台点检；`validate-task`、`recover --dry-run` 和边界审计通过。真实 UAC/WinRE 证据按矩阵记录，旧版本证据仅作历史参考 |
 | 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v0.4.8` ARM64 包已在 VM 使用既有工具链离线构建，manifest 与二进制 SHA-256 一致；`v0.4.7` 的管理员 GUI/UAC、Capture、Apply、格式化和独立 EFI BCDBoot 实测证据仍保留 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
@@ -85,12 +85,14 @@ git diff --check
 
 ## 4. 明确未完成的实机验收
 
-以下项目均不能因代码、AST 或 macOS 测试通过而标记完成：
+以下项目均不能因代码、AST 或 macOS 测试通过而标记完成。已完成的非 C: 实机证据不外推到未覆盖的场景：
 
-1. 在独立测试卷上验证过的 Capture/Apply 还需要在真实恢复任务进入 WinRE 后再做一次完整回归；
-2. `create-secondary`、`/addlast`、真实恢复卷从独立 EFI 启动、原 WinRE hash 恢复和正常 Windows 回归仍未完成；
+1. `create-secondary`、`/addlast` 双系统完整启动回归仍未完成；
+2. 从独立 EFI 实际启动恢复卷仍未完成；该功能仅保留为开发测试，不属于普通 GUI 或 V1 发布门槛；
 3. 验证错误边界：BitLocker 拒绝、卷身份不匹配拒绝、目标容量不足拒绝、DISM/BCDBoot 失败后的状态和 BCD 回滚、每个阶段的断电续跑；
-4. 在真实 Rust Win32 窗口核验环境刷新、卷默认值、镜像读取、任务状态刷新、确认对话框、长路径和 UAC 行为。
+4. 在最新 ARM64 包的真实 Rust Win32 窗口核验长路径、任务目录迁移、确认对话框和 UAC 行为。
+
+以下时间线中出现的 PowerShell 后端、`-EfiDrive` 等内容均是旧版本历史证据；当前产品运行时只使用 Rust，开发 EFI 参数名称是 `--test-efi-drive`，普通 GUI 不暴露该参数。
 
 2026-08-21 已实测：`Windows 11` ARM64 VM 使用 `v0.3.6` 完成真实自动 probe，任务为 `c12026c0-6a9e-4093-8a8b-2971968a31f7`。流程完成 `Windows -> reagentc /boottore -> WinRE -> winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe -> probe preflight -> 原始 WinRE hash 恢复 -> wpeutil reboot -> Windows`；最终 `status.json` 为 `success`，注册 WinRE 与任务原始副本 SHA-256 均为 `0cbc86b44994065c7295f0322df670cf0b6c9e4a7be5099cfd962ddec956fda1`。这证明自动入口、同卷盘符复用和清理状态机；不证明 DISM Capture/Apply、格式化、BCDBoot、双系统或故障回滚。
 
@@ -213,3 +215,7 @@ git diff --check
 2026-08-25 `v0.8.2` Rust 多索引还原实测：任务 `fcfdd192-61e0-4b14-b04f-9734dcd26e48` 使用 B: 程序工作目录、T: 多索引 WIM 的 Index 2、U: 唯一格式化目标和独立 EFI E:，完成 Windows → WinRE → DiskPart 格式化 U: → DISM `/Index:2` Apply → `bcdboot F:\Windows /s Z:\ /f UEFI` → 原始 WinRE 恢复 → Windows。最终 `status.json=success`；U:\Windows\System32\config\SYSTEM SHA-256 为 `A70A0D2750D67E0D3B4054C9284F5794B2A699CC3A76203B7297CD3EAF6CC550`，独立 E: BCD 默认 loader 的 `device/osdevice=partition=U:`，`bootmgfw.efi` 存在。C: 未触碰。独立 EFI 从 Parallels 固件实际启动仍保留为单独未解决项。
 
 2026-08-25 独立 EFI 限定为开发测试：普通 GUI 不显示 EFI 选择，也不向 Rust prepare 传入覆盖参数；正常流程只查找真实 GPT EFI 分区。仅测试 CLI 支持 `--test-efi-drive <盘符>`，用于隔离 E: EFI/跨磁盘启动诊断。关闭 Secure Boot 后 hdd2 首启动仍为 `0xc0430001`；把 E: `bootmgfw.efi` 替换为与 U: 完全相同的版本后错误不变。因此已排除“仅 Secure Boot 开关”与“独立 EFI bootmgfw 版本不同”两种单一原因，独立 EFI 固件启动不作为产品功能或 V1 发布门槛。
+
+2026-08-26 工作目录相对路径边界修复：WinRE 解析 `WORKSPACE_ROOT_REL` 时按最后一个 `\\tasks\\` 拆分，允许程序目录本身名为 `tasks`（例如 `D:\\tasks`），同时继续拒绝路径穿越和任务 ID 不匹配。新增 CLI 回归测试覆盖嵌套 `tasks` 目录；任务、日志、状态和载荷仍全部写入当前程序目录，不恢复 `C:\\ProgramData\\BackupRestore`。
+
+2026-08-26 v0.9.3 环境摘要编码修复：Windows `ver` 输出受系统代码页影响，旧 GUI 刷新环境时曾把“版本”中文解码成乱码。Rust 现在只提取不受本地化影响的 ASCII 版本号（例如 `10.0.26200.9168`），并新增回归测试；ARM64 v0.9.3 已重新编译、结束旧进程后以前台窗口运行。若系统命令没有可识别版本号，界面明确显示 `Windows version unavailable`，不会显示乱码。

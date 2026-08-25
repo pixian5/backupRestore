@@ -2,6 +2,8 @@
 
 当前进度、用户对网络/下载的要求和实机未验证项统一见 [project-status.md](project-status.md)。本文件只记录实现事实与技术边界。
 
+> 当前运行边界（2026-08-26，v0.9.3）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+
 ## 已实现的安全骨架
 
 - `backuprestore-core` 提供统一的任务 JSON、卷身份、WIM 哈希/大小校验、容量校验、BitLocker 拒绝策略、原子 `task.json` / `status.json` 写入和状态机。
@@ -33,6 +35,10 @@
 - 2026-08-21 修复 Windows 构建目录依赖：`build-windows.ps1` 现在为每次 Cargo 调用显式传入仓库 `Cargo.toml`；因此 Parallels Guest Tools 从 `C:\` 启动 PowerShell 时，文档中的构建命令仍会使用指定源码目录，而不会错误在 `C:\` 查找 manifest。
 - 2026-08-21 修复：工作目录所在卷重叠校验原先只拦截了 source/target，未覆盖 backup 的 destination 和 restore 的 image volume。已补齐同分区拒绝逻辑，并在 core 端新增回归测试，确保工作目录所在卷不能与镜像卷或目标卷重叠。
 - 2026-08-21 ARM64 构建：Recovery payload 会随包携带 `VCRUNTIME140.dll` 与 `VCRUNTIME140_1.dll`；WinRE 启动器把完整 payload hash 校验交给 Rust，兼容 `certutil` 输出中的空格。挂载失败时保留 file-backed DiskPart 日志，便于后续 WinRE 实机排查。
+- 2026-08-26 卷身份读取修复：`volume_identity` 不再解析本地化 DiskPart 的星号表格来猜磁盘号和分区号；改用 `IOCTL_STORAGE_GET_DEVICE_NUMBER` 获取物理磁盘号，并从 `PARTITION_INFORMATION_EX` 读取 GPT 分区号/GUID/偏移/容量。新增原生查询注释，避免语言、列布局或卷号变化导致身份错配。
+- 2026-08-26 GUI 标签布局修复：四种模式的源/目标标签改为短用途文案（例如“源卷（备份来源）”“目标卷（覆盖还原）”），完整破坏性说明保留在下方详情框，避免最大化窗口中标签出现第三行裁剪。
+- 2026-08-26 多语言默认值修复：中文模式的第二系统默认启动项从 `Windows Backup` 改为 `Windows 备份`；只有用户未修改默认值时切换语言才更新它，用户自定义的启动菜单名称不会被覆盖。
+- 2026-08-26 v0.9.3 ARM64 GUI 回归：结束旧 `BackupRestore.exe` 后，前台运行 `C:\\BackupRestoreBuild\\package\\BackupRestore-windows-arm64-v0.9.3\\BackupRestore.exe`。本轮最新包点击“刷新环境”后状态框显示 `Windows 10.0.26200.9168`、`arm64`、WinRE 可用，不再出现本地代码页乱码；此前同一布局代码的 v0.9.1 包已逐页切换探测、备份、单系统还原、新增第二系统和 English，确认字段显隐、纵向详情、标签不裁剪、英文纯净。证据截图位于仓库忽略目录 `.test-artifacts/root-captures/v0.9.3-refresh.png`、`v0.9.1-secondary.png` 和 `v0.9.1-english-secondary.png`。
 
 ## 当前验证结果
 
@@ -40,7 +46,7 @@ macOS 本地已完成：
 
 - `cargo test --workspace --all-targets --offline`：核心 crate 12 项测试通过；
 - `cargo fmt --all -- --check`：通过；
-- PowerShell AST 解析：`windows/BackupRestore.exe prepare`、`windows/build-windows.ps1` 均通过；Win11 ARM64 的 Windows PowerShell 5.1 输出也已覆盖 UTF-8 BOM JSON 读取。
+- `scripts/audit-runtime-boundaries.sh`、`cargo fmt`、`cargo test` 和 `cargo clippy` 均通过；PowerShell AST 仅适用于仍保留的 Windows 构建脚本，不再是产品运行时验收项。
 - Windows VM 曾生成 `BackupRestore-windows-arm64-v0.2.8`；上一轮已编译 `BackupRestore-windows-arm64-v0.2.9`，包含状态一致性修复。本轮已编译 `v0.3.0` ARM64 包，包含 probe 状态机修复。这类产物只是编译/打包证据，不是 WinRE 运行验收。
 - 2026-08-21 `v0.3.0` ARM64 包已在 Windows VM 内实际启动：`Recovery.exe hash` 返回 `dad44f85e4ba78044a56399625934b61e2548c8e471633fb6a03435e04772631`，与 `build-manifest.json` 一致；`validate-task` 对现有任务 fixture 通过。该证据覆盖 ARM64 进程启动和 schema 入口，不覆盖管理员 WinRE、DISM、BCDBoot 或重启。
 - 2026-08-21 管理员 `probe -NoReboot` 实测完成了 BCD 快照、原始 WinRE 复制、DISM 挂载/提交、manifest/status 写入，并确认原始 WinRE hash 未改变；首次实测发现 probe 未携带同目录 `Recovery.exe`，已修复脚本默认路径，使所有操作优先复制同架构 Recovery.exe，只有探针包确实缺少 exe 时才保留兼容入口。
@@ -52,10 +58,10 @@ macOS 本地已完成：
 - 2026-08-22 隔离 EFI 诊断：`prlctl exec --current-user` 对应 `P8B6\\x` 本地管理员账户，但普通进程是 UAC medium token。它调用 `bcdboot S:\Windows /s E: /f UEFI /v` 时，源端 ARM64 `bcdboot.exe`、`bootmgfw.efi` 与 `winload.efi` 一致，随后因对隔离 `HarddiskVolume9` 的 `0x5 Access denied` 失败。`v0.4.1` 改用 `target_root.join("Windows")` 构造源路径，并永久传入 `/v`，使高完整性实测能够保留 BFSVC 细节；仍须用 `x` 的 RunAs 令牌验收，不能使用来宾账户替代。
 - 2026-08-22 GUI 收口：测试产物不再放在仓库根目录或桌面；历史项目压缩包/构建文件集中到 `.test-artifacts/desktop-archive/2026-08-22`，历史截图集中到 `.test-artifacts/root-captures/2026-08-22`，两者均被 `.gitignore` 忽略。Rust GUI 默认从无破坏 `probe` 开始，自动提出卷建议并新增 WIM 索引字段；提交时将索引传入 `BackupRestore.exe prepare -WimIndex`。
 - 2026-08-22 Windows PowerShell 5.1 GUI 烟测首次发现 here-string 解析失败，已改为字符串数组拼接并纳入后续 ARM64 包重建门槛；macOS PowerShell 7 AST 不能替代目标 Windows PowerShell 5.1 解析。
-- 2026-08-22 GUI 技术路线纠正：用户要求 Rust 开发，`BackupRestore.exe` 已改为直接进入 `native_gui.rs` 的 Win32 原生窗口；它用 `ShellExecuteW(runas)` 调起已有管理员准备脚本，Recovery/CLI 仍共用同一 Rust 二进制。旧桌面前端已删除，PowerShell 只保留为隐藏后端脚本。
+- 2026-08-22 GUI 技术路线纠正（历史记录）：用户要求 Rust 开发，`BackupRestore.exe` 改为直接进入 `native_gui.rs` 的 Win32 原生窗口；当前版本已完成 Rust 收口，GUI、prepare 和 Recovery 均由 Rust 实现，不再调用隐藏 PowerShell 后端。
 - 2026-08-22 `v0.4.6` ARM64 构建：Windows VM 使用已有 `aarch64-pc-windows-msvc` 工具链和本地 Cargo target 生成包；`BackupRestore.exe` 的 SHA-256 为 `3180d5b30f34e0c4512c44ad0c8470a0bb7cf1874f6793f97015b884f6061272`，与 `build-manifest.json` 一致，后台进程标题为 `BackupRestore - Rust GUI`。这只证明目标编译和进程烟测，不证明真实按钮、UAC、WinRE 或恢复流程。
 - Rust GUI 镜像选择改为绝对 Windows 路径（例如 `B:\BackupRestore\Windows.wim`）；创建任务时从路径根解析镜像卷并记录完整身份，WinRE 仍用同一卷的内部路径重建实际挂载路径。相对路径不再作为用户输入。
-- Rust GUI 的正常 Windows 启动改为 Windows 子系统，管理员准备 PowerShell 使用隐藏窗口；WIM 读取通过 `Get-WindowsImage` 加载索引详情，下拉项展示序号、名称、描述、版本、架构、版本类型和大小。
+- Rust GUI 的正常 Windows 启动使用 Windows 子系统；WIM 读取通过 Rust 调用 DISM `/Get-WimInfo` 并解析索引详情，下拉项展示序号、名称、描述、版本、架构、版本类型和大小。
 - 2026-08-23 清理 Parallels VM：删除 `C:\BackupRestoreBuild` 下旧版本构建、日志和测试文件，重建为浅层 `src`、`target`、`package`；仍挂载的旧测试盘 `backup-fixture\source.vhdx` 因 Windows 文件锁保留，未强制卸载或删除。
 - 2026-08-23 `v0.5.2` ARM64 构建修复：VM 首次重建发现 WIM 多索引 JSON 数组分支把 `serde_json::Value` 按值传入借用函数，导致 Windows 目标编译失败；已修复为按引用读取并同步两个 Cargo manifest、`Cargo.lock`、`VERSION`。使用已有工具链在 `C:\BackupRestoreBuild\src` 编译，输出包为 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.5.2`；未下载新工具链，未执行真实还原或重启。
 - 2026-08-23 `v0.5.3` WIM 权限回退修复：普通令牌下 `Get-WindowsImage` 可能返回 JSON 但 `images` 为空，原逻辑误以为读取成功；新增空索引检测，自动走隐藏管理员 PowerShell 重试。ARM64 包已重建并真实启动 GUI，管理员读取 `B:\BackupRestore\Windows.wim` 返回索引 1（`Windows Backup`），下拉框实测显示序号、名称、无描述、未知字段和 162.9 MiB 大小；两个 EXE SHA-256 均为 `1e097ab33b01348db5515f41b25b56313f88f5b4ed9485e2782b7d4905ffc6dd`。测试期间出现的黑色终端是 Parallels 测试命令窗口，已关闭，不属于 BackupRestore GUI。

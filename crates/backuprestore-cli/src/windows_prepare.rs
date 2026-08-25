@@ -72,6 +72,9 @@ const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 const OPEN_EXISTING: u32 = 3;
 const IOCTL_DISK_GET_PARTITION_INFO_EX: u32 = 0x0007_0048;
 const IOCTL_DISK_GET_DRIVE_LAYOUT_EX: u32 = 0x0007_0050;
+// STORAGE_DEVICE_NUMBER is returned for a volume handle and is independent
+// of DiskPart's localized table headings or volume numbering.
+const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002d_1080;
 
 const RESERVED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
@@ -131,19 +134,64 @@ pub(crate) fn list_volumes() -> Result<(), TaskError> {
 
 pub(crate) fn inspect_environment() -> Result<(), TaskError> {
     let output = capture("cmd.exe", &["/d", "/c", "ver"])?;
+    // `ver` is localized and may use the active Windows code page.  The
+    // status panel is UTF-8 Rust text, so retain only its invariant ASCII
+    // version token instead of leaking mojibake such as `�本` into Chinese UI.
+    let windows = windows_version_summary(&output);
     let architecture = native_architecture();
     let reagent = capture("reagentc.exe", &["/info"])?;
     let winre_available = reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE");
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "windows": output.trim(),
+            "windows": windows,
             "architecture": architecture,
             "winreAvailable": winre_available,
             "volumes": discover_drives()?,
         }))?
     );
     Ok(())
+}
+
+fn windows_version_summary(output: &str) -> String {
+    let mut candidate = String::new();
+    for character in output.chars() {
+        if character.is_ascii_digit() || character == '.' {
+            candidate.push(character);
+        } else {
+            if candidate.starts_with(|c: char| c.is_ascii_digit())
+                && candidate.matches('.').count() >= 2
+            {
+                return format!("Windows {candidate}");
+            }
+            candidate.clear();
+        }
+    }
+    if candidate.starts_with(|c: char| c.is_ascii_digit()) && candidate.matches('.').count() >= 2 {
+        return format!("Windows {candidate}");
+    }
+    "Windows version unavailable".to_string()
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::windows_version_summary;
+
+    #[test]
+    fn windows_version_summary_discards_localized_ver_text() {
+        assert_eq!(
+            windows_version_summary("Microsoft Windows [版本 10.0.26200.9168]\r\n"),
+            "Windows 10.0.26200.9168"
+        );
+        assert_eq!(
+            windows_version_summary("Microsoft Windows [Version 10.0.26100.1]\r\n"),
+            "Windows 10.0.26100.1"
+        );
+        assert_eq!(
+            windows_version_summary("localized output without a version"),
+            "Windows version unavailable"
+        );
+    }
 }
 
 pub(crate) fn wim_info(image_path: String) -> Result<(), TaskError> {
@@ -1000,34 +1048,11 @@ fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError> {
         .find(|line| !line.is_empty())
         .ok_or_else(|| err("mountvol returned no volume identity"))?
         .to_string();
-    let script =
-        format!("list volume\r\nselect volume {letter}\r\ndetail volume\r\nlist partition\r\n");
-    let temp = env::temp_dir().join(format!("BackupRestore-detail-{letter}.txt"));
-    fs::write(&temp, script)?;
-    let output = capture("diskpart.exe", &["/s", &temp.to_string_lossy()]);
-    let _ = fs::remove_file(temp);
-    let output = output?;
-    let mut selected_numbers = Vec::new();
-    for line in output.lines() {
-        let lower = line.trim().to_ascii_lowercase();
-        if lower.starts_with('*') {
-            if let Some(number) = lower
-                .split_whitespace()
-                .find_map(|part| part.parse::<u32>().ok())
-            {
-                selected_numbers.push(number);
-            }
-        }
-    }
-    // Use DiskPart only for numbers; physical identity comes from native
-    // DeviceIoControl queries below, not localised DiskPart text.
     let filesystem = volume_filesystem(letter)?;
-    let disk_number = *selected_numbers
-        .first()
-        .ok_or_else(|| err("could not determine disk number"))?;
-    let partition_number = *selected_numbers
-        .get(1)
-        .ok_or_else(|| err("could not determine partition number"))?;
+    // Do not parse DiskPart's localized output here.  The volume handle gives
+    // us the physical disk number, while PARTITION_INFORMATION_EX contains
+    // the authoritative partition number alongside the GPT GUIDs.
+    let disk_number = storage_device_number(letter)?;
     let physical = physical_volume_identity(letter, disk_number)?;
     Ok(VolumeIdentity {
         disk_guid: physical.disk_guid,
@@ -1035,7 +1060,7 @@ fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError> {
         volume_guid,
         partition_type_guid: physical.partition_type_guid,
         disk_number: Some(disk_number),
-        partition_number: Some(partition_number),
+        partition_number: Some(physical.partition_number),
         partition_offset: physical.partition_offset,
         partition_size: physical.partition_size,
         filesystem,
@@ -1097,6 +1122,7 @@ struct PhysicalVolumeIdentity {
     disk_guid: String,
     partition_guid: String,
     partition_type_guid: String,
+    partition_number: u32,
     partition_offset: u64,
     partition_size: u64,
 }
@@ -1118,6 +1144,7 @@ fn physical_volume_identity(
     }
     let partition_offset = read_u64(&partition, 8)?;
     let partition_size = read_u64(&partition, 16)?;
+    let partition_number = read_u32(&partition, 24)?;
     let partition_type_guid = format_guid(&partition[32..48])?;
     let partition_guid = format_guid(&partition[48..64])?;
 
@@ -1132,9 +1159,23 @@ fn physical_volume_identity(
         disk_guid: format_guid(&layout[8..24])?,
         partition_guid,
         partition_type_guid,
+        partition_number,
         partition_offset,
         partition_size,
     })
+}
+
+fn storage_device_number(letter: char) -> Result<u32, TaskError> {
+    let handle = open_device(&wide_null(&format!(r"\\.\{}:", letter)))?;
+    // STORAGE_DEVICE_NUMBER is three DWORDs: device type, device number and
+    // partition number. Only DeviceNumber is used here; the GPT partition
+    // number is read from PARTITION_INFORMATION_EX so both values come from
+    // the same native identity query family.
+    let mut number = [0_u8; 12];
+    let result = device_io_control(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER, &mut number)
+        .and_then(|_| read_u32(&number, 4));
+    unsafe { CloseHandle(handle) };
+    result
 }
 
 fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {

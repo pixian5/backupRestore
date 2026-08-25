@@ -679,29 +679,18 @@ unsafe fn set_volume_labels(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state);
     let (source, target) = match (language, operation) {
-        (Language::Chinese, "backup") => ("源卷（要备份的 Windows 分区）", "目标卷"),
-        (Language::Chinese, "restore-existing") => (
-            "源卷（要替换的当前 Windows）",
-            "目标卷（写入镜像；必须等于源卷）",
-        ),
-        (Language::Chinese, "create-secondary") => (
-            "源卷（保留的当前 Windows）",
-            "目标卷（写入第二系统；将格式化）",
-        ),
-        (Language::Chinese, _) => ("源卷（只核验当前 Windows 身份）", "目标卷"),
-        (Language::English, "backup") => ("Source volume (Windows to back up)", "Target volume"),
-        (Language::English, "restore-existing") => (
-            "Source volume (current Windows to replace)",
-            "Target volume (receives image; must match source)",
-        ),
-        (Language::English, "create-secondary") => (
-            "Source volume (current Windows to keep)",
-            "Target volume (second system; will be formatted)",
-        ),
-        (Language::English, _) => (
-            "Source volume (only checks current Windows identity)",
-            "Target volume",
-        ),
+        // Keep the left labels short enough for the narrow role column. The
+        // detail boxes below carry the complete safety explanation, so a
+        // label should identify the purpose without wrapping into a clipped
+        // third line on a maximized VM window.
+        (Language::Chinese, "backup") => ("源卷（备份来源）", "目标卷（镜像位置）"),
+        (Language::Chinese, "restore-existing") => ("源卷（当前系统）", "目标卷（覆盖还原）"),
+        (Language::Chinese, "create-secondary") => ("源卷（保留系统）", "目标卷（第二系统）"),
+        (Language::Chinese, _) => ("源卷（检查对象）", "目标卷（不使用）"),
+        (Language::English, "backup") => ("Source (backup)", "Target (image)"),
+        (Language::English, "restore-existing") => ("Source (current)", "Target (overwrite)"),
+        (Language::English, "create-secondary") => ("Source (keep)", "Target (second system)"),
+        (Language::English, _) => ("Source (inspect)", "Target (unused)"),
     };
     set_child_text(state.root, 2003, source);
     set_child_text(state.root, 2005, target);
@@ -1212,6 +1201,21 @@ unsafe fn apply_language(state: &State) {
         (ID_REFRESH_TASK, "refresh_task"),
     ] {
         set_child_text(state.root, id, ui_text(language, key));
+    }
+    // The default secondary boot entry is user-editable, but its initial
+    // value must follow the selected language instead of leaking the English
+    // placeholder into an otherwise Chinese page.
+    let default_menu_name = if language == Language::Chinese {
+        "Windows 备份"
+    } else {
+        "Windows Backup"
+    };
+    let existing_menu_name = get_text(state.controls.menu);
+    if existing_menu_name.is_empty()
+        || existing_menu_name == "Windows Backup"
+        || existing_menu_name == "Windows 备份"
+    {
+        set_text(state.controls.menu, default_menu_name);
     }
     set_drive_details(state);
     set_volume_labels(state);
