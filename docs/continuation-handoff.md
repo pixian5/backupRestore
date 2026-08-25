@@ -35,8 +35,9 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前版本为 `0.7.7`。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前源码版本为 `0.7.8`；Windows 客体前台包仍是已验证的 `v0.7.7`，本轮未重新编译工具链包。
 - 最近 ARM64 实机结果：`v0.7.7` 的任务卷/镜像卷重叠在 PowerShell 变更 WinRE 前被拒绝，WinRE hash 不变；独立 EFI 首启动实测返回 Recovery `0xc0430001`，原启动顺序已恢复。继续调查 EFI 时仍禁止使用 `C:` 作为备份源或还原目标，但可以读取其启动配置和 WinRE。
+- `v0.7.8` 二次 EFI 诊断仍返回 `0xc0430001`：E: BCD 已由管理员 `bcdboot U:\Windows /s E: /f UEFI /v` 重建，默认 loader 的 `device/osdevice` 均为 U:，但 hdd2 首启动仍失败。不要再把旧 BCD 残留当作已证实根因；下一轮应在隔离快照验证跨磁盘 UEFI/Secure Boot/分区关联，完成后恢复 `hdd0` 首启动并保持最新 GUI 前台。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
   - 更早提交包含 ARM64 构建脚本、WinRE JSON 兼容、DISM 日志和清理守卫。

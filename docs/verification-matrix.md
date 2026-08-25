@@ -24,7 +24,7 @@
 | WinRE 自动启动 Recovery.exe | `winpeshl.ini`、`RecoveryLauncher.cmd` | 实机已验证（Win11 ARM64 probe） | `Recovery-launcher.log` 记录 `Recovery.exe present` 与 `starting Recovery.exe`；`recovery.log` 记录 Recovery.exe 从 env 启动 |
 | 一次性启动后返回正常 Windows | `reagentc /boottore`、清理/重启路径 | 实机已验证（Win11 ARM64 probe） | `recovery.log` 记录 `wpeutil.exe reboot`；VM 屏幕和 Guest Tools 均确认已回到正常 Windows，未出现 WinRE 循环 |
 | 单系统还原 | `restore-existing`、DiskPart format、Apply-Image、BCDBoot `/v` | **实机已验证（非 C、多索引 Index 2、ARM64）** | 任务 `375f4422-7c17-4397-9560-6c83d7ca9ff4` 为 `success`；U: 目标 SYSTEM 与 fixture 源 hash 相同；E: BCD、`bootmgfw.efi`、`bootaa64.efi` 存在；Recovery 日志确认 `/Index:2` 和 `bcdboot ... /s Z:`。不证明从 E: 实际重启进入 U: |
-| 独立 EFI 实际引导 | Parallels `hdd2` 首启动、EFI E:、U: 已 Apply Windows | **实机失败（ARM64，已记录）** | 新快照 `before-v0.7.7-efi-boot` 中固件进入 Windows Recovery，但显示错误 `0xc0430001`；原启动顺序已恢复，不能把 BCDBoot 文件存在误报为可启动 |
+| 独立 EFI 实际引导 | Parallels `hdd2` 首启动、EFI E:、U: 已 Apply Windows | **实机失败（ARM64，已复测）** | `before-v0.7.8-efi-bcd` 中管理员读取并重建 E: BCD（默认 loader `device/osdevice=partition=U:`，`bcdboot U:\Windows /s E: /f UEFI /v` 成功）后，hdd2 首启动仍进入 Recovery `0xc0430001`；启动顺序已恢复，不能把 BCDBoot 文件存在误报为可启动 |
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |

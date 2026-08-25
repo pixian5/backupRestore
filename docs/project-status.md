@@ -81,6 +81,8 @@ git diff --check
 
 2026-08-25 `v0.7.7` 独立 EFI 启动实测：在新快照 `before-v0.7.7-efi-boot` 中临时把测试 EFI 磁盘 `hdd2` 调为首启动项，固件确实尝试从独立 EFI 启动，但 Windows Recovery 显示 `0xc0430001`，未进入 `U:`。随后恢复原启动顺序 `hdd0 cdrom0 usb hdd1 hdd2 hdd3` 并重新启动回正常 Windows；`C:` 未作为备份源或恢复目标。该结果将“隔离 Apply/BCDBoot 成功”与“独立 EFI 实际引导成功”明确区分，后者仍未通过。
 
+2026-08-25 `v0.7.8` 独立 EFI 二次诊断：在快照 `before-v0.7.8-efi-bcd`（`c9ed1ee9-0a79-4a90-8c63-29afbc5c3033`）中，用管理员令牌读取 `E:\EFI\Microsoft\Boot\BCD`，确认默认 loader 的 `device/osdevice` 均为 `partition=U:`，`U:` 为 GPT 磁盘 3 分区 3、NTFS、约 8 GiB，`U:\Windows\System32\winload.efi` 存在；独立 EFI `E:` 为磁盘 2 分区 2、FAT32。随后用 `bcdboot U:\Windows /s E: /f UEFI /v` 成功重建 BCD，并再次把 `hdd2` 置首启动真实重启，仍稳定进入 Windows Recovery 并显示 `0xc0430001`，没有进入 `U:`。这排除了“仅因旧 BCD 残留”这一解释，但尚未证明根因；当前保留问题为跨磁盘 UEFI/Secure Boot/Windows loader 兼容性或 EFI/OS 分区关联。启动顺序已恢复为 `hdd0 cdrom0 usb hdd1 hdd2 hdd3`，VM 已回到正常 C: Windows，最新源码对应的 v0.7.7 Rust GUI 包已在客体前台运行。`C:` 仍未作为备份源或还原目标。
+
 ## 4. 明确未完成的实机验收
 
 以下项目均不能因代码、AST 或 macOS 测试通过而标记完成：
