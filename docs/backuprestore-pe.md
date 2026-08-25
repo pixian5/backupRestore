@@ -7,7 +7,7 @@
 - VM 路径：`C:\BackupRestorePE\BackupRestorePE.wim`
 - 仓库副本：`artifacts/BackupRestorePE.wim`
 - ARM64 可启动 ISO：`artifacts/BackupRestorePE.iso`
-- 项目版本：`0.8.7`
+- 项目版本：`0.8.8`
 - 已验证产物构建版本：`0.8.5`（本轮仅修订文档与测试边界，未重建 WIM/ISO）
 - WIM SHA-256：`d5f1515acc2a5bf5d244048b9b9b1975f88433c18b4e13c15f3177393c3d17cc`
 - ISO SHA-256：`4bd7b7c567bdbbfe61a24eeeca50d044172141bd02bedb7db47ca48fe9eeadc5`
@@ -65,6 +65,6 @@ C:\BackupRestorePE\elevate-build.exe
 
 ## 未宣称的范围
 
-本次验证证明 WIM 可由 DISM 挂载、提交、导出并再次只读挂载，且关键文件齐全；同时验证了 ADK ARM64 UEFI RAMDISK 启动链并生成 ISO。2026-08-26 的 Parallels 实测中，UEFI 能识别 `UEFI Virtual DVD-ROM`、显示“Press any key to boot from CD or DVD”，但确认后回到固件菜单，未进入 PE。该 VM 的正常固件为 `efi64`，而 ISO 只携带 ARM64 `bootaa64.efi`；即使临时切至 `efi-arm64` 且关闭 Secure Boot，结果仍相同。测试后 VM 已恢复 `efi64`、Secure Boot 开启、硬盘优先。
+本次验证证明 WIM 可由 DISM 挂载、提交、导出并再次只读挂载，且关键文件齐全；同时生成了 ADK ARM64 RAMDISK ISO。2026-08-26 的 Parallels 实测中，VM CPU 明确为 ARM，UEFI 能识别 `UEFI Virtual DVD-ROM` 并显示“Press any key to boot from CD or DVD”。确认后返回的是 Parallels UEFI 固件主菜单（`Boot Manager` 的上级菜单），不是 PE；这表示启动链在 `boot.wim` 加载前失败。随后将固件切换为 Parallels 明确支持 Apple Silicon 的 `efi-arm64`，并关闭“允许选择启动设备”后重置，仍停在同一固件菜单；方向键、回车和空格均未改变菜单状态。由此本轮只能确认对照 ISO 尚未进入 PE，不能把失败归因于自定义 `BackupRestorePE.wim`；当前更像是 Parallels UEFI 菜单/输入状态或其启动链兼容性问题。测试后 VM 已恢复 `efi64`、Secure Boot 开启、硬盘优先。
 
 因此尚未验证 `X:`、`Recovery.exe` 的独立 PE 启动，亦未执行真实 U 盘拔出测试；更不能宣称完整的 Windows → PE → 自动 `Recovery.exe` → 返回 Windows 重启流程成功。
