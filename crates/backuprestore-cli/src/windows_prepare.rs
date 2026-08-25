@@ -1231,25 +1231,31 @@ fn recovery_identity() -> Result<VolumeIdentity, TaskError> {
     let partition = extract_after(&lower, "partition")
         .and_then(|value| value.split('\\').next()?.parse().ok())
         .ok_or_else(|| err("WinRE partition identity is missing"))?;
-    let mut identity = identity_from_diskpart(disk, partition, 'R')?;
-    identity.partition_type_guid = RECOVERY_TYPE.into();
+    let identity = identity_from_diskpart(disk, partition, 'R')?;
+    if !identity
+        .partition_type_guid
+        .eq_ignore_ascii_case(RECOVERY_TYPE)
+    {
+        return Err(err(
+            "registered WinRE is not located on a GPT Recovery partition",
+        ));
+    }
     Ok(identity)
 }
 
 fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskError> {
     if let Some(letter) = override_drive {
-        let mut identity = volume_identity(letter)?;
-        identity.partition_type_guid = EFI_TYPE.into();
+        let identity = volume_identity(letter)?;
+        if !identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) {
+            return Err(err("specified EFI drive is not a GPT EFI system partition"));
+        }
         return Ok(identity);
     }
     for letter in 'C'..='Z' {
-        let Ok(mut identity) = volume_identity(letter) else {
+        let Ok(identity) = volume_identity(letter) else {
             continue;
         };
-        if identity.filesystem.eq_ignore_ascii_case("FAT32")
-            && identity.partition_size <= 1024 * 1024 * 1024
-        {
-            identity.partition_type_guid = EFI_TYPE.into();
+        if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) {
             return Ok(identity);
         }
     }

@@ -40,6 +40,7 @@ PowerShell 仅可作为开发机上的构建脚本宿主，不属于产品运行
 - Windows ARM64 Rust `prepare --operation probe --no-reboot`：成功生成任务；`validate-task` 和 `recover --dry-run` 通过。
 - Windows ARM64 Rust 自动 probe：程序目录位于 `T:\BRRustV080` 的任务 `dcff7126-aa6b-4a5b-910c-d5acbbcbdebe` 已完成 Windows → WinRE → `Recovery.exe recover-env` → 原始 WinRE hash 恢复 → Windows；`status.json=success`，`Recovery.log` 记录 `wpeutil.exe reboot`，注册 `Winre.wim` 回到 `0cbc86...6fda1`。
 - Windows ARM64 Rust 备份：v0.8.1 在 `B:\BRRustV081` 以 U: 为源、B: 为镜像目标完成 `--no-reboot` 准备；任务 `68177954-8208-4661-a4ae-b2531bfcc4d3` 的 env 已记录 `SOURCE_USED_BYTES=3369549824`、`RESERVED_BYTES=2147483648`、`MINIMUM_TARGET_SIZE=8572108800`，`validate-task` 与 `recover --dry-run` 通过。上一版 v0.8.0 的真实 U:→B: Capture 任务 `3a6f0d0f-9843-49b8-9841-4a11a38c25d7` 已成功生成 1.63 GB WIM；C: 未触碰。
+- Windows ARM64 Rust 多索引还原：v0.8.2 任务 `fcfdd192-61e0-4b14-b04f-9734dcd26e48` 使用 B: 工作目录、T: Index 2 镜像、U: 测试目标和 E: 独立 EFI，完成 WinRE 真实格式化、Apply、BCDBoot 与原 WinRE 清理；U: SYSTEM hash 恢复为 fixture 的 `A70A0D…CC550`，C: 未触碰。
 
 ## 尚未宣称完成
 
