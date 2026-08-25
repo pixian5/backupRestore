@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\BackupRestorePE',
-    [string]$Package = ''
+    [string]$Package = '',
+    [switch]$SkipIso
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,21 @@ function Invoke-Dism([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) {
         throw "DISM failed with exit code $LASTEXITCODE"
     }
+}
+
+function Invoke-CmdLogged([string]$CommandLine, [string]$FailureMessage) {
+    # oscdimg reports progress through stderr. Do not turn its benign progress
+    # text into a terminating PowerShell error; only cmd.exe's exit code is
+    # authoritative.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & cmd.exe /d /s /c $CommandLine 2>&1 | Tee-Object -FilePath $log -Append
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) { throw "$FailureMessage (exit code $exitCode)" }
 }
 
 $mountActive = $false
@@ -112,11 +128,49 @@ try {
     }
     Invoke-Dism @('/Unmount-Image', "/MountDir:$verifyMount", '/Discard')
     Remove-Item -LiteralPath $verifyMount -Recurse -Force -ErrorAction SilentlyContinue
+
+    # A WIM is only a payload. copype supplies the UEFI boot manager, BCD and
+    # boot.sdi that make Windows load sources\boot.wim as an in-memory
+    # RAMDISK. Replacing only sources\boot.wim preserves that boot chain.
+    $mediaRoot = Join-Path $Root 'media'
+    $iso = Join-Path $Root 'BackupRestorePE.iso'
+    $dandi = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\DandISetEnv.bat'
+    $copype = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\copype.cmd'
+    $makeMedia = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\MakeWinPEMedia.cmd'
+    if (-not (Test-Path $dandi)) { throw "ADK DandISetEnv.bat was not found: $dandi" }
+    if (-not (Test-Path $copype)) { throw "ADK copype.cmd was not found: $copype" }
+    if (-not (Test-Path $makeMedia)) { throw "ADK MakeWinPEMedia.cmd was not found: $makeMedia" }
+    Remove-Item -LiteralPath $mediaRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Log "DandISetEnv.bat && copype arm64 $mediaRoot"
+    Invoke-CmdLogged "call `"$dandi`" && call `"$copype`" arm64 `"$mediaRoot`"" 'copype failed'
+    $mediaBootWim = Join-Path $mediaRoot 'media\sources\boot.wim'
+    if (-not (Test-Path $mediaBootWim)) { throw "copype did not create media boot WIM: $mediaBootWim" }
+    Copy-Item -LiteralPath $output -Destination $mediaBootWim -Force
+    foreach ($relative in @(
+        'media\EFI\BOOT\bootaa64.efi',
+        'media\boot\boot.sdi',
+        'media\EFI\Microsoft\Boot\BCD',
+        'media\sources\boot.wim'
+    )) {
+        if (-not (Test-Path (Join-Path $mediaRoot $relative))) {
+            throw "RAMDISK boot chain file is missing: $relative"
+        }
+    }
+    Write-Log 'RAMDISK boot chain verified: bootaa64.efi, BCD, boot.sdi and sources\boot.wim.'
+    if (-not $SkipIso) {
+        Remove-Item -LiteralPath $iso -Force -ErrorAction SilentlyContinue
+        Write-Log "MakeWinPEMedia /ISO $mediaRoot $iso"
+        Invoke-CmdLogged "call `"$dandi`" && call `"$makeMedia`" /ISO /F `"$mediaRoot`" `"$iso`"" 'MakeWinPEMedia ISO failed'
+        if (-not (Test-Path $iso)) { throw "MakeWinPEMedia did not create ISO: $iso" }
+        Write-Log "ISO created: $iso"
+    }
     $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Log "Output=$output"
     Write-Log "SHA256=$hash"
     if (Test-Path -LiteralPath 'Y:\') {
         Copy-Item -LiteralPath $output -Destination 'Y:\artifacts\BackupRestorePE.wim' -Force
+        Copy-Item -LiteralPath $mediaRoot -Destination 'Y:\artifacts\BackupRestorePE-media' -Recurse -Force
+        if (Test-Path $iso) { Copy-Item -LiteralPath $iso -Destination 'Y:\artifacts\BackupRestorePE.iso' -Force }
         Write-Log 'Copied output to Y:\artifacts\BackupRestorePE.wim.'
     } else {
         Write-Log 'Y: is not visible in the elevated token; leaving output on C:.'
