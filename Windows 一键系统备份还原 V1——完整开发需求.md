@@ -148,45 +148,27 @@ Windows 主程序、Recovery.exe： 使用Rust；
 
 # 5. 目录设计
 
-程序安装目录，例如：
+程序目录就是工作目录，允许放在任意普通卷的普通目录中，例如：
 
 ```text
-C:\Program Files\MyBackupRestore\
+D:\Tools\BackupRestore\
+├── BackupRestore.exe
+├── Recovery.exe
+├── BackupRestore.cmd
+├── tasks\<taskId>\
+└── logs\
 ```
 
-包含：
-
-```text
-BackupRestore.exe
-```
-
-数据/恢复相关文件不要依赖 Program Files。
-
-建议：
-
-```text
-C:\ProgramData\MyBackupRestore\
-```
-
-例如：
-
-```text
-C:\ProgramData\MyBackupRestore\
-│
-├── config.json
-├── tasks\
-│
-├── logs\
-│
-└── recovery\
-    ├── staged\
-    └── manifests\
-```
-
-以上只是正常 Windows 中的暂存目录。真正用于离线恢复的任务、日志和
-Recovery 载荷必须复制到 Recovery 分区或独立数据分区；还原目标分区内
-不得保存唯一副本。每次任务使用独立的 `taskId` 目录，任务提交采用
+不再使用 `C:\ProgramData`、注册表或用户可见的工作目录卷选择。任务、日志、
+WinRE 载荷、状态和 BCD 快照都写入该程序目录。创建任务时记录程序目录所在
+卷的 GUID、磁盘/分区身份以及相对卷根路径；WinRE 根据这些身份重新挂载该
+卷，再从相对路径读取 `tasks\<taskId>`。每次任务使用独立目录，任务提交采用
 “临时文件写入、刷新、原子改名”的方式。
+
+单系统还原或新增第二系统如果程序目录所在卷等于目标卷，只显示阻止提示并
+停止，不创建任务、不修改 WinRE/BCD、不请求重启。用户必须手动移动整个
+程序目录后重新运行；程序不会自动复制或迁移文件。备份不覆盖源卷，因此
+程序目录与备份源位于同一卷仍然允许。
 
 ------
 
@@ -428,26 +410,20 @@ Recovery.exe 启动后：
 
 # 10. 任务文件必须放在不会被覆盖的位置
 
-**不能把 task.json 放在 C:\Windows 或 C:\ProgramData 中，然后直接覆盖 C:。**
+**不能把 task.json 放在即将覆盖的目标分区中，然后直接覆盖该分区。**
 
 因为还原过程中 Windows 分区会被覆盖。
 
-因此任务文件应该放在：
-
-- EFI/Recovery 分区
-- 独立数据分区
-- 或其他不会被还原操作覆盖的位置
-
-建议：
+任务文件应该放在程序目录所在的普通卷中；该卷必须与还原目标不同。程序
+目录移动到另一卷后，下一次运行自动使用新目录，不依赖旧路径或注册表：
 
 ```text
-Recovery Partition
-└── MyBackupRestore\
-    └── tasks\<taskId>\
-        ├── task.json
-        ├── status.json
-        ├── recovery.log
-        └── manifest.json
+程序目录\
+└── tasks\<taskId>\
+    ├── task.json
+    ├── status.json
+    ├── Recovery.log
+    └── manifest.json
 ```
 
 任务目录必须位于不会被目标分区覆盖的位置，且至少保留一份正常启动

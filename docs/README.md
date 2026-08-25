@@ -7,5 +7,6 @@
 3. [continuation-handoff.md](continuation-handoff.md)：后续开发者或 AI 的实现边界和执行顺序；
 4. [implementation-notes.md](implementation-notes.md)：实现细节、历史问题和验证边界；
 5. [windows-build.md](windows-build.md)：Windows ARM64/x64 构建和产物规则。
+6. [systematic-audit-2026-08-25.md](systematic-audit-2026-08-25.md)：全项目架构审计、已修复根因和当前验证边界。
 
 产品需求原文位于仓库根目录的 `Windows 一键系统备份还原 V1——完整开发需求.md`。发生冲突时，优先级为：用户最新指令、源代码与已保存的实机证据、本文档；静态检查或历史记录不能替代实机证据。

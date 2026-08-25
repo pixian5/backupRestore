@@ -116,8 +116,6 @@ foreach ($arch in $architectures) {
     }
     foreach ($file in @(
         'BackupRestore.cmd',
-        'BackupRestore.ps1',
-        'Recovery.cmd',
         'RecoveryLauncher.cmd',
         'winpeshl.ini',
         '..\VERSION'

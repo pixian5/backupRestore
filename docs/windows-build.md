@@ -44,12 +44,11 @@ Windows 虚拟磁盘：
 
 输出位于 `C:\BackupRestoreBuild\package\BackupRestore-windows-<arch>-v<VERSION>`，每个包
 包含同一架构的 `BackupRestore.exe`（启动 GUI）和 `Recovery.exe`（WinRE 恢复），
-以及 PowerShell/WinRE 载荷、所需 MSVC runtime 和 `build-manifest.json`。x64 与 ARM64 不可混用。
+以及 Rust WinRE 启动载荷、所需 MSVC runtime 和 `build-manifest.json`。x64 与 ARM64 不可混用。
 
-ARM64 包中的 `BackupRestore.ps1` 会读取同目录的 `build-manifest.json`，
-将当前 Windows 原生架构与包架构比对；在 ARM64 Windows 上运行 x64 包或反之会在
-任何磁盘操作前停止。RecoveryTask.env 和 metadata.json 也会记录实际 ARM64 架构、
-Windows 版本/构建号和容量安全字段。
+正常 Windows 的任务准备、卷枚举、WIM 读取、WinRE 注入、BCD 快照和重启请求均由
+`BackupRestore.exe prepare` 直接完成，不依赖 PowerShell。Recovery.exe 是 WinRE
+唯一执行入口；缺少它时不会回退到批处理执行备份或还原。
 
 宿主机仍只安装了 `aarch64-apple-darwin`，不承担 Windows 交叉链接。当前 VM 已确认
 Rust、`aarch64-pc-windows-msvc` 和 Visual Studio C++ 工具可用。源码可以通过

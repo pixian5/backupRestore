@@ -3,7 +3,7 @@
 //! The GUI deliberately uses only Win32 APIs exposed by the Windows SDK. This
 //! keeps the offline build self-contained and avoids pulling a GUI framework or
 //! another network dependency into the recovery package. Destructive work is
-//! still performed by the existing elevated PowerShell preparation contract;
+//! performed by the elevated Rust preparation command;
 //! this module owns the window, fields, validation, confirmation and status.
 
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -72,16 +72,13 @@ const ID_OPERATION_PROBE: usize = 1100;
 const ID_OPERATION_BACKUP: usize = 1101;
 const ID_OPERATION_RESTORE: usize = 1102;
 const ID_OPERATION_SECONDARY: usize = 1103;
-const ID_TASK: usize = 1201;
 const ID_SOURCE: usize = 1202;
 const ID_IMAGE: usize = 1203;
 const ID_TARGET: usize = 1204;
-const ID_RELATIVE: usize = 1205;
 const ID_INDEX: usize = 1206;
 const ID_MENU: usize = 1207;
 const ID_STATUS: usize = 1300;
 const ID_LANGUAGE_LABEL: usize = 2009;
-const ID_TASK_DETAILS: usize = 2011;
 const ID_SOURCE_DETAILS: usize = 2012;
 const ID_TARGET_DETAILS: usize = 2013;
 const OFN_PATHMUSTEXIST: u32 = 0x00000800;
@@ -245,14 +242,11 @@ struct TokenElevation {
 struct Controls {
     language: Hwnd,
     operation_tabs: [Hwnd; 4],
-    task: Hwnd,
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
-    relative: Hwnd,
     index: Hwnd,
     menu: Hwnd,
-    task_details: Hwnd,
     source_details: Hwnd,
     target_details: Hwnd,
     status: Hwnd,
@@ -301,11 +295,9 @@ enum Language {
 fn ui_text(language: Language, key: &str) -> &'static str {
     match (language, key) {
         (Language::Chinese, "operation") => "操作模式",
-        (Language::Chinese, "task") => "任务卷",
         (Language::Chinese, "source") => "源卷",
         (Language::Chinese, "image") => "镜像绝对路径",
         (Language::Chinese, "target") => "目标卷",
-        (Language::Chinese, "relative") => "镜像绝对路径",
         (Language::Chinese, "index") => "WIM 索引",
         (Language::Chinese, "menu") => "第二系统名称",
         (Language::Chinese, "language") => "语言",
@@ -334,11 +326,9 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "新增第二系统：保留当前 Windows，把镜像部署到另一个分区并新增启动项。"
         }
         (Language::English, "operation") => "Operation",
-        (Language::English, "task") => "Task volume",
         (Language::English, "source") => "Windows source",
         (Language::English, "image") => "Image absolute path",
         (Language::English, "target") => "Restore target",
-        (Language::English, "relative") => "Image absolute path",
         (Language::English, "index") => "WIM index",
         (Language::English, "menu") => "Secondary boot name",
         (Language::English, "language") => "Language",
@@ -564,9 +554,7 @@ unsafe fn layout_operation(state: &State) {
     let field_width = (client_width - field_x - 24).max(700);
     let details_height = 112;
     let row_gap = 8;
-    let task_combo_y = 100;
-    let task_details_y = task_combo_y + 36;
-    let source_combo_y = task_details_y + details_height + row_gap;
+    let source_combo_y = 100;
     let source_details_y = source_combo_y + 36;
     let target_combo_y = source_details_y + details_height + row_gap;
     let target_details_y = target_combo_y + 36;
@@ -600,14 +588,6 @@ unsafe fn layout_operation(state: &State) {
             MoveWindow(hwnd, x, y, width, height, 1);
         }
     };
-    reposition(state.controls.task, field_x, task_combo_y, field_width, 220);
-    reposition(
-        state.controls.task_details,
-        field_x,
-        task_details_y,
-        field_width,
-        details_height,
-    );
     reposition(
         state.controls.source,
         field_x,
@@ -656,7 +636,6 @@ unsafe fn layout_operation(state: &State) {
         24,
     );
 
-    reposition(GetDlgItem(state.root, 2002), 20, task_combo_y + 2, 150, 40);
     reposition(
         GetDlgItem(state.root, 2003),
         20,
@@ -699,49 +678,31 @@ unsafe fn layout_operation(state: &State) {
 unsafe fn set_volume_labels(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state);
-    let (task, source, target) = match (language, operation) {
-        (Language::Chinese, "backup") => (
-            "任务卷（保存任务、WinRE 与日志）",
-            "源卷（要备份的 Windows 分区）",
-            "目标卷",
-        ),
+    let (source, target) = match (language, operation) {
+        (Language::Chinese, "backup") => ("源卷（要备份的 Windows 分区）", "目标卷"),
         (Language::Chinese, "restore-existing") => (
-            "任务卷（保存任务、WinRE 与日志）",
             "源卷（要替换的当前 Windows）",
             "目标卷（写入镜像；必须等于源卷）",
         ),
         (Language::Chinese, "create-secondary") => (
-            "任务卷（保存任务、WinRE 与日志）",
             "源卷（保留的当前 Windows）",
             "目标卷（写入第二系统；将格式化）",
         ),
-        (Language::Chinese, _) => (
-            "任务卷（保存任务、WinRE 与日志）",
-            "源卷（只核验当前 Windows 身份）",
-            "目标卷",
-        ),
-        (Language::English, "backup") => (
-            "Task volume (task, WinRE and logs)",
-            "Source volume (Windows to back up)",
-            "Target volume",
-        ),
+        (Language::Chinese, _) => ("源卷（只核验当前 Windows 身份）", "目标卷"),
+        (Language::English, "backup") => ("Source volume (Windows to back up)", "Target volume"),
         (Language::English, "restore-existing") => (
-            "Task volume (task, WinRE and logs)",
             "Source volume (current Windows to replace)",
             "Target volume (receives image; must match source)",
         ),
         (Language::English, "create-secondary") => (
-            "Task volume (task, WinRE and logs)",
             "Source volume (current Windows to keep)",
             "Target volume (second system; will be formatted)",
         ),
         (Language::English, _) => (
-            "Task volume (task, WinRE and logs)",
             "Source volume (only checks current Windows identity)",
             "Target volume",
         ),
     };
-    set_child_text(state.root, 2002, task);
     set_child_text(state.root, 2003, source);
     set_child_text(state.root, 2005, target);
 }
@@ -858,9 +819,6 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
 
 fn drive_role_description(role: &str, operation: &str, language: Language) -> &'static str {
     match (language, role, operation) {
-        (Language::Chinese, "task", _) => {
-            "任务卷用途：保存任务状态、恢复环境载荷和日志。备份/还原时不能与源卷或目标卷相同；禁止 EFI、MSR、恢复分区。"
-        }
         (Language::Chinese, "source", "backup") => {
             "源卷用途：备份时从这里捕获 Windows 分区；镜像不能保存到这个卷。"
         }
@@ -877,16 +835,13 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "目标卷用途：将被格式化并写入镜像；单系统还原必须选择与源卷相同的分区。"
         }
         (Language::Chinese, "target", "create-secondary") => {
-            "目标卷用途：将被格式化并写入镜像作为第二个 Windows；必须不同于源卷和任务卷。"
+            "目标卷用途：将被格式化并写入镜像作为第二个 Windows；必须不同于源卷和程序目录所在分区。"
         }
         (Language::Chinese, "target", "backup") => {
             "目标卷用途：备份模式不会写入此卷；镜像保存位置由“镜像绝对路径”决定。"
         }
         (Language::Chinese, "target", _) => {
             "目标卷用途：探测模式只核验身份；不会备份、还原、格式化或写入。"
-        }
-        (Language::English, "task", _) => {
-            "Purpose: stores task state, WinRE payload and logs. For backup/restore it must differ from source and target; EFI, MSR and Recovery are forbidden."
         }
         (Language::English, "source", "backup") => {
             "Purpose: backup captures the Windows partition here; the image cannot be stored on this volume."
@@ -904,7 +859,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "Purpose: will be formatted and receive the image; single-system restore must select the source partition."
         }
         (Language::English, "target", "create-secondary") => {
-            "Purpose: will be formatted and receive the second Windows; it must differ from source and task."
+            "Purpose: will be formatted and receive the second Windows; it must differ from source and the program directory volume."
         }
         (Language::English, "target", "backup") => {
             "Purpose: backup does not write this volume; image storage comes from Image absolute path."
@@ -919,7 +874,6 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
 unsafe fn set_drive_details(state: &State) {
     let language = selected_language(state);
     let selected = [
-        ("task", selected_drive_letter(state, state.controls.task)),
         (
             "source",
             selected_drive_letter(state, state.controls.source),
@@ -929,17 +883,12 @@ unsafe fn set_drive_details(state: &State) {
             selected_drive_letter(state, state.controls.target),
         ),
     ];
-    let detail_controls = [
-        state.controls.task_details,
-        state.controls.source_details,
-        state.controls.target_details,
-    ];
+    let detail_controls = [state.controls.source_details, state.controls.target_details];
     let operation = selected_operation(state);
     for (role, letter) in selected {
         let index = match role {
-            "task" => 0,
-            "source" => 1,
-            _ => 2,
+            "source" => 0,
+            _ => 1,
         };
         let text = letter
             .and_then(|letter| state.drives.iter().find(|item| item.letter == letter))
@@ -968,11 +917,7 @@ unsafe fn set_drive_details(state: &State) {
 }
 
 unsafe fn set_drive_items(state: &State, desired: [Option<String>; 3]) {
-    let controls = [
-        state.controls.task,
-        state.controls.source,
-        state.controls.target,
-    ];
+    let controls = [state.controls.source, state.controls.target];
     for control in controls {
         reset_combo(control);
         if state.drives.is_empty() {
@@ -991,7 +936,7 @@ unsafe fn set_drive_items(state: &State, desired: [Option<String>; 3]) {
             add_combo_item(control, &drive_display(drive, selected_language(state)));
         }
     }
-    for (control, wanted) in controls.into_iter().zip(desired) {
+    for (control, wanted) in controls.into_iter().zip(desired.into_iter().skip(1)) {
         let position = wanted
             .and_then(|letter| state.drives.iter().position(|drive| drive.letter == letter))
             .unwrap_or(0);
@@ -1101,78 +1046,6 @@ fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
     Ok(images)
 }
 
-fn parse_dism_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
-    let mut images = Vec::new();
-    let mut index = None;
-    let mut name = String::new();
-    let mut description = String::new();
-    let mut size_bytes = None;
-    for raw_line in output.lines() {
-        let line = raw_line.trim();
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let value = value.trim();
-        match key.trim().to_ascii_lowercase().as_str() {
-            "index" => {
-                if let Some(previous) = index.take() {
-                    images.push(WimImageInfo {
-                        index: previous,
-                        name: std::mem::take(&mut name),
-                        description: std::mem::take(&mut description),
-                        version: String::new(),
-                        architecture: String::new(),
-                        edition: String::new(),
-                        installation_type: String::new(),
-                        size_bytes,
-                    });
-                    size_bytes = None;
-                }
-                index = value.parse::<u32>().ok().filter(|value| *value > 0);
-            }
-            "name" => name = value.to_string(),
-            "description" => description = value.to_string(),
-            "size" => size_bytes = parse_dism_size(value),
-            _ => {}
-        }
-    }
-    if let Some(previous) = index {
-        images.push(WimImageInfo {
-            index: previous,
-            name,
-            description,
-            version: String::new(),
-            architecture: String::new(),
-            edition: String::new(),
-            installation_type: String::new(),
-            size_bytes,
-        });
-    }
-    if images.is_empty() {
-        Err("DISM returned no WIM image indexes".to_string())
-    } else {
-        Ok(images)
-    }
-}
-
-fn parse_dism_size(value: &str) -> Option<u64> {
-    let numeric = value
-        .split_whitespace()
-        .next()?
-        .replace(',', "")
-        .parse::<u64>()
-        .ok()?;
-    if value.to_ascii_lowercase().contains("kb") {
-        Some(numeric.saturating_mul(1024))
-    } else if value.to_ascii_lowercase().contains("mb") {
-        Some(numeric.saturating_mul(1024 * 1024))
-    } else if value.to_ascii_lowercase().contains("gb") {
-        Some(numeric.saturating_mul(1024 * 1024 * 1024))
-    } else {
-        Some(numeric)
-    }
-}
-
 fn wim_image_items(value: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
     if let Some(items) = value.as_array() {
         return Ok(items.clone());
@@ -1184,12 +1057,6 @@ fn wim_image_items(value: &serde_json::Value) -> Result<Vec<serde_json::Value>, 
         return wim_image_items(images);
     }
     Err("WIM metadata did not return an image object, array or images wrapper".to_string())
-}
-
-fn report_has_wim_images(report: &serde_json::Value) -> bool {
-    wim_image_items(report)
-        .map(|items| !items.is_empty())
-        .unwrap_or(false)
 }
 
 fn report_images_value(report: &serde_json::Value) -> serde_json::Value {
@@ -1320,7 +1187,7 @@ unsafe fn apply_language(state: &State) {
     let language = selected_language(state);
     set_operation_tabs(state, language);
     let desired = [
-        selected_drive_letter(state, state.controls.task),
+        None,
         selected_drive_letter(state, state.controls.source),
         selected_drive_letter(state, state.controls.target),
     ];
@@ -1328,11 +1195,9 @@ unsafe fn apply_language(state: &State) {
     set_wim_items(state);
     for (id, key) in [
         (2001, "operation"),
-        (2002, "task"),
         (2003, "source"),
         (2004, "image"),
         (2005, "target"),
-        (2006, "relative"),
         (2007, "index"),
         (2008, "menu"),
         (ID_LANGUAGE_LABEL, "language"),
@@ -1363,73 +1228,21 @@ fn quote_argument(value: &str) -> String {
     }
 }
 
-fn powershell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-fn powershell_output_elevated(command: &str) -> String {
-    let nonce = format!("{}-{}", std::process::id(), std::process::id());
-    let script_path = std::env::temp_dir().join(format!("BackupRestore-wim-{nonce}.ps1"));
-    let output_path = std::env::temp_dir().join(format!("BackupRestore-wim-{nonce}.json"));
-    let _ = fs::remove_file(&script_path);
-    let _ = fs::remove_file(&output_path);
-    let script = format!(
-        "$ErrorActionPreference='Stop'; try {{ $result = & {{ {command} }} | Out-String; Set-Content -LiteralPath {output} -Value $result -Encoding UTF8; exit 0 }} catch {{ Set-Content -LiteralPath {output} -Value ($_ | Out-String) -Encoding UTF8; exit 1 }}",
-        output = powershell_single_quote(&output_path.to_string_lossy()),
-    );
-    if let Err(error) = fs::write(&script_path, script) {
-        return format!("elevated WIM reader setup failed: {error}");
-    }
-    let launcher = format!(
-        "$child=Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{script}); if($child.ExitCode -ne 0){{ exit $child.ExitCode }}",
-        script = powershell_single_quote(&script_path.to_string_lossy()),
-    );
-    let launch_result = Command::new("powershell.exe")
+fn rust_cli_output(arguments: &[&str]) -> Result<String, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let output = Command::new(executable)
         .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            &launcher,
-        ])
-        .output();
-    let text = match launch_result {
-        Ok(_output) if output_path.exists() => fs::read_to_string(&output_path)
-            .unwrap_or_else(|error| format!("elevated WIM reader output failed: {error}")),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.is_empty() {
-                format!("elevated WIM reader exited with code {}", output.status)
-            } else {
-                stderr.into_owned()
-            }
-        }
-        Err(error) => format!("elevated WIM reader launch failed: {error}"),
-    };
-    let _ = fs::remove_file(&script_path);
-    let _ = fs::remove_file(&output_path);
-    text.trim_start_matches('\u{feff}').trim().to_string()
-}
-
-fn powershell_output(command: &str) -> String {
-    let utf8_prefix = "$utf8 = New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; ";
-    let command = format!("{utf8_prefix}{command}");
-    match Command::new("powershell.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .args(arguments)
         .output()
-    {
-        Ok(output) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            if text.is_empty() {
-                text = String::from_utf8_lossy(&output.stderr).into_owned();
-            }
-            text.trim().to_string()
-        }
-        Err(error) => format!("环境检查失败：{error}"),
+        .map_err(|error| error.to_string())?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if text.trim().is_empty() {
+        text = String::from_utf8_lossy(&output.stderr).into_owned();
     }
+    if !output.status.success() {
+        return Err(text.trim().to_string());
+    }
+    Ok(text.trim().to_string())
 }
 
 unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32 {
@@ -1482,7 +1295,7 @@ unsafe fn relaunch_elevated() -> Result<(), super::TaskError> {
 unsafe fn refresh_environment(state: &mut State) {
     let language = selected_language(state);
     let desired = [
-        selected_drive_letter(state, state.controls.task),
+        None,
         selected_drive_letter(state, state.controls.source),
         selected_drive_letter(state, state.controls.target),
     ];
@@ -1497,15 +1310,33 @@ unsafe fn refresh_environment(state: &mut State) {
     state.drives = discover_drives();
     set_drive_items(state, desired);
     set_drive_details(state);
-    let text = powershell_output(
-        r#"$os=Get-CimInstance Win32_OperatingSystem; $fw=(Get-ComputerInfo -Property BiosFirmwareType).BiosFirmwareType; $vol=@(Get-Volume | ? DriveLetter | ? FileSystem -eq 'NTFS' | % { "$($_.DriveLetter): $($_.FileSystem) free=$($_.SizeRemaining)" }); @("Windows: $($os.Caption) build=$($os.BuildNumber) arch=$env:PROCESSOR_ARCHITECTURE","Firmware: $fw",'NTFS volumes:') + $vol -join [Environment]::NewLine"#,
-    );
+    let text = match rust_cli_output(&["inspect-environment"]) {
+        Ok(output) => output,
+        Err(error) => {
+            set_text(state.controls.status, &format!("环境检查失败：{error}"));
+            return;
+        }
+    };
+    let report: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(error) => {
+            set_text(state.controls.status, &format!("环境信息解析失败：{error}"));
+            return;
+        }
+    };
+    let system = json_text(&report, "windows");
+    let architecture = json_text(&report, "architecture");
+    let winre = report
+        .get("winreAvailable")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let text = if language == Language::English {
-        text
+        format!("Windows: {system}\nArchitecture: {architecture}\nWinRE available: {winre}")
     } else {
-        text.replace("Windows:", "Windows：")
-            .replace("Firmware:", "固件：")
-            .replace("NTFS volumes:", "NTFS 卷：")
+        format!(
+            "Windows：{system}\n架构：{architecture}\n恢复环境可用：{}",
+            if winre { "是" } else { "否" }
+        )
     };
     let volume_details = if state.drives.is_empty() {
         if language == Language::English {
@@ -1547,9 +1378,27 @@ unsafe fn refresh_task_status(state: &State) {
             "正在读取最近任务状态…"
         },
     );
-    let text = powershell_output(
-        r#"$p=Join-Path $env:ProgramData 'BackupRestore\last-task.json'; if(-not(Test-Path -LiteralPath $p)){ '尚未找到最近任务记录。' } else { try { $r=Get-Content -LiteralPath $p -Raw|ConvertFrom-Json; $lines=@("任务 ID：$($r.taskId)","操作：$($r.operation)","任务目录：$($r.taskRoot)","准备日志：$($r.prepareLog)","恢复日志：$($r.recoveryLog)"); if($r.statusJson -and (Test-Path -LiteralPath $r.statusJson)){ $s=Get-Content -LiteralPath $r.statusJson -Raw|ConvertFrom-Json; $lines += "状态：$($s|ConvertTo-Json -Compress)" } else { $lines += '状态：status.json 不可读或尚未生成' }; $lines -join [Environment]::NewLine } catch { "读取任务状态失败：$($_.Exception.Message)" } }"#,
-    );
+    let text = match std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join("last-task.json")))
+        .filter(|path| path.is_file())
+        .and_then(|path| fs::read_to_string(path).ok())
+    {
+        Some(value) => match serde_json::from_str::<serde_json::Value>(&value) {
+            Ok(report) => {
+                let task_id = json_text(&report, "taskId");
+                let operation = json_text(&report, "operation");
+                let task_root = json_text(&report, "taskRoot");
+                let prepare_log = json_text(&report, "prepareLog");
+                let recovery_log = json_text(&report, "recoveryLog");
+                format!(
+                    "任务 ID：{task_id}\n操作：{operation}\n任务目录：{task_root}\n准备日志：{prepare_log}\n恢复日志：{recovery_log}"
+                )
+            }
+            Err(error) => format!("读取任务状态失败：{error}"),
+        },
+        None => "尚未找到最近任务记录。".to_string(),
+    };
     let text = if language == Language::English {
         text.replace("任务 ID：", "Task ID: ")
             .replace("操作：", "Operation: ")
@@ -1569,33 +1418,38 @@ unsafe fn refresh_task_status(state: &State) {
 }
 
 fn discover_drives() -> Vec<DriveInfo> {
-    let output = powershell_output(
-        r#"$reserved=@('{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}','{e3c9e316-0b5c-4db8-817d-f92df00215ae}','{de94bba4-06d1-4d40-a16a-bfd50179d6ac}'); $items=@(Get-Volume -ErrorAction SilentlyContinue | ? { $_.DriveLetter -and $_.FileSystem } | % { $v=$_; $p=Get-Partition -DriveLetter $v.DriveLetter -ErrorAction SilentlyContinue; if($p -and $reserved -notcontains "$($p.GptType)") { [ordered]@{letter="$($v.DriveLetter)";label="$($v.FileSystemLabel)";filesystem="$($v.FileSystem)";sizeBytes=[UInt64]$v.Size;freeBytes=[UInt64]$v.SizeRemaining;volumeGuid="$($v.UniqueId)";diskNumber=[int]$p.DiskNumber;partitionNumber=[int]$p.PartitionNumber;partitionTypeGuid="$($p.GptType)"} } }); $items | ConvertTo-Json -Compress -Depth 4"#,
-    );
+    let output = rust_cli_output(&["list-volumes"]).unwrap_or_default();
     parse_drive_infos(&output).unwrap_or_default()
 }
 
-fn suggested_drive_defaults(drives: &[DriveInfo]) -> (String, String, String) {
+fn suggested_drive_defaults(_drives: &[DriveInfo]) -> (String, String) {
     let system = std::env::var("SystemDrive")
         .unwrap_or_else(|_| "C:".to_string())
         .trim()
         .trim_end_matches(':')
         .to_ascii_uppercase();
-    let is_image = |drive: &DriveInfo| {
-        PathBuf::from(format!(r"{}:\BackupRestore\Windows.wim", drive.letter)).exists()
-    };
-    let image = drives
-        .iter()
-        .find(|drive| is_image(drive))
-        .or_else(|| drives.iter().find(|drive| drive.letter != system));
-    let task = drives.iter().find(|drive| {
-        drive.letter != system && image.is_none_or(|image| image.letter != drive.letter)
-    });
-    (
-        system,
-        task.map(|drive| drive.letter.clone()).unwrap_or_default(),
-        image.map(|drive| drive.letter.clone()).unwrap_or_default(),
-    )
+    (system, String::new())
+}
+
+fn same_partition_by_gui_identity(left: Option<&DriveInfo>, right: Option<&DriveInfo>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            if !left.volume_guid.is_empty() && !right.volume_guid.is_empty() {
+                return left.volume_guid.eq_ignore_ascii_case(&right.volume_guid);
+            }
+            if !left.partition_type_guid.is_empty()
+                && !right.partition_type_guid.is_empty()
+                && left.disk_number.is_some()
+                && left.partition_number.is_some()
+                && left.disk_number == right.disk_number
+                && left.partition_number == right.partition_number
+            {
+                return true;
+            }
+            left.letter.eq_ignore_ascii_case(&right.letter)
+        }
+        _ => false,
+    }
 }
 
 unsafe fn read_image(state: &mut State) {
@@ -1618,67 +1472,7 @@ unsafe fn read_image(state: &mut State) {
         );
         return;
     }
-    let command = format!(
-        "$p={}; if(-not(Test-Path -LiteralPath $p)){{throw \"WIM not found: $p\"}}; if(-not(Get-Command Get-WindowsImage -ErrorAction SilentlyContinue)){{throw \"Get-WindowsImage is unavailable\"}}; $h=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant(); $metadataPath=Join-Path (Split-Path -Parent $p) 'metadata.json'; $metadata=if(Test-Path -LiteralPath $metadataPath){{Get-Content -LiteralPath $metadataPath -Raw|ConvertFrom-Json}}else{{$null}}; $images=@(Get-WindowsImage -ImagePath $p -ErrorAction Stop|Select-Object ImageIndex,ImageName,ImageDescription,ImageVersion,Architecture,EditionId,InstallationType,ImageSize); [ordered]@{{image=$p;sha256=$h;metadataSha256=if($metadata){{$metadata.imageSha256}}else{{''}};minimumTarget=if($metadata){{$metadata.minimumTargetSize}}else{{''}};images=$images}}|ConvertTo-Json -Compress -Depth 4",
-        powershell_single_quote(&image_path),
-    );
-    let mut text = powershell_output(&command);
-    let mut report_result = serde_json::from_str::<serde_json::Value>(&text);
-    let mut dism_diagnostic = String::new();
-    let needs_elevation = report_result
-        .as_ref()
-        .map(|report| !report_has_wim_images(report))
-        .unwrap_or(true);
-    if needs_elevation {
-        let elevated_text = powershell_output_elevated(&command);
-        if let Ok(elevated_report) = serde_json::from_str::<serde_json::Value>(&elevated_text) {
-            text = elevated_text;
-            report_result = Ok(elevated_report);
-        }
-    }
-    if report_result
-        .as_ref()
-        .map(|report| !report_has_wim_images(report))
-        .unwrap_or(true)
-    {
-        let dism_command = format!(
-            "$ErrorActionPreference='Stop'; & (Join-Path $env:WINDIR 'System32\\dism.exe') /English /Get-WimInfo (\"/WimFile:\" + {}) 2>&1 | Out-String",
-            powershell_single_quote(&image_path)
-        );
-        let dism_text = powershell_output(&dism_command);
-        if let Ok(images) = parse_dism_wim_images(&dism_text) {
-            let count = images.len();
-            state.wim_images = images;
-            set_wim_items(state);
-            let sha256 = report_result
-                .as_ref()
-                .ok()
-                .map(|report| json_text(report, "sha256"))
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "未知".to_string());
-            set_text(
-                state.controls.status,
-                &if language == Language::English {
-                    format!(
-                        "Loaded {count} WIM image indexes via DISM fallback.\nSHA-256: {sha256}\nSelect an index from the dropdown."
-                    )
-                } else {
-                    format!(
-                        "已通过 DISM 兼容路径读取 {count} 个 WIM 索引。\nSHA-256：{sha256}\n请从下拉框选择索引。"
-                    )
-                },
-            );
-            return;
-        } else {
-            let shown = if dism_text.len() > 4096 {
-                format!("{}…", &dism_text[..4096])
-            } else {
-                dism_text
-            };
-            dism_diagnostic = format!("\nDISM 回退输出：{shown}");
-        }
-    }
-    let report: serde_json::Value = match report_result {
+    let output = match rust_cli_output(&["wim-info", &image_path]) {
         Ok(value) => value,
         Err(error) => {
             state.wim_images.clear();
@@ -1686,11 +1480,20 @@ unsafe fn read_image(state: &mut State) {
             set_text(
                 state.controls.status,
                 &if language == Language::English {
-                    format!("Could not read WIM metadata: {error}\n{text}")
+                    format!("Could not read WIM metadata: {error}")
                 } else {
-                    format!("读取 WIM 详细信息失败：{error}\n{text}")
+                    format!("读取 WIM 详细信息失败：{error}")
                 },
             );
+            return;
+        }
+    };
+    let report: serde_json::Value = match serde_json::from_str(&output) {
+        Ok(value) => value,
+        Err(error) => {
+            state.wim_images.clear();
+            set_wim_items(state);
+            set_text(state.controls.status, &format!("WIM 信息解析失败：{error}"));
             return;
         }
     };
@@ -1759,9 +1562,7 @@ unsafe fn read_image(state: &mut State) {
                 &if language == Language::English {
                     format!("Could not parse WIM indexes: {error}\nRaw index JSON: {diagnostic}")
                 } else {
-                    format!(
-                        "无法解析 WIM 索引：{error}\n原始索引 JSON：{diagnostic}{dism_diagnostic}"
-                    )
+                    format!("无法解析 WIM 索引：{error}\n原始索引 JSON：{diagnostic}")
                 },
             );
         }
@@ -1859,29 +1660,13 @@ unsafe fn create_task(state: &State) {
         selected_drive_letter(state, control)
             .ok_or_else(|| format!("{label}必须从下拉框选择一个可用卷。"))
     };
-    let task_drive = match selected_or_error(
-        state.controls.task,
-        if language == Language::English {
-            "Task volume"
-        } else {
-            "任务卷"
-        },
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            show_message(
-                state.root,
-                &error,
-                if language == Language::English {
-                    "Validation failed"
-                } else {
-                    "参数校验失败"
-                },
-                MB_OK | MB_ICONERROR,
-            );
-            return;
-        }
-    };
+    let workspace_drive = state
+        .executable_dir
+        .to_string_lossy()
+        .chars()
+        .next()
+        .map(|value| value.to_ascii_uppercase().to_string())
+        .unwrap_or_default();
     let source_drive = match selected_or_error(
         state.controls.source,
         if language == Language::English {
@@ -1905,66 +1690,6 @@ unsafe fn create_task(state: &State) {
             return;
         }
     };
-    let image_path = get_text(state.controls.image).trim().to_string();
-    if operation != "probe"
-        && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
-    {
-        show_message(
-            state.root,
-            &if language == Language::English {
-                format!("Invalid image absolute path: {error}")
-            } else {
-                format!("镜像绝对路径无效：{error}")
-            },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
-        return;
-    }
-    let image_path = image_path;
-    let image_drive = image_path
-        .chars()
-        .next()
-        .map(|value| value.to_ascii_uppercase().to_string())
-        .unwrap_or_default();
-    if operation != "probe" && image_drive == task_drive {
-        show_message(
-            state.root,
-            if language == Language::English {
-                "Task volume must differ from the image volume."
-            } else {
-                "任务卷不能与镜像卷相同。"
-            },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
-        return;
-    }
-    if operation != "probe" && image_drive == source_drive {
-        show_message(
-            state.root,
-            if language == Language::English {
-                "Image volume must differ from the Windows source volume."
-            } else {
-                "镜像卷不能与 Windows 源卷相同。"
-            },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
-        return;
-    }
     let target_drive = match selected_or_error(
         state.controls.target,
         if language == Language::English {
@@ -1988,14 +1713,86 @@ unsafe fn create_task(state: &State) {
             return;
         }
     };
+    // Keep this as the first restore-specific guard: no image parsing,
+    // confirmation, elevation or preparation is reached when the program
+    // directory would be overwritten.
+    let workspace_identity = state
+        .drives
+        .iter()
+        .find(|drive| drive.letter.eq_ignore_ascii_case(&workspace_drive));
+    let target_identity = state
+        .drives
+        .iter()
+        .find(|drive| drive.letter.eq_ignore_ascii_case(&target_drive));
+    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+        && same_partition_by_gui_identity(workspace_identity, target_identity)
+    {
+        show_message(
+            state.root,
+            if language == Language::English {
+                "Cannot start restore: the program directory is on the same volume as the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, boot configuration or reboot was requested."
+            } else {
+                "无法开始还原：程序目录位于目标分区所在卷。请手动将整个 BackupRestore 文件夹移动到其他分区后重新运行。未创建任务，未修改 WinRE，未修改启动配置，未请求重启。"
+            },
+            if language == Language::English {
+                "Restore blocked"
+            } else {
+                "还原已停止"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    let image_path = get_text(state.controls.image).trim().to_string();
+    if operation != "probe"
+        && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
+    {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!("Invalid image absolute path: {error}")
+            } else {
+                format!("镜像绝对路径无效：{error}")
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    let image_drive = image_path
+        .chars()
+        .next()
+        .map(|value| value.to_ascii_uppercase().to_string())
+        .unwrap_or_default();
+    if operation != "probe" && image_drive == source_drive {
+        show_message(
+            state.root,
+            if language == Language::English {
+                "Image volume must differ from the Windows source volume."
+            } else {
+                "镜像卷不能与 Windows 源卷相同。"
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
     let operation_label = operation_display(language, &operation);
     let summary = if language == Language::English {
         format!(
-            "Mode: {operation_label}\nTask volume: {task_drive}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}",
+            "Mode: {operation_label}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}",
         )
     } else {
         format!(
-            "模式：{operation_label}\n任务卷：{task_drive}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
+            "模式：{operation_label}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
         )
     };
     if matches!(operation.as_str(), "restore-existing" | "create-secondary")
@@ -2024,48 +1821,45 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
-    let script = state.executable_dir.join("BackupRestore.ps1");
+    let executable =
+        std::env::current_exe().unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
     let mut arguments = vec![
-        "-NoProfile".to_string(),
-        "-WindowStyle".to_string(),
-        "Hidden".to_string(),
-        "-ExecutionPolicy".to_string(),
-        "Bypass".to_string(),
-        "-File".to_string(),
-        script.to_string_lossy().into_owned(),
-        "-Operation".to_string(),
+        "prepare".to_string(),
+        "--operation".to_string(),
         operation.clone(),
-        "-TaskDrive".to_string(),
-        task_drive.clone(),
-        "-SourceDrive".to_string(),
+        "--source-drive".to_string(),
         source_drive,
-        "-TargetDrive".to_string(),
+        "--target-drive".to_string(),
         target_drive,
-        "-ImagePath".to_string(),
-        image_path,
-        "-WimIndex".to_string(),
-        index,
-        "-BootMenuName".to_string(),
+        "--boot-menu-name".to_string(),
         get_text(state.controls.menu),
     ];
+    if operation != "probe" {
+        arguments.extend([
+            "--image-path".to_string(),
+            image_path,
+            "--wim-index".to_string(),
+            index,
+        ]);
+    }
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
-        arguments.push("-AllowDestructive".to_string());
+        arguments.push("--allow-destructive".to_string());
     }
     if operation == "probe" {
-        arguments.push("-NoReboot".to_string());
+        arguments.push("--no-reboot".to_string());
     }
+    let executable_wide = wide(&executable.to_string_lossy());
     let params = arguments
         .iter()
         .map(|argument| quote_argument(argument))
         .collect::<Vec<_>>()
         .join(" ");
     let runas = wide("runas");
-    let powershell = wide("powershell.exe");
     let params = wide(&params);
     let result = ShellExecuteW(
         state.root,
         runas.as_ptr(),
-        powershell.as_ptr(),
+        executable_wide.as_ptr(),
         params.as_ptr(),
         null(),
         SW_HIDE,
@@ -2111,12 +1905,10 @@ unsafe extern "system" fn window_proc(
             .and_then(|path| path.parent().map(|value| value.to_path_buf()))
             .unwrap_or_default();
         let drives = discover_drives();
-        let (system_drive, task_drive, image_drive) = suggested_drive_defaults(&drives);
-        let image_path = if image_drive.is_empty() {
-            String::new()
-        } else {
-            format!(r"{}:\BackupRestore\Windows.wim", image_drive)
-        };
+        let (system_drive, _image_drive) = suggested_drive_defaults(&drives);
+        // The image field is intentionally blank until the user chooses an
+        // absolute path; no fixed BackupRestore folder is assumed.
+        let image_path = String::new();
         let controls = Controls {
             language: create_control(
                 hwnd,
@@ -2175,17 +1967,6 @@ unsafe extern "system" fn window_proc(
                     ID_OPERATION_SECONDARY,
                 ),
             ],
-            task: create_control(
-                hwnd,
-                "COMBOBOX",
-                "",
-                CBS_DROPDOWNLIST | WS_TABSTOP,
-                180,
-                110,
-                800,
-                220,
-                ID_TASK,
-            ),
             source: create_control(
                 hwnd,
                 "COMBOBOX",
@@ -2219,17 +2000,6 @@ unsafe extern "system" fn window_proc(
                 220,
                 ID_TARGET,
             ),
-            relative: create_control(
-                hwnd,
-                "EDIT",
-                "",
-                WS_BORDER | WS_TABSTOP,
-                180,
-                585,
-                300,
-                24,
-                ID_RELATIVE,
-            ),
             index: create_control(
                 hwnd,
                 "COMBOBOX",
@@ -2251,17 +2021,6 @@ unsafe extern "system" fn window_proc(
                 380,
                 24,
                 ID_MENU,
-            ),
-            task_details: create_control(
-                hwnd,
-                "EDIT",
-                "",
-                WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
-                180,
-                140,
-                800,
-                70,
-                ID_TASK_DETAILS,
             ),
             source_details: create_control(
                 hwnd,
@@ -2297,13 +2056,11 @@ unsafe extern "system" fn window_proc(
                 ID_STATUS,
             ),
         };
-        ShowWindow(controls.relative, 0);
         add_combo_item(controls.language, "中文");
         add_combo_item(controls.language, "English");
         SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
         SendMessageW(controls.operation_tabs[0], BM_SETCHECK, BST_CHECKED, 0);
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
-        create_control(hwnd, "STATIC", "任务卷", 0, 20, 112, 150, 26, 2002);
         create_control(hwnd, "STATIC", "源卷", 0, 20, 222, 150, 26, 2003);
         create_control(hwnd, "STATIC", "目标卷", 0, 20, 332, 150, 26, 2005);
         create_control(hwnd, "STATIC", "镜像绝对路径", 0, 20, 550, 130, 22, 2004);
@@ -2387,11 +2144,7 @@ unsafe extern "system" fn window_proc(
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         set_drive_items(
             &*state_ptr,
-            [
-                Some(task_drive),
-                Some(system_drive.clone()),
-                Some(system_drive),
-            ],
+            [None, Some(system_drive.clone()), Some(system_drive)],
         );
         apply_language(&*state_ptr);
         return 0;
@@ -2420,9 +2173,7 @@ unsafe extern "system" fn window_proc(
                 select_operation(state, index);
                 return 0;
             }
-            if matches!(control_id, ID_TASK | ID_SOURCE | ID_TARGET)
-                && notification == CBN_SELCHANGE
-            {
+            if matches!(control_id, ID_SOURCE | ID_TARGET) && notification == CBN_SELCHANGE {
                 if control_id == ID_SOURCE
                     && selected_operation(state) == "restore-existing"
                     && let Some(source) = selected_drive_letter(state, state.controls.source)

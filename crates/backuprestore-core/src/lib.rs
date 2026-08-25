@@ -137,6 +137,11 @@ impl VolumeIdentity {
     pub fn is_complete(&self) -> bool {
         !self.disk_guid.trim().is_empty()
             && !self.partition_guid.trim().is_empty()
+            && !self.volume_guid.trim().is_empty()
+            && self.disk_number.is_some()
+            && self.partition_number.is_some()
+            && !self.partition_type_guid.trim().is_empty()
+            && !self.filesystem.trim().is_empty()
             && self.partition_size > 0
     }
     pub fn same_partition(&self, other: &Self) -> bool {
@@ -267,11 +272,11 @@ pub struct Task {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<VolumeIdentity>,
-    /// The non-target volume holding task.json and the recovery payload.
-    /// New Windows tasks always record it; the optional form keeps old task
-    /// files readable until Recovery explicitly requires it.
+    /// The volume containing the running program directory, tasks and recovery payload.
+    /// It is intentionally independent of the source/image volume; only a restore
+    /// target may not overwrite it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_volume: Option<VolumeIdentity>,
+    pub workspace_volume: Option<VolumeIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,7 +312,7 @@ impl Task {
             version: TASK_VERSION,
             operation,
             source: None,
-            task_volume: None,
+            workspace_volume: None,
             image: None,
             destination: None,
             target: None,
@@ -518,42 +523,22 @@ impl Task {
                 }
             }
         }
-        if let Some(task_volume) = self.task_volume.as_ref() {
-            require_complete("task volume", task_volume)?;
-            if task_volume.is_reserved_partition() {
-                return Err(TaskError::Invalid(
-                    "EFI/MSR/Recovery partitions cannot store task files".into(),
-                ));
-            }
-            if self.operation != Operation::Probe
-                && let Some(source) = self.source.as_ref()
-                && task_volume.same_partition(source)
-            {
-                return Err(TaskError::Invalid(
-                    "task volume must differ from source partition".into(),
-                ));
-            }
-            if let Some(destination) = self.destination.as_ref()
-                && task_volume.same_partition(&destination.volume)
-            {
-                return Err(TaskError::Invalid(
-                    "task volume must differ from backup destination".into(),
-                ));
-            }
-            if let Some(image) = self.image.as_ref()
-                && task_volume.same_partition(&image.volume)
-            {
-                return Err(TaskError::Invalid(
-                    "task volume must differ from restore image volume".into(),
-                ));
-            }
-            if let Some(target) = self.target.as_ref()
-                && task_volume.same_partition(&target.volume)
-            {
-                return Err(TaskError::Invalid(
-                    "task volume must differ from restore target".into(),
-                ));
-            }
+        let workspace_volume = self
+            .workspace_volume
+            .as_ref()
+            .ok_or_else(|| missing("workspace volume"))?;
+        require_complete("workspace volume", workspace_volume)?;
+        if workspace_volume.is_reserved_partition() {
+            return Err(TaskError::Invalid(
+                "EFI/MSR/Recovery partitions cannot store workspace files".into(),
+            ));
+        }
+        if let Some(target) = self.target.as_ref()
+            && workspace_volume.same_partition(&target.volume)
+        {
+            return Err(TaskError::Invalid(
+                "workspace volume must differ from restore target".into(),
+            ));
         }
         Ok(())
     }
@@ -970,7 +955,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     fn identity(value: &str, size: u64) -> VolumeIdentity {
         let mut i = VolumeIdentity::new("disk", value);
+        i.volume_guid = format!("volume-{value}");
+        i.partition_type_guid = "{00000000-0000-0000-0000-000000000000}".into();
+        i.disk_number = Some(0);
+        i.partition_number = Some(1);
         i.partition_size = size;
+        i.filesystem = "NTFS".into();
         i
     }
     fn backup_task() -> Task {
@@ -984,7 +974,7 @@ mod tests {
             },
         );
         task.source = Some(identity("source", 100));
-        task.task_volume = Some(identity("task", 100));
+        task.workspace_volume = Some(identity("task", 100));
         task.destination = Some(DestinationSpec {
             volume: identity("image", 100),
             absolute_path: None,
@@ -1012,7 +1002,7 @@ mod tests {
     fn arbitrary_drive_letters_are_temporary_hints() {
         let mut task = backup_task();
         task.source.as_mut().unwrap().drive_letter = Some('S');
-        task.task_volume.as_mut().unwrap().drive_letter = Some('T');
+        task.workspace_volume.as_mut().unwrap().drive_letter = Some('T');
         task.destination.as_mut().unwrap().volume.drive_letter = Some('B');
         assert!(task.validate().is_ok());
 
@@ -1028,19 +1018,19 @@ mod tests {
         );
     }
     #[test]
-    fn task_volume_rejects_reserved_and_overlapping_partitions() {
+    fn workspace_volume_rejects_reserved_and_target_overlap() {
         let mut task = backup_task();
-        task.task_volume.as_mut().unwrap().partition_type_guid =
+        task.workspace_volume.as_mut().unwrap().partition_type_guid =
             "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}".into();
         assert!(task.validate().is_err());
 
         let mut task = backup_task();
-        task.task_volume.as_mut().unwrap().partition_guid = "source".into();
-        assert!(task.validate().is_err());
+        task.workspace_volume.as_mut().unwrap().partition_guid = "source".into();
+        assert!(task.validate().is_ok());
 
         let mut task = backup_task();
-        task.task_volume.as_mut().unwrap().partition_guid = "image".into();
-        assert!(task.validate().is_err());
+        task.workspace_volume.as_mut().unwrap().partition_guid = "image".into();
+        assert!(task.validate().is_ok());
 
         let mut task = Task::new(
             Operation::RestoreExisting,
@@ -1052,7 +1042,7 @@ mod tests {
             },
         );
         task.source = Some(identity("source", 200));
-        task.task_volume = Some(identity("image", 200));
+        task.workspace_volume = Some(identity("source", 200));
         task.image = Some(ImageSpec {
             volume: identity("image", 100),
             absolute_path: None,
@@ -1067,6 +1057,20 @@ mod tests {
             boot_menu_name: None,
             minimum_size_bytes: 100,
         });
+        assert!(task.validate().is_err());
+    }
+    #[test]
+    fn task_rejects_incomplete_workspace_identity() {
+        let mut task = backup_task();
+        task.workspace_volume
+            .as_mut()
+            .unwrap()
+            .partition_type_guid
+            .clear();
+        assert!(task.validate().is_err());
+        task.workspace_volume.as_mut().unwrap().partition_type_guid =
+            "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}".into();
+        task.workspace_volume.as_mut().unwrap().volume_guid.clear();
         assert!(task.validate().is_err());
     }
     #[test]
@@ -1102,6 +1106,7 @@ mod tests {
             },
         );
         task.source = Some(source);
+        task.workspace_volume = Some(identity("workspace", 200));
         task.image = Some(ImageSpec {
             volume: image,
             absolute_path: None,
@@ -1168,6 +1173,7 @@ mod tests {
             minimum_size_bytes: 100,
         });
         task.source = Some(identity("source", 200));
+        task.workspace_volume = Some(identity("workspace", 200));
         assert!(task.validate().is_ok());
         task.target.as_mut().unwrap().boot_menu_name = None;
         assert!(task.validate().is_err());
@@ -1184,6 +1190,7 @@ mod tests {
             },
         );
         task.source = Some(identity("source", 200));
+        task.workspace_volume = Some(identity("workspace", 200));
         task.image = Some(ImageSpec {
             volume: identity("image", 100),
             absolute_path: None,

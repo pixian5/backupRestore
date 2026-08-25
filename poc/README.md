@@ -13,7 +13,7 @@ BCD 或分区操作，只在本次 VM 的持久化 Windows 卷 `C:` 写入
 
 ## 成功条件
 
-重启后，WinRE 自动进入且无需人工点击；随后在任务卷中同时看到：
+重启后，WinRE 自动进入且无需人工点击；随后在工作目录所在卷中同时看到：
 
 - `startup-seen.txt`
 - `recovery-started.txt`

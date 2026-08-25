@@ -31,10 +31,12 @@ use std::time::Duration;
 
 #[cfg(windows)]
 mod native_gui;
+#[cfg(windows)]
+mod windows_prepare;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> --target-drive <letter> [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--efi-drive <letter>] [--allow-destructive] [--no-reboot]\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
     );
     std::process::exit(2)
 }
@@ -68,6 +70,17 @@ fn main() {
             root.and_then(|r| id.map(|i| (r, i)))
                 .and_then(|(r, i)| show_status(r, i))
         }
+        #[cfg(windows)]
+        Some("prepare") => windows_prepare::prepare(args.collect()),
+        #[cfg(windows)]
+        Some("list-volumes") => windows_prepare::list_volumes(),
+        #[cfg(windows)]
+        Some("inspect-environment") => windows_prepare::inspect_environment(),
+        #[cfg(windows)]
+        Some("wim-info") => args
+            .next()
+            .ok_or_else(|| err("WIM image path is required"))
+            .and_then(windows_prepare::wim_info),
         Some("recover") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));
@@ -271,32 +284,31 @@ fn recover_env(_path: String) -> Result<(), TaskError> {
 
 #[cfg(windows)]
 fn recover_env(path: String) -> Result<(), TaskError> {
-    use backuprestore_core::{
-        PayloadManifest, validate_payload_files, validate_task_id, verify_sha256,
-    };
+    use backuprestore_core::{PayloadManifest, validate_payload_files, validate_task_id};
 
     let values = read_env_file(&path)?;
     let task_id = env_required(&values, "TASK_ID")?;
     validate_task_id(&task_id)?;
-    let task_root_rel = env_required(&values, "TASK_ROOT_REL")?;
-    backuprestore_core::validate_relative_path(&task_root_rel)?;
-    let normalized_task_root = task_root_rel.replace('/', "\\");
-    let (store_rel, relative_id) = normalized_task_root
+    let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
+    backuprestore_core::validate_relative_path(&workspace_root_rel)?;
+    let normalized_workspace_root = workspace_root_rel.replace('/', "\\");
+    let (store_rel, relative_id) = normalized_workspace_root
         .rsplit_once("\\tasks\\")
-        .ok_or_else(|| err("TASK_ROOT_REL must contain \\tasks\\"))?;
+        .ok_or_else(|| err("WORKSPACE_ROOT_REL must contain \\tasks\\"))?;
     if store_rel.is_empty() || store_rel.eq_ignore_ascii_case("tasks") {
-        return Err(err("TASK_ROOT_REL has an invalid task store path"));
+        return Err(err("WORKSPACE_ROOT_REL has an invalid workspace path"));
     }
     if relative_id != task_id {
-        return Err(err("TASK_ROOT_REL task id does not match TASK_ID"));
+        return Err(err("WORKSPACE_ROOT_REL task id does not match TASK_ID"));
     }
-    let early_log = PathBuf::from(r"C:\WinRE-PoC\Recovery-rust.log");
-    if let Some(parent) = early_log.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let task_letter = mount_env_volume(&values, "TASK", 'T', &early_log)?;
+    // Until the workspace volume is mounted only an ephemeral WinRE path is
+    // available.  Switch to the task directory immediately after mounting;
+    // all task/recovery logs that survive WinRE are stored there.
+    let mut early_log = PathBuf::from(r"X:\BackupRestore-Recovery-early.log");
+    let task_letter = mount_env_volume(&values, "WORKSPACE", 'T', &early_log)?;
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
+    early_log = task_dir.join("Recovery-early.log");
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, task_letter);
     let mut task = store.load(&task_id)?;
     if matches!(task.status, Stage::Success | Stage::Failed) {
@@ -326,34 +338,23 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         return Err(err("payload manifest task_id does not match task.json"));
     }
     let launcher = task_dir.join("payload").join("RecoveryLauncher.cmd");
-    let recovery_cmd = task_dir.join("payload").join("Recovery.cmd");
     let recovery_exe = task_dir.join("payload").join("Recovery.exe");
     let task_json = task_dir.join("payload").join("task.json");
     let recovery_task_env = task_dir.join("payload").join("RecoveryTask.env");
     let original = task_dir.join("original").join("Winre.wim");
     let staged = task_dir.join("stage").join("Winre.wim");
-    if recovery_exe.exists() {
-        validate_payload_files(
-            &manifest,
-            &launcher,
-            &recovery_exe,
-            &task_json,
-            &recovery_task_env,
-            &original,
-            &staged,
-        )?;
-    } else if task.operation != Operation::Probe {
-        return Err(err("Recovery.exe is required for a real operation"));
-    } else {
-        verify_sha256(&launcher, &manifest.launcher_sha256)?;
-        verify_sha256(&recovery_cmd, &manifest.recovery_sha256)?;
-        verify_sha256(&task_json, &manifest.task_sha256)?;
-        if let Some(expected) = manifest.recovery_task_env_sha256.as_deref() {
-            verify_sha256(&recovery_task_env, expected)?;
-        }
-        verify_sha256(&original, &manifest.original_winre_sha256)?;
-        verify_sha256(&staged, &manifest.staged_winre_sha256)?;
+    if !recovery_exe.is_file() {
+        return Err(err("Recovery.exe is required for every WinRE operation"));
     }
+    validate_payload_files(
+        &manifest,
+        &launcher,
+        &recovery_exe,
+        &task_json,
+        &recovery_task_env,
+        &original,
+        &staged,
+    )?;
 
     let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log)?;
     let efi_letter = if task.operation != Operation::Probe {
@@ -386,11 +387,11 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         // assigning a second letter in WinRE is unreliable (and can fail
         // after diskpart has partially changed the mount state).  Reuse the
         // verified task mount instead of trying to mount it again as S:.
-        let task_volume = task
-            .task_volume
+        let workspace_volume = task
+            .workspace_volume
             .as_ref()
-            .ok_or_else(|| err("probe task is missing task volume identity"))?;
-        if !task_volume.same_partition(source) {
+            .ok_or_else(|| err("probe task is missing workspace volume identity"))?;
+        if !workspace_volume.same_partition(source) {
             source.drive_letter = Some(mount_env_volume(&values, "SOURCE", 'S', &early_log)?);
         } else {
             source.drive_letter = Some(task_letter);
@@ -674,11 +675,11 @@ fn verify_task_identity_env(
     if let Some(source) = task.source.as_ref() {
         verify(values, "SOURCE", source)?;
     }
-    let task_volume = task
-        .task_volume
+    let workspace_volume = task
+        .workspace_volume
         .as_ref()
-        .ok_or_else(|| err("task.json is missing task_volume identity"))?;
-    verify(values, "TASK", task_volume)?;
+        .ok_or_else(|| err("task.json is missing workspace_volume identity"))?;
+    verify(values, "WORKSPACE", workspace_volume)?;
     match task.operation {
         Operation::Backup => {
             let destination = task
@@ -1493,5 +1494,37 @@ mod tests {
         assert!(diskpart_format_script(None, Some(2)).is_err());
         assert!(diskpart_format_script(Some(3), None).is_err());
         assert!(diskpart_format_script(Some(3), Some(0)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prepare_options_reject_missing_image_or_invalid_drive() {
+        assert!(
+            super::windows_prepare::parse_prepare_options(vec![
+                "--operation".into(),
+                "probe".into(),
+                "--source-drive".into(),
+                "C".into(),
+            ])
+            .is_ok()
+        );
+        assert!(
+            super::windows_prepare::parse_prepare_options(vec![
+                "--operation".into(),
+                "restore-existing".into(),
+                "--source-drive".into(),
+                "C".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            super::windows_prepare::parse_prepare_options(vec![
+                "--operation".into(),
+                "probe".into(),
+                "--source-drive".into(),
+                "CC".into(),
+            ])
+            .is_err()
+        );
     }
 }
