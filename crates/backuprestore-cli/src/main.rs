@@ -370,7 +370,9 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         }
         if task.target.is_some() {
             let target_letter = mount_env_volume(&values, "TARGET", 'W', &early_log)?;
-            let efi_letter = mount_env_volume(&values, "EFI", 'E', &early_log)?;
+            // WinRE may reuse E: for an image/data volume; keep EFI on a
+            // late temporary letter to avoid mount collisions.
+            let efi_letter = mount_env_volume(&values, "EFI", 'Z', &early_log)?;
             if let Some(target) = task.target.as_mut() {
                 target.volume.drive_letter = Some(target_letter);
             }
@@ -429,7 +431,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         let _ = store.write_failure(&mut task, 1, error.to_string());
         append_log(&log, &format!("Recovery failed: {error}"))?;
         if should_rollback_bcd {
-            if let Err(rollback) = restore_bcd_snapshot(&task_dir, &log) {
+            if let Err(rollback) = restore_bcd_snapshot(&task_dir, efi_root.as_deref(), &log) {
                 append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
             }
         }
@@ -882,13 +884,17 @@ fn restore_original_winre(
 }
 
 #[cfg(windows)]
-fn restore_bcd_snapshot(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
+fn restore_bcd_snapshot(
+    task_dir: &Path,
+    efi_root: Option<&Path>,
+    log: &Path,
+) -> Result<(), TaskError> {
     let snapshot = task_dir.join("bcd-before-export");
     if !snapshot.exists() {
         return Err(err("BCD snapshot is missing"));
     }
-    let efi_store = Path::new(r"E:\EFI\Microsoft\Boot\BCD");
-    if efi_store.exists() {
+    let efi_store = efi_root.map(|root| root.join("EFI\\Microsoft\\Boot\\BCD"));
+    if let Some(efi_store) = efi_store.filter(|path| path.exists()) {
         let snapshot_arg = snapshot.to_string_lossy().into_owned();
         let store_arg = efi_store.to_string_lossy().into_owned();
         run_logged(

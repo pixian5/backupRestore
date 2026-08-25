@@ -1931,6 +1931,23 @@ unsafe fn create_task(state: &State) {
         .next()
         .map(|value| value.to_ascii_uppercase().to_string())
         .unwrap_or_default();
+    if operation != "probe" && image_drive == task_drive {
+        show_message(
+            state.root,
+            if language == Language::English {
+                "Task volume must differ from the image volume."
+            } else {
+                "任务卷不能与镜像卷相同。"
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
     if operation != "probe" && image_drive == source_drive {
         show_message(
             state.root,

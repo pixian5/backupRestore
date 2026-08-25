@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-24
-当前开发版本：`0.5.8`
+更新时间：2026-08-25
+当前开发版本：`0.7.7`
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -42,6 +42,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | 工具链不可用时，先把程序完整设计和编码 | 离线阶段完成任务模型、正常 Windows 脚本、WinRE 载荷、Rust 原生 GUI、构建脚本、日志/状态、恢复边界和文档；工具链装好后不重新设计功能。 | 本仓库全部实现与第 3 节 |
 | 工具链装好后应能直接构建使用 | 构建脚本不自动下载，ARM64/x64 分离，明确 VM 本地 target 目录、包结构和 WinRE 启动入口；实际可用性仍以 Windows/WinRE 证据为准。 | `windows/build-windows.ps1`、`windows-build.md` |
 | 工具链准备好后直接开发 | 通过共享桌面传输当前工作树源码，使用 VM 本地 Cargo target 直接构建 ARM64 包；不把源码传输误写成工具链下载。 | `windows/build-windows.ps1`、本文件第 3 节 |
+| 不触碰 C: 的范围 | 只禁止把 `C:` 作为 `backup` 的源分区或恢复任务的目标分区；允许读取 C: 状态、使用其 WinRE/BCD、写入正常 Windows 的任务和日志文件，以及在隔离测试中临时修改启动顺序。 | 本轮用户澄清、测试边界 |
 
 网络状态不是永久属性，本文不把某次检测结果当作后续下载授权。恢复下载工作前必须重新检测。
 
@@ -75,6 +76,10 @@ git diff --check
 ```
 
 当前结果：Rust CLI/core 共 17 项测试通过；Clippy 无 warning；PowerShell 语法检查通过；差异无空白错误。
+
+2026-08-25 `v0.7.7` 前置重叠校验：`BackupRestore.ps1` 现在在解析任务卷和镜像卷身份之后、开始 WinRE 注入、BCD 导出或设置一次性恢复启动之前，拒绝非 probe 任务的“任务卷 = 镜像卷”。Rust GUI 也在用户点击创建任务时立即拒绝同一盘符组合。核心任务模型原有的 GUID 分区重叠检查保留为第二层防线。这样错误参数不再可能先重启进入 WinRE，再由 `validate-task` 拒绝。ARM64 实机以 `B:` 任务卷、`U:` 源卷和 `B:\...wim` 镜像路径验证：子进程退出码为 1，注册 WinRE SHA-256 前后均为 `0CBC86...6FDA1`。
+
+2026-08-25 `v0.7.7` 独立 EFI 启动实测：在新快照 `before-v0.7.7-efi-boot` 中临时把测试 EFI 磁盘 `hdd2` 调为首启动项，固件确实尝试从独立 EFI 启动，但 Windows Recovery 显示 `0xc0430001`，未进入 `U:`。随后恢复原启动顺序 `hdd0 cdrom0 usb hdd1 hdd2 hdd3` 并重新启动回正常 Windows；`C:` 未作为备份源或恢复目标。该结果将“隔离 Apply/BCDBoot 成功”与“独立 EFI 实际引导成功”明确区分，后者仍未通过。
 
 ## 4. 明确未完成的实机验收
 
@@ -182,3 +187,13 @@ git diff --check
 2026-08-25 `v0.7.4` PowerShell 中文输出修复：中文“刷新任务状态”实机显示乱码，根因是 Windows PowerShell 5.1 原生输出代码页被 Rust 以 UTF-8 读取。`powershell_output` 现在在所有隐藏查询前显式设定无 BOM UTF-8 `Console.OutputEncoding` 和 `$OutputEncoding`；待 ARM64 实机重新刷新任务状态验证中文可读。
 
 2026-08-25 `v0.7.4` ARM64 实机收口：使用 Windows ARM64 VM 重新构建并启动最新 GUI，管理员 GUI 读取 B 镜像成功，状态框显示镜像路径、WIM SHA-256 `c08c4e7a9628ead708802ca880f46932a4cb6e0547f0cad735bf79ef29711b30`、metadata SHA-256、最小目标容量和“已读取 1 个 WIM 索引”；单系统还原页下拉框显示 `Index 1 | Windows Backup`。英文模式截图确认四标签为 `Inspect / Backup / Restore / Second system`、语言标签纯 `Language`；中文模式刷新任务状态显示 `任务 ID/操作/任务目录/准备日志/恢复日志` 可读。最新前台进程为 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.7.4\BackupRestore.exe`（PID `2888`）。
+
+2026-08-25 非 C 指定分区真实备份：复制的 Windows fixture 挂载为 U:（Disk 3 Partition 3，约 8 GiB），任务卷 B:，独立镜像卷 T:（Disk 3 Partition 2）。任务 `bc1660b8-6863-495d-b333-cd168f9a5c41` 完成 `Windows -> WinRE -> DISM Capture -> 原始 WinRE hash 恢复 -> Windows`，最终 `status.json=success`；WIM 1.63 GB，metadata/hash 一致。该证据不涉及 C:。
+
+2026-08-25 多索引 WIM：从非 C 备份 WIM 导出两个索引到 `T:\BackupRestore\tests\non-c-u-multi\Windows.wim`，DISM `/Get-WimInfo` 显示 Index 1/2，两个名称分别为 `Windows Backup Index 1/2`。首次 `restore-existing` 未完成，根因是任务自动选择系统 EFI（任务 env GUID `d08d...`）而独立测试 EFI E: GUID 为 `6ba9...`，Recovery 在 WinRE 进入前发生 EFI 身份冲突；U: 未被格式化，C: 未触碰。
+
+2026-08-25 EFI 选择缺口修复：`BackupRestore.ps1` 新增可选 `-EfiDrive`，默认仍选择系统启动盘 EFI；隔离多磁盘测试可显式指定独立 EFI（例如 E:），避免把生产 EFI 与测试 EFI 混淆。v0.7.6 ARM64 实机已用该参数完成 Index 2 还原。
+
+2026-08-25 Recovery EFI 冲突修复：Index 2 还原的 WinRE 日志显示镜像卷被复用为 E:，而 EFI 也硬编码偏好 E:，导致 EFI 身份冲突、目标 U: 未格式化。Rust Recovery 现以 Z: 作为 EFI 临时挂载偏好，并让 BCD 回滚使用实际 EFI 根路径；生产默认 EFI 选择不变。v0.7.6 ARM64 实机重试成功。
+
+2026-08-25 多索引 Index 2 真实还原成功：任务 `375f4422-7c17-4397-9560-6c83d7ca9ff4` 使用 v0.7.6 Recovery、`-EfiDrive E`、T: 多索引 WIM Index 2、U: 目标分区，完成快速格式化、DISM Apply-Image、`bcdboot F:\Windows /s Z:\ /f UEFI`、原始 WinRE 恢复和自动返回 Windows；最终 `status.json=success`。U: 目标 SYSTEM 与 fixture 源 SYSTEM hive SHA-256 均为 `A70A0D2750D67E0D3B4054C9284F5794B2A699CC3A76203B7297CD3EAF6CC550`；E: BCD、`bootmgfw.efi`、`bootaa64.efi` 均存在。该证据证明指定分区和多索引 Apply/BCDBoot，不证明从 E: 实际引导 U:。

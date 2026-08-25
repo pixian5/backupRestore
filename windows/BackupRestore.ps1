@@ -14,6 +14,8 @@ param(
     [string]$BootMenuName = 'Windows Backup',
     [switch]$AllowDestructive,
     [switch]$NoReboot,
+    [ValidatePattern('^[A-Za-z]$')]
+    [string]$EfiDrive = '',
     [string]$RecoveryExe = ''
 )
 
@@ -232,7 +234,15 @@ function Get-RecoveryIdentity {
     [pscustomobject]@{ Partition = $partition; VolumeGuid = $volume.UniqueId }
 }
 
-function Get-EfiIdentity {
+function Get-EfiIdentity([string]$DriveLetter = '') {
+    if (-not [string]::IsNullOrWhiteSpace($DriveLetter)) {
+        $partition = Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop
+        if ($partition.GptType -ne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}') {
+            throw "Specified EFI drive $DriveLetter`: is not a GPT EFI system partition."
+        }
+        $volume = $partition | Get-Volume
+        return [pscustomobject]@{ Partition = $partition; VolumeGuid = $volume.UniqueId }
+    }
     $bootDisk = Get-Disk | Where-Object IsBoot -eq $true | Select-Object -First 1
     $partition = Get-Partition |
         Where-Object {
@@ -302,7 +312,7 @@ $source = Get-VolumeIdentity $SourceDrive
 $image = if ($effectiveOperation -eq 'probe') { $task } else { $imageInfo.Identity }
 $target = Get-VolumeIdentity $TargetDrive
 $recovery = Get-RecoveryIdentity
-$efi = Get-EfiIdentity
+$efi = Get-EfiIdentity $EfiDrive
 if ($task.PartitionTypeGuid.ToLowerInvariant() -in $reservedPartitionTypes) {
     throw 'The task volume cannot be an EFI, MSR or Recovery partition.'
 }
@@ -314,6 +324,9 @@ if ($task.VolumeGuid -in @($recovery.VolumeGuid, $efi.VolumeGuid)) {
 }
 if ($image.VolumeGuid -in @($recovery.VolumeGuid, $efi.VolumeGuid)) {
     throw 'The image volume cannot be the registered Recovery or EFI volume.'
+}
+if ($effectiveOperation -ne 'probe' -and $task.VolumeGuid -eq $image.VolumeGuid) {
+    throw 'The task volume must differ from the image volume.'
 }
 $imagePath = if ($imageInfo) { $imageInfo.FullPath } else { '' }
 $imageRelativePath = if ($imageInfo) { $imageInfo.RelativePath } else { '' }

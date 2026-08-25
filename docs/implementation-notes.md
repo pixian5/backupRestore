@@ -92,6 +92,10 @@ macOS 本地已完成：
 - 2026-08-25 `v0.7.3` 多语言细节：英语截图仍暴露 `Language / 语言` 的混合标签，英语 UI 改为纯 `Language`。语言切换的每个静态标签都需同目标语言一致。
 - 2026-08-25 `v0.7.4` PowerShell 5.1 编码：隐藏查询的 stdout 默认使用系统代码页，Rust `from_utf8_lossy` 会把中文任务状态显示为乱码。所有 `powershell_output` 调用统一在脚本前设置无 BOM UTF-8 输出；必须用真实中文任务状态复验。
 - 2026-08-25 `v0.7.4` 实机确认：Windows ARM64 最新包在高完整性 GUI 中成功读取 WIM 索引 1，英文标签与 `Language` 纯英文；切回中文后任务状态字段显示正常中文。所有证据通过 Windows 客体会话和 `prlctl capture` 获取，未操作 Parallels 控制中心作为客体。
+- 2026-08-25 非 C/多索引实测：U: fixture -> T: 镜像的真实备份成功；由此 WIM 导出两个索引。还原首次因自动 EFI 选择系统盘而未进入 Recovery，暴露隔离测试无法指定 EFI 的设计缺口；新增 `-EfiDrive`，生产默认行为不变。
+- 2026-08-25 WinRE EFI 临时盘符：Recovery 里镜像卷可能被挂载为 E:，不能再把 E: 作为 EFI 固定盘符。改用 Z: 偏好并保留 GUID 校验；BCD rollback 不再硬编码 E:\EFI。
+- 2026-08-25 `v0.7.7` 准备阶段参数边界：核心 `validate-task` 虽能拒绝任务卷和镜像卷重叠，但此前 PowerShell 已在调用核心验证前导出 BCD、注入 WinRE 并请求重启。该校验已前移到 `Get-VolumeIdentity` 后，GUI 同时在创建任务时拒绝任务盘符等于镜像路径根盘符；仍以 GUID 对比作为脚本的最终判断，盘符只用于即时交互反馈。
+- 2026-08-25 `v0.7.7` 独立 EFI 启动结果：将测试 EFI `hdd2` 临时置于 Parallels 首启动后，固件进入 Windows Recovery 并返回 `0xc0430001`，没有进入 `U:`。恢复原顺序后正常 Windows 启动。该失败说明需要继续核对独立磁盘的 BCD device/osdevice、EFI 与 Windows 分区的关联以及 Secure Boot/固件路径；在修复前不得宣称独立 EFI 启动验收通过。
 - 2026-08-24 快照清理：Windows 11 VM 原有 7 层串联快照，已删除 5 个早期冗余点（`before-winre-auto-launch`、`backupRestore-before-winre-validation`、`快照 1`、`before-v0.3.6-winre-probe`、`before-v0.3.6-backup-fixture`），保留 `before-v0.3.8-fixture-restore` 和当前 `before-v0.3.9-isolated-restore`。快照目录从约 22 GiB 降到 6.8 GiB；VM 停止/启动状态均未改动测试磁盘内容。
 - 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 
