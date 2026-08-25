@@ -211,7 +211,9 @@ fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskE
                     .map_err(|_| err("--wim-index must be a positive integer"))?;
             }
             "--boot-menu-name" => boot_menu_name = value("--boot-menu-name", &mut args)?,
-            "--efi-drive" => efi_drive = Some(parse_drive(&value("--efi-drive", &mut args)?)?),
+            "--test-efi-drive" => {
+                efi_drive = Some(parse_drive(&value("--test-efi-drive", &mut args)?)?)
+            }
             "--allow-destructive" => allow_destructive = true,
             "--no-reboot" => no_reboot = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
@@ -1259,7 +1261,7 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             return Ok(identity);
         }
     }
-    Err(err("EFI volume was not found; specify --efi-drive"))
+    Err(err("system GPT EFI partition was not found"))
 }
 
 fn identity_from_diskpart(

@@ -26,7 +26,7 @@
 | Rust prepare 自动进入 WinRE | Rust `prepare`、`RecoveryLauncher.cmd`、Rust `recover-env` | **实机已验证（v0.8.0 ARM64 probe）** | 任务 `dcff7126-aa6b-4a5b-910c-d5acbbcbdebe` 从 T: 程序目录完成自动 probe；`status.json=success`，原始 WinRE hash 已恢复。 |
 | 单系统还原 | `restore-existing`、DiskPart format、Apply-Image、BCDBoot `/v` | **实机已验证（非 C、多索引 Index 2、ARM64）** | 任务 `375f4422-7c17-4397-9560-6c83d7ca9ff4` 为 `success`；U: 目标 SYSTEM 与 fixture 源 hash 相同；E: BCD、`bootmgfw.efi`、`bootaa64.efi` 存在；Recovery 日志确认 `/Index:2` 和 `bcdboot ... /s Z:`。不证明从 E: 实际重启进入 U: |
 | Rust prepare 多索引单系统还原 | Rust `prepare`、Rust `recover-env`、`restore-existing` | **实机已验证（v0.8.2 ARM64）** | 任务 `fcfdd192-61e0-4b14-b04f-9734dcd26e48` 从 B: 工作目录使用 T: Index 2 还原 U:，DiskPart/DISM/BCDBoot/WinRE 清理完成；U: SYSTEM hash 为 `A70A0D…CC550`，E: BCD 默认 loader 指向 U:。 |
-| 独立 EFI 实际引导 | Parallels `hdd2` 首启动、EFI E:、U: 已 Apply Windows | **实机失败（ARM64，已复测）** | `before-v0.7.8-efi-bcd` 中管理员读取并重建 E: BCD（默认 loader `device/osdevice=partition=U:`，`bcdboot U:\Windows /s E: /f UEFI /v` 成功）后，hdd2 首启动仍进入 Recovery `0xc0430001`；启动顺序已恢复，不能把 BCDBoot 文件存在误报为可启动 |
+| 独立 EFI 实际引导（开发测试） | Parallels `hdd2` 首启动、EFI E:、U: 已 Apply Windows | **实机失败（ARM64，已复测）**；不属于普通 GUI/V1 发布门槛 | E: BCD 默认 loader `device/osdevice=partition=U:`，`bcdboot U:\Windows /s E: /f UEFI /v` 成功；关闭 Secure Boot、并替换 E: bootmgfw 为 U: 同哈希版本后，hdd2 仍进入 Recovery `0xc0430001`。启动顺序和 Secure Boot 已恢复。 |
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | 实机待验证 | 原 loader 和新 loader 的 device/osdevice/path 均正确 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
@@ -38,7 +38,7 @@
 | 中文任务状态编码 | `powershell_output` UTF-8 前缀 | **实机已验证（v0.7.4 ARM64）** | 点击“刷新任务状态”后，任务 ID、操作、任务目录、准备日志和恢复日志中文标签可读，无乱码 |
 | 非 C 指定分区真实备份 | `BackupRestore.exe prepare -SourceDrive U -ImagePath T:\...`、Recovery 状态机 | **实机已验证（ARM64）** | 任务 `bc1660b8-6863-495d-b333-cd168f9a5c41` 最终 success；U: fixture 未格式化，WIM/metadata/hash 已记录 |
 | 多索引 WIM 导出 | DISM Export-Image | **实机已验证（ARM64）** | T: `non-c-u-multi\Windows.wim` 显示索引 1 和 2；Index 2 已用于任务 `375f4422-7c17-4397-9560-6c83d7ca9ff4` 还原 |
-| 隔离测试 EFI 选择 | `BackupRestore.exe prepare -EfiDrive`、`Get-EfiIdentity`、Recovery EFI=Z: | **实机已验证（ARM64）** | 独立 EFI E: GUID 写入任务 env，WinRE 使用 Z: 临时挂载，避免镜像卷 E: 冲突；生产默认仍自动选系统 EFI |
+| 隔离测试 EFI 选择 | `BackupRestore.exe prepare --test-efi-drive`、Rust EFI 校验、Recovery EFI=Z: | **实机已验证（ARM64）** | 独立 EFI E: GUID 写入任务 env，WinRE 使用 Z: 临时挂载，避免镜像卷 E: 冲突；参数仅用于开发测试，普通 GUI 不暴露。 |
 | 工作目录所在卷与镜像卷重叠拒绝 | `native_gui.rs:create_task`、`BackupRestore.exe prepare`、core `Task::validate` | 离线已验证；ARM64 GUI 待验证 | GUI 在创建任务前按盘符立即拒绝，PowerShell 在 WinRE/BCD 变更前按 GUID 拒绝，核心校验作为防御纵深；本机 Rust 17 测试、AST 和 Clippy 已通过 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | 自动 probe 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 的 `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；新 `-NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 保持 `prepared`，dry-run 不会伪造成功 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
