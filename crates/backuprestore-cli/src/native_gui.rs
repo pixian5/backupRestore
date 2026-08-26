@@ -53,6 +53,7 @@ const CB_ADDSTRING: u32 = 0x0143;
 const CB_RESETCONTENT: u32 = 0x014b;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
+const CB_SETDROPPEDWIDTH: u32 = 0x0160;
 const BM_SETCHECK: u32 = 0x00f1;
 const BST_UNCHECKED: usize = 0;
 const BST_CHECKED: usize = 1;
@@ -833,7 +834,12 @@ unsafe fn layout_operation(state: &State) {
         80,
         24,
     );
-    reposition(state.controls.index, field_x, secondary_y, 440, 220);
+    let index_width = if selected_operation(state) == "create-secondary" {
+        440
+    } else {
+        field_width
+    };
+    reposition(state.controls.index, field_x, secondary_y, index_width, 220);
     reposition(
         state.controls.menu,
         field_x + 500,
@@ -1375,6 +1381,17 @@ unsafe fn set_wim_items(state: &State) {
         }
         add_combo_item(state.controls.index, &wim_display(image, language));
     }
+    let mut rect = Rect {
+        left: 0,
+        top: 0,
+        right: 1020,
+        bottom: 760,
+    };
+    GetClientRect(state.root, &mut rect);
+    // The open list must expose each index's full metadata, even when the
+    // selected one-line control shares a row with a secondary-system name.
+    let dropdown_width = (rect.right - rect.left - 204).max(440) as usize;
+    SendMessageW(state.controls.index, CB_SETDROPPEDWIDTH, dropdown_width, 0);
     SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
 }
 
