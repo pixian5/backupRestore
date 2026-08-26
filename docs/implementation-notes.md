@@ -2,10 +2,14 @@
 
 当前进度、用户对网络/下载的要求和实机未验证项统一见 [project-status.md](project-status.md)。本文件只记录实现事实与技术边界。
 
-> 当前运行边界（2026-08-27，v1.0.5）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+> 当前运行边界（2026-08-27，v1.0.8）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
 
 - 2026-08-27 `v1.0.5` WIM 多索引元数据：DISM 文本回退解析器现在按每个 `Index` 分组读取 `Name`、`Description`、`Size`、`Version`、`Architecture`、`Edition/Edition Id` 和 `Installation Type`；支持逗号分隔字节数及常见 KiB/MiB/GiB/TiB 单位。解析严格限定在有效索引之后，避免把 DISM 头部的工具版本误记为镜像版本；新增多索引与无索引回归测试。标准 `/Get-WimInfo` 未提供的字段仍显示为“?”，不虚构元数据。
 - 2026-08-27 `v1.0.5` ARM64 回归：Windows 11 ARM64 目标全量测试 8 项 CLI（包含多索引解析、头部版本隔离和参数边界）与 16 项核心测试全部通过；发行构建使用现有 `aarch64-pc-windows-msvc` 工具链成功，`BackupRestore.exe`/`Recovery.exe` 与 manifest SHA-256 均为 `5a1fd2b97c358d31ba6dd3d93b088edab1cdd051e5db1cd3e651aade5008af7e`。最新 GUI 已结束旧实例后以前台最大化运行，标题为 `BackupRestore - Rust GUI v1.0.5`，截图保存于 `.test-artifacts/root-captures/v1.0.5-gui.png`；真实 `D:\sources\boot.wim` 的 `wim-info` 返回索引 1、描述和 2163165471 字节大小。尚未声称多索引 WIM 的 GUI 实盘截图，因为当前挂载卷没有可用多索引镜像；多索引解析由 Windows 目标单元测试覆盖。
+- 2026-08-27 `v1.0.6` GUI 文本读取修复：Win32 GUI 的 `get_text` 从 `WM_GETTEXTLENGTH/WM_GETTEXT` 改为 `GetWindowTextLengthW/GetWindowTextW`。真实控件点检确认跨进程自动设置的 `V:\multi-index-same-source-v1.0.5.wim` 能被 Win32 API 读回，修复了消息返回长度为 0 导致的“镜像绝对路径为空”误报；需继续在新 ARM64 包上完成读取按钮、多索引下拉和最终截图验收。
+- 2026-08-27 `v1.0.7` GUI 文本读取兜底：部分控件实测仍可能返回 `GetWindowTextLengthW=0`，但 `GetWindowTextW` 能读回可见文本。`get_text` 现在在报告长度为 0 时使用 32 KiB 有界缓冲，按实际写入长度返回字符串，避免有效镜像路径被判为空；下一步必须在 ARM64 新包完成多索引按钮和下拉框验收。
+- 2026-08-27 `v1.0.8` GUI 文本读取三层回退：`GetWindowTextLengthW/GetWindowTextW` 返回 0 时，使用 32 KiB 上限缓冲再尝试 `WM_GETTEXTLENGTH/WM_GETTEXT`，覆盖跨完整性/线程边界的原生 EDIT 控件。该改动只影响 GUI 字段读取，不放宽绝对路径校验；ARM64 新包仍需用同源双索引 WIM 完成真实按钮和下拉截图。
+- 2026-08-27 `v1.0.8` ARM64 构建与 WIM 实读：既有 `aarch64-pc-windows-msvc` 工具链从共享桌面源码成功构建，包内两个 Rust 二进制和 manifest SHA-256 为 `8a67df2c833ff0a4b20501e5446273f5ee7af4df015c8ed3a78046acba8744c1`。Windows ARM64 CLI 8 项、core 16 项测试通过；提升权限执行 `wim-info V:\multi-index-same-source-v1.0.5.wim` 返回索引 1/2 及各自名称、描述和大小。GUI 最新前台标题为 `BackupRestore - Rust GUI v1.0.8`，但双索引下拉的最终客体截图仍待稳定的真实输入点检，不以 CLI 输出替代。
 
 ## 已实现的安全骨架
 

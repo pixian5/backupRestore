@@ -208,6 +208,8 @@ unsafe extern "system" {
     fn GetMessageW(message: *mut Msg, hwnd: Hwnd, min: u32, max: u32) -> i32;
     fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
     fn GetDlgItem(hwnd: Hwnd, id: i32) -> Hwnd;
+    fn GetWindowTextLengthW(hwnd: Hwnd) -> i32;
+    fn GetWindowTextW(hwnd: Hwnd, text: *mut u16, max_count: i32) -> i32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, flags: u32) -> i32;
     fn PostQuitMessage(exit_code: i32);
     fn SendMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> LResult;
@@ -576,10 +578,37 @@ unsafe fn set_text(hwnd: Hwnd, value: &str) {
 }
 
 unsafe fn get_text(hwnd: Hwnd) -> String {
-    let length = SendMessageW(hwnd, 0x000e, 0, 0) as usize;
-    let mut buffer = vec![0u16; length.saturating_add(1)];
-    SendMessageW(hwnd, 0x000d, buffer.len(), buffer.as_mut_ptr() as isize);
-    String::from_utf16_lossy(&buffer[..length])
+    // GetWindowTextW is the supported cross-control API for retrieving text
+    // from EDIT/COMBOBOX controls.  Some Windows builds return zero for a
+    // cross-thread WM_GETTEXTLENGTH even though the control visibly contains
+    // text; relying on that message made a filled image path look empty to
+    // the Rust GUI.  Read the exact length first, then use the reported count
+    // so embedded NULs cannot leak into validation.
+    let reported_length = GetWindowTextLengthW(hwnd);
+    // A few native controls report zero from GetWindowTextLengthW while
+    // still returning their text from GetWindowTextW. Use a bounded fallback
+    // buffer in that case instead of treating the field as empty.
+    let capacity = if reported_length > 0 {
+        reported_length as usize + 1
+    } else {
+        32 * 1024
+    };
+    let mut buffer = vec![0u16; capacity];
+    let mut written = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+    // GetWindowTextW is not guaranteed to marshal EDIT text across every
+    // Windows integrity/thread boundary. If it reports no characters, retry
+    // with the control messages themselves and the same bounded buffer. This
+    // keeps real user-entered paths readable without an unbounded allocation.
+    if written == 0 {
+        let message_length = SendMessageW(hwnd, 0x000e, 0, 0).max(0) as usize;
+        let message_capacity = message_length.saturating_add(1).clamp(1, 32 * 1024);
+        if message_capacity != buffer.len() {
+            buffer.resize(message_capacity, 0);
+        }
+        written = SendMessageW(hwnd, 0x000d, buffer.len(), buffer.as_mut_ptr() as isize) as i32;
+    }
+    let written = written.max(0) as usize;
+    String::from_utf16_lossy(&buffer[..written.min(buffer.len())])
 }
 
 unsafe fn add_combo_item(hwnd: Hwnd, value: &str) {

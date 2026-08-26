@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-08-27
-当前开发版本：`1.0.5`（DISM 多索引详细元数据解析）
+当前开发版本：`1.0.8`（补强 Win32 GUI 镜像路径读取回退）
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -218,7 +218,15 @@ git diff --check
 
 2026-08-27 v1.0.4 多语言 tooltip 修复：悬停提示按当前语言生成，中文模式不再显示拼接的英文；切换语言时重建 tooltip，防止旧语言文本残留。ARM64 包已重建，`build-manifest.json`、`BackupRestore.exe` 与 `Recovery.exe` 的 SHA-256 均为 `88399f72a55b7af59ed85173d13a27f60fc4dc18c14de502dcf7c801d322115f`，窗口标题为 `BackupRestore - Rust GUI v1.0.4`。客体画面已确认新窗口前台最大化；真实鼠标悬停弹出框仍未取得可靠截图证据。
 
-2026-08-27 v1.0.5 WIM 多索引元数据：DISM 文本回退解析器按索引保存名称、描述、大小及可选的版本、架构、版本类型和安装类型，支持逗号分隔字节数与常见二进制单位；头部工具版本不会泄漏到镜像条目。Windows ARM64 目标全量测试 8 项 CLI 与 16 项核心测试通过；发行包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.0.5` 的两个二进制及 manifest SHA-256 均为 `5a1fd2b97c358d31ba6dd3d93b088edab1cdd051e5db1cd3e651aade5008af7e`。结束旧实例后最新 GUI 已以前台最大化运行，标题为 `BackupRestore - Rust GUI v1.0.5`，截图 `.test-artifacts/root-captures/v1.0.5-gui.png`；真实 `D:\sources\boot.wim` 的 `wim-info` 已返回索引 1、描述和大小。当前挂载卷没有可用多索引 WIM，因此多索引下拉的实盘截图仍待有镜像时补测，解析逻辑已由 Windows 目标单元测试覆盖。
+2026-08-27 v1.0.5 WIM 多索引元数据：DISM 文本回退解析器按索引保存名称、描述、大小及可选的版本、架构、版本类型和安装类型，支持逗号分隔字节数与常见二进制单位；头部工具版本不会泄漏到镜像条目。Windows ARM64 目标全量测试 8 项 CLI 与 16 项核心测试通过；发行包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.0.5` 的两个二进制及 manifest SHA-256 均为 `5a1fd2b97c358d31ba6dd3d93b088edab1cdd051e5db1cd3e651aade5008af7e`。结束旧实例后最新 GUI 已以前台最大化运行，标题为 `BackupRestore - Rust GUI v1.0.5`，截图 `.test-artifacts/root-captures/v1.0.5-gui.png`；真实 `D:\sources\boot.wim` 的 `wim-info` 已返回索引 1、描述和大小。
+
+2026-08-27 v1.0.6 GUI 文本读取修复：真实多索引 GUI 点检发现跨进程设置的镜像路径可见，但 `WM_GETTEXTLENGTH` 返回 0，读取镜像因此错误提示路径为空。`get_text` 改用 `GetWindowTextLengthW/GetWindowTextW`，避免该消息边界。测试期间在 `U:` 同一源卷两次捕获生成 `V:\multi-index-same-source-v1.0.5.wim`，DISM 返回索引 1/2；C: 未触碰。
+
+2026-08-27 v1.0.7 GUI 文本读取兜底：实测发现部分控件的 `GetWindowTextLengthW` 也可能返回 0，但 `GetWindowTextW` 仍能返回可见文本。`get_text` 在长度为 0 时使用 32 KiB 有界缓冲并按实际写入长度截取，避免合法镜像路径被误判为空；需用 v1.0.7 ARM64 包重新完成多索引读取按钮和下拉截图。
+
+2026-08-27 v1.0.8 GUI 文本读取三层回退：在 `GetWindowTextLengthW/GetWindowTextW` 有界读取后，若控件仍返回 0，再使用受限的 `WM_GETTEXTLENGTH/WM_GETTEXT` 读取，避免 Windows 完整性/线程边界导致合法绝对路径被判为空。测试驱动同时修正了高 DPI 坐标和残留模态框干扰；`U:` 同一源卷生成的 `V:\multi-index-same-source-v1.0.5.wim` 仍保留为双索引 GUI 验收输入，C: 未触碰。ARM64 新包需在 VM 中完成最终“读取镜像”按钮和双索引下拉截图，未取得前不宣称 GUI 多索引验收完成。
+
+2026-08-27 v1.0.8 ARM64 构建回归：从桌面共享源码使用既有 `aarch64-pc-windows-msvc` 工具链成功构建 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.0.8`；`BackupRestore.exe`、`Recovery.exe` 与 `build-manifest.json` 的 SHA-256 均为 `8a67df2c833ff0a4b20501e5446273f5ee7af4df015c8ed3a78046acba8744c1`。Windows ARM64 `cargo test --workspace --all-targets --offline` 通过（CLI 8 项、core 16 项），最新 GUI 已结束旧实例并以前台最大化运行，标题 `BackupRestore - Rust GUI v1.0.8`。提升权限的 `wim-info` 实读 `V:\multi-index-same-source-v1.0.5.wim` 返回索引 1/2（Same source capture 1/2，描述和大小均存在），证明同源双索引输入和解析链路；截图保存于 `.test-artifacts/root-captures/v1.0.8-fresh.png`。由于客体真实输入驱动仍无法稳定穿透高 DPI/模态窗口，GUI 双索引下拉最终截图继续标记为待验证，不把 CLI 结果冒充 GUI 证据。
 
 本轮 ARM64 客体验证边界：v1.0.0 已从共享桌面源码重建并通过 ARM64 编译；仍需在新快照中实际停留鼠标确认 tooltip，并重新执行非 C probe/备份/还原链路。不得把旧版本包的截图当作本轮证据。
 
