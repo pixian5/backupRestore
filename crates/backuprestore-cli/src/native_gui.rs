@@ -187,6 +187,10 @@ struct WndClassExW {
 
 #[link(name = "user32")]
 unsafe extern "system" {
+    fn EnumWindows(
+        callback: Option<unsafe extern "system" fn(Hwnd, LParam) -> i32>,
+        l_param: LParam,
+    ) -> i32;
     fn RegisterClassExW(class: *const WndClassExW) -> u16;
     fn CreateWindowExW(
         ex_style: u32,
@@ -210,8 +214,11 @@ unsafe extern "system" {
     fn GetDlgItem(hwnd: Hwnd, id: i32) -> Hwnd;
     fn GetWindowTextLengthW(hwnd: Hwnd) -> i32;
     fn GetWindowTextW(hwnd: Hwnd, text: *mut u16, max_count: i32) -> i32;
+    fn GetClassNameW(hwnd: Hwnd, class_name: *mut u16, max_count: i32) -> i32;
+    fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, flags: u32) -> i32;
     fn PostQuitMessage(exit_code: i32);
+    fn PostMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> i32;
     fn SendMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> LResult;
     fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, value: isize) -> isize;
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
@@ -236,7 +243,9 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetModuleHandleW(name: *const u16) -> HInstance;
     fn GetCurrentProcess() -> Handle;
+    fn GetCurrentProcessId() -> u32;
     fn CloseHandle(handle: Handle) -> i32;
+    fn Sleep(milliseconds: u32);
 }
 
 #[link(name = "advapi32")]
@@ -1506,6 +1515,35 @@ unsafe fn relaunch_elevated() -> Result<(), super::TaskError> {
     Ok(())
 }
 
+unsafe extern "system" fn close_previous_gui_window(hwnd: Hwnd, current_process: LParam) -> i32 {
+    let mut process_id = 0;
+    GetWindowThreadProcessId(hwnd, &mut process_id);
+    if process_id == current_process as u32 {
+        return 1;
+    }
+
+    let mut class_name = [0u16; 64];
+    let written = GetClassNameW(hwnd, class_name.as_mut_ptr(), class_name.len() as i32);
+    if written > 0
+        && String::from_utf16_lossy(&class_name[..written as usize]) == "BackupRestoreNativeGui"
+    {
+        // This is a cooperative close on the same interactive desktop, not a
+        // process termination. It lets the old GUI release its package files.
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+    1
+}
+
+unsafe fn close_previous_gui_windows() {
+    EnumWindows(
+        Some(close_previous_gui_window),
+        GetCurrentProcessId() as LParam,
+    );
+    // Give normal WM_CLOSE handling a short chance to release an old package
+    // before the latest instance proceeds to occupy the foreground.
+    Sleep(200);
+}
+
 unsafe fn refresh_environment(state: &mut State) {
     let language = selected_language(state);
     let desired = [
@@ -2445,6 +2483,7 @@ pub fn run() -> Result<(), super::TaskError> {
         if !is_elevated() {
             return relaunch_elevated();
         }
+        close_previous_gui_windows();
         let instance = GetModuleHandleW(null());
         if instance.is_null() {
             return Err(super::err("GetModuleHandleW failed"));
