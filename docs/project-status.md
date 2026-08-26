@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-26
-当前开发版本：`0.9.5`（本轮收紧终态任务清理的完整任务校验）
+更新时间：2026-08-27
+当前开发版本：`1.0.5`（DISM 多索引详细元数据解析）
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
@@ -60,7 +60,7 @@ V1 不包含自研 PE、分区布局重构、网络备份、增量/差异镜像�
 | 成功状态一致性 | WinRE 只有在原始注册 `Winre.wim` 恢复并通过 SHA-256 校验后才写入 `success`；probe 支持 `preflight -> success`；清理失败写入 `failed` 并保留恢复日志。 | probe 实机已验收 |
 | probe 同卷情形 | `recover-env` 按卷 GUID 复用已有盘符；同卷源使用工作目录所在卷实际盘符。真实备份/还原仍要求工作目录所在卷与源/目标独立。 | Win11 ARM64 probe 实机已验收 |
 | GUI | Rust Win32 原生单窗口是唯一桌面前端，负责操作模式、源/目标卷详细下拉框、镜像读取、WIM 索引、环境和最近任务状态刷新、盘符校验、破坏性确认和管理员准备启动；支持中文/English 切换；镜像使用绝对路径。WIM 索引条目显示序号、名称、描述、版本、架构、Edition、安装类型和大小。产品运行时不调用 PowerShell。 | `v0.8.x` ARM64 包已使用现有工具链重建并完成 GUI 前台点检；`validate-task`、`recover --dry-run` 和边界审计通过。真实 UAC/WinRE 证据按矩阵记录，旧版本证据仅作历史参考 |
-| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v0.4.8` ARM64 包已在 VM 使用既有工具链离线构建，manifest 与二进制 SHA-256 一致；`v0.4.7` 的管理员 GUI/UAC、Capture、Apply、格式化和独立 EFI BCDBoot 实测证据仍保留 |
+| 构建与交付结构 | `build-windows.ps1` 生成架构隔离包，`BackupRestore.exe` 启动 GUI，`Recovery.exe` 作为 WinRE 主机，并随包携带 ARM64 MSVC runtime。 | `v1.0.5` ARM64 包已在 VM 使用既有工具链构建，manifest 与两个二进制 SHA-256 一致；更早版本的管理员 GUI/UAC、Capture、Apply、格式化和独立 EFI BCDBoot 实测证据仍保留 |
 | Windows 工具链 | Rust 1.98.0、`aarch64-pc-windows-msvc`、Visual Studio Build Tools ARM64、Windows SDK `10.0.26100.0`。 | 已安装并用于构建 |
 
 ### 已执行且通过的本机验证
@@ -132,7 +132,7 @@ git diff --check
    ```
 
 2. 检测为热点时，报告具体要下载的一个项目并等待授权；检测为 Wi-Fi/有线时，执行该下载。下载下一个大项目之前重新检测。
-3. 保持 VM 构建目录浅层：源码 `C:\BackupRestoreBuild\src`、Cargo target `C:\BackupRestoreBuild\target`、输出包 `C:\BackupRestoreBuild\package`；不要按版本号继续创建多层 source/target/artifacts 目录。
+3. 保持 VM 构建目录浅层：源码使用 Parallels 共享桌面 `C:\Users\x\Desktop\BackupRestore`（与 macOS 工作区同步），Cargo target 使用 `C:\BackupRestoreBuild\target`，输出包使用 `C:\BackupRestoreBuild\package`；不要再复制到旧的 `C:\BackupRestoreBuild\src`，也不要按版本号创建多层 source/target/artifacts 目录。
 4. 在 VM 中运行：
 
    ```powershell
@@ -204,7 +204,23 @@ git diff --check
 
 2026-08-25 `v0.7.9` 工作目录架构收口：删除 GUI 中的工作目录卷选择、详情栏和旧任务盘参数。程序目录与 Rust Recovery 均从 `BackupRestore.exe` 所在目录推导 `<程序目录>\tasks\<任务 ID>`、日志、WinRE 载荷、状态和 BCD 快照；任务记录工作目录卷 GUID、磁盘/分区身份及相对路径，WinRE 按这些身份重新挂载后读取任务。还原创建前按卷 GUID阻止“程序目录所在卷 = 还原目标”，阻止路径只显示单按钮弹窗，不创建任务、不修改 WinRE/BCD、不请求重启；备份允许程序目录与源卷相同。镜像路径仍要求用户选择绝对路径，WIM 索引仍通过下拉框展示完整索引信息。
 
-本轮 ARM64 客体验证尚未完成：必须使用最新源码重建包后，确认 GUI 不显示工作目录卷字段、中文布局无裁剪，并执行六项非 C 破坏性边界/工作目录迁移测试；不得把旧版本包的截图当作本轮证据。
+2026-08-26 v0.9.8 安全边界补强：prepare 在任何 BCD/WinRE 写入前完整验证 Task；卷身份包含卷序列号并在 WinRE 挂载后逐字段核对；目标格式化后重新核验分区几何，防止盘符复用或分区替换。最新 ARM64 包来自桌面共享软链接源码，标题显示版本号，控件悬停提示已接入。
+
+2026-08-26 v0.9.9 审计收口：任务验证与 BCD 快照顺序已修正为两阶段，先无副作用验证任务，再导出/哈希 BCD，最后启用并验证一次性启动计划；避免把合法任务误判为缺少 BCD 回滚信息。
+
+2026-08-26 v1.0.0 事务与身份审计修复：已挂载卷不再因卷 GUID 命中而跳过完整身份复核；WinRE 盘符分配改用 X: 临时盘并等待 DiskPart 正常退出；RecoveryTask.env 与载荷 task.json 改为严格绑定；准备阶段在替换注册 WinRE 前先持久化 manifest，失败时恢复原始 WinRE 和 BCD 快照；BCDBoot 后必须确认 loader 的 device/osdevice 指向目标分区；探测/备份不再要求隐藏目标卷。
+
+2026-08-27 v1.0.1 Recovery 分区定位修复：不再忽略 DiskPart 失败后读取固定 `R:`。准备阶段先扫描已挂载卷的实际磁盘/分区身份，再尝试多个空闲盘符并核对卷/GPT GUID、分区类型、文件系统、磁盘号、分区号、偏移和容量；`R:` 被占用或分配异常时安全失败，避免误把其他卷当作 Recovery。
+
+2026-08-27 v1.0.2 隐藏 EFI 定位修复：默认系统 EFI 通常没有盘符，准备阶段先复用已挂载 EFI，否则通过 `mountvol /S` 临时挂载到空闲盘符，读取完整 GPT 身份后立即卸载；挂载失败、类型不符或所有盘符占用时安全失败。ARM64 VM 已从共享桌面源码重新构建 v1.0.2，manifest 与 `BackupRestore.exe`/`Recovery.exe` SHA-256 一致，标题显示 v1.0.2，GUI 已以前台最大化运行。
+
+2026-08-27 v1.0.3 空闲盘符判定修复：`mountvol <letter>: /L` 对未分配盘符返回退出码 1，旧逻辑因此跳过所有临时盘符。现将无挂载点视为空闲，再由 `mountvol /S` 和完整 GPT 身份校验确认；其它命令异常仍安全失败。
+
+2026-08-27 v1.0.4 多语言 tooltip 修复：悬停提示按当前语言生成，中文模式不再显示拼接的英文；切换语言时重建 tooltip，防止旧语言文本残留。ARM64 包已重建，`build-manifest.json`、`BackupRestore.exe` 与 `Recovery.exe` 的 SHA-256 均为 `88399f72a55b7af59ed85173d13a27f60fc4dc18c14de502dcf7c801d322115f`，窗口标题为 `BackupRestore - Rust GUI v1.0.4`。客体画面已确认新窗口前台最大化；真实鼠标悬停弹出框仍未取得可靠截图证据。
+
+2026-08-27 v1.0.5 WIM 多索引元数据：DISM 文本回退解析器按索引保存名称、描述、大小及可选的版本、架构、版本类型和安装类型，支持逗号分隔字节数与常见二进制单位；头部工具版本不会泄漏到镜像条目。Windows ARM64 目标全量测试 8 项 CLI 与 16 项核心测试通过；发行包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.0.5` 的两个二进制及 manifest SHA-256 均为 `5a1fd2b97c358d31ba6dd3d93b088edab1cdd051e5db1cd3e651aade5008af7e`。结束旧实例后最新 GUI 已以前台最大化运行，标题为 `BackupRestore - Rust GUI v1.0.5`，截图 `.test-artifacts/root-captures/v1.0.5-gui.png`；真实 `D:\sources\boot.wim` 的 `wim-info` 已返回索引 1、描述和大小。当前挂载卷没有可用多索引 WIM，因此多索引下拉的实盘截图仍待有镜像时补测，解析逻辑已由 Windows 目标单元测试覆盖。
+
+本轮 ARM64 客体验证边界：v1.0.0 已从共享桌面源码重建并通过 ARM64 编译；仍需在新快照中实际停留鼠标确认 tooltip，并重新执行非 C probe/备份/还原链路。不得把旧版本包的截图当作本轮证据。
 
 2026-08-25 系统性架构审计与 Rust 准备迁移：发现并修复“Rust GUI 仍调用 PowerShell 准备/查询”和“Recovery.cmd 保留破坏性回退”两项 P0 根因。新增 Rust `prepare`、`list-volumes`、`inspect-environment`、`wim-info`；GUI 改为调用 Rust 自身 CLI；产品包删除 `BackupRestore.ps1` 和破坏性 `Recovery.cmd`；WinRE 启动器缺少 `Recovery.exe` 时直接失败。Rust 原生卷枚举通过 `DeviceIoControl`/`GetVolumeInformationW`/`GetDiskFreeSpaceExW` 读取 GPT 类型、卷 GUID、磁盘/分区身份和容量，ARM64 实测只返回 C/T/U 普通卷，EFI/Recovery 被排除。Rust `prepare --operation probe --no-reboot`、`validate-task`、`recover --dry-run` 已在 ARM64 通过；Rust 还原 C: 的同卷阻止已验证。自动重启进入 WinRE 的 Rust prepare 链路仍待下一轮非 C 快照复验。
 
@@ -222,5 +238,6 @@ git diff --check
 2026-08-26 v0.9.3 环境摘要编码修复：Windows `ver` 输出受系统代码页影响，旧 GUI 刷新环境时曾把“版本”中文解码成乱码。Rust 现在只提取不受本地化影响的 ASCII 版本号（例如 `10.0.26200.9168`），并新增回归测试；ARM64 v0.9.3 已重新编译、结束旧进程后以前台窗口运行。若系统命令没有可识别版本号，界面明确显示 `Windows version unavailable`，不会显示乱码。
 2026-08-26 Windows 系统空间审计：DISM 报告 WinSxS 实际 19.75 GiB、7 个可回收包并建议清理；C: 卷影副本配额已用约 4.08 GiB。未删除 WinSxS 或 `System Volume Information`，避免丢失更新回滚/系统还原能力；清理需用户确认具体范围。
 2026-08-26 v0.9.5 清理安全复核：自动清理在删除大型 WinRE 目录前新增完整任务模型与 operation 一致性校验；格式异常或字段缺失的任务永不自动删除。
+2026-08-26 v0.9.7 逻辑漏洞修复：WinRE 每次挂载后复核完整 GPT/卷身份和几何信息，格式化后再次复核目标仍是原分区；异常退出守卫使用 Recovery 实际盘符；BCDBoot 仅允许匹配目标分区的 loader；同卷阻止在 UAC 前执行。Rust Win32 GUI 标题显示版本号，并为操作标签、卷下拉框、镜像路径、WIM 索引和操作按钮增加悬停说明。
 
 2026-08-26 系统恢复数据清理（用户已授权）：已删除 C: 上全部 4 个卷影副本，并完成普通 DISM 组件清理；WinSxS 实际占用由约 19.75 GiB 降至约 12.60 GiB，7 个可回收包先清理 5 个。`/StartComponentCleanup /ResetBase` 已退出码 0 完成，之后再次运行普通清理成功。最终 AnalyzeComponentStore 为实际 12.53 GiB，仍报告 2 个可回收项；逐项检查显示它们属于 staged 按需功能/语言包，未手工删除，避免破坏可选功能。`vssadmin list shadows /for=C:` 无卷影副本，C: 可用空间约 181.3 GiB。CheckHealth 与 ScanHealth 仍报告组件存储可修复；未执行 `RestoreHealth`，因为它可能需要下载源文件且当前网络是热点。ResetBase 已永久丢弃旧更新回滚基线，不能卸载已纳入基线的更新。

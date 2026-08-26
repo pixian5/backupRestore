@@ -35,8 +35,8 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前源码版本为 `0.9.5`；Windows 客体前台包需在本轮修改后重新构建，不能复用旧版本截图。
-- 最近 ARM64 实机结果：Rust prepare/Recovery 已完成自动 probe、非 C Capture 和多索引 Index 2 Apply；工作目录/目标同卷会在任何 BCD/WinRE 写入前被 Rust 拒绝，WinRE hash 保持不变。独立 EFI 首启动仍返回 Recovery `0xc0430001`，该功能仅开发测试。继续验证时仍禁止把 `C:` 作为备份源或还原目标，但可以读取其启动配置和 WinRE。
+- 当前开发版本：以根目录 `VERSION` 为准；每完成一轮修改必须执行 `python3 ~/.codex/skills/pixian-dev-workflow/scripts/bump_version.py --root .`，同步两个 Cargo manifest 和 `Cargo.lock`。当前源码版本为 `1.0.5`；Windows 客体前台包需在本轮修改后重新构建，不能复用旧版本截图。
+- 最近 ARM64 实机结果：Rust prepare/Recovery 已完成自动 probe、非 C Capture 和多索引 Index 2 Apply；工作目录/目标同卷会在任何 BCD/WinRE 写入前被 Rust 拒绝，WinRE hash 保持不变。独立 EFI 首启动仍返回 Recovery `0xc0430001`，该功能仅开发测试。继续验证时仍禁止把 `C:` 作为备份源或还原目标，但可以读取其启动配置和 WinRE。v1.0.5 新增 DISM 文本回退的多索引详细字段解析，需在本轮 ARM64 包中复核。
 - `v0.7.8` 二次 EFI 诊断仍返回 `0xc0430001`：E: BCD 已由管理员 `bcdboot U:\Windows /s E: /f UEFI /v` 重建，默认 loader 的 `device/osdevice` 均为 U:，但 hdd2 首启动仍失败。不要再把旧 BCD 残留当作已证实根因；下一轮应在隔离快照验证跨磁盘 UEFI/Secure Boot/分区关联，完成后恢复 `hdd0` 首启动并保持最新 GUI 前台。
 - 重要历史提交：
   - `4561f7b`：加强任务标识校验并同步版本；
@@ -134,7 +134,7 @@ docs/README.md                              文档阅读入口
 
 在用户明确允许并且网络规则允许时：
 
-1. 工具链已安装在 Parallels Windows 11 ARM64 VM；源码通过共享桌面传输到 `C:\BackupRestoreBuild\src`，Cargo target 使用 `C:\BackupRestoreBuild\target`，输出包使用 `C:\BackupRestoreBuild\package`。不要再按版本号创建多层 source/target/artifacts 目录。
+1. 工具链已安装在 Parallels Windows 11 ARM64 VM；源码通过共享桌面同步到 `C:\Users\x\Desktop\BackupRestore`，Cargo target 使用 `C:\BackupRestoreBuild\target`，输出包使用 `C:\BackupRestoreBuild\package`。不要再复制到旧的 `C:\BackupRestoreBuild\src`，也不要按版本号创建多层 source/target/artifacts 目录。
 2. 在仓库目录执行：
 
    ```powershell

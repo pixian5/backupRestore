@@ -2,7 +2,10 @@
 
 当前进度、用户对网络/下载的要求和实机未验证项统一见 [project-status.md](project-status.md)。本文件只记录实现事实与技术边界。
 
-> 当前运行边界（2026-08-26，v0.9.5）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+> 当前运行边界（2026-08-27，v1.0.5）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+
+- 2026-08-27 `v1.0.5` WIM 多索引元数据：DISM 文本回退解析器现在按每个 `Index` 分组读取 `Name`、`Description`、`Size`、`Version`、`Architecture`、`Edition/Edition Id` 和 `Installation Type`；支持逗号分隔字节数及常见 KiB/MiB/GiB/TiB 单位。解析严格限定在有效索引之后，避免把 DISM 头部的工具版本误记为镜像版本；新增多索引与无索引回归测试。标准 `/Get-WimInfo` 未提供的字段仍显示为“?”，不虚构元数据。
+- 2026-08-27 `v1.0.5` ARM64 回归：Windows 11 ARM64 目标全量测试 8 项 CLI（包含多索引解析、头部版本隔离和参数边界）与 16 项核心测试全部通过；发行构建使用现有 `aarch64-pc-windows-msvc` 工具链成功，`BackupRestore.exe`/`Recovery.exe` 与 manifest SHA-256 均为 `5a1fd2b97c358d31ba6dd3d93b088edab1cdd051e5db1cd3e651aade5008af7e`。最新 GUI 已结束旧实例后以前台最大化运行，标题为 `BackupRestore - Rust GUI v1.0.5`，截图保存于 `.test-artifacts/root-captures/v1.0.5-gui.png`；真实 `D:\sources\boot.wim` 的 `wim-info` 返回索引 1、描述和 2163165471 字节大小。尚未声称多索引 WIM 的 GUI 实盘截图，因为当前挂载卷没有可用多索引镜像；多索引解析由 Windows 目标单元测试覆盖。
 
 ## 已实现的安全骨架
 
@@ -109,6 +112,23 @@ macOS 本地已完成：
 - 2026-08-24 快照清理：Windows 11 VM 原有 7 层串联快照，已删除 5 个早期冗余点（`before-winre-auto-launch`、`backupRestore-before-winre-validation`、`快照 1`、`before-v0.3.6-winre-probe`、`before-v0.3.6-backup-fixture`），保留 `before-v0.3.8-fixture-restore` 和当前 `before-v0.3.9-isolated-restore`。快照目录从约 22 GiB 降到 6.8 GiB；VM 停止/启动状态均未改动测试磁盘内容。
 - 2026-08-22 fixture 根因：WinSxS 下 3224 字节的 `BCD-Template` 在该 ARM64 VM 上无法作为 BCDBoot 模板加载；`C:\Windows\Boot\DVD\EFI\BCD` 又不含可用 OS loader。管理员环境中实际的 `C:\Windows\System32\config\BCD-Template` 为 20480 字节，复制到测试源后 BCDBoot 成功。测试 fixture 脚本已优先检查该系统模板，并对过小文件拒绝继续；fixture 目录被 `.gitignore` 忽略，不进入产品包。
 
+## 2026-08-26 v0.9.8 逻辑审计补强
+
+prepare 在导出 BCD、写入 WinRE 前再次运行完整 Task::validate；VolumeIdentity 同时记录真实卷序列号；格式化目标后再次核验磁盘/分区 GUID、类型、编号、偏移和容量；WinRE 挂载完成后逐字段复核工作区、源、镜像、目标和 EFI 身份。
+
+## 2026-08-26 v0.9.9 审计收口
+
+prepare 在 BCD 导出前先完成完整任务校验，导出并记录 BCD 哈希后再启用一次性启动计划并再次校验，避免校验顺序导致合法任务被误拒绝。
+
+## 2026-08-26 v1.0.0 事务与身份审计修复
+
+- WinRE 已挂载卷即使通过卷 GUID 找到，也必须再次核对磁盘/分区 GUID、类型、文件系统、编号、偏移、容量和卷序列号；不再因“已挂载”路径跳过复核。
+- WinRE 盘符分配脚本改写到可写的 `X:\Windows\Temp`，并等待 DiskPart 自然退出（最长 30 秒），不再固定等待 5 秒后强制终止。
+- `RecoveryTask.env` 的任务身份字段改为必需并与 `task.json` 逐项比较；载荷内不可变 `task.json` 也必须与工作区任务完全一致，仅允许工作区状态从 `Prepared` 前进到 `BootRequested`。
+- 正常 Windows 准备阶段先持久化 manifest 和任务状态，再替换注册 WinRE；替换、`reagentc /boottore`、任务状态写入或重启请求失败时恢复原始 WinRE，并导入 BCD 快照。
+- BCDBoot 后读取实际 BCD，确认 `device/osdevice` 至少有一个 Windows loader 指向所选目标分区；不满足时恢复阶段失败并进入既有 BCD 回滚路径。
+- `prepare --target-drive` 对探测/备份改为可选；隐藏的目标卷不会再参与备份/探测的 BitLocker 和卷校验。
+
 ## 尚未宣称完成的实机项
 
 当前先以 Parallels Win11 ARM64 为主线，以下必须在 ARM64 虚拟机和快照上验证后才能发布：
@@ -137,3 +157,8 @@ macOS 本地已完成：
 - 2026-08-26 VM 系统目录审计：WinSxS 实际约 19.75 GiB，其中 7 个包被 DISM 标记为可回收，系统报告建议组件清理；`System Volume Information` 的卷影副本配额已用约 4.08 GiB。两者均属于 Windows 系统恢复/更新数据，本轮未直接删除；后续若清理，必须由用户明确确认具体范围。
 - 2026-08-26 v0.9.5 清理边界复核：终态任务自动清理现在必须同时通过完整 `Task::validate()`、任务/状态 operation 一致性和终态检查；任何缺字段、身份不完整或记录不一致的目录都计为 malformed 并保留。
 - 2026-08-26 系统恢复数据清理（用户明确授权）：在 Windows 11 ARM64 测试虚拟机中执行 `vssadmin delete shadows /for=C: /all /quiet`，删除 C: 上 4 个卷影副本；随后执行普通 `DISM /Online /Cleanup-Image /StartComponentCleanup`，WinSxS 从约 19.75 GiB 降至约 12.60 GiB，7 个可回收包中先移除 5 个。经用户明确允许后继续执行 `/StartComponentCleanup /ResetBase`，永久丢弃旧更新回滚基线；ResetBase 退出码为 0，随后再次执行普通组件清理也成功。最终 AnalyzeComponentStore 报告实际 12.53 GiB、仍有 2 个可回收项（对应 staged 按需功能/语言包，不能手工删除），`vssadmin list shadows /for=C:` 无卷影副本，C: 可用空间约 181.3 GiB。CheckHealth/ScanHealth 仍报告组件存储可修复；未执行 `RestoreHealth`，因为它可能需要下载源文件且当前网络是热点。该结果已明确区分“清理成功”与“组件健康仍需来源修复”。
+- 2026-08-26 v0.9.7 逻辑审计修复：WinRE 挂载后现在重新读取并核对卷 GUID、磁盘/分区 GUID、分区类型、文件系统、磁盘号、分区号、偏移和容量；格式化后再次核验目标身份，防止盘符复用或目标被替换。异常清理守卫改用真实 Recovery 卷盘符；BCDBoot 只接受明确绑定到目标分区的 loader，不再回退误改其他启动项；程序目录与还原目标的阻止在管理员提升前执行。GUI 标题包含版本号，并为操作标签、分区、镜像、索引和按钮增加悬停提示。
+- 2026-08-27 v1.0.1 Recovery 分区定位修复：准备阶段不再忽略 DiskPart 失败后读取固定 `R:`；先扫描已挂载卷的真实磁盘/分区号，再从多个可用盘符尝试分配，且逐项核对磁盘号、分区号、卷/GPT GUID、分区类型、文件系统、偏移和容量。这样 WinRE 中 `R:` 被占用或 DiskPart 部分失败时会安全拒绝，不会把错误卷当成 Recovery。
+- 2026-08-27 v1.0.2 隐藏 EFI 定位修复：默认系统 EFI 没有盘符时，准备阶段先复用已挂载 EFI，否则用 `mountvol /S` 临时挂载到空闲盘符，读取完整 GPT 身份后立即卸载；未找到或类型不符时安全失败。ARM64 v1.0.2 已重新构建并校验版本、manifest 与两个二进制哈希，GUI 已以前台最大化运行。
+- 2026-08-27 v1.0.3 空闲盘符判定修复：Windows `mountvol <letter>: /L` 对未分配盘符正常返回退出码 1，原判定把所有空闲盘符误认为不可用，导致 EFI 临时挂载始终跳过。现在将“无挂载点”的退出码 1 视为空闲，并在挂载后继续完整身份核验；其它异常仍由后续分配/核验失败安全拦截。
+- 2026-08-27 v1.0.4 多语言 tooltip 修复：悬停提示不再把中英文拼接在同一条文案中；提示内容跟随当前语言，并在语言切换时销毁旧 tooltip、重新注册当前语言文本，避免中文界面残留英文。ARM64 包 `BackupRestore.exe` 与 `Recovery.exe` SHA-256 均为 `88399f72a55b7af59ed85173d13a27f60fc4dc18c14de502dcf7c801d322115f`，窗口标题已显示版本号；客体真实悬停弹框尚未获得可靠截图。

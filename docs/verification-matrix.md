@@ -14,6 +14,7 @@
 | x64/ARM64 架构隔离 | `windows/build-windows.ps1`、`build-manifest.json`、`Assert-PackageArchitecture` | `v0.4.8` ARM64 二进制已在 VM 启动并通过 manifest/`Recovery.exe hash` 检查，WinRE 运行待验证 | x64/ARM64 各自产物在对应 Guest 启动并拒绝错架构 |
 | 当前/候选 Windows 分区枚举 | Rust `discover_drives`、`Refresh environment` | 代码已覆盖 | GUI 实盘显示下拉项的文件系统、容量、剩余空间和 GUID |
 | 盘符不是身份 | `VolumeIdentity`、`verify_task_identity_env`、`mount_env_volume` | 代码已覆盖 | 改盘符或更换卷后任务必须拒绝 |
+| Recovery 盘符冲突安全边界 | `identity_from_diskpart`、`ensure_volume_mounted` | **代码已覆盖；v1.0.1 ARM64 重建通过** | 已挂载卷先按实际磁盘/分区身份复用；固定 `R:` 被占用或 DiskPart 失败时不会读取错误卷，实机故障注入待验证 |
 | 镜像使用绝对路径 | `ImagePath`、`validate_absolute_path`、task `absolutePath`、`IMAGE_ABSOLUTE_PATH` | `v0.5.0` 代码和 ARM64 参数帮助已验证；Recovery 仍按 GUID 重挂载后使用卷内路径 | Windows GUI 选择 `B:\...\Windows.wim`，换盘符后必须仍解析到同一镜像卷 |
 | probe 任务/源卷相同 | `recover-env` 按卷 GUID 扫描已有挂载，任务/源同卷时复用实际盘符 | 实机已验证（Win11 ARM64 probe） | 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 在 WinRE 记录 `TASK volume already mounted at C:; reusing it`，随后为 `success` |
 | EFI/MSR/Recovery 保护 | core `is_reserved_partition`、Rust `windows_prepare`、Rust Recovery | Rust 代码与 ARM64 原生 GPT 枚举已验证 | 实盘尝试选中三类分区都被拒绝 |
@@ -31,7 +32,7 @@
 | 断电恢复 | `Stage`、`recover_windows` resume 分支 | 代码已覆盖 | 每个阶段断电后快照恢复并检查状态 |
 | BCD 失败回滚 | BCD snapshot、`restore_bcd_snapshot` | 代码已覆盖 | 模拟 BCDBoot 失败后原 BCD hash 恢复 |
 | Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | **实机已验证（GUI 范围）**：`v0.6.5` 客户区动态排版在每次标签切换后重排，详情框 112 高度、行距 8、状态框 64；逐页实际矩形确认探测/备份/单系统还原/第二系统的字段显隐、镜像/按钮不重叠，第二系统按钮位于客户区内 | 包 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v0.6.5`，SHA-256 `ddbedf79f00bf209453162f94433eab1c2d235ff014c1d8d400bfd0a577d0bd4`；截图 `.test-artifacts/root-captures/v0.6.5-guest-secondary.png`。不包括 UAC、任务创建、WinRE 或磁盘写入 |
-| WIM 单索引读取与下拉显示 | `parse_wim_images`、`parse_dism_wim_images`、`report_images_value` | **实机已验证（v0.7.4 ARM64）** | 高完整性 GUI 读取 B 镜像成功；状态框显示 SHA-256/metadata/最小容量，单系统还原页下拉框显示 `Index 1 | Windows Backup` |
+| WIM 多索引读取与详细下拉显示 | `parse_wim_images`、`parse_dism_images`、`report_images_value` | **基础索引实机已验证（v0.7.4）；v1.0.5 ARM64 目标测试与单索引实读已通过** | 高完整性 GUI 曾读取 B 镜像索引 1；v1.0.5 Windows 目标测试覆盖多索引/可选字段/大小单位，`D:\sources\boot.wim` 实读返回索引 1 和大小；当前挂载卷没有多索引 WIM，真实 GUI 多索引下拉截图待有镜像时补测 |
 | GUI 管理员令牌与 WIM 读取 | `is_elevated`、`relaunch_elevated`、`ShellExecuteW("runas")` | **实机已验证（v0.7.4 ARM64）** | GUI 自提升后读取 WIM 成功，不再出现 DISM 740；最新 GUI 以高完整性用户进程运行 |
 | 英文标签可见性 | `ui_text`、`operation_display` | **实机已验证（v0.7.3 ARM64）** | 英文模式四个顶部标签显示 `Inspect / Backup / Restore / Second system`，无裁剪；详细行为由说明框显示 |
 | 英文 UI 纯净性 | `ui_text(Language::English, "language")` | **实机已验证（v0.7.3 ARM64）** | 英语模式显示纯 `Language`，不残留中文；中文模式仍显示 `语言` |

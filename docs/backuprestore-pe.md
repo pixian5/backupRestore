@@ -7,7 +7,7 @@
 - VM 路径：`C:\BackupRestorePE\BackupRestorePE.wim`
 - 仓库副本：`artifacts/BackupRestorePE.wim`
 - ARM64 可启动 ISO：`artifacts/BackupRestorePE.iso`
-- 项目源码当前版本：`0.9.0`
+- 项目源码当前版本：`1.0.5`
 - 已验证产物构建版本：`0.8.5`（本轮仅修订文档与测试边界，未重建 WIM/ISO）
 - WIM SHA-256：`d5f1515acc2a5bf5d244048b9b9b1975f88433c18b4e13c15f3177393c3d17cc`
 - ISO SHA-256：`4bd7b7c567bdbbfe61a24eeeca50d044172141bd02bedb7db47ca48fe9eeadc5`

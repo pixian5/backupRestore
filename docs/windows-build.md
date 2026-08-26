@@ -27,7 +27,8 @@ rustup target add aarch64-pc-windows-msvc
 .\windows\build-windows.ps1 -Architecture x64
 ```
 
-Parallels 共享目录不适合 Rust 的临时归档操作时，可把 Cargo 输出放到
+源码固定通过 Parallels 共享桌面同步到 `C:\Users\x\Desktop\BackupRestore`；不要再复制到旧的
+`C:\BackupRestoreBuild\src`。共享目录不适合 Rust 的临时归档操作时，可把 Cargo 输出放到
 Windows 虚拟磁盘：
 
 ```powershell

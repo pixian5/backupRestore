@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::thread;
 #[cfg(windows)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 mod native_gui;
@@ -36,7 +36,7 @@ mod windows_prepare;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> --target-drive <letter> [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... --test-efi-drive <letter>  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... --test-efi-drive <letter>  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
     );
     std::process::exit(2)
 }
@@ -323,7 +323,11 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
-    let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, task_letter);
+    // Mount Recovery before loading/validating the task so the emergency
+    // guard always uses the Recovery volume letter, never the workspace
+    // letter. The old ordering could attempt restoration under T:\Recovery.
+    let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log)?;
+    let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, recovery_letter);
     let mut task = store.load(&task_id)?;
     if matches!(task.status, Stage::Success | Stage::Failed) {
         return Err(err(&format!(
@@ -369,8 +373,21 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         &original,
         &staged,
     )?;
+    // The payload task is the immutable copy staged before the one-time boot
+    // request. Compare every field, allowing only the normal status advance
+    // from Prepared to BootRequested in the workspace copy. Without this
+    // check a tampered workspace task could pass the payload hash check while
+    // Recovery operated on different source/target identities.
+    let payload_task: Task = read_json(&task_json)?;
+    payload_task.validate()?;
+    let mut expected_payload_task = task.clone();
+    expected_payload_task.status = Stage::Prepared;
+    if payload_task != expected_payload_task {
+        return Err(err(
+            "payload task does not match the workspace task prepared for this recovery",
+        ));
+    }
 
-    let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log)?;
     let efi_letter = if task.operation != Operation::Probe {
         let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
         let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log)?;
@@ -578,6 +595,13 @@ fn env_u32(values: &BTreeMap<String, String>, key: &str) -> Result<u32, TaskErro
 }
 
 #[cfg(windows)]
+fn env_u64(values: &BTreeMap<String, String>, key: &str) -> Result<u64, TaskError> {
+    env_required(values, key)?
+        .parse::<u64>()
+        .map_err(|_| err(&format!("RecoveryTask.env {key} is not a number")))
+}
+
+#[cfg(windows)]
 fn env_optional(values: &BTreeMap<String, String>, key: &str) -> Option<String> {
     values
         .get(key)
@@ -601,7 +625,7 @@ fn verify_task_identity_env(
         prefix: &str,
         identity: &backuprestore_core::VolumeIdentity,
     ) -> Result<(), TaskError> {
-        for (suffix, expected, actual) in [
+        for (suffix, expected, label) in [
             ("VOLUME_GUID", identity.volume_guid.as_str(), "volume"),
             ("DISK_GUID", identity.disk_guid.as_str(), "disk"),
             (
@@ -609,78 +633,56 @@ fn verify_task_identity_env(
                 identity.partition_guid.as_str(),
                 "partition",
             ),
+            (
+                "PARTITION_TYPE_GUID",
+                identity.partition_type_guid.as_str(),
+                "partition type",
+            ),
+            ("FILESYSTEM", identity.filesystem.as_str(), "filesystem"),
         ] {
-            if let Some(value) = env_optional(values, &format!("{prefix}_{suffix}")) {
-                if !expected.is_empty() && !expected.eq_ignore_ascii_case(&value) {
-                    return Err(err(&format!(
-                        "{prefix} {actual} identity differs between task.json and RecoveryTask.env"
-                    )));
-                }
+            let actual = env_required(values, &format!("{prefix}_{suffix}"))?;
+            if !expected.eq_ignore_ascii_case(&actual) {
+                return Err(err(&format!(
+                    "{prefix} {label} differs between task.json and RecoveryTask.env"
+                )));
             }
         }
-        if let Some(number) = identity.disk_number {
-            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_DISK_NUMBER")) {
-                if number as u64 != expected {
-                    return Err(err(&format!(
-                        "{prefix} disk number differs between task.json and RecoveryTask.env"
-                    )));
-                }
+        for (suffix, expected, label) in [
+            ("DISK_NUMBER", identity.disk_number, "disk number"),
+            (
+                "PARTITION_NUMBER",
+                identity.partition_number,
+                "partition number",
+            ),
+        ] {
+            let actual = env_u32(values, &format!("{prefix}_{suffix}"))?;
+            if expected != Some(actual) {
+                return Err(err(&format!(
+                    "{prefix} {label} differs between task.json and RecoveryTask.env"
+                )));
             }
         }
-        if let Some(number) = identity.partition_number {
-            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_PARTITION_NUMBER"))
-            {
-                if number as u64 != expected {
-                    return Err(err(&format!(
-                        "{prefix} partition number differs between task.json and RecoveryTask.env"
-                    )));
-                }
-            }
-        }
-        if identity.partition_size > 0 {
-            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_PARTITION_SIZE")) {
-                if identity.partition_size != expected {
-                    return Err(err(&format!(
-                        "{prefix} partition size differs between task.json and RecoveryTask.env"
-                    )));
-                }
-            }
-        }
-        if identity.partition_offset > 0 {
-            if let Some(expected) = env_optional_u64(values, &format!("{prefix}_PARTITION_OFFSET"))
-            {
-                if identity.partition_offset != expected {
-                    return Err(err(&format!(
-                        "{prefix} partition offset differs between task.json and RecoveryTask.env"
-                    )));
-                }
-            }
-        }
-        if !identity.partition_type_guid.trim().is_empty() {
-            if let Some(expected) = env_optional(values, &format!("{prefix}_PARTITION_TYPE_GUID")) {
-                if !identity.partition_type_guid.eq_ignore_ascii_case(&expected) {
-                    return Err(err(&format!(
-                        "{prefix} partition type differs between task.json and RecoveryTask.env"
-                    )));
-                }
-            }
-        }
-        if !identity.filesystem.trim().is_empty() {
-            if let Some(expected) = env_optional(values, &format!("{prefix}_FILESYSTEM")) {
-                if !identity.filesystem.eq_ignore_ascii_case(&expected) {
-                    return Err(err(&format!(
-                        "{prefix} filesystem differs between task.json and RecoveryTask.env"
-                    )));
-                }
+        for (suffix, expected, label) in [
+            (
+                "PARTITION_OFFSET",
+                identity.partition_offset,
+                "partition offset",
+            ),
+            ("PARTITION_SIZE", identity.partition_size, "partition size"),
+        ] {
+            let actual = env_u64(values, &format!("{prefix}_{suffix}"))?;
+            if expected != actual {
+                return Err(err(&format!(
+                    "{prefix} {label} differs between task.json and RecoveryTask.env"
+                )));
             }
         }
         if !identity.volume_serial.trim().is_empty() {
-            if let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL")) {
-                if !identity.volume_serial.eq_ignore_ascii_case(&expected) {
-                    return Err(err(&format!(
-                        "{prefix} volume serial differs between task.json and RecoveryTask.env"
-                    )));
-                }
+            let actual = env_required(values, &format!("{prefix}_VOLUME_SERIAL"))?;
+            if !identity.volume_serial.eq_ignore_ascii_case(&actual) {
+                return Err(err(&format!(
+                    "{prefix} volume serial differs between task.json and RecoveryTask.env"
+                )));
             }
         }
         Ok(())
@@ -753,10 +755,14 @@ fn mount_env_volume(
             log,
             &format!("{prefix} volume already mounted at {existing}:; reusing it"),
         )?;
+        verify_mounted_volume(existing, &expected)?;
+        verify_live_volume_identity(existing, values, prefix)?;
         return Ok(existing);
     }
+    // X: is the writable WinRE RAM disk. C: may be the offline Windows
+    // volume (or unavailable), so never use it for the assignment script.
     let script = PathBuf::from(format!(
-        r"C:\Windows\Temp\BackupRestore-assign-{letter}.txt"
+        r"X:\Windows\Temp\BackupRestore-assign-{letter}.txt"
     ));
     let existing = Command::new("mountvol")
         .arg(format!("{letter}:"))
@@ -769,6 +775,8 @@ fn mount_env_volume(
             .find(|line| !line.is_empty())
         {
             if actual.eq_ignore_ascii_case(&expected) {
+                verify_mounted_volume(letter, &expected)?;
+                verify_live_volume_identity(letter, values, prefix)?;
                 return Ok(letter);
             }
             return Err(err(&format!(
@@ -788,6 +796,7 @@ fn mount_env_volume(
     )?;
     if direct_status.success() {
         verify_mounted_volume(letter, &expected)?;
+        verify_live_volume_identity(letter, values, prefix)?;
         return Ok(letter);
     }
     let body =
@@ -810,19 +819,106 @@ fn mount_env_volume(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .spawn()?;
-    thread::sleep(Duration::from_secs(5));
-    let _ = child.kill();
-    let _ = child.wait();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(&script);
+            return Err(err(
+                "diskpart timed out while assigning the recovery volume",
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
     append_log(
         log,
         &format!(
-            "diskpart.exe given 5s to apply assignment, then terminated; output={}",
+            "diskpart.exe completed with {status}; output={}",
             diskpart_log.display()
         ),
     )?;
     let _ = fs::remove_file(&script);
     verify_mounted_volume(letter, &expected)?;
+    verify_live_volume_identity(letter, values, prefix)?;
     Ok(letter)
+}
+
+#[cfg(windows)]
+fn verify_live_volume_identity(
+    letter: char,
+    values: &BTreeMap<String, String>,
+    prefix: &str,
+) -> Result<(), TaskError> {
+    // A volume GUID alone is insufficient: it can survive reformatting or a
+    // stale mount assignment. Re-read the live GPT/device identity after
+    // mounting and compare every immutable field recorded at preparation.
+    let live = crate::windows_prepare::volume_identity(letter)?;
+    for (suffix, actual, label) in [
+        ("VOLUME_GUID", live.volume_guid.as_str(), "volume GUID"),
+        ("DISK_GUID", live.disk_guid.as_str(), "disk GUID"),
+        (
+            "PARTITION_GUID",
+            live.partition_guid.as_str(),
+            "partition GUID",
+        ),
+        (
+            "PARTITION_TYPE_GUID",
+            live.partition_type_guid.as_str(),
+            "partition type",
+        ),
+        ("FILESYSTEM", live.filesystem.as_str(), "filesystem"),
+    ] {
+        let expected = env_required(values, &format!("{prefix}_{suffix}"))?;
+        if !actual.eq_ignore_ascii_case(&expected) {
+            return Err(err(&format!(
+                "{prefix} {label} differs after mounting: expected {expected}, got {actual}"
+            )));
+        }
+    }
+    for (suffix, actual, label) in [
+        ("DISK_NUMBER", live.disk_number, "disk number"),
+        (
+            "PARTITION_NUMBER",
+            live.partition_number,
+            "partition number",
+        ),
+    ] {
+        let expected = env_u32(values, &format!("{prefix}_{suffix}"))?;
+        if actual != Some(expected) {
+            return Err(err(&format!(
+                "{prefix} {label} differs after mounting: expected {expected}, got {:?}",
+                actual
+            )));
+        }
+    }
+    for (suffix, actual, label) in [
+        (
+            "PARTITION_OFFSET",
+            live.partition_offset,
+            "partition offset",
+        ),
+        ("PARTITION_SIZE", live.partition_size, "partition size"),
+    ] {
+        let expected = env_u64(values, &format!("{prefix}_{suffix}"))?;
+        if actual != expected {
+            return Err(err(&format!(
+                "{prefix} {label} differs after mounting: expected {expected}, got {actual}"
+            )));
+        }
+    }
+    if let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL"))
+        && !live.volume_serial.is_empty()
+        && !live.volume_serial.eq_ignore_ascii_case(&expected)
+    {
+        return Err(err(&format!(
+            "{prefix} volume serial differs after mounting"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1172,6 +1268,7 @@ fn recover_windows(
                         "restore target is unavailable after DiskPart format operation",
                     ));
                 }
+                verify_partition_identity_after_format(&target.volume, log)?;
             }
             if matches!(task.status, Stage::TargetErased | Stage::ImageApplied) {
                 run_logged(
@@ -1214,6 +1311,7 @@ fn recover_windows(
                 if !boot_manager.exists() {
                     return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
                 }
+                verify_bcd_target(&efi, &target_root, log)?;
                 if target.role == TargetRole::NewWindows {
                     let menu_name = target
                         .boot_menu_name
@@ -1244,6 +1342,51 @@ fn resolve_volume_root(volume: &backuprestore_core::VolumeIdentity) -> Result<Pa
         .ok_or_else(|| {
             err("Recovery volume has no resolved drive letter; front end must record or assign one")
         })
+}
+
+#[cfg(windows)]
+fn verify_partition_identity_after_format(
+    expected: &backuprestore_core::VolumeIdentity,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let letter = expected
+        .drive_letter
+        .ok_or_else(|| err("formatted restore target lost its drive letter"))?;
+    let actual = crate::windows_prepare::volume_identity(letter)?;
+    for (name, left, right) in [
+        (
+            "disk GUID",
+            expected.disk_guid.as_str(),
+            actual.disk_guid.as_str(),
+        ),
+        (
+            "partition GUID",
+            expected.partition_guid.as_str(),
+            actual.partition_guid.as_str(),
+        ),
+        (
+            "partition type",
+            expected.partition_type_guid.as_str(),
+            actual.partition_type_guid.as_str(),
+        ),
+    ] {
+        if !left.eq_ignore_ascii_case(right) {
+            return Err(err(&format!(
+                "formatted restore target {name} changed unexpectedly"
+            )));
+        }
+    }
+    if expected.disk_number != actual.disk_number
+        || expected.partition_number != actual.partition_number
+        || expected.partition_offset != actual.partition_offset
+        || expected.partition_size != actual.partition_size
+    {
+        return Err(err(
+            "formatted restore target disk/partition geometry changed unexpectedly",
+        ));
+    }
+    append_log(log, "Formatted target partition identity re-verified")?;
+    Ok(())
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1381,7 +1524,6 @@ fn set_secondary_boot_menu(
     let target_needle = format!("partition={letter}:");
     let mut current_id: Option<String> = None;
     let mut matched = Vec::new();
-    let mut os_loaders = Vec::new();
     for line in output.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
@@ -1395,13 +1537,6 @@ fn set_secondary_boot_menu(
                 .unwrap_or(trimmed.len());
             current_id = Some(trimmed[start..end].to_string());
         }
-        if lower.contains("winload") {
-            if let Some(identifier) = current_id.as_ref() {
-                if !os_loaders.contains(identifier) {
-                    os_loaders.push(identifier.clone());
-                }
-            }
-        }
         if lower.contains(&target_needle) {
             if let Some(identifier) = current_id.as_ref() {
                 if !matched.contains(identifier) {
@@ -1410,10 +1545,9 @@ fn set_secondary_boot_menu(
             }
         }
     }
-    let identifier = matched
-        .last()
-        .or_else(|| os_loaders.last())
-        .ok_or_else(|| err("BCDBoot created no identifiable Windows loader"))?;
+    let identifier = matched.last().ok_or_else(|| {
+        err("BCDBoot created no Windows loader tied to the selected target partition")
+    })?;
     let description_args = [
         "/store",
         store_arg.as_str(),
@@ -1437,6 +1571,45 @@ fn set_secondary_boot_menu(
     append_log(
         log,
         &format!("Secondary Windows loader {identifier} named {menu_name}"),
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_bcd_target(efi_root: &Path, target_root: &Path, log: &Path) -> Result<(), TaskError> {
+    let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
+    if !store.is_file() {
+        return Err(err("BCD store is missing after BCDBoot"));
+    }
+    let target_letter = target_root
+        .to_string_lossy()
+        .chars()
+        .next()
+        .ok_or_else(|| err("restore target has no drive letter for BCD verification"))?
+        .to_ascii_lowercase();
+    let needle = format!("partition={target_letter}:");
+    let store_arg = store.to_string_lossy().into_owned();
+    let output = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    let matched = output.lines().any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        (lower.starts_with("device")
+            || lower.starts_with("osdevice")
+            || lower.starts_with("设备")
+            || lower.starts_with("os 设备"))
+            && lower.contains(&needle)
+    });
+    if !matched {
+        return Err(err(&format!(
+            "BCDBoot completed but no Windows loader points to the selected target {target_letter}:"
+        )));
+    }
+    append_log(
+        log,
+        &format!("Verified BCD device/osdevice points to target {target_letter}:"),
     )?;
     Ok(())
 }

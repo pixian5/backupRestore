@@ -81,10 +81,13 @@ const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
 const RECOVERY_TYPE: &str = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}";
 
 #[derive(Debug, Clone)]
-struct PrepareOptions {
+pub(crate) struct PrepareOptions {
     operation: Operation,
     source_drive: char,
-    target_drive: char,
+    /// Only restore operations need a target. Keeping it optional prevents
+    /// hidden probe/backup UI fields from accidentally becoming destructive
+    /// validation inputs.
+    target_drive: Option<char>,
     image_path: Option<String>,
     wim_index: u32,
     boot_menu_name: String,
@@ -109,10 +112,20 @@ struct DriveReport {
 
 pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     let options = parse_prepare_options(arguments)?;
-    require_administrator()?;
     let executable_dir = executable_dir()?;
     let workspace = volume_identity(drive_from_path(&executable_dir)?)?;
-    let target = volume_identity(options.target_drive)?;
+    let target = if matches!(
+        options.operation,
+        Operation::RestoreExisting | Operation::CreateSecondary
+    ) {
+        volume_identity(
+            options
+                .target_drive
+                .ok_or_else(|| err("--target-drive is required for restore operations"))?,
+        )?
+    } else {
+        workspace.clone()
+    };
     if matches!(
         options.operation,
         Operation::RestoreExisting | Operation::CreateSecondary
@@ -123,6 +136,9 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
             workspace.drive_letter.unwrap_or('?')
         )));
     }
+    // Perform the no-overwrite guard before elevation. A direct CLI call must
+    // fail locally without triggering UAC or touching any boot configuration.
+    require_administrator()?;
     prepare_task(&executable_dir, &workspace, target, options)
 }
 
@@ -220,7 +236,7 @@ pub(crate) fn wim_info(image_path: String) -> Result<(), TaskError> {
     Ok(())
 }
 
-fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskError> {
+pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskError> {
     let mut operation = None;
     let mut source_drive = None;
     let mut target_drive = None;
@@ -269,7 +285,14 @@ fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskE
     }
     let operation = operation.ok_or_else(|| err("--operation is required"))?;
     let source_drive = source_drive.ok_or_else(|| err("--source-drive is required"))?;
-    let target_drive = target_drive.unwrap_or(source_drive);
+    let target_drive = if matches!(
+        operation,
+        Operation::RestoreExisting | Operation::CreateSecondary
+    ) {
+        Some(target_drive.ok_or_else(|| err("--target-drive is required for restore operations"))?)
+    } else {
+        target_drive
+    };
     if wim_index == 0 {
         return Err(err("--wim-index must be greater than zero"));
     }
@@ -323,7 +346,16 @@ fn prepare_task(
             .drive_letter
             .ok_or_else(|| err("image volume has no drive letter"))?,
     )?;
-    assert_bitlocker_off(options.target_drive)?;
+    if matches!(
+        options.operation,
+        Operation::RestoreExisting | Operation::CreateSecondary
+    ) {
+        assert_bitlocker_off(
+            options
+                .target_drive
+                .ok_or_else(|| err("restore target drive is missing"))?,
+        )?;
+    }
     let recovery = recovery_identity()?;
     let efi = efi_identity(options.efi_drive)?;
     if workspace.same_partition(&recovery) || workspace.same_partition(&efi) {
@@ -376,7 +408,11 @@ fn prepare_task(
             } else {
                 None
             },
-            boot_sequence_requested: true,
+            // The one-time boot request is enabled only after the BCD
+            // snapshot has been exported and hashed below. This lets us run
+            // a complete side-effect-free task validation before any BCD or
+            // WinRE mutation while still persisting a fully protected plan.
+            boot_sequence_requested: false,
         },
     );
     task.source = Some(source.clone());
@@ -414,12 +450,19 @@ fn prepare_task(
         Operation::Probe => {}
     }
 
+    // Validate the complete task before exporting BCD or touching WinRE. This
+    // keeps malformed/reserved/undersized requests side-effect free even when
+    // they arrived through the CLI instead of the GUI.
+    task.validate()?;
+
     let task_dir = store.task_dir(&task.task_id)?;
     let prepare_log = task_dir.join("prepare.log");
     let bootstrap_bcd = executable_dir.join(format!(".backuprestore-{}.bcd", task.task_id));
     let bootstrap_arg = bootstrap_bcd.to_string_lossy().into_owned();
     run_logged("bcdedit.exe", &["/export", &bootstrap_arg], &bootstrap_log)?;
     task.boot_plan.previous_bcd_sha256 = Some(sha256_file(&bootstrap_bcd)?);
+    task.boot_plan.boot_sequence_requested = true;
+    task.validate()?;
     let result = prepare_payload(
         executable_dir,
         &store,
@@ -562,18 +605,13 @@ fn prepare_payload(
     )?;
     thread::sleep(Duration::from_secs(5));
     let staged_hash = sha256_file(&staged)?;
-    if !options.no_reboot {
-        fs::copy(&staged, &registered_wim)?;
-        backuprestore_core::verify_sha256(&registered_wim, &staged_hash)?;
-    }
-
     let manifest = PayloadManifest {
         task_id: task.task_id.clone(),
         launcher_sha256: launcher_hash,
         recovery_sha256: recovery_hash,
         task_sha256: task_hash,
-        original_winre_sha256: original_hash,
-        staged_winre_sha256: staged_hash,
+        original_winre_sha256: original_hash.clone(),
+        staged_winre_sha256: staged_hash.clone(),
         created_by_version: backuprestore_core::PROGRAM_VERSION.into(),
         recovery_task_env_sha256: Some(sha256_file(&env_path)?),
     };
@@ -586,10 +624,60 @@ fn prepare_payload(
         )?;
         return Ok(());
     }
-    run_logged("reagentc.exe", &["/boottore"], log)?;
-    store.write_transition(task, backuprestore_core::Stage::BootRequested)?;
-    write_status_env(&task_dir, task, "boot-requested")?;
-    run_logged("shutdown.exe", &["/r", "/t", "0"], log)
+
+    // Do not replace the registered WinRE image until every task artifact and
+    // its manifest are durable. If any subsequent preparation step fails,
+    // restore the original image and BCD snapshot immediately so a failed
+    // desktop launch cannot strand the machine with a half-installed WinRE.
+    let restore_registered = || -> Result<(), TaskError> {
+        fs::copy(original.join("Winre.wim"), &registered_wim)?;
+        backuprestore_core::verify_sha256(&registered_wim, &original_hash)?;
+        append_log(
+            log,
+            "Restored original registered WinRE after preparation failure",
+        )?;
+        Ok(())
+    };
+    if let Err(error) = (|| {
+        fs::copy(&staged, &registered_wim)?;
+        backuprestore_core::verify_sha256(&registered_wim, &staged_hash)
+    })() {
+        let _ = restore_registered();
+        return Err(error);
+    }
+    if let Err(error) = run_logged("reagentc.exe", &["/boottore"], log) {
+        let _ = restore_registered();
+        return Err(error);
+    }
+    if let Err(error) = store.write_transition(task, backuprestore_core::Stage::BootRequested) {
+        let _ = restore_registered();
+        let _ = rollback_boot_request(&task_dir, log);
+        return Err(error);
+    }
+    if let Err(error) = write_status_env(&task_dir, task, "boot-requested") {
+        let _ = restore_registered();
+        let _ = rollback_boot_request(&task_dir, log);
+        return Err(error);
+    }
+    if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
+        let _ = restore_registered();
+        let _ = rollback_boot_request(&task_dir, log);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn rollback_boot_request(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
+    let snapshot = task_dir.join("bcd-before-export");
+    if !snapshot.is_file() {
+        return Err(err(
+            "BCD snapshot is missing while rolling back preparation",
+        ));
+    }
+    let snapshot_arg = snapshot.to_string_lossy().into_owned();
+    run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
+    append_log(log, "Restored BCD snapshot after preparation failure")?;
+    Ok(())
 }
 
 fn inject_winre_payload(mount: &Path, payload: &Path) -> Result<(), TaskError> {
@@ -1057,14 +1145,14 @@ fn capture(program: &str, args: &[&str]) -> Result<String, TaskError> {
     }
 }
 
-fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError> {
+pub(crate) fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError> {
     let volume_guid = capture("mountvol.exe", &[&format!("{letter}:"), "/L"])?
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| err("mountvol returned no volume identity"))?
         .to_string();
-    let filesystem = volume_filesystem(letter)?;
+    let (filesystem, volume_serial) = volume_information(letter)?;
     // Do not parse DiskPart's localized output here.  The volume handle gives
     // us the physical disk number, while PARTITION_INFORMATION_EX contains
     // the authoritative partition number alongside the GPT GUIDs.
@@ -1080,7 +1168,7 @@ fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError> {
         partition_offset: physical.partition_offset,
         partition_size: physical.partition_size,
         filesystem,
-        volume_serial: String::new(),
+        volume_serial,
         drive_letter: Some(letter),
     })
 }
@@ -1101,7 +1189,7 @@ fn disk_free_space(letter: char) -> Result<(u64, u64), TaskError> {
     Ok((total, available.min(free)))
 }
 
-fn volume_filesystem(letter: char) -> Result<String, TaskError> {
+fn volume_information(letter: char) -> Result<(String, String), TaskError> {
     let path = wide_null(&format!(r"{}:\", letter));
     let mut volume_name = vec![0_u16; 256];
     let mut filesystem = vec![0_u16; 64];
@@ -1127,7 +1215,10 @@ fn volume_filesystem(letter: char) -> Result<String, TaskError> {
         .iter()
         .position(|value| *value == 0)
         .unwrap_or(filesystem.len());
-    Ok(String::from_utf16_lossy(&filesystem[..length]))
+    Ok((
+        String::from_utf16_lossy(&filesystem[..length]),
+        format!("{serial:08X}"),
+    ))
 }
 
 fn wide_null(value: &str) -> Vec<u16> {
@@ -1310,6 +1401,11 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
         }
         return Ok(identity);
     }
+    // The system EFI partition is normally hidden and has no drive letter.
+    // Scanning C:..Z: alone therefore misses the normal boot partition. First
+    // reuse an already-mounted EFI, then ask mountvol to expose the hidden
+    // system partition on a genuinely free temporary letter, read its full
+    // identity, and immediately remove that assignment.
     for letter in 'C'..='Z' {
         let Ok(identity) = volume_identity(letter) else {
             continue;
@@ -1318,7 +1414,49 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             return Ok(identity);
         }
     }
-    Err(err("system GPT EFI partition was not found"))
+    let mut last_error = None;
+    for letter in identity_drive_candidates('Z') {
+        if !is_drive_letter_available(letter) {
+            continue;
+        }
+        let status = Command::new("mountvol.exe")
+            .args([format!("{letter}:"), "/S".to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !status
+            .as_ref()
+            .map(|value| value.success())
+            .unwrap_or(false)
+        {
+            if let Err(error) = status {
+                last_error = Some(TaskError::Io(error));
+            }
+            continue;
+        }
+        let identity = volume_identity(letter);
+        let _ = Command::new("mountvol.exe")
+            .args([format!("{letter}:"), "/D".to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match identity {
+            Ok(identity) if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) => {
+                return Ok(identity);
+            }
+            Ok(identity) => {
+                last_error = Some(err(&format!(
+                    "mountvol /S exposed disk {} partition {} but it is not an EFI partition",
+                    identity.disk_number.unwrap_or_default(),
+                    identity.partition_number.unwrap_or_default(),
+                )));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| err("system GPT EFI partition was not found")))
 }
 
 fn identity_from_diskpart(
@@ -1326,14 +1464,92 @@ fn identity_from_diskpart(
     partition: u32,
     preferred: char,
 ) -> Result<VolumeIdentity, TaskError> {
-    let script = format!(
-        "select disk {disk}\r\nselect partition {partition}\r\nassign letter={preferred}\r\n"
-    );
-    let temp = env::temp_dir().join(format!("BackupRestore-identity-{disk}-{partition}.txt"));
-    fs::write(&temp, script)?;
-    let _ = capture("diskpart.exe", &["/s", &temp.to_string_lossy()]);
-    let _ = fs::remove_file(temp);
-    volume_identity(preferred)
+    // First reuse an already-mounted partition.  A fixed preferred letter
+    // is only a hint; it may be occupied by an unrelated volume in WinRE.
+    for letter in 'C'..='Z' {
+        let Ok(identity) = volume_identity(letter) else {
+            continue;
+        };
+        if identity.disk_number == Some(disk) && identity.partition_number == Some(partition) {
+            return Ok(identity);
+        }
+    }
+
+    let mut last_error = None;
+    for letter in identity_drive_candidates(preferred) {
+        if !is_drive_letter_available(letter) {
+            continue;
+        }
+        let script = format!(
+            "select disk {disk}\r\nselect partition {partition}\r\nassign letter={letter}\r\n"
+        );
+        let temp = env::temp_dir().join(format!(
+            "BackupRestore-identity-{disk}-{partition}-{letter}.txt"
+        ));
+        fs::write(&temp, script)?;
+        let result = capture("diskpart.exe", &["/s", &temp.to_string_lossy()]);
+        let _ = fs::remove_file(&temp);
+        if let Err(error) = result {
+            last_error = Some(error);
+            continue;
+        }
+        match volume_identity(letter) {
+            Ok(identity)
+                if identity.disk_number == Some(disk)
+                    && identity.partition_number == Some(partition) =>
+            {
+                return Ok(identity);
+            }
+            Ok(identity) => {
+                last_error = Some(err(&format!(
+                    "DiskPart assigned {letter}: to disk {} partition {}, expected disk {disk} partition {partition}",
+                    identity.disk_number.unwrap_or_default(),
+                    identity.partition_number.unwrap_or_default(),
+                )));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        err(&format!(
+            "unable to mount disk {disk} partition {partition} on an available drive letter"
+        ))
+    }))
+}
+
+fn identity_drive_candidates(preferred: char) -> impl Iterator<Item = char> {
+    std::iter::once(preferred)
+        .chain('C'..='Z')
+        .filter(|letter| *letter != 'X')
+        .collect::<Vec<_>>()
+        .into_iter()
+        .fold(Vec::new(), |mut letters, letter| {
+            if !letters.contains(&letter) {
+                letters.push(letter);
+            }
+            letters
+        })
+        .into_iter()
+}
+
+fn is_drive_letter_available(letter: char) -> bool {
+    let Ok(output) = Command::new("mountvol.exe")
+        .args([format!("{letter}:"), "/L".to_string()])
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        // `mountvol X: /L` exits with code 1 when the letter has no mount
+        // point (the normal free-letter case). Assignment below still has to
+        // succeed and is followed by full identity verification.
+        return true;
+    }
+    !String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .any(|line| !line.is_empty())
 }
 
 fn ensure_volume_mounted(
@@ -1351,13 +1567,24 @@ fn ensure_volume_mounted(
         .partition_number
         .ok_or_else(|| err("volume has no partition number"))?;
     let mounted = identity_from_diskpart(disk, partition, preferred)?;
-    if !mounted
-        .volume_guid
-        .eq_ignore_ascii_case(&identity.volume_guid)
+    if !mounted.same_partition(identity)
+        || !mounted
+            .volume_guid
+            .eq_ignore_ascii_case(&identity.volume_guid)
+        || mounted.partition_offset != identity.partition_offset
+        || mounted.partition_size != identity.partition_size
+        || !mounted
+            .partition_type_guid
+            .eq_ignore_ascii_case(&identity.partition_type_guid)
+        || !mounted
+            .filesystem
+            .eq_ignore_ascii_case(&identity.filesystem)
     {
         return Err(err("mounted volume identity does not match task"));
     }
-    Ok(preferred)
+    mounted
+        .drive_letter
+        .ok_or_else(|| err("mounted volume has no drive letter"))
 }
 
 fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
@@ -1396,34 +1623,174 @@ fn parse_dism_images(output: &str) -> Result<Vec<Value>, TaskError> {
     let mut index = None;
     let mut name = String::new();
     let mut description = String::new();
+    let mut version = String::new();
+    let mut architecture = String::new();
+    let mut edition = String::new();
+    let mut installation_type = String::new();
+    let mut size_bytes = None;
+
+    // DISM's text output is the fallback used by the GUI when the optional
+    // Get-WindowsImage JSON command is unavailable.  Keep the parser scoped
+    // to an active image: the header's own `Version:` line must not become an
+    // image version.  Fields beyond Index/Name/Description are emitted when
+    // a particular DISM build provides them, while remaining optional for
+    // the standard `/Get-WimInfo` output.
+    let flush = |images: &mut Vec<Value>,
+                 index: &mut Option<u32>,
+                 name: &mut String,
+                 description: &mut String,
+                 version: &mut String,
+                 architecture: &mut String,
+                 edition: &mut String,
+                 installation_type: &mut String,
+                 size_bytes: &mut Option<u64>| {
+        let Some(index_value) = index.take() else {
+            return;
+        };
+        images.push(json!({
+            "ImageIndex": index_value,
+            "ImageName": std::mem::take(name),
+            "ImageDescription": std::mem::take(description),
+            "ImageVersion": std::mem::take(version),
+            "Architecture": std::mem::take(architecture),
+            "EditionId": std::mem::take(edition),
+            "InstallationType": std::mem::take(installation_type),
+            "ImageSize": size_bytes.take(),
+        }));
+    };
+
     for line in output.lines() {
         let line = line.trim();
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        match key.trim().to_ascii_lowercase().as_str() {
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        match key.as_str() {
             "index" => {
-                if let Some(index) = index.take() {
-                    images.push(
-                        json!({"ImageIndex":index,"ImageName":name,"ImageDescription":description}),
-                    );
-                    name = String::new();
-                    description = String::new();
-                }
-                index = value.trim().parse::<u32>().ok();
+                flush(
+                    &mut images,
+                    &mut index,
+                    &mut name,
+                    &mut description,
+                    &mut version,
+                    &mut architecture,
+                    &mut edition,
+                    &mut installation_type,
+                    &mut size_bytes,
+                );
+                index = value.parse::<u32>().ok().filter(|value| *value > 0);
             }
-            "name" => name = value.trim().to_string(),
-            "description" => description = value.trim().to_string(),
+            // Ignore image fields before the first valid Index.  This also
+            // prevents a localized/header `Version:` from leaking into the
+            // first image's metadata.
+            "name" if index.is_some() => name = value.to_string(),
+            "description" if index.is_some() => description = value.to_string(),
+            "version" if index.is_some() => version = value.to_string(),
+            "architecture" if index.is_some() => architecture = value.to_string(),
+            "edition" | "edition id" if index.is_some() => edition = value.to_string(),
+            "installation type" if index.is_some() => installation_type = value.to_string(),
+            "size" | "image size" if index.is_some() => size_bytes = parse_dism_size(value),
             _ => {}
         }
     }
-    if let Some(index) = index {
-        images.push(json!({"ImageIndex":index,"ImageName":name,"ImageDescription":description}));
-    }
+    flush(
+        &mut images,
+        &mut index,
+        &mut name,
+        &mut description,
+        &mut version,
+        &mut architecture,
+        &mut edition,
+        &mut installation_type,
+        &mut size_bytes,
+    );
     if images.is_empty() {
         Err(err("DISM returned no WIM indexes"))
     } else {
         Ok(images)
+    }
+}
+
+/// Parse DISM's size field, which is normally an integer followed by
+/// `bytes`, but can be formatted with comma separators or binary units by
+/// OEM/localized builds.  The GUI consumes a byte count, so normalize all
+/// supported forms to bytes and leave malformed values absent.
+fn parse_dism_size(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let start = value.find(|character: char| character.is_ascii_digit())?;
+    let value = &value[start..];
+    let end = value
+        .find(|character: char| !(character.is_ascii_digit() || matches!(character, ',' | '.')))
+        .unwrap_or(value.len());
+    let number = value[..end].replace(',', "");
+    let numeric = number.parse::<f64>().ok()?;
+    let unit = value[end..].trim().to_ascii_lowercase();
+    let multiplier = if unit.starts_with("tib") || unit.starts_with("tb") {
+        1024_f64.powi(4)
+    } else if unit.starts_with("gib") || unit.starts_with("gb") {
+        1024_f64.powi(3)
+    } else if unit.starts_with("mib") || unit.starts_with("mb") {
+        1024_f64.powi(2)
+    } else if unit.starts_with("kib") || unit.starts_with("kb") {
+        1024_f64
+    } else {
+        1_f64
+    };
+    let bytes = numeric * multiplier;
+    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
+        return None;
+    }
+    Some(bytes.round() as u64)
+}
+
+#[cfg(test)]
+mod wim_parser_tests {
+    use super::parse_dism_images;
+
+    #[test]
+    fn parses_multiple_indexes_and_optional_metadata() {
+        let output = r#"
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.1
+
+Details for image : install.wim
+
+Index : 1
+Name : Windows 11 Home
+Description : Windows 11 Home
+Size : 15,728,640 bytes
+Architecture : arm64
+Edition Id : Core
+Installation Type : Client
+
+Index : 2
+Name : Windows 11 Pro
+Description : Windows 11 Pro for testing
+Version : 10.0.26100.1
+Size : 16,384 MiB
+Architecture : arm64
+Edition : Professional
+Installation Type : Client
+"#;
+
+        let images = parse_dism_images(output).expect("DISM output should parse");
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0]["ImageIndex"], 1);
+        assert_eq!(images[0]["ImageName"], "Windows 11 Home");
+        assert_eq!(images[0]["ImageSize"], 15_728_640);
+        assert_eq!(images[0]["Architecture"], "arm64");
+        assert_eq!(images[0]["EditionId"], "Core");
+        assert_eq!(images[1]["ImageIndex"], 2);
+        assert_eq!(images[1]["ImageVersion"], "10.0.26100.1");
+        assert_eq!(images[1]["ImageSize"], 16_384_u64 * 1024 * 1024);
+        assert_eq!(images[1]["EditionId"], "Professional");
+    }
+
+    #[test]
+    fn ignores_header_version_and_rejects_missing_indexes() {
+        let output = "Version: 10.0.26100.1\nName: not an image\n";
+        assert!(parse_dism_images(output).is_err());
     }
 }
 

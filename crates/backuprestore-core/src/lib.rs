@@ -1071,9 +1071,9 @@ mod tests {
             Operation::Backup,
             BootPlan {
                 mode: BootMode::ReturnExisting,
-                previous_bcd_sha256: None,
+                previous_bcd_sha256: Some("a".repeat(64)),
                 menu_name: None,
-                boot_sequence_requested: false,
+                boot_sequence_requested: true,
             },
         );
         task.source = Some(identity("source", 100));

@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::ptr::{null, null_mut};
 
+use backuprestore_core::PROGRAM_VERSION;
+
 type Handle = *mut c_void;
 type HInstance = Handle;
 type HIcon = Handle;
@@ -32,6 +34,10 @@ const WM_COMMAND: u32 = 0x0111;
 const WM_DESTROY: u32 = 0x0002;
 const WM_CLOSE: u32 = 0x0010;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00cf0000;
+const WS_POPUP: u32 = 0x80000000;
+const WS_EX_TOPMOST: u32 = 0x00000008;
+const TTS_ALWAYSTIP: u32 = 0x0001;
+const TTS_NOPREFIX: u32 = 0x0002;
 const WS_VISIBLE: u32 = 0x10000000;
 const WS_CHILD: u32 = 0x40000000;
 const WS_BORDER: u32 = 0x00800000;
@@ -88,6 +94,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const DEFAULT_GUI_FONT: i32 = 17;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_ELEVATION_CLASS: u32 = 20;
+const TTM_ADDTOOLW: u32 = 0x0432;
+const TTF_IDISHWND: u32 = 0x0001;
+const TTF_SUBCLASS: u32 = 0x0010;
+const ICC_WIN95_CLASSES: u32 = 0x000000ff;
 
 #[repr(C)]
 struct Point {
@@ -128,6 +138,25 @@ struct OpenFileNameW {
     pv_reserved: *mut c_void,
     dw_reserved: u32,
     flags_ex: u32,
+}
+
+#[repr(C)]
+struct ToolInfoW {
+    cb_size: u32,
+    u_flags: u32,
+    hwnd: Hwnd,
+    u_id: usize,
+    rect: Rect,
+    hinst: HInstance,
+    lpsz_text: *const u16,
+    l_param: isize,
+    reserved: usize,
+}
+
+#[repr(C)]
+struct InitCommonControlsEx {
+    size: u32,
+    classes: u32,
 }
 
 #[repr(C)]
@@ -232,6 +261,11 @@ unsafe extern "system" {
     ) -> isize;
 }
 
+#[link(name = "comctl32")]
+unsafe extern "system" {
+    fn InitCommonControlsEx(init: *const InitCommonControlsEx) -> i32;
+}
+
 const GWLP_USERDATA: i32 = -21;
 
 #[repr(C)]
@@ -254,11 +288,119 @@ struct Controls {
 
 struct State {
     root: Hwnd,
+    tooltip: Hwnd,
     controls: Controls,
     executable_dir: PathBuf,
     wim_images: Vec<WimImageInfo>,
     drives: Vec<DriveInfo>,
     operation_index: usize,
+}
+
+unsafe fn install_tooltips(state: &mut State) {
+    if !state.tooltip.is_null() {
+        DestroyWindow(state.tooltip);
+        state.tooltip = null_mut();
+    }
+    let tooltip_class = wide("tooltips_class32");
+    let tooltip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        tooltip_class.as_ptr(),
+        null(),
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        0,
+        0,
+        0,
+        0,
+        state.root,
+        null_mut(),
+        null_mut(),
+        null_mut(),
+    );
+    if tooltip.is_null() {
+        return;
+    }
+    let language = selected_language(state);
+    let controls = [
+        (state.controls.operation_tabs[0], "probe"),
+        (state.controls.operation_tabs[1], "backup"),
+        (state.controls.operation_tabs[2], "restore"),
+        (state.controls.operation_tabs[3], "secondary"),
+        (state.controls.source, "source"),
+        (state.controls.target, "target"),
+        (state.controls.image, "image"),
+        (state.controls.index, "index"),
+        (state.controls.menu, "menu"),
+        (GetDlgItem(state.root, ID_REFRESH as i32), "refresh"),
+        (GetDlgItem(state.root, ID_READ_IMAGE as i32), "read_image"),
+        (GetDlgItem(state.root, ID_CREATE_TASK as i32), "create_task"),
+        (
+            GetDlgItem(state.root, ID_REFRESH_TASK as i32),
+            "refresh_task",
+        ),
+    ];
+    for (control, key) in controls {
+        let text = tooltip_text(language, key);
+        add_tooltip(tooltip, state.root, control, text);
+    }
+    // Keep the tooltip handle alive by storing it in the state object. The
+    // control owns the subclass hooks and automatically tracks child bounds.
+    state.tooltip = tooltip;
+}
+
+fn tooltip_text(language: Language, key: &str) -> &'static str {
+    match (language, key) {
+        (Language::Chinese, "probe") => "探测：仅校验任务、WinRE 和卷身份，不写入磁盘、不重启。",
+        (Language::Chinese, "backup") => "备份：进入 WinRE 后用 DISM 捕获源卷到镜像路径。",
+        (Language::Chinese, "restore") => {
+            "单系统还原：格式化目标卷并写入镜像，目标必须是当前系统卷。"
+        }
+        (Language::Chinese, "secondary") => {
+            "新增第二系统：格式化另一个卷并通过 BCDBoot 添加启动项。"
+        }
+        (Language::Chinese, "source") => "选择备份来源或当前 Windows 分区；身份按 GUID 校验。",
+        (Language::Chinese, "target") => "还原时将被格式化的目标分区；备份和探测模式不使用。",
+        (Language::Chinese, "image") => {
+            "镜像文件必须是绝对路径，例如 B:\\BackupRestore\\Windows.wim。"
+        }
+        (Language::Chinese, "index") => "选择 WIM 索引；下拉项显示索引及详细元数据。",
+        (Language::Chinese, "menu") => "第二系统在 Windows 启动菜单中显示的名称。",
+        (Language::Chinese, "refresh") => "刷新 Windows、WinRE 和可用卷信息。",
+        (Language::Chinese, "read_image") => "只读解析 WIM 索引、哈希和元数据。",
+        (Language::Chinese, "create_task") => "创建任务；还原操作会先显示确认对话框。",
+        (Language::Chinese, "refresh_task") => "读取程序目录中的最近任务状态。",
+        (Language::English, "probe") => {
+            "Inspect: validate task, WinRE and volume identities; no disk write or reboot."
+        }
+        (Language::English, "backup") => {
+            "Backup: enter WinRE and capture the selected source volume with DISM."
+        }
+        (Language::English, "restore") => "Restore: format the target volume and apply the image.",
+        (Language::English, "secondary") => {
+            "Second system: format another volume and add a BCDBoot entry."
+        }
+        (Language::English, "source") => {
+            "Select the backup source or current Windows volume; GUID identity is verified."
+        }
+        (Language::English, "target") => {
+            "Restore target to be formatted; unused by backup and inspect."
+        }
+        (Language::English, "image") => {
+            "The image file must be an absolute path, such as B:\\BackupRestore\\Windows.wim."
+        }
+        (Language::English, "index") => "Select a WIM index; each item shows detailed metadata.",
+        (Language::English, "menu") => "Name shown for the second system in the Windows boot menu.",
+        (Language::English, "refresh") => "Refresh Windows, WinRE and eligible volume information.",
+        (Language::English, "read_image") => {
+            "Read WIM indexes, hash and metadata without modifying the image."
+        }
+        (Language::English, "create_task") => {
+            "Create the task; restore operations require confirmation."
+        }
+        (Language::English, "refresh_task") => {
+            "Read the latest task status from the program directory."
+        }
+        _ => "",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -396,6 +538,32 @@ unsafe fn create_control(
         SendMessageW(handle, WM_SETFONT, font as usize, 1);
     }
     handle
+}
+
+unsafe fn add_tooltip(tooltip: Hwnd, parent: Hwnd, control: Hwnd, text: &str) {
+    if tooltip.is_null() || control.is_null() {
+        return;
+    }
+    // Tooltip controls retain the text pointer, so deliberately leak these
+    // tiny immutable UTF-16 strings for the lifetime of the GUI process.
+    let text = Box::leak(wide(text).into_boxed_slice());
+    let info = ToolInfoW {
+        cb_size: size_of::<ToolInfoW>() as u32,
+        u_flags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: parent,
+        u_id: control as usize,
+        rect: Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        hinst: null_mut(),
+        lpsz_text: text.as_ptr(),
+        l_param: 0,
+        reserved: 0,
+    };
+    SendMessageW(tooltip, TTM_ADDTOOLW, 0, &info as *const ToolInfoW as isize);
 }
 
 unsafe fn set_text(hwnd: Hwnd, value: &str) {
@@ -1172,7 +1340,7 @@ unsafe fn set_wim_items(state: &State) {
     SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
 }
 
-unsafe fn apply_language(state: &State) {
+unsafe fn apply_language(state: &mut State) {
     let language = selected_language(state);
     set_operation_tabs(state, language);
     let desired = [
@@ -1222,6 +1390,7 @@ unsafe fn apply_language(state: &State) {
     set_operation_visibility(state);
     layout_operation(state);
     set_operation_guidance(state);
+    install_tooltips(state);
 }
 
 fn quote_argument(value: &str) -> String {
@@ -2138,6 +2307,7 @@ unsafe extern "system" fn window_proc(
         );
         let state = Box::new(State {
             root: hwnd,
+            tooltip: null_mut(),
             controls,
             executable_dir,
             wim_images: Vec::new(),
@@ -2146,11 +2316,12 @@ unsafe extern "system" fn window_proc(
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        install_tooltips(&mut *state_ptr);
         set_drive_items(
             &*state_ptr,
             [None, Some(system_drive.clone()), Some(system_drive)],
         );
-        apply_language(&*state_ptr);
+        apply_language(&mut *state_ptr);
         return 0;
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -2204,6 +2375,9 @@ unsafe extern "system" fn window_proc(
     }
     if message == WM_DESTROY {
         if !state_ptr.is_null() {
+            if !(*state_ptr).tooltip.is_null() {
+                DestroyWindow((*state_ptr).tooltip);
+            }
             drop(Box::from_raw(state_ptr));
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
@@ -2215,6 +2389,11 @@ unsafe extern "system" fn window_proc(
 
 pub fn run() -> Result<(), super::TaskError> {
     unsafe {
+        let common_controls = InitCommonControlsEx {
+            size: size_of::<InitCommonControlsEx>() as u32,
+            classes: ICC_WIN95_CLASSES,
+        };
+        InitCommonControlsEx(&common_controls);
         if !is_elevated() {
             return relaunch_elevated();
         }
@@ -2240,7 +2419,7 @@ pub fn run() -> Result<(), super::TaskError> {
         if RegisterClassExW(&class) == 0 {
             return Err(super::err("RegisterClassExW failed"));
         }
-        let title = wide("BackupRestore - Rust GUI");
+        let title = wide(&format!("BackupRestore - Rust GUI v{PROGRAM_VERSION}"));
         let window = CreateWindowExW(
             0,
             class_name.as_ptr(),
