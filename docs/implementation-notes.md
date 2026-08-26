@@ -10,6 +10,8 @@
 - 2026-08-27 `v1.0.7` GUI 文本读取兜底：部分控件实测仍可能返回 `GetWindowTextLengthW=0`，但 `GetWindowTextW` 能读回可见文本。`get_text` 现在在报告长度为 0 时使用 32 KiB 有界缓冲，按实际写入长度返回字符串，避免有效镜像路径被判为空；下一步必须在 ARM64 新包完成多索引按钮和下拉框验收。
 - 2026-08-27 `v1.0.8` GUI 文本读取三层回退：`GetWindowTextLengthW/GetWindowTextW` 返回 0 时，使用 32 KiB 上限缓冲再尝试 `WM_GETTEXTLENGTH/WM_GETTEXT`，覆盖跨完整性/线程边界的原生 EDIT 控件。该改动只影响 GUI 字段读取，不放宽绝对路径校验；ARM64 新包仍需用同源双索引 WIM 完成真实按钮和下拉截图。
 - 2026-08-27 `v1.0.8` ARM64 构建与 WIM 实读：既有 `aarch64-pc-windows-msvc` 工具链从共享桌面源码成功构建，包内两个 Rust 二进制和 manifest SHA-256 为 `8a67df2c833ff0a4b20501e5446273f5ee7af4df015c8ed3a78046acba8744c1`。Windows ARM64 CLI 8 项、core 16 项测试通过；提升权限执行 `wim-info V:\multi-index-same-source-v1.0.5.wim` 返回索引 1/2 及各自名称、描述和大小。GUI 最新前台标题为 `BackupRestore - Rust GUI v1.0.8`，但双索引下拉的最终客体截图仍待稳定的真实输入点检，不以 CLI 输出替代。
+- 2026-08-27 `v1.0.9` GUI 启动参数与双索引实机验证：新增 `BackupRestore.exe --open-image <绝对 WIM 路径>`，启动后自动进入单系统还原页并调用同一 WIM 读取逻辑。修复 UAC `ShellExecuteW` 重启丢失 argv 的问题；此前它会吞掉 `--open-image` 并回到探测页。Windows ARM64 实机从 `C:\BackupRestoreBuild\multi-index-gui-v1.0.8.wim` 读取同源双索引 WIM，前台 GUI 状态显示“已读取 2 个 WIM 索引”，下拉框显示索引 1 的名称和描述；提升令牌不可见映射共享盘 `Y:`，因此该测试输入必须放在本地卷。
+- 2026-08-27 `v1.0.9` 发布版本一致性：根 `VERSION` 已升至 `1.0.9` 时，两个 Cargo manifest 仍是 `1.0.8`。构建目录名取根版本，而窗口标题取 `CARGO_PKG_VERSION`，导致同一包出现 `v1.0.9` 目录与 `v1.0.8` 标题。现已同步根版本、两个 manifest 与锁文件；Windows 包必须同时核对目录、`build-manifest.json` 和窗口标题，三者不一致即视为构建失败。
 
 ## 已实现的安全骨架
 

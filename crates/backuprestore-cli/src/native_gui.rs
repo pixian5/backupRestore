@@ -1478,11 +1478,23 @@ unsafe fn relaunch_elevated() -> Result<(), super::TaskError> {
         .map_err(|error| super::err(&format!("cannot resolve current executable: {error}")))?;
     let executable = wide(&executable.to_string_lossy());
     let verb = wide("runas");
+    // Preserve launch options such as `--open-image` across UAC elevation.
+    // ShellExecuteW does not inherit argv when its parameter pointer is null.
+    let parameters = std::env::args()
+        .skip(1)
+        .map(|value| quote_argument(&value))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let parameters = wide(&parameters);
     let result = ShellExecuteW(
         null_mut(),
         verb.as_ptr(),
         executable.as_ptr(),
-        null(),
+        if parameters.len() > 1 {
+            parameters.as_ptr()
+        } else {
+            null()
+        },
         null(),
         SW_MAXIMIZE,
     );
@@ -2351,6 +2363,13 @@ unsafe extern "system" fn window_proc(
             [None, Some(system_drive.clone()), Some(system_drive)],
         );
         apply_language(&mut *state_ptr);
+        if let Ok(image) = std::env::var("BACKUPRESTORE_OPEN_IMAGE") {
+            if !image.trim().is_empty() {
+                select_operation(&mut *state_ptr, 2);
+                set_text((*state_ptr).controls.image, &image);
+                read_image(&mut *state_ptr);
+            }
+        }
         return 0;
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;

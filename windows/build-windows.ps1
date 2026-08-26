@@ -11,6 +11,25 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $version = (Get-Content (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
 
+function Get-PackageVersion([string]$manifest) {
+    $match = Select-String -LiteralPath $manifest -Pattern '^version\s*=\s*"([^"]+)"\s*$' |
+        Select-Object -First 1
+    if (-not $match) { throw "Package version is missing: $manifest" }
+    return $match.Matches[0].Groups[1].Value
+}
+
+# The package directory uses VERSION while the executable title uses
+# CARGO_PKG_VERSION. Refuse to publish a misleading mixed-version package.
+foreach ($manifest in @(
+    (Join-Path $repoRoot 'crates\backuprestore-core\Cargo.toml'),
+    (Join-Path $repoRoot 'crates\backuprestore-cli\Cargo.toml')
+)) {
+    $packageVersion = Get-PackageVersion $manifest
+    if ($packageVersion -ne $version) {
+        throw "VERSION ($version) does not match $manifest ($packageVersion). Synchronize release versions before building."
+    }
+}
+
 $targets = [ordered]@{
     x64 = 'x86_64-pc-windows-msvc'
     arm64 = 'aarch64-pc-windows-msvc'

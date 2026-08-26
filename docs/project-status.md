@@ -249,3 +249,5 @@ git diff --check
 2026-08-26 v0.9.7 逻辑漏洞修复：WinRE 每次挂载后复核完整 GPT/卷身份和几何信息，格式化后再次复核目标仍是原分区；异常退出守卫使用 Recovery 实际盘符；BCDBoot 仅允许匹配目标分区的 loader；同卷阻止在 UAC 前执行。Rust Win32 GUI 标题显示版本号，并为操作标签、卷下拉框、镜像路径、WIM 索引和操作按钮增加悬停说明。
 
 2026-08-26 系统恢复数据清理（用户已授权）：已删除 C: 上全部 4 个卷影副本，并完成普通 DISM 组件清理；WinSxS 实际占用由约 19.75 GiB 降至约 12.60 GiB，7 个可回收包先清理 5 个。`/StartComponentCleanup /ResetBase` 已退出码 0 完成，之后再次运行普通清理成功。最终 AnalyzeComponentStore 为实际 12.53 GiB，仍报告 2 个可回收项；逐项检查显示它们属于 staged 按需功能/语言包，未手工删除，避免破坏可选功能。`vssadmin list shadows /for=C:` 无卷影副本，C: 可用空间约 181.3 GiB。CheckHealth 与 ScanHealth 仍报告组件存储可修复；未执行 `RestoreHealth`，因为它可能需要下载源文件且当前网络是热点。ResetBase 已永久丢弃旧更新回滚基线，不能卸载已纳入基线的更新。
+
+2026-08-27 v1.0.9 版本一致性防线：根 `VERSION=1.0.9` 与两个 Cargo manifest 停留在 `1.0.8` 会造成包目录和 Rust GUI 标题不一致。`windows/build-windows.ps1` 现会在编译前拒绝该错配。Windows ARM64 用既有工具链重建 `C:\BackupRestoreBuild\package-staging\BackupRestore-windows-arm64-v1.0.9`；真实前台标题为 `BackupRestore - Rust GUI v1.0.9`，已自动读取 `C:\BackupRestoreBuild\multi-index-gui-v1.0.8.wim` 的 2 个索引，截图为 `.test-artifacts/root-captures/v1.0.9-version-consistent.png`。Parallels 辅助功能树只暴露旧 medium-token 桌面，和 `prlctl capture` 的高权限前台桌面不同，不能把它的操作冒充前台下拉点检。

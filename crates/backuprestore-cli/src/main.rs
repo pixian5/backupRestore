@@ -50,6 +50,27 @@ fn main() {
         }
         return;
     }
+    #[cfg(windows)]
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--open-image")
+    {
+        let image = arguments
+            .get(1)
+            .ok_or_else(|| err("--open-image requires an absolute WIM path"));
+        let result = image.and_then(|image| {
+            backuprestore_core::validate_absolute_path(image)?;
+            // This is a GUI launch option, not a task-preparation argument.
+            // The native window consumes it once during initialization.
+            unsafe { env::set_var("BACKUPRESTORE_OPEN_IMAGE", image) };
+            launch_gui()
+        });
+        if let Err(error) = result {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut args = arguments.into_iter();
     let result = match args.next().as_deref() {
         Some("validate-task") => args
