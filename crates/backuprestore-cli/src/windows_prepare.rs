@@ -339,9 +339,29 @@ fn prepare_task(
         image_path.as_deref(),
         &options,
     )?;
+    let store = TaskStore::new(executable_dir);
+    let bootstrap_log = executable_dir.join(r"logs\prepare-bootstrap.log");
+    if let Some(parent) = bootstrap_log.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let cleanup =
+        store.cleanup_terminal_tasks(backuprestore_core::DEFAULT_TERMINAL_TASK_RETENTION)?;
+    if !cleanup.removed_task_ids.is_empty()
+        || cleanup.skipped_nonterminal > 0
+        || !cleanup.skipped_mounted.is_empty()
+    {
+        append_log(
+            &bootstrap_log,
+            &format!(
+                "terminal task cleanup: removed={}, skipped_nonterminal={}, skipped_mounted={}",
+                cleanup.removed_task_ids.len(),
+                cleanup.skipped_nonterminal,
+                cleanup.skipped_mounted.len()
+            ),
+        )?;
+    }
     ensure_workspace_capacity(workspace, &recovery)?;
 
-    let store = TaskStore::new(executable_dir);
     let boot_plan = match options.operation {
         Operation::CreateSecondary => BootMode::AddSecondary,
         _ => BootMode::ReturnExisting,
@@ -397,10 +417,6 @@ fn prepare_task(
     let task_dir = store.task_dir(&task.task_id)?;
     let prepare_log = task_dir.join("prepare.log");
     let bootstrap_bcd = executable_dir.join(format!(".backuprestore-{}.bcd", task.task_id));
-    let bootstrap_log = executable_dir.join(r"logs\prepare-bootstrap.log");
-    if let Some(parent) = bootstrap_log.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let bootstrap_arg = bootstrap_bcd.to_string_lossy().into_owned();
     run_logged("bcdedit.exe", &["/export", &bootstrap_arg], &bootstrap_log)?;
     task.boot_plan.previous_bcd_sha256 = Some(sha256_file(&bootstrap_bcd)?);

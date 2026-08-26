@@ -2,7 +2,7 @@
 
 当前进度、用户对网络/下载的要求和实机未验证项统一见 [project-status.md](project-status.md)。本文件只记录实现事实与技术边界。
 
-> 当前运行边界（2026-08-26，v0.9.3）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+> 当前运行边界（2026-08-26，v0.9.4）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
 
 ## 已实现的安全骨架
 
@@ -37,6 +37,7 @@
 - 2026-08-21 ARM64 构建：Recovery payload 会随包携带 `VCRUNTIME140.dll` 与 `VCRUNTIME140_1.dll`；WinRE 启动器把完整 payload hash 校验交给 Rust，兼容 `certutil` 输出中的空格。挂载失败时保留 file-backed DiskPart 日志，便于后续 WinRE 实机排查。
 - 2026-08-26 卷身份读取修复：`volume_identity` 不再解析本地化 DiskPart 的星号表格来猜磁盘号和分区号；改用 `IOCTL_STORAGE_GET_DEVICE_NUMBER` 获取物理磁盘号，并从 `PARTITION_INFORMATION_EX` 读取 GPT 分区号/GUID/偏移/容量。新增原生查询注释，避免语言、列布局或卷号变化导致身份错配。
 - 2026-08-26 GUI 标签布局修复：四种模式的源/目标标签改为短用途文案（例如“源卷（备份来源）”“目标卷（覆盖还原）”），完整破坏性说明保留在下方详情框，避免最大化窗口中标签出现第三行裁剪。
+- 2026-08-26 客体空间清理与任务保留：发现旧测试在 `C:\BackupRestore\tasks` 累积 48 个任务，重复保存 `original`、`stage` 和 `mount` 共约 61.8 GiB；先用 DISM `/Unmount-Image /Discard` 卸载两个孤儿挂载，再删除已确认的历史任务目录。Rust `TaskStore::cleanup_terminal_tasks` 现在在新任务准备前只清理已终态任务的大型 WinRE 目录，保留最近 3 个终态任务的诊断元数据；未完成、格式异常或仍挂载的任务永不自动删除。
 - 2026-08-26 多语言默认值修复：中文模式的第二系统默认启动项从 `Windows Backup` 改为 `Windows 备份`；只有用户未修改默认值时切换语言才更新它，用户自定义的启动菜单名称不会被覆盖。
 - 2026-08-26 v0.9.3 ARM64 GUI 回归：结束旧 `BackupRestore.exe` 后，前台运行 `C:\\BackupRestoreBuild\\package\\BackupRestore-windows-arm64-v0.9.3\\BackupRestore.exe`。本轮最新包点击“刷新环境”后状态框显示 `Windows 10.0.26200.9168`、`arm64`、WinRE 可用，不再出现本地代码页乱码；此前同一布局代码的 v0.9.1 包已逐页切换探测、备份、单系统还原、新增第二系统和 English，确认字段显隐、纵向详情、标签不裁剪、英文纯净。证据截图位于仓库忽略目录 `.test-artifacts/root-captures/v0.9.3-refresh.png`、`v0.9.1-secondary.png` 和 `v0.9.1-english-secondary.png`。
 
@@ -133,3 +134,4 @@ macOS 本地已完成：
 - Windows PowerShell 5.1 的原生命令改用 .NET `ProcessStartInfo` 等待并把 DISM 专用日志写入任务日志，避免 `Tee-Object` 管道或同步 `.Result` 在 ARM64 VM 上出现命令已完成但父进程不返回。
 - 历史探测曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲；另修复了 PowerShell 5.1 UTF-8 BOM 导致的 JSON 解析失败。历史探测没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。
 - 0.2.1 ARM64 探测曾出现 DISM 提交后立即读取 WIM 的短暂文件锁；0.2.3 修复为独立 DISM 日志、固定等待释放窗口并记录独立失败日志，避免 PowerShell 5.1 枚举 `wimserv.exe` 进程时卡住。
+- 2026-08-26 VM 系统目录审计：WinSxS 实际约 19.75 GiB，其中 7 个包被 DISM 标记为可回收，系统报告建议组件清理；`System Volume Information` 的卷影副本配额已用约 4.08 GiB。两者均属于 Windows 系统恢复/更新数据，本轮未直接删除；后续若清理，必须由用户明确确认具体范围。

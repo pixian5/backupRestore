@@ -15,6 +15,9 @@ use uuid::Uuid;
 
 pub const TASK_VERSION: u32 = 1;
 pub const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Keep a small amount of terminal history for diagnostics without allowing
+/// repeated WinRE preparation tests to grow the workspace indefinitely.
+pub const DEFAULT_TERMINAL_TASK_RETENTION: usize = 3;
 
 #[derive(Debug, Error)]
 pub enum TaskError {
@@ -800,6 +803,15 @@ pub fn read_json<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result
 pub struct TaskStore {
     pub root: PathBuf,
 }
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CleanupReport {
+    pub removed_task_ids: Vec<String>,
+    pub skipped_nonterminal: usize,
+    pub skipped_mounted: Vec<String>,
+    pub skipped_malformed: usize,
+}
+
 impl TaskStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -889,6 +901,93 @@ impl TaskStore {
         write_json_atomic(self.task_path(&task.task_id)?, task)?;
         write_json_atomic(self.status_path(&task.task_id)?, &status)?;
         Ok(status)
+    }
+
+    /// Remove only the large WinRE working trees for one terminal task.
+    /// Task/status/manifest/log/BCD evidence remains available for diagnosis.
+    pub fn cleanup_task_artifacts(&self, task_id: &str) -> Result<bool, TaskError> {
+        let path = self.task_dir(task_id)?;
+        if !path.is_dir() {
+            return Ok(false);
+        }
+        let mount = path.join("mount");
+        if mount.is_dir() && fs::read_dir(&mount)?.next().is_some() {
+            return Err(TaskError::Invalid(format!(
+                "task {task_id} still has a mounted WinRE tree"
+            )));
+        }
+        let mut removed = false;
+        for name in ["mount", "stage", "original", "payload"] {
+            let artifact = path.join(name);
+            if artifact.is_dir() {
+                fs::remove_dir_all(artifact)?;
+                removed = true;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Remove old terminal task artifacts while preserving recent evidence.
+    ///
+    /// Only tasks whose task and status records both say `success` or
+    /// `failed` are eligible. Incomplete, malformed, or still-mounted tasks
+    /// are deliberately left in place for operator recovery. The newest
+    /// `keep_latest` terminal tasks are retained.
+    pub fn cleanup_terminal_tasks(&self, keep_latest: usize) -> Result<CleanupReport, TaskError> {
+        let tasks_root = self.root.join("tasks");
+        if !tasks_root.is_dir() {
+            return Ok(CleanupReport::default());
+        }
+
+        let mut report = CleanupReport::default();
+        let mut terminal = Vec::new();
+        for entry in fs::read_dir(&tasks_root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(id) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+            else {
+                report.skipped_malformed += 1;
+                continue;
+            };
+            let task = read_json::<Task>(path.join("task.json"));
+            let status = read_json::<StatusRecord>(path.join("status.json"));
+            let (Ok(task), Ok(status)) = (task, status) else {
+                report.skipped_malformed += 1;
+                continue;
+            };
+            let task_terminal = matches!(task.status, Stage::Success | Stage::Failed);
+            let status_terminal = matches!(status.stage, Stage::Success | Stage::Failed);
+            if task.task_id != id
+                || status.task_id != task.task_id
+                || task.status != status.stage
+                || !task_terminal
+                || !status_terminal
+            {
+                report.skipped_nonterminal += 1;
+                continue;
+            }
+            terminal.push((status.updated, path, id));
+        }
+
+        terminal.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        for (_, path, id) in terminal.into_iter().skip(keep_latest) {
+            let mount = path.join("mount");
+            let mounted = mount.is_dir() && fs::read_dir(&mount)?.next().is_some();
+            if mounted {
+                report.skipped_mounted.push(id);
+                continue;
+            }
+            if self.cleanup_task_artifacts(&id)? {
+                report.removed_task_ids.push(id);
+            }
+        }
+        Ok(report)
     }
 }
 
@@ -1241,6 +1340,51 @@ mod tests {
         let status: StatusRecord = read_json(store.status_path(&task.task_id).unwrap()).unwrap();
         assert_eq!(status.stage, Stage::Failed);
         assert_eq!(status.error_code, Some(123));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cleanup_keeps_recent_terminal_tasks_and_skips_incomplete_tasks() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-cleanup-{suffix}"));
+        let store = TaskStore::new(&root);
+        let mut old = backup_task();
+        store.create(&old).unwrap();
+        store
+            .write_transition(&mut old, Stage::BootRequested)
+            .unwrap();
+        store
+            .write_transition(&mut old, Stage::RecoveryStarted)
+            .unwrap();
+        store.write_transition(&mut old, Stage::Preflight).unwrap();
+        store.write_transition(&mut old, Stage::Capturing).unwrap();
+        store.write_transition(&mut old, Stage::Success).unwrap();
+        fs::create_dir_all(store.task_dir(&old.task_id).unwrap().join("stage")).unwrap();
+        fs::write(
+            store
+                .task_dir(&old.task_id)
+                .unwrap()
+                .join("stage")
+                .join("Winre.wim"),
+            b"large-test-artifact",
+        )
+        .unwrap();
+
+        let mut recent = backup_task();
+        store.create(&recent).unwrap();
+        store
+            .write_transition(&mut recent, Stage::BootRequested)
+            .unwrap();
+
+        let report = store.cleanup_terminal_tasks(0).unwrap();
+        assert_eq!(report.removed_task_ids, vec![old.task_id.clone()]);
+        assert!(store.task_dir(&old.task_id).unwrap().exists());
+        assert!(!store.task_dir(&old.task_id).unwrap().join("stage").exists());
+        assert!(store.task_dir(&recent.task_id).unwrap().exists());
+        assert_eq!(report.skipped_nonterminal, 1);
         let _ = fs::remove_dir_all(root);
     }
 
