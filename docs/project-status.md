@@ -222,3 +222,5 @@ git diff --check
 2026-08-26 v0.9.3 环境摘要编码修复：Windows `ver` 输出受系统代码页影响，旧 GUI 刷新环境时曾把“版本”中文解码成乱码。Rust 现在只提取不受本地化影响的 ASCII 版本号（例如 `10.0.26200.9168`），并新增回归测试；ARM64 v0.9.3 已重新编译、结束旧进程后以前台窗口运行。若系统命令没有可识别版本号，界面明确显示 `Windows version unavailable`，不会显示乱码。
 2026-08-26 Windows 系统空间审计：DISM 报告 WinSxS 实际 19.75 GiB、7 个可回收包并建议清理；C: 卷影副本配额已用约 4.08 GiB。未删除 WinSxS 或 `System Volume Information`，避免丢失更新回滚/系统还原能力；清理需用户确认具体范围。
 2026-08-26 v0.9.5 清理安全复核：自动清理在删除大型 WinRE 目录前新增完整任务模型与 operation 一致性校验；格式异常或字段缺失的任务永不自动删除。
+
+2026-08-26 系统恢复数据清理（用户已授权）：已删除 C: 上全部 4 个卷影副本，并完成普通 DISM 组件清理；WinSxS 实际占用由约 19.75 GiB 降至约 12.60 GiB，7 个可回收包先清理 5 个。`/StartComponentCleanup /ResetBase` 已退出码 0 完成，之后再次运行普通清理成功。最终 AnalyzeComponentStore 为实际 12.53 GiB，仍报告 2 个可回收项；逐项检查显示它们属于 staged 按需功能/语言包，未手工删除，避免破坏可选功能。`vssadmin list shadows /for=C:` 无卷影副本，C: 可用空间约 181.3 GiB。CheckHealth 与 ScanHealth 仍报告组件存储可修复；未执行 `RestoreHealth`，因为它可能需要下载源文件且当前网络是热点。ResetBase 已永久丢弃旧更新回滚基线，不能卸载已纳入基线的更新。
