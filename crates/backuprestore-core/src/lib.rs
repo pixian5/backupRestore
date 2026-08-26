@@ -961,6 +961,10 @@ impl TaskStore {
                 report.skipped_malformed += 1;
                 continue;
             };
+            if task.validate().is_err() || status.operation != task.operation {
+                report.skipped_malformed += 1;
+                continue;
+            }
             let task_terminal = matches!(task.status, Stage::Success | Stage::Failed);
             let status_terminal = matches!(status.stage, Stage::Success | Stage::Failed);
             if task.task_id != id

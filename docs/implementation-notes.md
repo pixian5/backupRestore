@@ -2,7 +2,7 @@
 
 当前进度、用户对网络/下载的要求和实机未验证项统一见 [project-status.md](project-status.md)。本文件只记录实现事实与技术边界。
 
-> 当前运行边界（2026-08-26，v0.9.4）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+> 当前运行边界（2026-08-26，v0.9.5）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
 
 ## 已实现的安全骨架
 
@@ -135,3 +135,4 @@ macOS 本地已完成：
 - 历史探测曾发现 1 MiB 栈上哈希缓冲会触发 ARM64 `STATUS_STACK_OVERFLOW`，已改为堆上缓冲；另修复了 PowerShell 5.1 UTF-8 BOM 导致的 JSON 解析失败。历史探测没有执行格式化、DISM Apply、BCDBoot 写入或真实重启恢复。
 - 0.2.1 ARM64 探测曾出现 DISM 提交后立即读取 WIM 的短暂文件锁；0.2.3 修复为独立 DISM 日志、固定等待释放窗口并记录独立失败日志，避免 PowerShell 5.1 枚举 `wimserv.exe` 进程时卡住。
 - 2026-08-26 VM 系统目录审计：WinSxS 实际约 19.75 GiB，其中 7 个包被 DISM 标记为可回收，系统报告建议组件清理；`System Volume Information` 的卷影副本配额已用约 4.08 GiB。两者均属于 Windows 系统恢复/更新数据，本轮未直接删除；后续若清理，必须由用户明确确认具体范围。
+- 2026-08-26 v0.9.5 清理边界复核：终态任务自动清理现在必须同时通过完整 `Task::validate()`、任务/状态 operation 一致性和终态检查；任何缺字段、身份不完整或记录不一致的目录都计为 malformed 并保留。
