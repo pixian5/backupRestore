@@ -154,7 +154,6 @@ Windows 主程序、Recovery.exe： 使用Rust；
 D:\Tools\BackupRestore\
 ├── BackupRestore.exe
 ├── Recovery.exe
-├── BackupRestore.cmd
 ├── tasks\<taskId>\
 └── logs\
 ```

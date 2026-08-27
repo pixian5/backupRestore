@@ -7,7 +7,7 @@
 //! WinRE's `winpeshl.ini` without depending on a desktop runtime.
 
 #[cfg(windows)]
-use backuprestore_core::{BootMode, Operation, verify_image_file};
+use backuprestore_core::{BootMode, Operation, PayloadManifest, verify_image_file};
 use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
 use chrono::Utc;
 use std::collections::BTreeMap;
@@ -18,6 +18,8 @@ use std::io::Read;
 use std::io::Write;
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
@@ -30,13 +32,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
 mod native_gui;
 #[cfg(windows)]
 mod windows_prepare;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... --test-efi-drive <letter>  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
     );
     std::process::exit(2)
 }
@@ -121,9 +126,29 @@ fn main() {
         _ => usage(),
     };
     if let Err(error) = result {
+        #[cfg(windows)]
+        record_launch_error(&error);
         eprintln!("error: {error}");
         std::process::exit(1);
     }
+}
+
+/// Preparation can fail before a task directory exists, for example while the
+/// native volume identity preflight is opening a newly attached disk. Persist
+/// that diagnostic beside the program without creating a task or changing
+/// WinRE/BCD, so the GUI and non-console executable do not lose the reason.
+#[cfg(windows)]
+fn record_launch_error(error: &TaskError) {
+    let Ok(executable) = env::current_exe() else {
+        return;
+    };
+    let Some(directory) = executable.parent() else {
+        return;
+    };
+    let _ = append_log(
+        &directory.join("logs").join("launcher-errors.log"),
+        &error.to_string(),
+    );
 }
 
 #[derive(Default)]
@@ -179,8 +204,176 @@ fn launch_gui() -> Result<(), TaskError> {
     native_gui::run()
 }
 
+/// Resume a task that reached `boot-requested` but lost power before Windows
+/// actually entered WinRE. The task was already explicitly authorized by the
+/// user; on the next normal launch we revalidate its durable records and ask
+/// Windows RE for the one-time boot again. We deliberately require exactly
+/// one valid pending task and never guess when records are malformed or
+/// ambiguous.
+#[cfg(windows)]
+pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
+    let executable = env::current_exe()?;
+    let workspace = executable
+        .parent()
+        .ok_or_else(|| err("executable has no workspace directory"))?;
+    let tasks_root = workspace.join("tasks");
+    if !tasks_root.is_dir() {
+        return Ok(false);
+    }
+
+    let mut pending = Vec::new();
+    for entry in fs::read_dir(&tasks_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let task_id = entry.file_name().to_string_lossy().to_string();
+        let task_path = entry.path().join("task.json");
+        let status_path = entry.path().join("status.json");
+        let Ok(task) = read_json::<Task>(&task_path) else {
+            continue;
+        };
+        if task.status != Stage::BootRequested || task.validate().is_err() {
+            continue;
+        }
+        let Ok(status) = read_json::<StatusRecord>(&status_path) else {
+            continue;
+        };
+        if status.task_id.eq_ignore_ascii_case(&task.task_id)
+            && status.operation == task.operation
+            && status.stage == Stage::BootRequested
+            && task.task_id.eq_ignore_ascii_case(&task_id)
+        {
+            pending.push((task, entry.path()));
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(false);
+    }
+    if pending.len() != 1 {
+        let log = workspace.join("logs").join("launcher-errors.log");
+        append_log(
+            &log,
+            &format!(
+                "Pending boot recovery not resumed: {} valid boot-requested tasks found",
+                pending.len()
+            ),
+        )?;
+        return Ok(false);
+    }
+
+    let (task, task_dir) = pending.pop().expect("pending length checked above");
+    for required in [
+        task_dir.join("payload").join("Recovery.exe"),
+        task_dir.join("payload").join("RecoveryTask.env"),
+        task_dir.join("payload").join("task.json"),
+        task_dir.join("manifest.json"),
+        task_dir.join("original").join("Winre.wim"),
+        task_dir.join("stage").join("Winre.wim"),
+    ] {
+        if !required.is_file() {
+            append_log(
+                &task_dir.join("prepare.log"),
+                &format!(
+                    "Pending boot recovery refused: required artifact is missing: {}",
+                    required.display()
+                ),
+            )?;
+            return Ok(false);
+        }
+    }
+
+    let log = task_dir.join("prepare.log");
+    append_log(
+        &log,
+        &format!(
+            "Detected durable boot-requested task after normal Windows startup; resuming task {} operation={:?}",
+            task.task_id, task.operation
+        ),
+    )?;
+    let reagentc = Command::new("reagentc.exe")
+        .args(["/boottore"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if !reagentc.success() {
+        append_log(
+            &log,
+            &format!("Pending boot recovery failed: reagentc exited {reagentc}"),
+        )?;
+        return Err(err("unable to re-request Windows RE for pending task"));
+    }
+    append_log(
+        &log,
+        "Re-requested one-time Windows RE boot for pending task",
+    )?;
+    let shutdown = Command::new("shutdown.exe")
+        .args(["/r", "/t", "0"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if !shutdown.success() {
+        append_log(
+            &log,
+            &format!("Pending boot recovery failed: shutdown exited {shutdown}"),
+        )?;
+        return Err(err("unable to restart into Windows RE for pending task"));
+    }
+    append_log(
+        &log,
+        "Restart requested to resume pending task in Windows RE",
+    )?;
+    Ok(true)
+}
+
 fn err(message: &str) -> TaskError {
     TaskError::Invalid(message.into())
+}
+
+/// Each WIM index owns a sidecar so appending a new capture never makes the
+/// target-size and source identity of earlier indexes ambiguous.  The legacy
+/// directory-level `metadata.json` remains a read fallback for images made by
+/// older releases.
+#[cfg(windows)]
+fn index_metadata_path(image: &Path, index: u32) -> Result<PathBuf, TaskError> {
+    let name = image
+        .file_name()
+        .ok_or_else(|| err("image path has no file name"))?
+        .to_string_lossy();
+    Ok(image.with_file_name(format!("{name}.index-{index}.metadata.json")))
+}
+
+#[cfg(windows)]
+fn legacy_metadata_path(image: &Path) -> Result<PathBuf, TaskError> {
+    image
+        .parent()
+        .map(|parent| parent.join("metadata.json"))
+        .ok_or_else(|| err("image path has no parent"))
+}
+
+#[cfg(windows)]
+fn read_index_metadata(
+    image: &Path,
+    index: u32,
+) -> Result<backuprestore_core::BackupMetadata, TaskError> {
+    let sidecar = index_metadata_path(image, index)?;
+    let metadata: backuprestore_core::BackupMetadata = if sidecar.is_file() {
+        read_json(sidecar)?
+    } else {
+        read_json(legacy_metadata_path(image)?)?
+    };
+    if metadata.wim_index != index {
+        return Err(err(&format!(
+            "backup metadata is for WIM index {}, not selected index {index}",
+            metadata.wim_index
+        )));
+    }
+    Ok(metadata)
 }
 
 /// Parse the workspace-relative task path written into `RecoveryTask.env`.
@@ -329,7 +522,7 @@ fn recover_env(_path: String) -> Result<(), TaskError> {
 
 #[cfg(windows)]
 fn recover_env(path: String) -> Result<(), TaskError> {
-    use backuprestore_core::{PayloadManifest, validate_payload_files, validate_task_id};
+    use backuprestore_core::{validate_payload_files, validate_task_id};
 
     let values = read_env_file(&path)?;
     let task_id = env_required(&values, "TASK_ID")?;
@@ -356,128 +549,125 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task.status
         )));
     }
-    let persisted_status: StatusRecord = read_json(store.status_path(&task_id)?)?;
-    if !persisted_status.task_id.eq_ignore_ascii_case(&task.task_id) {
-        return Err(err("status.json task_id does not match task.json"));
-    }
-    if persisted_status.operation != task.operation {
-        return Err(err("status.json operation does not match task.json"));
-    }
-    // The normal-host preparation records boot-requested in status.json
-    // without rewriting the payload task.json. Accept exactly that one-step
-    // ahead state; any other divergence indicates a torn or tampered task.
-    if persisted_status.stage != task.status
-        && !(task.status == Stage::Prepared && persisted_status.stage == Stage::BootRequested)
-    {
-        return Err(err("status.json stage does not match task.json"));
-    }
-    verify_task_identity_env(&values, &task)?;
-    let manifest: PayloadManifest = read_json(task_dir.join("manifest.json"))?;
-    if !manifest.task_id.eq_ignore_ascii_case(&task.task_id) {
-        return Err(err("payload manifest task_id does not match task.json"));
-    }
-    let launcher = task_dir.join("payload").join("RecoveryLauncher.cmd");
-    let recovery_exe = task_dir.join("payload").join("Recovery.exe");
-    let task_json = task_dir.join("payload").join("task.json");
-    let recovery_task_env = task_dir.join("payload").join("RecoveryTask.env");
-    let original = task_dir.join("original").join("Winre.wim");
-    let staged = task_dir.join("stage").join("Winre.wim");
-    if !recovery_exe.is_file() {
-        return Err(err("Recovery.exe is required for every WinRE operation"));
-    }
-    validate_payload_files(
-        &manifest,
-        &launcher,
-        &recovery_exe,
-        &task_json,
-        &recovery_task_env,
-        &original,
-        &staged,
-    )?;
-    // The payload task is the immutable copy staged before the one-time boot
-    // request. Compare every field, allowing only the normal status advance
-    // from Prepared to BootRequested in the workspace copy. Without this
-    // check a tampered workspace task could pass the payload hash check while
-    // Recovery operated on different source/target identities.
-    let payload_task: Task = read_json(&task_json)?;
-    payload_task.validate()?;
-    let mut expected_payload_task = task.clone();
-    expected_payload_task.status = Stage::Prepared;
-    if payload_task != expected_payload_task {
-        return Err(err(
-            "payload task does not match the workspace task prepared for this recovery",
-        ));
-    }
-
-    let efi_letter = if task.operation != Operation::Probe {
-        let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
-        let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log)?;
-        if let Some(source) = task.source.as_mut() {
-            source.drive_letter = Some(source_letter);
-        }
-        if let Some(image) = task.image.as_mut() {
-            image.volume.drive_letter = Some(image_letter);
-        }
-        if let Some(destination) = task.destination.as_mut() {
-            destination.volume.drive_letter = Some(image_letter);
-        }
-        if task.target.is_some() {
-            let target_letter = mount_env_volume(&values, "TARGET", 'W', &early_log)?;
-            // WinRE may reuse E: for an image/data volume; keep EFI on a
-            // late temporary letter to avoid mount collisions.
-            let efi_letter = mount_env_volume(&values, "EFI", 'Z', &early_log)?;
-            if let Some(target) = task.target.as_mut() {
-                target.volume.drive_letter = Some(target_letter);
-            }
-            Some(efi_letter)
-        } else {
-            None
-        }
-    } else if let Some(source) = task.source.as_mut() {
-        // Probe tasks are allowed to keep their task files on the source
-        // partition.  That partition is already mounted as T: above, and
-        // assigning a second letter in WinRE is unreliable (and can fail
-        // after diskpart has partially changed the mount state).  Reuse the
-        // verified task mount instead of trying to mount it again as S:.
-        let workspace_volume = task
-            .workspace_volume
-            .as_ref()
-            .ok_or_else(|| err("probe task is missing workspace volume identity"))?;
-        if !workspace_volume.same_partition(source) {
-            source.drive_letter = Some(mount_env_volume(&values, "SOURCE", 'S', &early_log)?);
-        } else {
-            source.drive_letter = Some(task_letter);
-            append_log(
-                &early_log,
-                &format!("Probe source is the task partition; reusing {task_letter}:"),
-            )?;
-        }
-        None
-    } else {
-        None
-    };
-
     let log = store.log_path(&task_id)?;
-    append_log(
-        &log,
-        &format!(
-            "Recovery.exe started from env task={} operation={:?}",
-            task_id, task.operation
-        ),
-    )?;
-    let efi_root = efi_letter.map(|letter| PathBuf::from(format!(r"{}:\", letter)));
     let stage_before_failure = task.status;
+    let mut efi_root = None;
     // WinRE cleanup is part of the recovery contract.  Defer the terminal
     // success write until the original registered WinRE image has been
     // restored and verified below.
-    let result = recover_windows(
-        &store,
-        &mut task,
-        &log,
-        efi_root.as_deref(),
-        Some(&values),
-        false,
-    );
+    let result = (|| -> Result<(), TaskError> {
+        let persisted_status: StatusRecord = read_json(store.status_path(&task_id)?)?;
+        if !persisted_status.task_id.eq_ignore_ascii_case(&task.task_id) {
+            return Err(err("status.json task_id does not match task.json"));
+        }
+        if persisted_status.operation != task.operation {
+            return Err(err("status.json operation does not match task.json"));
+        }
+        // The normal-host preparation records boot-requested in status.json
+        // without rewriting the payload task.json. Accept exactly that one-step
+        // ahead state; any other divergence indicates a torn or tampered task.
+        if persisted_status.stage != task.status
+            && !(task.status == Stage::Prepared && persisted_status.stage == Stage::BootRequested)
+        {
+            return Err(err("status.json stage does not match task.json"));
+        }
+        verify_task_identity_env(&values, &task)?;
+        let manifest: PayloadManifest = read_json(task_dir.join("manifest.json"))?;
+        if !manifest.task_id.eq_ignore_ascii_case(&task.task_id) {
+            return Err(err("payload manifest task_id does not match task.json"));
+        }
+        let recovery_exe = task_dir.join("payload").join("Recovery.exe");
+        let task_json = task_dir.join("payload").join("task.json");
+        let recovery_task_env = task_dir.join("payload").join("RecoveryTask.env");
+        let original = task_dir.join("original").join("Winre.wim");
+        let staged = task_dir.join("stage").join("Winre.wim");
+        if !recovery_exe.is_file() {
+            return Err(err("Recovery.exe is required for every WinRE operation"));
+        }
+        verify_running_recovery_binary(&manifest)?;
+        validate_payload_files(
+            &manifest,
+            &recovery_exe,
+            &task_json,
+            &recovery_task_env,
+            &original,
+            &staged,
+        )?;
+        // The payload task is the immutable copy staged before the one-time
+        // boot request. Compare every field, allowing only the normal status
+        // advance from Prepared to BootRequested in the workspace copy.
+        let payload_task: Task = read_json(&task_json)?;
+        payload_task.validate()?;
+        let mut expected_payload_task = task.clone();
+        expected_payload_task.status = Stage::Prepared;
+        if payload_task != expected_payload_task {
+            return Err(err(
+                "payload task does not match the workspace task prepared for this recovery",
+            ));
+        }
+
+        let efi_letter = if task.operation != Operation::Probe {
+            let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
+            let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log)?;
+            if let Some(source) = task.source.as_mut() {
+                source.drive_letter = Some(source_letter);
+            }
+            if let Some(image) = task.image.as_mut() {
+                image.volume.drive_letter = Some(image_letter);
+            }
+            if let Some(destination) = task.destination.as_mut() {
+                destination.volume.drive_letter = Some(image_letter);
+            }
+            if task.target.is_some() {
+                let target_letter = mount_env_volume(&values, "TARGET", 'W', &early_log)?;
+                // WinRE may reuse E: for an image/data volume; keep EFI on a
+                // late temporary letter to avoid mount collisions.
+                let efi_letter = mount_env_volume(&values, "EFI", 'Z', &early_log)?;
+                if let Some(target) = task.target.as_mut() {
+                    target.volume.drive_letter = Some(target_letter);
+                }
+                Some(efi_letter)
+            } else {
+                None
+            }
+        } else if let Some(source) = task.source.as_mut() {
+            // Probe tasks are allowed to keep their task files on the source
+            // partition. Reuse the verified workspace mount when both names
+            // identify the same partition.
+            let workspace_volume = task
+                .workspace_volume
+                .as_ref()
+                .ok_or_else(|| err("probe task is missing workspace volume identity"))?;
+            if !workspace_volume.same_partition(source) {
+                source.drive_letter = Some(mount_env_volume(&values, "SOURCE", 'S', &early_log)?);
+            } else {
+                source.drive_letter = Some(task_letter);
+                append_log(
+                    &early_log,
+                    &format!("Probe source is the task partition; reusing {task_letter}:"),
+                )?;
+            }
+            None
+        } else {
+            None
+        };
+        efi_root = efi_letter.map(|letter| PathBuf::from(format!(r"{}:\", letter)));
+        append_log(
+            &log,
+            &format!(
+                "Recovery.exe started from env task={} operation={:?}",
+                task_id, task.operation
+            ),
+        )?;
+        recover_windows(
+            &store,
+            &mut task,
+            &log,
+            efi_root.as_deref(),
+            Some(&values),
+            false,
+        )
+    })();
     if let Err(error) = &result {
         let should_rollback_bcd =
             task.status == Stage::BootRepaired || stage_before_failure == Stage::BootRepaired;
@@ -531,6 +721,20 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             Err(recovery_error)
         }
     }
+}
+
+/// `winpeshl.ini` starts this GUI-subsystem Rust binary directly.  Verify the
+/// actual executable loaded from the task WinRE image as well as the immutable
+/// workspace payload copy before touching any disk.  Checking only the copy in
+/// the workspace would not prove that WinRE launched the staged Rust payload.
+#[cfg(windows)]
+fn verify_running_recovery_binary(manifest: &PayloadManifest) -> Result<(), TaskError> {
+    let running = env::current_exe()?;
+    backuprestore_core::verify_sha256(&running, &manifest.recovery_sha256).map_err(|error| {
+        err(&format!(
+            "running WinRE Recovery.exe does not match the prepared payload: {error}"
+        ))
+    })
 }
 
 #[cfg(windows)]
@@ -788,6 +992,7 @@ fn mount_env_volume(
     let existing = Command::new("mountvol")
         .arg(format!("{letter}:"))
         .arg("/L")
+        .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if existing.status.success() {
         if let Some(actual) = String::from_utf8_lossy(&existing.stdout)
@@ -810,6 +1015,7 @@ fn mount_env_volume(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .status()?;
     append_log(
         log,
@@ -839,6 +1045,7 @@ fn mount_env_volume(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()?;
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
@@ -948,6 +1155,7 @@ fn find_mounted_volume(expected: &str) -> Option<char> {
         let Ok(output) = Command::new("mountvol.exe")
             .args([format!("{letter}:"), "/L".to_string()])
             .stdin(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
         else {
             continue;
@@ -975,6 +1183,7 @@ fn verify_mounted_volume(letter: char, expected: &str) -> Result<(), TaskError> 
     let output = Command::new("mountvol.exe")
         .arg(format!("{letter}:"))
         .arg("/L")
+        .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if !output.status.success() {
         return Err(err(&format!("mountvol failed while verifying {letter}:")));
@@ -1025,23 +1234,42 @@ fn restore_bcd_snapshot(
     if !snapshot.exists() {
         return Err(err("BCD snapshot is missing"));
     }
+    let raw_snapshot = task_dir.join("bcd-before-raw");
     let efi_store = efi_root.map(|root| root.join("EFI\\Microsoft\\Boot\\BCD"));
     if let Some(efi_store) = efi_store.filter(|path| path.exists()) {
-        let snapshot_arg = snapshot.to_string_lossy().into_owned();
-        let store_arg = efi_store.to_string_lossy().into_owned();
-        run_logged(
-            "bcdedit.exe",
-            &["/store", &store_arg, "/import", &snapshot_arg],
-            log,
-        )?;
+        if raw_snapshot.is_file() {
+            let expected = sha256_file(&raw_snapshot)?;
+            fs::copy(&raw_snapshot, &efi_store)?;
+            backuprestore_core::verify_sha256(&efi_store, &expected)?;
+            append_log(
+                log,
+                "Previous byte-for-byte EFI BCD snapshot restored after boot repair failure",
+            )?;
+        } else {
+            // Old tasks only contain a logical BCD export. `bcdedit /import`
+            // cannot target an explicit test EFI partition, so retain the
+            // historical copy-and-open fallback for those tasks.
+            fs::copy(&snapshot, &efi_store)?;
+            append_log(
+                log,
+                "Legacy exported BCD snapshot restored after boot repair failure",
+            )?;
+        }
+        // Do not invoke `bcdedit /store /enum` after the byte-level copy:
+        // opening a BCD hive can rewrite its internal transaction metadata
+        // and change the SHA-256 that we just verified. The copy plus hash is
+        // the authoritative rollback proof; the legacy exported fallback
+        // retains its historical import behavior below.
     } else {
         let snapshot_arg = snapshot.to_string_lossy().into_owned();
         run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
     }
-    append_log(
-        log,
-        "Previous BCD snapshot imported after boot repair failure",
-    )?;
+    if efi_root.is_none() {
+        append_log(
+            log,
+            "Previous exported BCD snapshot imported after boot repair failure",
+        )?;
+    }
     Ok(())
 }
 
@@ -1113,43 +1341,18 @@ fn recover_windows(
             task.operation,
             Operation::RestoreExisting | Operation::CreateSecondary
         ) {
-            let metadata_path = path
-                .parent()
-                .ok_or_else(|| err("image path has no parent"))?
-                .join("metadata.json");
-            let metadata: serde_json::Value = read_json(&metadata_path).map_err(|error| {
+            let metadata = read_index_metadata(path, image.index).map_err(|error| {
                 err(&format!(
                     "backup metadata is required and must be valid: {error}"
                 ))
             })?;
-            let metadata_hash = metadata
-                .get("imageSha256")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| err("backup metadata has no imageSha256"))?;
-            if !metadata_hash.eq_ignore_ascii_case(&image.sha256) {
+            if !metadata.image_sha256.eq_ignore_ascii_case(&image.sha256) {
                 return Err(err("image hash does not match backup metadata"));
             }
             let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;
-            let explicit_minimum = metadata
-                .get("minimumTargetSize")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let source_size = metadata
-                .get("source")
-                .and_then(|source| source.get("partitionSize"))
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let captured = metadata
-                .get("capturedUsedBytes")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let reserved = metadata
-                .get("reservedBytes")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let required = explicit_minimum
-                .max(source_size)
-                .max(captured.saturating_add(reserved));
+            let required = metadata
+                .required_target_size()
+                .max(metadata.source.partition_size);
             if required == 0 || target.volume.partition_size < required {
                 return Err(err(&format!(
                     "target partition is too small: {} < {}",
@@ -1199,29 +1402,87 @@ fn recover_windows(
                 }
                 stage => return Err(err(&format!("backup cannot resume from stage {stage:?}"))),
             }
-            // A power loss can leave a partial WIM behind.  DISM does not
-            // reliably overwrite an existing partial image, so remove only
-            // this task-owned temporary file before restarting capture.
+            let existing = destination_path.exists();
+            if existing && !destination_path.is_file() {
+                return Err(err("backup image path exists but is not a regular file"));
+            }
+            let previous_hash = existing
+                .then(|| backuprestore_core::sha256_file(&destination_path))
+                .transpose()?;
+            let previous_indexes = if existing {
+                wim_indexes(&destination_path, log)?
+            } else {
+                Vec::new()
+            };
+            let mut previous_metadata = BTreeMap::new();
+            for index in &previous_indexes {
+                previous_metadata.insert(*index, read_index_metadata(&destination_path, *index)?);
+            }
+            let legacy_path = legacy_metadata_path(&destination_path)?;
+            let legacy_metadata: Option<BackupMetadata> = legacy_path
+                .is_file()
+                .then(|| read_json(&legacy_path))
+                .transpose()
+                .ok()
+                .flatten();
+
+            // A power loss can leave a partial WIM behind.  For the first
+            // capture, only that partial file is removed.  For an existing
+            // WIM, copy it to a same-volume candidate and append there; the
+            // original remains recoverable until the candidate has passed
+            // DISM inspection and is renamed into place.
             let _ = fs::remove_file(&partial);
-            run_logged(
-                "dism.exe",
-                &[
-                    "/Capture-Image",
-                    &format!("/ImageFile:{}", partial.display()),
+            let new_index = if existing {
+                let candidate = PathBuf::from(format!(
+                    "{}.{}.append-candidate.wim",
+                    destination_path.display(),
+                    task.task_id
+                ));
+                let _ = fs::remove_file(&candidate);
+                fs::copy(&destination_path, &candidate)?;
+                let append_args = [
+                    "/Append-Image",
+                    &format!("/ImageFile:{}", candidate.display()),
                     &format!("/CaptureDir:{}", source_path.display()),
                     "/Name:Windows Backup",
-                    "/Compress:max",
                     "/CheckIntegrity",
-                ],
-                log,
-            )?;
-            run_logged(
-                "dism.exe",
-                &["/Get-WimInfo", &format!("/WimFile:{}", partial.display())],
-                log,
-            )?;
-            let _ = fs::remove_file(&destination_path);
-            fs::rename(&partial, &destination_path)?;
+                ];
+                let append_result = run_logged("dism.exe", &append_args, log);
+                if let Err(error) = append_result {
+                    let _ = fs::remove_file(&candidate);
+                    return Err(error);
+                }
+                let candidate_indexes = wim_indexes(&candidate, log)?;
+                if candidate_indexes.len() != previous_indexes.len().saturating_add(1) {
+                    let _ = fs::remove_file(&candidate);
+                    return Err(err("WIM append did not create exactly one new index"));
+                }
+                let index = *candidate_indexes
+                    .last()
+                    .ok_or_else(|| err("WIM append returned no indexes"))?;
+                fs::rename(&candidate, &destination_path)?;
+                append_log(log, &format!("Appended backup as WIM index {index}"))?;
+                index
+            } else {
+                run_logged(
+                    "dism.exe",
+                    &[
+                        "/Capture-Image",
+                        &format!("/ImageFile:{}", partial.display()),
+                        &format!("/CaptureDir:{}", source_path.display()),
+                        "/Name:Windows Backup",
+                        "/Compress:max",
+                        "/CheckIntegrity",
+                    ],
+                    log,
+                )?;
+                let indexes = wim_indexes(&partial, log)?;
+                if indexes != [1] {
+                    return Err(err("first backup capture did not produce WIM index 1"));
+                }
+                fs::rename(&partial, &destination_path)?;
+                1
+            };
             let image_size = fs::metadata(&destination_path)?.len();
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
             let source_volume_serial = source.volume_serial.clone();
@@ -1236,16 +1497,22 @@ fn recover_windows(
                     .and_then(|values| env_optional_u64(values, key))
                     .unwrap_or(fallback)
             };
+            for (index, metadata) in &mut previous_metadata {
+                metadata.wim_index = *index;
+                metadata.image_sha256 = image_sha256.clone();
+                metadata.image_size = image_size;
+                write_json_atomic(index_metadata_path(&destination_path, *index)?, metadata)?;
+            }
             let metadata = BackupMetadata {
-                version: 1,
+                version: 2,
                 image_type: "wim".into(),
                 created: Utc::now(),
                 computer: context_value("COMPUTERNAME", "WinRE"),
                 windows_edition: context_value("WINDOWS_EDITION", "unknown"),
                 architecture: context_value("WINDOWS_ARCHITECTURE", &native_windows_architecture()),
                 windows_build: context_value("WINDOWS_BUILD", "unknown"),
-                wim_index: 1,
-                image_sha256,
+                wim_index: new_index,
+                image_sha256: image_sha256.clone(),
                 image_size,
                 source,
                 captured_used_bytes: context_u64("SOURCE_USED_BYTES", 0),
@@ -1254,12 +1521,35 @@ fn recover_windows(
                 volume_serial: source_volume_serial,
                 program_version: PROGRAM_VERSION.into(),
             };
-            let metadata_path = destination_path
-                .parent()
-                .ok_or_else(|| err("backup destination has no parent"))?
-                .join("metadata.json");
-            write_json_atomic(metadata_path, &metadata)?;
-            append_log(log, "Backup metadata written and image hash recorded")?;
+            write_json_atomic(
+                index_metadata_path(&destination_path, new_index)?,
+                &metadata,
+            )?;
+
+            // Retain a single legacy sidecar only when it clearly belongs to
+            // this image.  New code always reads index-specific metadata;
+            // this preserves old index-1 restores without clobbering another
+            // WIM stored in the same directory.
+            let legacy_belongs_to_image = if !legacy_path.exists() {
+                true
+            } else {
+                legacy_metadata.as_ref().is_some_and(|value| {
+                    previous_hash
+                        .as_deref()
+                        .is_some_and(|hash| value.image_sha256.eq_ignore_ascii_case(hash))
+                })
+            };
+            if legacy_belongs_to_image {
+                let legacy = previous_metadata
+                    .get(&1)
+                    .cloned()
+                    .unwrap_or_else(|| metadata.clone());
+                write_json_atomic(legacy_path, &legacy)?;
+            }
+            append_log(
+                log,
+                &format!("Backup metadata written for WIM index {new_index}"),
+            )?;
             if finalize_success {
                 store.write_transition(task, Stage::Success)?;
             }
@@ -1313,6 +1603,13 @@ fn recover_windows(
                 // stage simply re-runs BCDBoot and validates its output.
                 if task.status == Stage::ImageApplied {
                     store.write_transition(task, Stage::BootRepaired)?;
+                }
+                if metadata_context
+                    .and_then(|values| env_optional(values, "TEST_FAULT"))
+                    .as_deref()
+                    == Some("bcdboot-failure")
+                {
+                    return Err(err("development test fault: BCDBoot failure injected"));
                 }
                 let windows_root = target_root.join("Windows");
                 let mut bcd_args = vec![
@@ -1465,6 +1762,31 @@ fn find_efi_root(override_root: Option<&Path>) -> Result<PathBuf, TaskError> {
         .map(Path::to_path_buf)
         .ok_or_else(|| err("EFI root must be explicitly mounted before recovery"))
 }
+
+#[cfg(windows)]
+fn wim_indexes(path: &Path, log: &Path) -> Result<Vec<u32>, TaskError> {
+    let output = capture_logged(
+        "dism.exe",
+        &[
+            "/English",
+            "/Get-WimInfo",
+            &format!("/WimFile:{}", path.display()),
+        ],
+        log,
+    )?;
+    let mut indexes = crate::windows_prepare::parse_dism_images(&output)?
+        .iter()
+        .filter_map(|image| image.get("ImageIndex").and_then(serde_json::Value::as_u64))
+        .filter_map(|index| u32::try_from(index).ok())
+        .collect::<Vec<_>>();
+    indexes.sort_unstable();
+    indexes.dedup();
+    if indexes.is_empty() || indexes.iter().any(|index| *index == 0) {
+        return Err(err("DISM returned invalid WIM indexes"));
+    }
+    Ok(indexes)
+}
+
 #[cfg(windows)]
 fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError> {
     append_log(log, &format!("running {program} {}", args.join(" ")))?;
@@ -1473,6 +1795,7 @@ fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError>
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()?;
     let log_file = OpenOptions::new().create(true).append(true).open(log)?;
     let sink = Arc::new(Mutex::new(log_file));
@@ -1507,6 +1830,7 @@ fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, Ta
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -1517,6 +1841,25 @@ fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, Ta
         return Err(err(&format!("{program} failed with {}", output.status)));
     }
     Ok(text)
+}
+
+#[cfg(any(windows, test))]
+fn bcd_identifier_from_line(line: &str) -> Option<&str> {
+    let start = line.find('{')?;
+    let end = line[start..].find('}')? + start + 1;
+    let identifier = &line[start..end];
+    (identifier.len() == 38
+        && identifier.starts_with('{')
+        && identifier.ends_with('}')
+        && identifier[1..37]
+            .chars()
+            .enumerate()
+            .all(|(index, character)| {
+                matches!(index, 8 | 13 | 18 | 23)
+                    .then_some(character == '-')
+                    .unwrap_or_else(|| character.is_ascii_hexdigit())
+            }))
+    .then_some(identifier)
 }
 
 #[cfg(windows)]
@@ -1548,15 +1891,12 @@ fn set_secondary_boot_menu(
     for line in output.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
-        if (lower.starts_with("identifier") || trimmed.starts_with("标识符"))
-            && trimmed.find('{').is_some()
-        {
-            let start = trimmed.find('{').unwrap_or(0);
-            let end = trimmed[start..]
-                .find('}')
-                .map(|offset| start + offset + 1)
-                .unwrap_or(trimmed.len());
-            current_id = Some(trimmed[start..end].to_string());
+        // `bcdedit` localizes its field names and on WinRE can emit an OEM
+        // code page. The BCD object GUID is invariant and occurs on each
+        // entry header before its device/osdevice fields, so use that instead
+        // of matching a translated "identifier" label.
+        if let Some(identifier) = bcd_identifier_from_line(trimmed) {
+            current_id = Some(identifier.to_string());
         }
         if lower.contains(&target_needle) {
             if let Some(identifier) = current_id.as_ref() {
@@ -1660,13 +2000,16 @@ fn stream_to_log<R: Read>(
             write!(file, "[{label}] {line}")?;
             file.flush()?;
         }
-        print!("{label}: {line}");
     }
     Ok(())
 }
 
 fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
-    let status = Command::new(program).args(args).status()?;
+    let mut command = Command::new(program);
+    command.args(args);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let status = command.status()?;
     if status.success() {
         Ok(())
     } else {
@@ -1676,7 +2019,10 @@ fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{diskpart_format_script, parse_recover_options, split_workspace_root_rel};
+    use super::{
+        bcd_identifier_from_line, diskpart_format_script, parse_recover_options,
+        split_workspace_root_rel,
+    };
 
     #[test]
     fn recover_options_accept_explicit_efi_root() {
@@ -1732,6 +2078,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bcd_identifier_parser_ignores_localized_field_labels() {
+        assert_eq!(
+            bcd_identifier_from_line(
+                "\u{fffd}\u{fffd}\u{fffd} {3f66f61e-a1ce-11f1-9d29-f5ba5ed7cdd2}"
+            ),
+            Some("{3f66f61e-a1ce-11f1-9d29-f5ba5ed7cdd2}")
+        );
+        assert_eq!(bcd_identifier_from_line("device partition=H:"), None);
+        assert_eq!(bcd_identifier_from_line("{not-a-bcd-guid}"), None);
+    }
+
     #[cfg(windows)]
     #[test]
     fn prepare_options_reject_missing_image_or_invalid_drive() {
@@ -1762,5 +2120,31 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prepare_fault_options_require_efi_only_for_efi_faults() {
+        let base = vec![
+            "--operation".into(),
+            "probe".into(),
+            "--source-drive".into(),
+            "P".into(),
+        ];
+        let mut power_loss = base.clone();
+        power_loss.extend(["--test-fault".into(), "power-loss-window".into()]);
+        assert!(
+            super::windows_prepare::parse_prepare_options(power_loss).is_ok(),
+            "power-loss-window uses the real system EFI by default"
+        );
+
+        for fault in ["identity-env-mismatch", "bcdboot-failure"] {
+            let mut missing_efi = base.clone();
+            missing_efi.extend(["--test-fault".into(), fault.into()]);
+            assert!(
+                super::windows_prepare::parse_prepare_options(missing_efi).is_err(),
+                "{fault} must require an explicit development EFI"
+            );
+        }
     }
 }

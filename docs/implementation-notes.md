@@ -1,8 +1,58 @@
 # V1 实现说明
 
+## 2026-08-27 `v1.2.2` 开发 EFI 故障注入
+
+- 仅开发 CLI 在同时指定 `--test-efi-drive` 时接受 `--test-fault identity-env-mismatch` 或 `bcdboot-failure`；普通 GUI 和正常 EFI 流程不暴露该参数。
+- 前者在 manifest 保护的 `RecoveryTask.env` 中制造源卷序列号与 `task.json` 的真实不一致，WinRE 必须在任何 DISM、格式化或 BCDBoot 前由既有身份校验拒绝；后者在持久化 `BootRepaired` 后注入 BCDBoot 失败，以验证既有 BCD 快照回滚与 WinRE 清理。
+
+## 2026-08-27 `v1.2.4` 原始 BCD 快照持久化顺序
+
+- 首次实机复测发现：创建任务目录后才捕获字节级 EFI BCD 快照时，内存中的 `previous_bcd_sha256` 已更新，但工作区 `task.json` 尚未覆盖写入；Recovery 因 payload/task 不一致而提前拒绝。现在在复制 `task.json` 到 WinRE payload 前原子写回完整任务，确保快照哈希、manifest 和 payload 一致。
+
+## 2026-08-27 `v1.2.5` 故障回滚与完整 P/WIM/Q 验收
+
+- `identity-env-mismatch` 实机任务 `00bae5b0-d830-4fac-8bd8-7bbdd3e85188` 在任何 DISM/格式化/BCDBoot 前失败，错误为 `SOURCE volume serial differs between task.json and RecoveryTask.env`；E: BCD 哈希保持 `FC1E0A786691E8F20083DC08A97BC2BD31BD8188BEE3C29E68AC122585CD479D`，Q: 内容计数不变，原注册 WinRE 恢复并校验。
+- `bcdboot-failure` 实机任务 `635e39d3-034a-4390-873b-b0ae68843863` 真实完成格式化和 Index 1 Apply 后在 `BootRepaired` 注入失败；`bcd-before-raw` 与 E: BCD SHA-256 均为 `FC1E0A786691E8F20083DC08A97BC2BD31BD8188BEE3C29E68AC122585CD479D`，WinRE 恢复为 Enabled。
+- 成功备份任务 `89439a72-9fc6-41be-ae49-18be36e9a850` 从 P 捕获到 `H:\Images\FullCycle-v1.2.5.wim`（索引 1，WIM SHA-256 `89CBDB75E83FCE55F3A8EBE140B696687957C14184EBA3F8D8C633A120C68B47`）；追加任务 `b4fec5e1-7d02-4aad-8bc3-ee7959f3e0ef` 创建索引 2。还原任务 `bb73da54-80e3-4b7b-9550-0ac24901aab2` 使用 Index 1，`8a590f81-7777-4074-915e-e7dd5dec2607` 使用 Index 2，均完成 WinRE、DiskPart、DISM Apply、BCDBoot 和清理重启。
+- P/Q 按相对路径、大小和 SHA-256 比较：排除 `System Volume Information`、回收站、Parallels `Mac disk` 和 BCDBoot 更新的 `Windows\System32\config\BCD-Template*` 后，212 个 payload 文件完全一致，差异 0。C: 未作为备份源或还原目标。
+
+## 2026-08-27 `v1.2.1` 状态文件断电窗口修复
+
+- `write_json_atomic` 过去在 Windows 覆盖 `task.json`/`status.json` 时会先删除旧文件，再重命名同目录临时文件。掉电恰好落在两步之间会让恢复任务缺少状态记录，违背原子持久化和断电续跑约束。
+- Windows 现在用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` 将已 `sync_all` 的同目录临时 JSON 直接替换目标；不再删除原记录。非 Windows 保持同文件系统 `rename`。新增覆盖写入回归测试确认读到完整新 JSON 且不遗留临时文件。
+- 本机离线 5 项 CLI + 17 项 core、Clippy、运行时边界审计和差异检查全部通过。Windows 11 ARM64 从共享桌面源码构建 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.2.1`，CLI 10 项 + core 17 项全部通过；测试目标目录必须在客体本地，不能置于 Parallels 共享源码目录。manifest、两个 EXE 和前台窗口标题均为 `v1.2.1`，二进制 SHA-256 为 `3c3c27057b1c81cb5ed17023a06f32376928ecc6c6bf213ba1be3d813ffd3415`。
+
+## 2026-08-27 `v1.2.0` P/Q 隔离备份与第二系统还原
+
+- 在新快照 `24860ee1-0682-4b2b-8158-7a68da0f28f8` 上，ARM64 `v1.1.9` 从 P（磁盘 2/分区 2）备份到 H 的 `BlankCompare-v1.1.9.wim`；任务 `a12fa889-c64f-4db3-88be-2adce2dc8518` 为 `success`，WIM SHA-256 与 index-1 metadata 均为 `8f231f3f5042dcf838963ffe880fb705c432700f4b0b690599d11c56882bdffa`。
+- 同一 WIM 索引由任务 `e005077c-1431-4987-a98c-8a8074aab5d5` 还原到 Q（磁盘 2/分区 3），使用开发 EFI E。状态为 `success`；Recovery 日志记录 `Apply-Image`、`bcdboot ... /addlast`、目标 loader 绑定验证、原 WinRE 恢复和 `wpeutil reboot`。
+- 管理员复核 E: 的 BCD 可打开，新增 loader 的 `device/osdevice=partition=Q:`。普通令牌无法列出受保护 EFI 文件或打开 BCD，不能把“Access denied”误判为 EFI 内容丢失。
+- P/Q 的文件树以相对路径、大小和 SHA-256 比较。Parallels 自动产生的锁定 `Mac disk`、`System Volume Information`，以及还原后 BCDBoot 修改的 `BCD-Template`/`.LOG` 和回收站 `desktop.ini` 单列为系统后处理项；排除这些可解释项后，212 个文件、174,008,660 字节完全一致。测试清单工具现在显式报告该规则，避免隐藏差异。
+
+## 2026-08-27 `v1.1.9` 日志与执行纪律
+
+- GUI 的关键交互统一写入 `<程序目录>\logs\gui.log`：刷新环境/最近任务、WIM 元数据读取、镜像选择、任务创建、校验阻止、用户取消和管理员 prepare 启动结果均带 RFC 3339 时间戳。
+- 任务目录尚未创建就失败的 CLI 路径继续写入 `<程序目录>\logs\launcher-errors.log`；任务准备和 WinRE 恢复分别保留自己的 `prepare.log` 和 `recovery.log`。这四类日志都跟随程序目录移动。
+- GUI 日志采用尽力写入，不让诊断文件写入异常绕过或改变安全校验；准备和恢复阶段的关键日志仍为强制写入。
+- 后续每个开发/测试/清理任务先按 `docs/development-execution-protocol.md` 写明计划并完成自审，随后再修改或操作虚拟机。
+- Windows 11 ARM64 已用既有工具链真实构建 `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.1.9`；VM 目标测试 10 项 CLI 和 16 项 core 全部通过，两个 EXE 与 `build-manifest.json` 的 SHA-256 均为 `e0d97e7038e9aa2199907cd5b358890411cb0e664e23715fc6d9b2ba97c22964`。最新 GUI 已以前台最大化运行，实际创建 `logs\gui.log` 首行 `[2026-08-27T04:39:01.106746300+00:00] GUI started; elevated native Rust window initialized`。Computer Use 对客体刷新按钮的坐标输入未稳定转发，未将刷新动作或后续日志事件标记为实机已验证。
+
 当前进度、用户对网络/下载的要求和实机未验证项统一见 [project-status.md](project-status.md)。本文件只记录实现事实与技术边界。
 
-> 当前运行边界（2026-08-27，v1.0.8）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
+## 2026-08-27 `v1.2.9` 标题核验与故障参数回归
+
+- Rust Win32 窗口标题仍由 `CreateWindowExW` 使用 `BackupRestore - Rust GUI v{PROGRAM_VERSION}` 设置；Windows 客体前台截图实际显示 `BackupRestore - Rust GUI v1.2.8`。宿主通过跨完整性 PowerShell 读取 `MainWindowTitle` 得到空值属于 Windows 访问边界，不能据此判断标题丢失。
+- 为 `--test-fault` 增加参数回归测试：`power-loss-window` 不再被错误要求开发 EFI，身份环境篡改和 BCDBoot 失败仍要求显式 `--test-efi-drive`。这样断电窗口测试使用真实系统 WinRE，避免把开发 EFI 选择与正常续跑混在一起。
+- v1.2.9 Windows ARM64 客体本地测试通过 CLI 11 项、core 17 项；本机格式化、离线测试、Clippy、运行时边界审计和 `git diff --check` 继续作为构建前门槛。
+
+## 2026-08-27/28 `v1.3.0` P/WIM/Q 完整备份还原验收
+
+- 最新 ARM64 Rust 包从 P: 捕获到 `H:\Images\FullCycle-v1.2.9.wim`。任务 `5f2d2262-80c1-43c8-b839-8b2544effedf`、`fcad95ce-9c46-4e74-8302-452fbda7992f`、`31971c01-62b3-47ff-a01f-22dddb2f9541` 通过同卷候选文件事务生成索引 1/2/3；三个索引均由 DISM `/Get-WimInfo` 实读确认。
+- `create-secondary` 使用索引 1/2/3 分别恢复 Q:（任务 `21ecf1b9-72ce-4a65-b279-459880edcb88`、`eac6910f-8387-478b-babf-935135d78d8a`、`8f5ca68c-a7f5-410d-8cfc-2791f33a389d`），`restore-existing` 使用索引 2 和 3 恢复 P:（任务 `312a7cc0-5c15-4d29-9e7b-3ead67644a16`、`8538cc29-79fe-41d3-9de2-8458e3bfaa48`）。五个恢复任务均完成格式化/Apply/BCDBoot、原 WinRE 恢复和自动重启，状态为 `success`。
+- P: 还原前后以及 Q: 三次恢复后的完整分区清单各含 215 个文件；排除 Parallels 锁定的 `Mac disk` 与 BCDBoot 自动生成的 `Windows\System32\config\BCD-Template*` 后，均为 212 个 payload 文件，路径、大小和 SHA-256 的 `Compare-Object` 差异为 0。五个 fixture 也逐项一致。恢复后 `reagentc /info` 为 Enabled，`dism /Get-MountedWimInfo` 报告无挂载镜像；最终 v1.3.0 GUI 前台截图标题为 `BackupRestore - Rust GUI v1.3.0`。
+- 断电窗口任务 `3dd7a348-9190-4e61-90d0-76ecf1fd45cf` 在 `boot-requested` 持久化后故意不重启；再次启动 GUI 后，`prepare.log` 记录检测待恢复任务、重新请求一次性 WinRE 启动并重启，Recovery 最终将任务标记为 `success`。
+
+> 当前运行边界（2026-08-27，v1.2.5）：产品运行时完全由 Rust 提供。`BackupRestore.exe`、`Recovery.exe`、任务准备、卷枚举、WIM 信息读取和 WinRE 恢复不调用 PowerShell；PowerShell 只保留为 Windows 构建脚本宿主及历史实验记录。较早时间线中的旧脚本、旧参数和旧版本包名均不可作为当前运行入口。
 
 - 2026-08-27 `v1.0.5` WIM 多索引元数据：DISM 文本回退解析器现在按每个 `Index` 分组读取 `Name`、`Description`、`Size`、`Version`、`Architecture`、`Edition/Edition Id` 和 `Installation Type`；支持逗号分隔字节数及常见 KiB/MiB/GiB/TiB 单位。解析严格限定在有效索引之后，避免把 DISM 头部的工具版本误记为镜像版本；新增多索引与无索引回归测试。标准 `/Get-WimInfo` 未提供的字段仍显示为“?”，不虚构元数据。
 - 2026-08-27 `v1.0.5` ARM64 回归：Windows 11 ARM64 目标全量测试 8 项 CLI（包含多索引解析、头部版本隔离和参数边界）与 16 项核心测试全部通过；发行构建使用现有 `aarch64-pc-windows-msvc` 工具链成功，`BackupRestore.exe`/`Recovery.exe` 与 manifest SHA-256 均为 `5a1fd2b97c358d31ba6dd3d93b088edab1cdd051e5db1cd3e651aade5008af7e`。最新 GUI 已结束旧实例后以前台最大化运行，标题为 `BackupRestore - Rust GUI v1.0.5`，截图保存于 `.test-artifacts/root-captures/v1.0.5-gui.png`；真实 `D:\sources\boot.wim` 的 `wim-info` 返回索引 1、描述和 2163165471 字节大小。尚未声称多索引 WIM 的 GUI 实盘截图，因为当前挂载卷没有可用多索引镜像；多索引解析由 Windows 目标单元测试覆盖。
@@ -14,6 +64,7 @@
 - 2026-08-27 `v1.0.9` 发布版本一致性：根 `VERSION` 已升至 `1.0.9` 时，两个 Cargo manifest 仍是 `1.0.8`。构建目录名取根版本，而窗口标题取 `CARGO_PKG_VERSION`，导致同一包出现 `v1.0.9` 目录与 `v1.0.8` 标题。现已同步根版本、两个 manifest 与锁文件；Windows 包必须同时核对目录、`build-manifest.json` 和窗口标题，三者不一致即视为构建失败。
 - 2026-08-27 `v1.1.0` GUI 替换：提升后的新 GUI 在创建窗口前枚举当前交互桌面，只对旧 `BackupRestoreNativeGui` 窗口投递正常 `WM_CLOSE`，短暂等待其释放文件后再显示最新窗口。它不终止进程，也不操作任务、磁盘或 WinRE；目的只是防止多实例锁住旧发行目录并让最新版本无法成为前台实例。
 - 2026-08-27 `v1.1.1` WIM 索引可读性：单系统还原将 WIM 索引控件扩展到整行，第二系统页仍为启动菜单名称留出输入空间。两种页面的下拉列表现在设置为窗口可用宽度，避免索引名称、描述和元数据被 440 像素选择框裁剪。
+- 2026-08-27 `v1.1.4`--`v1.1.5` 直启 Rust 回归：产品包移除 `RecoveryLauncher.cmd` 和 `BackupRestore.cmd`，`winpeshl.ini` 直接启动 GUI 子系统的 `Recovery.exe recover-env`。在 ARM64 VM 中从 `F:\BackupRestoreMoved-v1.1.5` 执行任务 `8f180630-1d8d-414e-b166-70ed9301d911`，完成 Windows -> WinRE -> Rust Recovery -> 原 WinRE 恢复 -> Windows，最终 `status.json=success`，载荷不含 `.cmd`，日志记录 `wpeutil.exe reboot`。Recovery 同时校验当前 WinRE 中正在运行的 EXE 和工作目录 payload 的 SHA-256。程序目录与还原目标同卷的拒绝已移到物理卷读取、UAC、任务、WinRE 和 BCD 修改之前；C:->C: 与 H:->H: 均保持任务数不变。
 
 ## 已实现的安全骨架
 
@@ -22,7 +73,7 @@
 - 恢复状态在准备、启动、WinRE、预检、捕获、擦除、应用、修复引导、成功/失败之间单向流转；准备阶段失败也会落盘失败状态，避免“无状态卡死”。
 - Rust prepare 检查 Windows 分区、GPT 卷身份、WinRE、BitLocker 保护状态，保存原始 WinRE 与 BCD，并用 SHA-256 清单保护 WinRE payload。
 - Rust prepare 和 GUI 不会关闭 Secure Boot；未完成 Secure Boot 实机验证时，不把它当作 WinRE 成功证据。
-- `winpeshl.ini` 自动进入 `RecoveryLauncher.cmd`；启动器只启动 `Recovery.exe recover-env`，缺少 exe 时立即失败，不存在批处理恢复回退。
+- `winpeshl.ini` 直接进入 GUI 子系统的 `Recovery.exe recover-env`；不再存在产品批处理启动器或任何批处理恢复回退。Recovery 在挂载程序工作目录所在卷后会校验当前正在运行的 WinRE 二进制与 payload manifest 的 SHA-256。
 - `BackupRestore.exe prepare -NoReboot` 只生成并校验临时 WinRE 载荷，不设置一次性启动、不替换注册的 WinRE；准备阶段异常会先丢弃残留 DISM 挂载，再尝试用原始副本恢复注册镜像；DISM 提交后会等待 `wimserv.exe` 释放 WIM，再计算哈希。
 - payload manifest 还绑定 `RecoveryTask.env` 的 SHA-256；Rust Recovery 读取 env 后会用工作目录所在卷上的 manifest 再校验一次，避免环境变量文件被替换后继续执行。
 - WinRE 执行路径按磁盘号/分区号和卷 GUID 重新挂载固定临时盘符，并逐项比对任务 JSON 与 RecoveryTask.env 的磁盘/分区/大小快照；恢复前再次校验镜像与 metadata，备份完成后原子生成 `metadata.json`，所有破坏性操作都要求 `-AllowDestructive`。
@@ -170,3 +221,11 @@ prepare 在 BCD 导出前先完成完整任务校验，导出并记录 BCD 哈�
 - 2026-08-27 v1.0.2 隐藏 EFI 定位修复：默认系统 EFI 没有盘符时，准备阶段先复用已挂载 EFI，否则用 `mountvol /S` 临时挂载到空闲盘符，读取完整 GPT 身份后立即卸载；未找到或类型不符时安全失败。ARM64 v1.0.2 已重新构建并校验版本、manifest 与两个二进制哈希，GUI 已以前台最大化运行。
 - 2026-08-27 v1.0.3 空闲盘符判定修复：Windows `mountvol <letter>: /L` 对未分配盘符正常返回退出码 1，原判定把所有空闲盘符误认为不可用，导致 EFI 临时挂载始终跳过。现在将“无挂载点”的退出码 1 视为空闲，并在挂载后继续完整身份核验；其它异常仍由后续分配/核验失败安全拦截。
 - 2026-08-27 v1.0.4 多语言 tooltip 修复：悬停提示不再把中英文拼接在同一条文案中；提示内容跟随当前语言，并在语言切换时销毁旧 tooltip、重新注册当前语言文本，避免中文界面残留英文。ARM64 包 `BackupRestore.exe` 与 `Recovery.exe` SHA-256 均为 `88399f72a55b7af59ed85173d13a27f60fc4dc18c14de502dcf7c801d322115f`，窗口标题已显示版本号；客体真实悬停弹框尚未获得可靠截图。
+
+## 2026-08-27 `v1.2.5` BCD 回滚验证副作用
+
+- `bcdedit /store ... /enum` 在字节级恢复后可能重写 BCD hive 的事务元数据，使刚复制并校验通过的文件 SHA-256 改变。故障回滚现在不再调用该枚举命令；以原始快照复制后的立即 SHA-256 相等作为权威证据，避免验证步骤改变被验证对象。
+
+## 2026-08-27 `v1.2.6` 断电后待恢复任务续跑
+
+- 实测在 `reagentc /boottore` 与实际重启之间强制断电，会留下唯一的 `boot-requested` 任务而正常进入 Windows；旧启动入口没有再次请求 WinRE。Rust GUI 启动前现在扫描程序目录下的任务，要求 `task.json`/`status.json` 一致、任务 ID 合法且 Recovery payload、manifest、原始/暂存 WinRE 均存在；确认唯一合法任务后隐藏调用 `reagentc /boottore` 与 `shutdown /r /t 0`，让用户重新启动程序即可继续。多个、损坏或缺少载荷的待恢复任务只写 `launcher-errors.log`/`prepare.log`，不猜测、不自动执行。

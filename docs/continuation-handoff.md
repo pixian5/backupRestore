@@ -26,7 +26,7 @@
 | “没有热点/没有 Wi-Fi 时先把不需要流量的代码写完” | 本轮只使用已有本地工具和离线 Cargo 缓存；不安装 Rust target、Visual Studio、SDK 或其他大文件。 |
 | “以后工具链好了要直接编译运行” | `windows/build-windows.ps1` 不自动下载，目标架构、Cargo target 目录、产物文件名和运行入口已固定；交接文档给出唯一构建顺序。 |
 | “热点每次下载前重新授权，Wi-Fi 不需要反复问” | 工作流技能按每个独立下载执行 `check_network.py`；热点授权不跨下载继承，Wi-Fi/有线不重复询问。 |
-| “所有页面、功能、恢复流程都设计完整” | Rust Win32 GUI 单窗口是唯一桌面前端，覆盖环境、备份/还原、镜像信息和任务结果状态；Rust prepare、core、WinRE launcher、Recovery.exe 和最小 cmd 启动器职责均已写入文档。 |
+| “所有页面、功能、恢复流程都设计完整” | Rust Win32 GUI 单窗口是唯一桌面前端，覆盖环境、备份/还原、镜像信息和任务结果状态；Rust prepare、core、`winpeshl.ini` 和 Recovery.exe 的职责均已写入文档。 |
 | “让其它 AI 接手后直接继续” | `docs/README.md`、`project-status.md`、本文、`implementation-notes.md`、`windows-build.md` 和 `verification-matrix.md` 分别记录入口、进度、文件结构、决策、构建和证据。 |
 | “工具链完成后直接继续开发” | 已通过 Parallels 共享桌面传入当前工作树，ARM64 构建脚本可以在 VM 本地 target 目录直接产出包；本轮不执行破坏性恢复。 |
 
@@ -35,7 +35,7 @@
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本为 `1.0.9`。根目录 `VERSION`、两个 Cargo manifest 和 `Cargo.lock` 必须同步；`windows/build-windows.ps1` 已强制检查。Windows 包的目录、`build-manifest.json` 和 GUI 标题必须一致，不能复用旧版本截图。
+- 当前开发版本为 `1.3.0`。根目录 `VERSION`、两个 Cargo manifest 和 `Cargo.lock` 必须同步；`windows/build-windows.ps1` 已强制检查。Windows 包的目录、`build-manifest.json` 和 GUI 标题必须一致，不能复用旧版本截图。
 - 最近 ARM64 实机结果：Rust prepare/Recovery 已完成自动 probe、非 C Capture 和多索引 Index 2 Apply；工作目录/目标同卷会在任何 BCD/WinRE 写入前被 Rust 拒绝，WinRE hash 保持不变。独立 EFI 首启动仍返回 Recovery `0xc0430001`，该功能仅开发测试。继续验证时仍禁止把 `C:` 作为备份源或还原目标，但可以读取其启动配置和 WinRE。v1.0.5 新增 DISM 文本回退的多索引详细字段解析，需在本轮 ARM64 包中复核。
 - v1.0.8 已从共享桌面源码重建 ARM64 包；提升权限 CLI 实读 `V:\multi-index-same-source-v1.0.5.wim` 返回索引 1/2。GUI 双索引下拉仍必须在客体中用真实输入完成截图后才能标记实机已验证，不能把 CLI 输出或旧截图当作本轮证据。
 - `v0.7.8` 二次 EFI 诊断仍返回 `0xc0430001`：E: BCD 已由管理员 `bcdboot U:\Windows /s E: /f UEFI /v` 重建，默认 loader 的 `device/osdevice` 均为 U:，但 hdd2 首启动仍失败。不要再把旧 BCD 残留当作已证实根因；下一轮应在隔离快照验证跨磁盘 UEFI/Secure Boot/分区关联，完成后恢复 `hdd0` 首启动并保持最新 GUI 前台。
@@ -51,7 +51,6 @@ crates/backuprestore-core/src/lib.rs       纯 Rust 任务模型、身份、安�
 crates/backuprestore-cli/src/main.rs       BackupRestore.exe GUI/Recovery.exe CLI 入口
 crates/backuprestore-cli/src/native_gui.rs Rust Win32 GUI：窗口、字段、确认、状态和管理员脚本启动
 crates/backuprestore-cli/src/windows_prepare.rs Rust 正常 Windows 任务准备、卷/WIM/环境查询
-windows/RecoveryLauncher.cmd               WinRE 自动入口，唯一职责是启动 Rust Recovery.exe
 windows/winpeshl.ini                       WinRE [LaunchApps] 自动启动入口
 windows/build-windows.ps1                  x64/ARM64 分离打包，不自动下载工具链
 docs/implementation-notes.md               当前实现、验证证据和未验证边界
@@ -91,7 +90,7 @@ docs/README.md                              文档阅读入口
 
 ### 4.4 WinRE 与清理
 
-- Rust prepare 保存原始 `Winre.wim` 和 BCD 快照，生成任务专用副本，注入 `RecoveryLauncher.cmd`、`RecoveryTask.env`、`task.json`、`winpeshl.ini` 和必需的 `Recovery.exe`。
+- Rust prepare 保存原始 `Winre.wim` 和 BCD 快照，生成任务专用副本，注入 `RecoveryTask.env`、`task.json`、`winpeshl.ini` 和必需的 `Recovery.exe`；`winpeshl.ini` 直接运行 Rust，不再有批处理启动器。
 - 每次注入有 payload manifest 和 SHA-256；`-NoReboot` 不替换注册 WinRE，不设置一次性启动。
 - manifest 同时绑定 `RecoveryTask.env` 的 SHA-256；Rust Recovery 在读取 env 后再次校验它，环境变量文件被替换时拒绝执行。
 - DISM 卸载后固定等待短窗口，防止 Windows PowerShell 5.1 的 WIM 文件锁尚未释放。
@@ -144,7 +143,7 @@ docs/README.md                              文档阅读入口
 
    首次出现缺少 target 时脚本应停止，而不是自动下载。
 
-3. 已完成 ARM64 自动 probe：任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 已验证 `winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe`、同卷盘符复用、原始 WinRE SHA-256 恢复和自动返回 Windows。修改 WinRE 路径后必须在新快照重复该验证。
+3. 当前 v1.1.5 已完成 ARM64 自动 probe：任务 `8f180630-1d8d-414e-b166-70ed9301d911` 已验证 `winpeshl.ini -> Recovery.exe recover-env`、同卷盘符复用、运行中 WinRE EXE 哈希校验、原始 WinRE SHA-256 恢复和自动返回 Windows。修改 WinRE 路径后必须在新快照重复该验证。
 4. `v0.4.8` 源码已完成离线验证，并已用 VM 既有工具链成功构建、校验哈希和启动 GUI；`v0.4.7` ARM64 包已完成 GUI/UAC、Capture、Apply 和独立 EFI BCDBoot 实测。剩余顺序是：在新快照中重复真实 WinRE 自动还原并从恢复卷回到 Windows，再验证 `create-secondary`/`/addlast`、身份不匹配、BitLocker 拒绝、断电续跑和 BCD 回滚。
 5. 只有拿到对应流程的真实证据，才能在文档中把该流程从“未验证”改成“已验证”。每个验证后恢复快照，避免把测试卷当成用户数据。
 6. 完成修复后再次运行离线测试、AST、`git diff --check`，递增版本，中文提交并推送 `origin/main`。

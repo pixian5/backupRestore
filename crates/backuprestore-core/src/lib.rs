@@ -13,6 +13,20 @@ use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: u32) -> i32;
+}
+
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
 pub const TASK_VERSION: u32 = 1;
 pub const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Keep a small amount of terminal history for diagnostics without allowing
@@ -229,7 +243,6 @@ pub struct BootPlan {
 #[serde(rename_all = "camelCase")]
 pub struct PayloadManifest {
     pub task_id: String,
-    pub launcher_sha256: String,
     pub recovery_sha256: String,
     pub task_sha256: String,
     pub original_winre_sha256: String,
@@ -354,8 +367,7 @@ impl Task {
                 ));
             }
             for (name, hash) in [
-                ("launcher", payload.launcher_sha256.as_str()),
-                ("recovery", payload.recovery_sha256.as_str()),
+                ("recovery entry point", payload.recovery_sha256.as_str()),
                 ("task", payload.task_sha256.as_str()),
                 ("original WinRE", payload.original_winre_sha256.as_str()),
                 ("staged WinRE", payload.staged_winre_sha256.as_str()),
@@ -714,7 +726,6 @@ pub fn verify_image_file(path: impl AsRef<Path>, image: &ImageSpec) -> Result<()
 
 pub fn validate_payload_files(
     manifest: &PayloadManifest,
-    launcher: impl AsRef<Path>,
     recovery: impl AsRef<Path>,
     task_json: impl AsRef<Path>,
     recovery_task_env: impl AsRef<Path>,
@@ -725,11 +736,6 @@ pub fn validate_payload_files(
         return Err(TaskError::Invalid("payload task id is empty".into()));
     }
     for (name, path, expected) in [
-        (
-            "launcher",
-            launcher.as_ref(),
-            manifest.launcher_sha256.as_str(),
-        ),
         (
             "recovery",
             recovery.as_ref(),
@@ -781,9 +787,33 @@ pub fn write_json_atomic<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Res
     file.sync_all()?;
     drop(file);
     #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path)?;
+    {
+        // Do not delete the old task/status record before installing the new
+        // one. A power loss in that gap makes an otherwise recoverable task
+        // look absent. The temporary file is in the same directory, so this
+        // is a replace-in-place operation on the same NTFS volume.
+        let from = tmp
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let to = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
     }
+    #[cfg(not(windows))]
     fs::rename(&tmp, path)?;
     if let Ok(dir) = File::open(parent) {
         let _ = dir.sync_all();
@@ -1402,6 +1432,21 @@ mod tests {
         fs::write(&path, b"\xEF\xBB\xBF{\"ok\":true}").unwrap();
         let value: serde_json::Value = read_json(&path).unwrap();
         assert_eq!(value["ok"], true);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn atomic_json_overwrite_replaces_a_complete_record() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("backuprestore-atomic-{suffix}.json"));
+        write_json_atomic(&path, &serde_json::json!({ "generation": 1 })).unwrap();
+        write_json_atomic(&path, &serde_json::json!({ "generation": 2 })).unwrap();
+        let value: serde_json::Value = read_json(&path).unwrap();
+        assert_eq!(value["generation"], 2);
+        assert!(!path.with_extension("json.tmp").exists());
         let _ = fs::remove_file(path);
     }
 

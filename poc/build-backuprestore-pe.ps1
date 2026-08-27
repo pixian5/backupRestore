@@ -74,7 +74,7 @@ try {
     $system32 = Join-Path $mount 'Windows\System32'
     $payloadFiles = @(
         'BackupRestore.exe', 'Recovery.exe', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll',
-        'RecoveryLauncher.cmd', 'BackupRestore.cmd', 'winpeshl.ini'
+        'winpeshl.ini'
     )
     foreach ($name in $payloadFiles) {
         $source = Join-Path $Package $name
@@ -104,7 +104,7 @@ try {
         'Windows RE base: ADK arm64 winpe.wim',
         'DISM: Capture-Image and Apply-Image',
         'BCDBoot: bcdboot.exe',
-        'Launcher: Windows\System32\winpeshl.ini -> RecoveryLauncher.cmd -> Recovery.exe'
+        'Entry point: Windows\System32\winpeshl.ini -> Recovery.exe recover-env'
     ) -Encoding UTF8
 
     Invoke-Dism @('/Unmount-Image', "/MountDir:$mount", '/Commit', '/CheckIntegrity')
@@ -116,7 +116,7 @@ try {
     Invoke-Dism @('/Mount-Image', "/ImageFile:$output", '/Index:1', "/MountDir:$verifyMount", '/ReadOnly')
     foreach ($relative in @(
         'Windows\System32\BackupRestore.exe', 'Windows\System32\Recovery.exe',
-        'Windows\System32\RecoveryLauncher.cmd', 'Windows\System32\winpeshl.ini',
+        'Windows\System32\winpeshl.ini',
         'Windows\System32\dism.exe', 'Windows\System32\DismApi.dll', 'Windows\System32\Dism\DismCore.dll',
         'Windows\System32\Dism\WimProvider.dll', 'Windows\System32\bcdboot.exe',
         'Windows\System32\drivers\disk.sys', 'Windows\System32\drivers\ntfs.sys',

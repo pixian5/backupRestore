@@ -90,7 +90,6 @@ const ID_SOURCE_DETAILS: usize = 2012;
 const ID_TARGET_DETAILS: usize = 2013;
 const OFN_PATHMUSTEXIST: u32 = 0x00000800;
 const OFN_FILEMUSTEXIST: u32 = 0x00001000;
-const OFN_OVERWRITEPROMPT: u32 = 0x00000002;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const DEFAULT_GUI_FONT: i32 = 17;
 const TOKEN_QUERY: u32 = 0x0008;
@@ -306,6 +305,13 @@ struct State {
     wim_images: Vec<WimImageInfo>,
     drives: Vec<DriveInfo>,
     operation_index: usize,
+}
+
+/// GUI diagnostics follow the executable, so moving the complete program
+/// directory also moves its audit trail. A failed diagnostic write must not
+/// alter a safety check or a pending preparation operation.
+fn append_gui_log(state: &State, message: &str) {
+    let _ = super::append_log(&state.executable_dir.join("logs").join("gui.log"), message);
 }
 
 unsafe fn install_tooltips(state: &mut State) {
@@ -1563,6 +1569,7 @@ unsafe fn close_previous_gui_windows() {
 
 unsafe fn refresh_environment(state: &mut State) {
     let language = selected_language(state);
+    append_gui_log(state, "GUI action started: refresh environment");
     let desired = [
         None,
         selected_drive_letter(state, state.controls.source),
@@ -1582,6 +1589,10 @@ unsafe fn refresh_environment(state: &mut State) {
     let text = match rust_cli_output(&["inspect-environment"]) {
         Ok(output) => output,
         Err(error) => {
+            append_gui_log(
+                state,
+                &format!("GUI action failed: refresh environment: {error}"),
+            );
             set_text(state.controls.status, &format!("环境检查失败：{error}"));
             return;
         }
@@ -1589,6 +1600,10 @@ unsafe fn refresh_environment(state: &mut State) {
     let report: serde_json::Value = match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(error) => {
+            append_gui_log(
+                state,
+                &format!("GUI action failed: parse environment report: {error}"),
+            );
             set_text(state.controls.status, &format!("环境信息解析失败：{error}"));
             return;
         }
@@ -1635,10 +1650,18 @@ unsafe fn refresh_environment(state: &mut State) {
         )
     };
     set_text(state.controls.status, &(text + &volume_details));
+    append_gui_log(
+        state,
+        &format!(
+            "GUI action completed: refresh environment; eligible_volumes={}",
+            state.drives.len()
+        ),
+    );
 }
 
 unsafe fn refresh_task_status(state: &State) {
     let language = selected_language(state);
+    append_gui_log(state, "GUI action started: refresh latest task status");
     set_text(
         state.controls.status,
         if language == Language::English {
@@ -1684,6 +1707,7 @@ unsafe fn refresh_task_status(state: &State) {
         text
     };
     set_text(state.controls.status, &text);
+    append_gui_log(state, "GUI action completed: refresh latest task status");
 }
 
 fn discover_drives() -> Vec<DriveInfo> {
@@ -1724,7 +1748,15 @@ fn same_partition_by_gui_identity(left: Option<&DriveInfo>, right: Option<&Drive
 unsafe fn read_image(state: &mut State) {
     let language = selected_language(state);
     let image_path = get_text(state.controls.image).trim().to_string();
+    append_gui_log(
+        state,
+        &format!("GUI action started: read WIM metadata; image={image_path}"),
+    );
     if let Err(error) = backuprestore_core::validate_absolute_path(&image_path) {
+        append_gui_log(
+            state,
+            &format!("GUI action blocked: invalid WIM path: {error}"),
+        );
         show_message(
             state.root,
             &if language == Language::English {
@@ -1744,6 +1776,10 @@ unsafe fn read_image(state: &mut State) {
     let output = match rust_cli_output(&["wim-info", &image_path]) {
         Ok(value) => value,
         Err(error) => {
+            append_gui_log(
+                state,
+                &format!("GUI action failed: read WIM metadata: {error}"),
+            );
             state.wim_images.clear();
             set_wim_items(state);
             set_text(
@@ -1760,6 +1796,10 @@ unsafe fn read_image(state: &mut State) {
     let report: serde_json::Value = match serde_json::from_str(&output) {
         Ok(value) => value,
         Err(error) => {
+            append_gui_log(
+                state,
+                &format!("GUI action failed: parse WIM report: {error}"),
+            );
             state.wim_images.clear();
             set_wim_items(state);
             set_text(state.controls.status, &format!("WIM 信息解析失败：{error}"));
@@ -1770,6 +1810,10 @@ unsafe fn read_image(state: &mut State) {
     let images_text = match serde_json::to_string(&images_json) {
         Ok(value) => value,
         Err(error) => {
+            append_gui_log(
+                state,
+                &format!("GUI action failed: serialize WIM index report: {error}"),
+            );
             set_text(
                 state.controls.status,
                 &format!("WIM metadata serialization failed: {error}"),
@@ -1817,8 +1861,19 @@ unsafe fn read_image(state: &mut State) {
                 )
             };
             set_text(state.controls.status, &details);
+            append_gui_log(
+                state,
+                &format!(
+                    "GUI action completed: read WIM metadata; indexes={}",
+                    state.wim_images.len()
+                ),
+            );
         }
         Err(error) => {
+            append_gui_log(
+                state,
+                &format!("GUI action failed: parse WIM indexes: {error}"),
+            );
             state.wim_images.clear();
             set_wim_items(state);
             let diagnostic = if images_text.len() > 4096 {
@@ -1875,7 +1930,7 @@ unsafe fn browse_image(state: &State) {
         lpstr_title: title.as_ptr(),
         flags: OFN_PATHMUSTEXIST
             | if operation == "backup" {
-                OFN_OVERWRITEPROMPT
+                0
             } else {
                 OFN_FILEMUSTEXIST
             },
@@ -1900,14 +1955,28 @@ unsafe fn browse_image(state: &State) {
             state.controls.image,
             &String::from_utf16_lossy(&buffer[..length]),
         );
+        append_gui_log(
+            state,
+            "GUI action completed: image path selected from file dialog",
+        );
+    } else {
+        append_gui_log(state, "GUI action cancelled: image file dialog");
     }
 }
 
 unsafe fn create_task(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state).to_string();
+    append_gui_log(
+        state,
+        &format!("GUI action started: create task; operation={operation}"),
+    );
     let index = selected_wim_index(state);
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") && index.is_none() {
+        append_gui_log(
+            state,
+            "GUI action blocked: restore requested without a selected WIM index",
+        );
         show_message(
             state.root,
             if language == Language::English {
@@ -1946,6 +2015,7 @@ unsafe fn create_task(state: &State) {
     ) {
         Ok(value) => value,
         Err(error) => {
+            append_gui_log(state, &format!("GUI action blocked: {error}"));
             show_message(
                 state.root,
                 &error,
@@ -1969,6 +2039,7 @@ unsafe fn create_task(state: &State) {
     ) {
         Ok(value) => value,
         Err(error) => {
+            append_gui_log(state, &format!("GUI action blocked: {error}"));
             show_message(
                 state.root,
                 &error,
@@ -1996,6 +2067,10 @@ unsafe fn create_task(state: &State) {
     if matches!(operation.as_str(), "restore-existing" | "create-secondary")
         && same_partition_by_gui_identity(workspace_identity, target_identity)
     {
+        append_gui_log(
+            state,
+            "GUI action blocked: program workspace volume matches restore target",
+        );
         show_message(
             state.root,
             if language == Language::English {
@@ -2016,6 +2091,10 @@ unsafe fn create_task(state: &State) {
     if operation != "probe"
         && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
     {
+        append_gui_log(
+            state,
+            &format!("GUI action blocked: invalid image path: {error}"),
+        );
         show_message(
             state.root,
             &if language == Language::English {
@@ -2032,12 +2111,17 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
+    let backup_will_append = operation == "backup" && PathBuf::from(&image_path).is_file();
     let image_drive = image_path
         .chars()
         .next()
         .map(|value| value.to_ascii_uppercase().to_string())
         .unwrap_or_default();
     if operation != "probe" && image_drive == source_drive {
+        append_gui_log(
+            state,
+            "GUI action blocked: image volume matches source volume",
+        );
         show_message(
             state.root,
             if language == Language::English {
@@ -2080,6 +2164,10 @@ unsafe fn create_task(state: &State) {
             MB_YESNO | MB_ICONWARNING,
         ) != IDYES
     {
+        append_gui_log(
+            state,
+            &format!("GUI action cancelled: destructive confirmation; operation={operation}"),
+        );
         set_text(
             state.controls.status,
             if language == Language::English {
@@ -2097,9 +2185,9 @@ unsafe fn create_task(state: &State) {
         "--operation".to_string(),
         operation.clone(),
         "--source-drive".to_string(),
-        source_drive,
+        source_drive.clone(),
         "--target-drive".to_string(),
-        target_drive,
+        target_drive.clone(),
         "--boot-menu-name".to_string(),
         get_text(state.controls.menu),
     ];
@@ -2134,6 +2222,12 @@ unsafe fn create_task(state: &State) {
         SW_HIDE,
     );
     if result <= 32 {
+        append_gui_log(
+            state,
+            &format!(
+                "GUI action failed: elevated prepare launch; operation={operation}; ShellExecute={result}"
+            ),
+        );
         set_text(
             state.controls.status,
             &if language == Language::English {
@@ -2145,6 +2239,12 @@ unsafe fn create_task(state: &State) {
             },
         );
     } else {
+        append_gui_log(
+            state,
+            &format!(
+                "GUI action delegated: elevated prepare launched; operation={operation}; source={source_drive}; target={target_drive}"
+            ),
+        );
         set_text(
             state.controls.status,
             if operation == "probe" {
@@ -2152,6 +2252,12 @@ unsafe fn create_task(state: &State) {
                     "Probe preparation started with -NoReboot. Check status.json and logs; no backup, restore or reboot will run."
                 } else {
                     "已启动探测准备流程（不重启）。请查看任务状态和日志；不会备份、还原或格式化。"
+                }
+            } else if backup_will_append {
+                if language == Language::English {
+                    "Elevated preparation started. The existing WIM will receive a new index; existing indexes remain unchanged until the append candidate is verified."
+                } else {
+                    "已启动管理员准备流程。现有 WIM 将追加一个新索引；候选镜像验证完成前，原有索引不会被修改。"
                 }
             } else if language == Language::English {
                 "Elevated preparation started. Check status.json, prepare.log and Recovery.log; this is not recovery success."
@@ -2412,6 +2518,10 @@ unsafe extern "system" fn window_proc(
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        append_gui_log(
+            &*state_ptr,
+            "GUI started; elevated native Rust window initialized",
+        );
         install_tooltips(&mut *state_ptr);
         set_drive_items(
             &*state_ptr,
@@ -2439,6 +2549,7 @@ unsafe extern "system" fn window_proc(
             let notification = (w_param >> 16) & 0xffff;
             if control_id == ID_LANGUAGE && notification == CBN_SELCHANGE {
                 apply_language(state);
+                append_gui_log(state, "GUI action completed: language changed");
                 return 0;
             }
             if let Some(index) = match control_id {
@@ -2449,6 +2560,13 @@ unsafe extern "system" fn window_proc(
                 _ => None,
             } {
                 select_operation(state, index);
+                append_gui_log(
+                    state,
+                    &format!(
+                        "GUI action completed: operation selected={}",
+                        selected_operation(state)
+                    ),
+                );
                 return 0;
             }
             if matches!(control_id, ID_SOURCE | ID_TARGET) && notification == CBN_SELCHANGE {
@@ -2499,6 +2617,9 @@ pub fn run() -> Result<(), super::TaskError> {
         InitCommonControlsEx(&common_controls);
         if !is_elevated() {
             return relaunch_elevated();
+        }
+        if super::resume_pending_boot_task()? {
+            return Ok(());
         }
         close_previous_gui_windows();
         let instance = GetModuleHandleW(null());

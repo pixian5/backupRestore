@@ -24,7 +24,7 @@
 
 - Rust `BackupRestore.exe`：Win32 GUI、环境/卷/WIM 查询、任务准备；
 - Rust `Recovery.exe`：WinRE 载荷校验、Capture/Apply、BCDBoot、清理和状态机；
-- `RecoveryLauncher.cmd` 与 `winpeshl.ini`：只负责从 WinRE 启动 Rust Recovery；
+- `winpeshl.ini`：直接从 WinRE 启动 Rust `Recovery.exe recover-env`；
 - Windows inbox `dism.exe`、`bcdedit.exe`、`bcdboot.exe`、`reagentc.exe`、`diskpart.exe`、`shutdown.exe`：由 Rust 直接调用。
 
 PowerShell 仅可作为开发机上的构建脚本宿主，不属于产品运行时；产品包不再携带 `BackupRestore.exe prepare`。
@@ -32,13 +32,13 @@ PowerShell 仅可作为开发机上的构建脚本宿主，不属于产品运行
 ## 已验证证据
 
 - macOS：`cargo fmt --all`、`cargo test --workspace --all-targets --offline`、`git diff --check` 通过；
-- Windows ARM64：使用现有 `aarch64-pc-windows-msvc` 工具链构建 v0.7.9 通过；
+- Windows ARM64：使用现有 `aarch64-pc-windows-msvc` 工具链构建 v1.1.5 通过；
 - Windows ARM64 Rust `list-volumes`：返回 C/T/U 普通 NTFS 卷和真实 GPT 类型，EFI/Recovery 未进入列表；
 - Windows ARM64 Rust `inspect-environment`：报告 ARM64、WinRE 可用；
 - Windows ARM64 Rust `wim-info`：多索引 WIM 返回 Index 1/2；
 - Windows ARM64 Rust `prepare --operation restore-existing --source-drive C --target-drive C`：在任务创建前阻止，未修改 WinRE/BCD、未请求重启；
 - Windows ARM64 Rust `prepare --operation probe --no-reboot`：成功生成任务；`validate-task` 和 `recover --dry-run` 通过。
-- Windows ARM64 Rust 自动 probe：程序目录位于 `T:\BRRustV080` 的任务 `dcff7126-aa6b-4a5b-910c-d5acbbcbdebe` 已完成 Windows → WinRE → `Recovery.exe recover-env` → 原始 WinRE hash 恢复 → Windows；`status.json=success`，`Recovery.log` 记录 `wpeutil.exe reboot`，注册 `Winre.wim` 回到 `0cbc86...6fda1`。
+- Windows ARM64 Rust 自动 probe：当前 v1.1.5 任务 `8f180630-1d8d-414e-b166-70ed9301d911` 从 `F:\BackupRestoreMoved-v1.1.5` 完成 Windows → WinRE 直接加载 `Recovery.exe recover-env` → 原始 WinRE hash 恢复 → Windows；`status.json=success`，`Recovery.log` 记录 `wpeutil.exe reboot`，载荷中没有 `.cmd`。旧 `v0.8.0` 经启动器的 probe 仅是历史基线。
 - Windows ARM64 Rust 备份：v0.8.1 在 `B:\BRRustV081` 以 U: 为源、B: 为镜像目标完成 `--no-reboot` 准备；任务 `68177954-8208-4661-a4ae-b2531bfcc4d3` 的 env 已记录 `SOURCE_USED_BYTES=3369549824`、`RESERVED_BYTES=2147483648`、`MINIMUM_TARGET_SIZE=8572108800`，`validate-task` 与 `recover --dry-run` 通过。上一版 v0.8.0 的真实 U:→B: Capture 任务 `3a6f0d0f-9843-49b8-9841-4a11a38c25d7` 已成功生成 1.63 GB WIM；C: 未触碰。
 - Windows ARM64 Rust 多索引还原：v0.8.2 任务 `fcfdd192-61e0-4b14-b04f-9734dcd26e48` 使用 B: 工作目录、T: Index 2 镜像、U: 测试目标和 E: 独立 EFI，完成 WinRE 真实格式化、Apply、BCDBoot 与原 WinRE 清理；U: SYSTEM hash 恢复为 fixture 的 `A70A0D…CC550`，C: 未触碰。
 

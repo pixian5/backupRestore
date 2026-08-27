@@ -134,8 +134,6 @@ foreach ($arch in $architectures) {
         Copy-Item $runtimePath (Join-Path $package $runtime)
     }
     foreach ($file in @(
-        'BackupRestore.cmd',
-        'RecoveryLauncher.cmd',
         'winpeshl.ini',
         '..\VERSION'
     )) {

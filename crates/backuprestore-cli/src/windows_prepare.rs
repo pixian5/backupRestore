@@ -7,8 +7,7 @@
 
 use backuprestore_core::{
     BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest, TargetRole, TargetSpec, Task,
-    TaskError, TaskStore, VolumeIdentity, read_json, sha256_file, validate_absolute_path,
-    write_json_atomic,
+    TaskError, TaskStore, VolumeIdentity, sha256_file, validate_absolute_path, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -18,6 +17,7 @@ use std::env;
 use std::ffi::c_void;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr::null_mut;
@@ -64,11 +64,13 @@ unsafe extern "system" {
         overlapped: *mut c_void,
     ) -> i32;
     fn CloseHandle(handle: *mut c_void) -> i32;
+    fn GetLastError() -> u32;
 }
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_SHARE_READ: u32 = 0x0000_0001;
 const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+const FILE_SHARE_DELETE: u32 = 0x0000_0004;
 const OPEN_EXISTING: u32 = 3;
 const IOCTL_DISK_GET_PARTITION_INFO_EX: u32 = 0x0007_0048;
 const IOCTL_DISK_GET_DRIVE_LAYOUT_EX: u32 = 0x0007_0050;
@@ -79,6 +81,7 @@ const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002d_1080;
 const RESERVED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
 const RECOVERY_TYPE: &str = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}";
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PrepareOptions {
@@ -92,6 +95,7 @@ pub(crate) struct PrepareOptions {
     wim_index: u32,
     boot_menu_name: String,
     efi_drive: Option<char>,
+    test_fault: Option<String>,
     allow_destructive: bool,
     no_reboot: bool,
 }
@@ -113,7 +117,19 @@ struct DriveReport {
 pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     let options = parse_prepare_options(arguments)?;
     let executable_dir = executable_dir()?;
-    let workspace = volume_identity(drive_from_path(&executable_dir)?)?;
+    let workspace_drive = drive_from_path(&executable_dir)?;
+    if matches!(
+        options.operation,
+        Operation::RestoreExisting | Operation::CreateSecondary
+    ) && options.target_drive == Some(workspace_drive)
+    {
+        // A normal drive-root executable path and its selected target letter
+        // already identify the same mounted volume. Do this inexpensive check
+        // before opening a raw volume handle so users get the explicit move
+        // instruction without elevation, UAC, task creation or WinRE/BCD I/O.
+        return Err(restore_workspace_target_error(workspace_drive));
+    }
+    let workspace = volume_identity(workspace_drive)?;
     let target = if matches!(
         options.operation,
         Operation::RestoreExisting | Operation::CreateSecondary
@@ -131,15 +147,20 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
         Operation::RestoreExisting | Operation::CreateSecondary
     ) && workspace.same_partition(&target)
     {
-        return Err(err(&format!(
-            "Cannot start restore: the program directory is on {}:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested.",
-            workspace.drive_letter.unwrap_or('?')
-        )));
+        return Err(restore_workspace_target_error(
+            workspace.drive_letter.unwrap_or(workspace_drive),
+        ));
     }
     // Perform the no-overwrite guard before elevation. A direct CLI call must
     // fail locally without triggering UAC or touching any boot configuration.
     require_administrator()?;
     prepare_task(&executable_dir, &workspace, target, options)
+}
+
+fn restore_workspace_target_error(workspace_drive: char) -> TaskError {
+    err(&format!(
+        "Cannot start restore: the program directory is on {workspace_drive}:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
+    ))
 }
 
 pub(crate) fn list_volumes() -> Result<(), TaskError> {
@@ -244,6 +265,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut wim_index = 1_u32;
     let mut boot_menu_name = String::from("Windows Backup");
     let mut efi_drive = None;
+    let mut test_fault = None;
     let mut allow_destructive = false;
     let mut no_reboot = false;
     let mut args = arguments.into_iter();
@@ -278,6 +300,18 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             "--test-efi-drive" => {
                 efi_drive = Some(parse_drive(&value("--test-efi-drive", &mut args)?)?)
             }
+            "--test-fault" => {
+                let fault = value("--test-fault", &mut args)?;
+                if !matches!(
+                    fault.as_str(),
+                    "identity-env-mismatch" | "bcdboot-failure" | "power-loss-window"
+                ) {
+                    return Err(err(
+                        "--test-fault must be identity-env-mismatch, bcdboot-failure, or power-loss-window",
+                    ));
+                }
+                test_fault = Some(fault);
+            }
             "--allow-destructive" => allow_destructive = true,
             "--no-reboot" => no_reboot = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
@@ -305,6 +339,15 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     if operation != Operation::Probe && image_path.is_none() {
         return Err(err("--image-path is required for backup and restore"));
     }
+    if matches!(
+        test_fault.as_deref(),
+        Some("identity-env-mismatch" | "bcdboot-failure")
+    ) && efi_drive.is_none()
+    {
+        return Err(err(
+            "identity-env-mismatch and bcdboot-failure require --test-efi-drive and are development-only",
+        ));
+    }
     Ok(PrepareOptions {
         operation,
         source_drive,
@@ -313,6 +356,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         wim_index,
         boot_menu_name,
         efi_drive,
+        test_fault,
         allow_destructive,
         no_reboot,
     })
@@ -522,6 +566,17 @@ fn prepare_payload(
     append_log(log, "Rust preparation started")?;
 
     fs::copy(bootstrap_bcd, task_dir.join("bcd-before-export"))?;
+    let raw_bcd_hash = snapshot_raw_bcd(&efi, &task_dir, log)?;
+    // `bcdedit /export` is a logical export. Importing it may rewrite the
+    // binary hive, so new tasks retain a byte-for-byte EFI store snapshot for
+    // rollback while old tasks can still use the exported fallback.
+    task.boot_plan.previous_bcd_sha256 = Some(raw_bcd_hash);
+    task.validate()?;
+    // `store.create` runs before the EFI snapshot is captured so the task
+    // directory exists for the raw snapshot. Persist the updated boot-plan
+    // hash before copying task.json into the WinRE payload; otherwise Recovery
+    // would correctly reject a stale payload/task pair.
+    write_json_atomic(store.task_path(&task.task_id)?, task)?;
 
     let recovery_letter = ensure_volume_mounted(recovery, 'R', log)?;
     let registered_wim = PathBuf::from(format!(
@@ -534,7 +589,7 @@ fn prepare_payload(
     fs::copy(&registered_wim, original.join("Winre.wim"))?;
     let original_hash = sha256_file(original.join("Winre.wim"))?;
 
-    for name in ["RecoveryLauncher.cmd", "winpeshl.ini", "Recovery.exe"] {
+    for name in ["winpeshl.ini", "Recovery.exe"] {
         let source = executable_dir.join(name);
         if !source.is_file() {
             return Err(err(&format!(
@@ -554,17 +609,11 @@ fn prepare_payload(
     let env_path = payload.join("RecoveryTask.env");
     write_recovery_env(&env_path, executable_dir, task, recovery, efi, options)?;
     fs::copy(store.task_path(&task.task_id)?, payload.join("task.json"))?;
-    let launcher_hash = sha256_file(payload.join("RecoveryLauncher.cmd"))?;
     let recovery_hash = sha256_file(payload.join("Recovery.exe"))?;
     let task_hash = sha256_file(payload.join("task.json"))?;
     append_env(
         &env_path,
-        &[
-            ("EXPECTED_LAUNCHER_SHA256", launcher_hash.as_str()),
-            ("EXPECTED_RECOVERY_SHA256", recovery_hash.as_str()),
-            ("EXPECTED_TASK_SHA256", task_hash.as_str()),
-            ("ORIGINAL_WINRE_SHA256", original_hash.as_str()),
-        ],
+        &[("ORIGINAL_WINRE_SHA256", original_hash.as_str())],
     )?;
 
     let staged = stage.join("Winre.wim");
@@ -607,7 +656,6 @@ fn prepare_payload(
     let staged_hash = sha256_file(&staged)?;
     let manifest = PayloadManifest {
         task_id: task.task_id.clone(),
-        launcher_sha256: launcher_hash,
         recovery_sha256: recovery_hash,
         task_sha256: task_hash,
         original_winre_sha256: original_hash.clone(),
@@ -651,23 +699,91 @@ fn prepare_payload(
     }
     if let Err(error) = store.write_transition(task, backuprestore_core::Stage::BootRequested) {
         let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, log);
+        let _ = rollback_boot_request(&task_dir, &efi, log);
         return Err(error);
     }
     if let Err(error) = write_status_env(&task_dir, task, "boot-requested") {
         let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, log);
+        let _ = rollback_boot_request(&task_dir, &efi, log);
         return Err(error);
+    }
+    if options.test_fault.as_deref() == Some("power-loss-window") {
+        append_log(
+            log,
+            "Development test fault: stopped after durable boot-requested state; no shutdown requested",
+        )?;
+        return Ok(());
     }
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
         let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, log);
+        let _ = rollback_boot_request(&task_dir, &efi, log);
         return Err(error);
     }
     Ok(())
 }
 
-fn rollback_boot_request(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
+fn snapshot_raw_bcd(
+    efi: &VolumeIdentity,
+    task_dir: &Path,
+    log: &Path,
+) -> Result<String, TaskError> {
+    let mounted_temporarily = efi.drive_letter.is_none();
+    let letter = ensure_volume_mounted(efi, 'S', log)?;
+    let source = PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD"));
+    let snapshot = task_dir.join("bcd-before-raw");
+    let result = (|| {
+        if !source.is_file() {
+            return Err(err("EFI BCD store is missing while creating raw snapshot"));
+        }
+        fs::copy(&source, &snapshot)?;
+        let hash = sha256_file(&snapshot)?;
+        backuprestore_core::verify_sha256(&source, &hash)?;
+        append_log(log, "Captured byte-for-byte EFI BCD snapshot")?;
+        Ok(hash)
+    })();
+    if mounted_temporarily {
+        let _ = Command::new("mountvol.exe")
+            .args([format!("{letter}:"), "/D".to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    result
+}
+
+fn rollback_boot_request(
+    task_dir: &Path,
+    efi: &VolumeIdentity,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let raw_snapshot = task_dir.join("bcd-before-raw");
+    if raw_snapshot.is_file() {
+        let mounted_temporarily = efi.drive_letter.is_none();
+        let letter = ensure_volume_mounted(efi, 'S', log)?;
+        let store = PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD"));
+        let result = (|| {
+            let expected = sha256_file(&raw_snapshot)?;
+            fs::copy(&raw_snapshot, &store)?;
+            backuprestore_core::verify_sha256(&store, &expected)?;
+            append_log(
+                log,
+                "Restored byte-for-byte EFI BCD snapshot after preparation failure",
+            )?;
+            Ok(())
+        })();
+        if mounted_temporarily {
+            let _ = Command::new("mountvol.exe")
+                .args([format!("{letter}:"), "/D".to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+        return result;
+    }
     let snapshot = task_dir.join("bcd-before-export");
     if !snapshot.is_file() {
         return Err(err(
@@ -686,7 +802,6 @@ fn inject_winre_payload(mount: &Path, payload: &Path) -> Result<(), TaskError> {
         return Err(err("mounted WinRE has no Windows\\System32"));
     }
     for name in [
-        "RecoveryLauncher.cmd",
         "RecoveryTask.env",
         "task.json",
         "winpeshl.ini",
@@ -727,6 +842,16 @@ fn validate_operation_inputs(
                 .partition_size
                 .saturating_sub(volume_free_bytes(source.drive_letter.unwrap())?)
                 .saturating_add(RESERVED_BYTES);
+            // Appending is transactional: Recovery copies the current WIM to
+            // a same-volume candidate before capture. Reserve that extra copy
+            // here so a full destination cannot strand the original half-way
+            // through an append attempt.
+            let append_candidate_bytes = image_path
+                .filter(|path| Path::new(path).is_file())
+                .map(|path| fs::metadata(path).map(|metadata| metadata.len()))
+                .transpose()?
+                .unwrap_or(0);
+            let required = required.saturating_add(append_candidate_bytes);
             if volume_free_bytes(image.drive_letter.unwrap())? < required {
                 return Err(err("backup destination free space is insufficient"));
             }
@@ -757,30 +882,15 @@ fn validate_operation_inputs(
                     &format!("/Index:{}", options.wim_index),
                 ],
             )?;
-            let metadata: Value = read_json(
-                Path::new(path)
-                    .parent()
-                    .ok_or_else(|| err("image has no parent"))?
-                    .join("metadata.json"),
-            )?;
-            let expected = metadata
-                .get("imageSha256")
-                .and_then(Value::as_str)
-                .ok_or_else(|| err("backup metadata has no imageSha256"))?;
+            let metadata = crate::read_index_metadata(Path::new(path), options.wim_index)?;
+            let expected = &metadata.image_sha256;
             let actual = sha256_file(path)?;
             if !actual.eq_ignore_ascii_case(expected) {
                 return Err(err("restore image hash does not match metadata"));
             }
             let minimum = metadata
-                .get("minimumTargetSize")
-                .and_then(Value::as_u64)
-                .or_else(|| {
-                    metadata
-                        .get("source")
-                        .and_then(|source| source.get("partitionSize"))
-                        .and_then(Value::as_u64)
-                })
-                .ok_or_else(|| err("backup metadata has no target-size requirement"))?;
+                .required_target_size()
+                .max(metadata.source.partition_size);
             if target.partition_size < minimum {
                 return Err(err("restore target is too small"));
             }
@@ -846,6 +956,12 @@ fn write_recovery_env(
     put_value(&mut values, "WORKSPACE_ROOT_REL", task_root_rel);
     insert_identity(&mut values, "RECOVERY", recovery);
     insert_identity(&mut values, "SOURCE", source);
+    if options.test_fault.as_deref() == Some("identity-env-mismatch") {
+        put_value(&mut values, "SOURCE_VOLUME_SERIAL", "FAULT-INJECTED".into());
+    }
+    if let Some(fault) = &options.test_fault {
+        put_value(&mut values, "TEST_FAULT", fault.clone());
+    }
     if let Some(source_drive) = source.drive_letter {
         let source_free = volume_free_bytes(source_drive)?;
         put_value(
@@ -1033,6 +1149,7 @@ fn require_administrator() -> Result<(), TaskError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .status()?;
     if status.success() {
         Ok(())
@@ -1132,6 +1249,7 @@ fn capture(program: &str, args: &[&str]) -> Result<String, TaskError> {
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -1290,7 +1408,7 @@ fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {
         CreateFileW(
             path.as_ptr(),
             GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             null_mut(),
             OPEN_EXISTING,
             0,
@@ -1298,7 +1416,10 @@ fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {
         )
     };
     if handle as isize == -1 {
-        Err(err("CreateFileW failed while reading volume identity"))
+        let error_code = unsafe { GetLastError() };
+        Err(err(&format!(
+            "CreateFileW failed while reading volume identity (Windows error {error_code})"
+        )))
     } else {
         Ok(handle)
     }
@@ -1424,6 +1545,7 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .status();
         if !status
             .as_ref()
@@ -1441,6 +1563,7 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .status();
         match identity {
             Ok(identity) if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) => {
@@ -1536,6 +1659,7 @@ fn is_drive_letter_available(letter: char) -> bool {
     let Ok(output) = Command::new("mountvol.exe")
         .args([format!("{letter}:"), "/L".to_string()])
         .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
     else {
         return false;
@@ -1618,7 +1742,7 @@ fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
     Ok(drives)
 }
 
-fn parse_dism_images(output: &str) -> Result<Vec<Value>, TaskError> {
+pub(crate) fn parse_dism_images(output: &str) -> Result<Vec<Value>, TaskError> {
     let mut images = Vec::new();
     let mut index = None;
     let mut name = String::new();
@@ -1791,6 +1915,19 @@ Installation Type : Client
     fn ignores_header_version_and_rejects_missing_indexes() {
         let output = "Version: 10.0.26100.1\nName: not an image\n";
         assert!(parse_dism_images(output).is_err());
+    }
+}
+
+#[cfg(test)]
+mod prepare_safety_tests {
+    use super::restore_workspace_target_error;
+
+    #[test]
+    fn same_drive_restore_is_rejected_before_privileged_identity_queries() {
+        assert_eq!(
+            restore_workspace_target_error('C').to_string(),
+            "invalid task: Cannot start restore: the program directory is on C:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
+        );
     }
 }
 
