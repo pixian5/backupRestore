@@ -123,53 +123,98 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 - `power-loss-window`：`boot-requested` 持久化后 GUI 能识别唯一待恢复任务，重新请求 WinRE，最终成功。
 - 1 GiB 目标容量不足被拒绝，未格式化；非 C: 源卷加密到 100% 后备份准备被拒绝。
 
+### 4.5 v1.3.3 三阶段断电续跑（实机完成）
+
+在基线快照 `before-v133-stage-fault-tests`（id `{9c3e4813-b14d-4db1-ad19-554bdd8b7a09}`）上切三个独立快照，每个流程 = `prepare --test-fault <name>`（`--current-user` 通道 + Start-Process -Verb RunAs）→ WinRE 内 fault 触发回 Windows → 启动 GUI 触发 `resume_pending_boot_task()`（reagentc /boottore + 重启）→ 续跑至 success：
+
+| 任务 | fault | 任务 ID | 结果 |
+|---|---|---|---|
+| Test1 | power-loss-target-erased | `7590b3ac-a869-4518-8ced-65099ae9797f` | success/100 |
+| Test2 | power-loss-image-applied | `93abc3a2-5051-467f-8ea0-e2697f8e7014` | success/100 |
+| Test3 | power-loss-boot-repaired | `ce53efd6-9261-4148-8df6-f4be524c8adc` | success/100 |
+
+- 每个任务 fault marker 恰好 1 个（一次性 marker 防循环）。
+- recovery.log 均含 `Preserved Boot Manager default {d2264b2f-...}; restored 1 original display-order entries and appended secondary loader`。
+- WinRE Enabled、无挂载 WIM；P↔Q 216 文件 216 size-match、98 目录一致。
+
+### 4.6 当前 EFI BCD 回归（实机完成）
+
+`bcdedit /enum` 确认 Windows Boot Manager 仅保留原 default `{d2264b2f-5431-11f1-9fa0-b55b60784edc}` 并追加 secondary（StageBootRepaired），firmware entries 未混入 Windows 菜单；三个 fault 测试各追加不同 secondary loader GUID。
+
+### 4.7 异常拒绝矩阵（实机完成）
+
+6 案例全部 EXITCODE=1、无新任务目录、`bcdedit /enum` 逻辑对比 UNCHANGED、WinRE 保持 Enabled、全程无重启：
+
+| 案例 | 结果 |
+|---|---|
+| missing-wim | 拒绝 |
+| corrupt-wim | 拒绝 |
+| efi-target | 拒绝（旧包报 BitLocker 错误，即第 5 项修复目标） |
+| recovery-target | 拒绝 |
+| image-vol-gone | 拒绝 |
+| same-vol-workspace | 拒绝（"Cannot start restore: the program directory is on Q:, which is the restore target...No task, WinRE, BCD or reboot was requested"） |
+
+### 4.8 Windows 安装发现字段 + EFI 显式拒绝 + json_text 修复（实机完成）
+
+- `windows_prepare.rs`：`DriveReport.has_windows_installation`；`discover_drives()` 检测 `{letter}:\Windows\System32\Config\SYSTEM`；restore 目标在 `assert_bitlocker_off` 之前显式拒绝保留分区（`restore_reserved_target_error()` + `prepare_safety_tests::reserved_restore_target_error_names_the_role`）。
+- `native_gui.rs`：`DriveInfo.hasWindowsInstallation` 解析与显示（"| Windows" 标记、"Windows 安装: 是/否"）。
+- **修复 bug**：`json_text()` 不处理布尔值 → GUI 中 hasWindowsInstallation 恒 false；修复为 `as_bool().map(|flag| flag.to_string())`，新增 `json_text_reads_boolean_values` 测试。
+- 实测 `list-volumes` 新字段：C/P/Q/G/F hasWindowsInstallation=True，H=False。
+- Windows 目标测试：CLI 16/16、core 17/17。
+
+### 4.9 GUI 逐页真实验收（实机完成）
+
+最新包（exe hash `355c222d61ceeff5580c73bf6e940c7b9e4ebfdfba321a08c080f7310b3c8159`）保持前台，经 Windows 侧注入真实 WM_COMMAND/BM_CLICK（GUI 提升运行，注入任务以 Interactive+RunLevel Highest 同会话执行，绕过 UIPI）逐页完成，gui.log 28 条动作记录 + 6 张截图归档于 `.test-artifacts/root-captures/v133-gui-*.png`：
+
+- 启动：标题/版本正确，C: 显示 "| Windows" 与 "Windows 安装: 是"。
+- 刷新环境：`GUI action completed: refresh environment; eligible_volumes=6`。
+- 备份页：源卷（备份来源）、镜像绝对路径 + 浏览…、提示文本正确。
+- 单系统还原页：源卷（当前系统）/目标卷（覆盖还原）双面板、WIM 索引占位正确。
+- 新增第二系统页：源卷（保留系统）/目标卷（第二系统）、第二系统名称默认 "Windows 备份"。
+- 读取镜像空路径：`GUI action blocked: invalid WIM path` + "参数校验失败" 对话框，可正常关闭。
+- 读取镜像 `H:\Images\CurrentEfiV131.wim`：`GUI action completed: read WIM metadata; indexes=1`，状态区显示 SHA-256 与索引 1 详情。
+- 刷新任务状态：started/completed 成对记录。
+
 ## 5. 当前未完成与失败证据
 
 ### 5.1 阶段断电续跑
 
-三种新 fault 为 `power-loss-target-erased`、`power-loss-image-applied`、`power-loss-boot-repaired`。当前状态是：**代码已覆盖、离线已验证、最新版 ARM64 实机待验证**。
-
-已发现并修复的真实问题：
-
-1. v1.3.1 续跑时 Windows/WinRE 盘符变化参与 payload 全量比较，报 `payload task does not match the workspace task`；v1.3.2 清除临时盘符后比较。
-2. 目标格式化改变卷序列号，续跑报 `TARGET volume serial differs after mounting`；v1.3.2 对已格式化目标放宽序列号，其余身份仍严格。
-3. v1.3.2 续跑重新进入同一阶段时 fault 无条件再次触发，形成格式化/重启循环；v1.3.3 增加一次性 marker，并只在首次进入阶段时注入。
-4. v1.3.3 修改后只完成本机检查和 ARM64 构建；因切换快照导致包目录不在当前快照，尚未用 v1.3.3 完成三种真实 WinRE 故障的最终成功证据。
+**已收口**：v1.3.3 三个 fault（target-erased/image-applied/boot-repaired）已在独立快照中各自完成真实 WinRE 断电→续跑→success，证据见 §4.5。修复链：v1.3.1 盘符参与比较 → v1.3.2 清除临时盘符 + 放宽已格式化目标序列号 → v1.3.3 一次性 fault marker 防循环。
 
 ### 5.2 当前 EFI 第二系统与独立 EFI
 
+- 当前 EFI `create-secondary` 最新版回归已收口（§4.6）：Windows Boot Manager 只保留原菜单并追加 secondary，不混入 firmware entries。
 - 独立 EFI E: 从 Parallels 固件首启动反复得到 `0xc0430001`。即使 BCD 指向 U:、Secure Boot 切换、`bootmgfw.efi` 版本对齐，仍未进入 U:。
 - 独立 EFI 仅保留为开发测试功能，不进入普通 GUI，也不作为 V1 发布门槛；现阶段产品只修改当前系统 EFI。
-- v1.3.1 曾完成一次当前 EFI 的第二系统 Apply/BCDBoot，并记录保留原 default、追加 secondary loader；最新 BCD 解析修复尚未在干净快照完成回归。
-- 现有证据排除了“仅旧 BCD 残留”“仅 Secure Boot 开关”和“仅 bootmgfw 版本不同”，但不能仅凭 `0xc0430001` 断定唯一根因。
+- 现有证据排除了“仅旧 BCD 残留”“仅 Secure Boot 开关”和“仅 bootmgfw 版本不同”，但不能仅凭 `0xc0430001` 断定唯一根因。**这是 V1 唯一已知失败项。**
 
 ### 5.3 GUI、安装发现和 BitLocker
 
-- GUI 代码已具备标签、绝对路径、盘符、WIM 索引、提示和 UAC；最新版尚未完成一条完整的真实鼠标流程验收。
-- 当前卷枚举返回普通 NTFS 卷身份，尚未将包含 `Windows\System32\Config\SYSTEM` 的当前/其他 Windows 安装作为结构化发现字段完整展示。
-- prepare 已检查源、镜像和还原目标的 BitLocker；EFI 角色的显式拒绝和所有角色组合的真实矩阵仍需补充。
-- 尚未在 C: 上开启或修改 BitLocker；角色测试只能用快照和非 C: 隔离卷。
+**已收口**：Windows 安装发现字段、EFI 保留分区显式拒绝、json_text 布尔修复和 GUI 逐页真实验收均已完成（§4.8/§4.9）。尚未在 C: 上开启或修改 BitLocker；角色测试只能用快照和非 C: 隔离卷（属于固定约束，不构成未完成项）。
 
 ### 5.4 尚待实机拒绝矩阵
 
-损坏 WIM、镜像文件运行时消失、EFI/Recovery 误选、程序目录移动到另一分区后直接运行、多个合法待恢复任务并存等场景已有代码边界或计划，但最新版尚需客体证据证明：无任务创建、无格式化、无 BCD/WinRE 修改、无重启请求。
+**已收口**：6 案例拒绝矩阵（§4.7）证明无任务创建、无格式化、无 BCD/WinRE 修改、无重启请求。
 
 ## 6. 当前客体事实
 
 - VM 是 Parallels `Windows 11` ARM64、UEFI、Secure Boot 开启；当前状态和星号快照必须每次用 `prlctl status`、`prlctl snapshot-list` 重新确认。
 - 阶段测试使用 P/Q/H fixture；WinRE 会把它们重新挂载为其他盘符，例如 G/F/H，所以恢复逻辑必须依赖 GUID。
 - 不能把 Parallels 控制中心窗口当作客体 GUI；Computer Use 操作前必须确认截图是 Windows 桌面或 BackupRestore 窗口。
+- GUI 提升运行（HIGH 完整性）时，非提升进程的 SendMessage/SetCursorPos/SendInput 均被 UIPI 静默拦截；可用计划任务（`New-ScheduledTaskPrincipal -UserId 'p8b6\x' -LogonType Interactive -RunLevel Highest`）在 Session 1 内提升注入 WM_COMMAND/BM_CLICK/WM_SETTEXT 完成 GUI 自动化（本轮已实测有效）。
 - 测试截图统一放在 `.test-artifacts/root-captures/`，不放项目根目录；历史包和无用快照应在确认引用关系后清理。
 
-## 7. 下一轮执行顺序
+## 7. 执行顺序（已完成）
 
-1. 恢复含 P/Q/H fixture 的干净快照，重新构建 v1.3.3 ARM64 包并核对 manifest、hash、架构和标题。
-2. 在三个独立快照中测试 TargetErased、ImageApplied、BootRepaired fault；每次确认只注入一次，任务最终到达 `success` 或安全 `failed`，WinRE Enabled、无挂载 WIM、Q payload 与源清单一致。
-3. 用当前系统 EFI 重跑 `create-secondary`，检查 Windows Boot Manager 只保留原菜单并追加 secondary，不混入 firmware entries。
-4. 实测损坏/缺失 WIM、EFI/Recovery 误选、镜像卷消失和程序目录移动；记录无任务、无 BCD/WinRE 变化和无重启。
-5. 补充 Windows 安装发现字段和 EFI BitLocker 显式检查，同步 CLI/core 测试。
-6. 用最新包保持 GUI 前台不关闭，Computer Use 逐页完成真实鼠标验收；截图只写入忽略目录。
-7. 更新所有状态文档，再运行离线检查和 ARM64 构建，最后中文提交并推送。
+第 7 节所列步骤已全部完成（v1.3.3 开发测试版收口）：
+
+1. ✅ 恢复含 P/Q/H fixture 的干净快照，重新构建 v1.3.3 ARM64 包并核对 manifest、hash、架构和标题（exe hash `355c222d…`）。
+2. ✅ 三阶段断电 fault 测试（§4.5）。
+3. ✅ 当前系统 EFI `create-secondary` 回归（§4.6）。
+4. ✅ 异常拒绝矩阵 6 案例（§4.7）。
+5. ✅ Windows 安装发现字段 + EFI BitLocker 显式检查 + json_text 布尔修复（§4.8）。
+6. ✅ 最新包 GUI 逐页真实验收（§4.9）。
+7. ✅ 更新状态文档 → 离线检查 → ARM64 构建 → 中文提交并推送（本轮）。
 
 ## 8. 统一判断口径
 
@@ -183,4 +228,4 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 | GUI 真实鼠标已验证 | 最新包由真实鼠标完成指定交互并有截图/日志 |
 | 已知失败 | 可重复错误码、日志和快照回滚证据 |
 
-当前总判断：**Rust 核心产品和非 C: 正常备份/还原链路已完成；v1.3.3 仍是开发测试版，阶段断电续跑最新版实机回归、Windows 安装发现、EFI BitLocker 角色矩阵、最新版 GUI 完整鼠标验收和独立 EFI 首启动仍未收口。**
+当前总判断：**Rust 核心产品、非 C: 正常备份/还原链路、三阶段断电续跑、当前 EFI BCD 回归、异常拒绝矩阵、Windows 安装发现与 EFI 显式拒绝、GUI 逐页真实验收均已收口；v1.3.3 开发测试版可提交推送。唯一已知失败项是独立 EFI E: 固件首启动 `0xc0430001`（不进入 GUI、不作为 V1 发布门槛）。**

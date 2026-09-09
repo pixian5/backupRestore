@@ -444,6 +444,7 @@ struct DriveInfo {
     disk_number: Option<u32>,
     partition_number: Option<u32>,
     partition_type_guid: String,
+    has_windows_installation: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -953,9 +954,14 @@ fn drive_display(drive: &DriveInfo, language: Language) -> String {
         .partition_number
         .map(|number| number.to_string())
         .unwrap_or_else(|| "?".to_string());
+    let windows_marker = if drive.has_windows_installation {
+        " | Windows"
+    } else {
+        ""
+    };
     if language == Language::English {
         format!(
-            "{}: | {} | {} | total {} | free {} | disk {}/partition {}",
+            "{}: | {} | {} | total {} | free {} | disk {}/partition {}{}",
             drive.letter,
             drive.filesystem,
             label,
@@ -963,10 +969,11 @@ fn drive_display(drive: &DriveInfo, language: Language) -> String {
             format_bytes(drive.free_bytes),
             disk,
             partition,
+            windows_marker,
         )
     } else {
         format!(
-            "{}: | {} | 卷标 {} | 总容量 {} | 可用 {} | 磁盘 {}/分区 {}",
+            "{}: | {} | 卷标 {} | 总容量 {} | 可用 {} | 磁盘 {}/分区 {}{}",
             drive.letter,
             drive.filesystem,
             label,
@@ -974,6 +981,7 @@ fn drive_display(drive: &DriveInfo, language: Language) -> String {
             format_bytes(drive.free_bytes),
             disk,
             partition,
+            windows_marker,
         )
     }
 }
@@ -989,7 +997,7 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
         .unwrap_or_else(|| "?".to_string());
     if language == Language::English {
         format!(
-            "{}: {}\nFile system: {}\nTotal: {} | Free: {}\nDisk/partition: {}/{}\nPartition type: {}\nVolume GUID: {}",
+            "{}: {}\nFile system: {}\nWindows installation: {}\nTotal: {} | Free: {}\nDisk/partition: {}/{}\nPartition type: {}\nVolume GUID: {}",
             drive.letter,
             if drive.label.is_empty() {
                 "no label"
@@ -997,6 +1005,11 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
                 &drive.label
             },
             drive.filesystem,
+            if drive.has_windows_installation {
+                "yes"
+            } else {
+                "no"
+            },
             format_bytes(drive.size_bytes),
             format_bytes(drive.free_bytes),
             disk,
@@ -1006,7 +1019,7 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
         )
     } else {
         format!(
-            "{}: {}\n文件系统：{}\n总容量：{} | 可用：{}\n磁盘/分区：{}/{}\n分区类型：{}\n卷 GUID：{}",
+            "{}: {}\n文件系统：{}\nWindows 安装：{}\n总容量：{} | 可用：{}\n磁盘/分区：{}/{}\n分区类型：{}\n卷 GUID：{}",
             drive.letter,
             if drive.label.is_empty() {
                 "无卷标"
@@ -1014,6 +1027,11 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
                 &drive.label
             },
             drive.filesystem,
+            if drive.has_windows_installation {
+                "是"
+            } else {
+                "否"
+            },
             format_bytes(drive.size_bytes),
             format_bytes(drive.free_bytes),
             disk,
@@ -1180,6 +1198,7 @@ fn json_text(value: &serde_json::Value, key: &str) -> String {
                 .map(ToOwned::to_owned)
                 .or_else(|| item.as_u64().map(|number| number.to_string()))
                 .or_else(|| item.as_i64().map(|number| number.to_string()))
+                .or_else(|| item.as_bool().map(|flag| flag.to_string()))
         })
         .unwrap_or_default()
 }
@@ -1213,6 +1232,8 @@ fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> {
             disk_number: json_text(&item, "diskNumber").parse::<u32>().ok(),
             partition_number: json_text(&item, "partitionNumber").parse::<u32>().ok(),
             partition_type_guid: json_text(&item, "partitionTypeGuid"),
+            has_windows_installation: json_text(&item, "hasWindowsInstallation")
+                .eq_ignore_ascii_case("true"),
         });
     }
     drives.sort_by(|left, right| left.letter.cmp(&right.letter));
@@ -2680,5 +2701,31 @@ pub fn run() -> Result<(), super::TaskError> {
             DispatchMessageW(&message);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod json_text_tests {
+    use super::json_text;
+    use serde_json::json;
+
+    #[test]
+    fn json_text_reads_boolean_values() {
+        let value = json!({
+            "hasWindowsInstallation": true,
+            "name": "C",
+            "count": 7,
+        });
+        assert_eq!(json_text(&value, "hasWindowsInstallation"), "true");
+        assert_eq!(json_text(&value, "name"), "C");
+        assert_eq!(json_text(&value, "count"), "7");
+        assert_eq!(json_text(&value, "missing"), "");
+        assert_eq!(
+            json_text(
+                &json!({"hasWindowsInstallation": false}),
+                "hasWindowsInstallation"
+            ),
+            "false"
+        );
     }
 }

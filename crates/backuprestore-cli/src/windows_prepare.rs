@@ -112,6 +112,11 @@ struct DriveReport {
     disk_number: u32,
     partition_number: u32,
     partition_type_guid: String,
+    /// True when the mounted volume contains a bootable Windows installation
+    /// (`\Windows\System32\Config\SYSTEM`). Lets the GUI label current and
+    /// offline Windows volumes so a user can tell them apart from plain data
+    /// partitions before choosing a source or restore target.
+    has_windows_installation: bool,
 }
 
 pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
@@ -161,6 +166,10 @@ fn restore_workspace_target_error(workspace_drive: char) -> TaskError {
     err(&format!(
         "Cannot start restore: the program directory is on {workspace_drive}:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
     ))
+}
+
+fn restore_reserved_target_error() -> TaskError {
+    err("EFI/MSR/Recovery partitions cannot be restore targets")
 }
 
 pub(crate) fn list_volumes() -> Result<(), TaskError> {
@@ -399,6 +408,14 @@ fn prepare_task(
         options.operation,
         Operation::RestoreExisting | Operation::CreateSecondary
     ) {
+        // Reject reserved restore targets explicitly before the BitLocker
+        // probe. `manage-bde` cannot open EFI/MSR/Recovery partitions, so
+        // without this early check a user selecting the EFI or Recovery
+        // partition would see a confusing BitLocker error instead of the real
+        // reason the target is ineligible.
+        if target.is_reserved_partition() {
+            return Err(restore_reserved_target_error());
+        }
         assert_bitlocker_off(
             options
                 .target_drive
@@ -1793,6 +1810,10 @@ fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
             disk_number: identity.disk_number.unwrap_or_default(),
             partition_number: identity.partition_number.unwrap_or_default(),
             partition_type_guid: identity.partition_type_guid,
+            has_windows_installation: Path::new(&format!(
+                r"{letter}:\Windows\System32\Config\SYSTEM"
+            ))
+            .is_file(),
         });
     }
     Ok(drives)
@@ -1976,13 +1997,21 @@ Installation Type : Client
 
 #[cfg(test)]
 mod prepare_safety_tests {
-    use super::restore_workspace_target_error;
+    use super::{restore_reserved_target_error, restore_workspace_target_error};
 
     #[test]
     fn same_drive_restore_is_rejected_before_privileged_identity_queries() {
         assert_eq!(
             restore_workspace_target_error('C').to_string(),
             "invalid task: Cannot start restore: the program directory is on C:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
+        );
+    }
+
+    #[test]
+    fn reserved_restore_target_error_names_the_role() {
+        assert_eq!(
+            restore_reserved_target_error().to_string(),
+            "invalid task: EFI/MSR/Recovery partitions cannot be restore targets"
         );
     }
 }
