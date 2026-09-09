@@ -82,6 +82,13 @@ try {
         Copy-Item -LiteralPath $source -Destination (Join-Path $system32 $name) -Force
     }
 
+    # Chinese font support: the ADK base winpe.wim ships no CJK glyphs, so
+    # Chinese labels render as boxes. Add the FontSupport optional component
+    # before committing.
+    $fontSupport = Join-Path $adkRoot 'WinPE_OCS\WinPE-FontSupport-ZH-CN.cab'
+    if (-not (Test-Path $fontSupport)) { throw "WinPE FontSupport-ZH-CN.cab was not found: $fontSupport" }
+    Invoke-Dism @('/Add-Package', "/Image:$mount", "/PackagePath:$fontSupport")
+
     # The ADK base already carries its architecture-matched DISM provider
     # tree below System32\Dism. Verify it in place; do not mix host-version
     # provider DLLs into the image.

@@ -41,7 +41,7 @@ mod windows_prepare;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -69,6 +69,27 @@ fn main() {
             // The native window consumes it once during initialization.
             unsafe { env::set_var("BACKUPRESTORE_OPEN_IMAGE", image) };
             launch_gui()
+        });
+        if let Err(error) = result {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(windows)]
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--pe-desktop")
+    {
+        // WinPE recovery desktop: full-screen shell-free landing window. The
+        // desktop returns the operation tab the technician picked; hand it to
+        // the main GUI so it opens directly on that page.
+        let result = unsafe { native_gui::run_pe_desktop() }.and_then(|tab| {
+            if let Some(tab) = tab {
+                unsafe { env::set_var("BACKUPRESTORE_OPEN_TAB", tab.to_string()) };
+                launch_gui()?;
+            }
+            Ok(())
         });
         if let Err(error) = result {
             eprintln!("error: {error}");

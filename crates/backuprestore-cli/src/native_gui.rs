@@ -99,6 +99,29 @@ const TTF_IDISHWND: u32 = 0x0001;
 const TTF_SUBCLASS: u32 = 0x0010;
 const ICC_WIN95_CLASSES: u32 = 0x000000ff;
 
+// PE desktop mode window messages, metrics and control identifiers.
+const WM_TIMER: u32 = 0x0113;
+const WM_CTLCOLORSTATIC: u32 = 0x0138;
+const WM_CTLCOLORBTN: u32 = 0x0135;
+const SM_CXSCREEN: i32 = 0;
+const SM_CYSCREEN: i32 = 1;
+const EWX_REBOOT: u32 = 0x00000002;
+const SS_CENTER: u32 = 0x0001;
+const ID_PE_BACKUP: usize = 1401;
+const ID_PE_RESTORE: usize = 1402;
+const ID_PE_SECONDARY: usize = 1403;
+const ID_PE_CMD: usize = 1404;
+const ID_PE_EXIT: usize = 1405;
+const ID_PE_REBOOT: usize = 1406;
+const ID_PE_TITLE: usize = 1407;
+const ID_PE_VERSION: usize = 1408;
+const ID_PE_CLOCK: usize = 1409;
+const PE_TIMER_ID: usize = 1;
+// COLORREF values are 0x00BBGGRR.
+const PE_BACKGROUND: u32 = 0x00553a2b; // RGB(43, 58, 85), deep blue-grey.
+const PE_TITLE_TEXT: u32 = 0x00e8e8ea; // near-white.
+
+
 #[repr(C)]
 struct Point {
     x: i32,
@@ -111,6 +134,18 @@ struct Rect {
     top: i32,
     right: i32,
     bottom: i32,
+}
+
+#[repr(C)]
+struct SystemTime {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    milliseconds: u16,
 }
 
 #[repr(C)]
@@ -277,6 +312,59 @@ unsafe extern "system" {
     fn InitCommonControlsEx(init: *const InitCommonControlsEx) -> i32;
 }
 
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetSystemMetrics(index: i32) -> i32;
+    fn ExitWindowsEx(flags: u32, reserved: u32) -> i32;
+    fn SetTimer(hwnd: Hwnd, id: usize, elapsed: u32, timer_proc: Option<unsafe extern "system" fn(Hwnd, u32, usize, u32)>) -> usize;
+    fn KillTimer(hwnd: Hwnd, id: usize) -> i32;
+    fn SetTextColor(hdc: Handle, color: u32) -> u32;
+    fn SetBkMode(hdc: Handle, mode: i32) -> i32;
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetLocalTime(time: *mut SystemTime);
+    fn FindFirstVolumeW(volume_name: *mut u16, size: u32) -> Handle;
+    fn FindNextVolumeW(handle: Handle, volume_name: *mut u16, size: u32) -> i32;
+    fn FindVolumeClose(handle: Handle) -> i32;
+    fn GetVolumeInformationW(
+        root_path: *const u16,
+        volume_name: *mut u16,
+        volume_name_size: u32,
+        serial: *mut u32,
+        max_component_length: *mut u32,
+        flags: *mut u32,
+        fs_name: *mut u16,
+        fs_name_size: u32,
+    ) -> i32;
+    fn SetVolumeMountPointW(mount_point: *const u16, volume: *const u16) -> i32;
+    fn DeleteVolumeMountPointW(mount_point: *const u16) -> i32;
+    fn GetFileAttributesW(name: *const u16) -> u32;
+}
+
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn CreateSolidBrush(color: u32) -> Handle;
+    fn DeleteObject(object: Handle) -> i32;
+    fn CreateFontW(
+        height: i32,
+        width: i32,
+        escapement: i32,
+        orientation: i32,
+        weight: i32,
+        italic: u32,
+        underline: u32,
+        strikeout: u32,
+        charset: u32,
+        output_precision: u32,
+        clip_precision: u32,
+        quality: u32,
+        pitch_and_family: u32,
+        face_name: *const u16,
+    ) -> Handle;
+}
+
 const GWLP_USERDATA: i32 = -21;
 
 #[repr(C)]
@@ -305,6 +393,14 @@ struct State {
     wim_images: Vec<WimImageInfo>,
     drives: Vec<DriveInfo>,
     operation_index: usize,
+}
+
+/// State for the PE recovery-desktop window. The operation the technician
+/// picks is carried out through `PE_EXIT_TAB` (an atomic) so the window can be
+/// destroyed safely inside WM_COMMAND before the message loop finishes.
+struct PeDesktopState {
+    clock: Hwnd,
+    fonts: [Handle; 3],
 }
 
 /// GUI diagnostics follow the executable, so moving the complete program
@@ -2556,6 +2652,13 @@ unsafe extern "system" fn window_proc(
                 read_image(&mut *state_ptr);
             }
         }
+        if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB") {
+            if let Ok(index) = tab.parse::<usize>() {
+                if (1..=3).contains(&index) {
+                    select_operation(&mut *state_ptr, index);
+                }
+            }
+        }
         return 0;
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -2627,6 +2730,346 @@ unsafe extern "system" fn window_proc(
         return 0;
     }
     DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+/// Exit selection shared between the PE desktop window procedure and
+/// `run_pe_desktop`: 0 = no operation, 1 = backup, 2 = restore,
+/// 3 = secondary system. A plain atomic avoids any use-after-free when the
+/// window is destroyed inside WM_COMMAND.
+static PE_EXIT_TAB: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe fn update_pe_clock(state: &PeDesktopState) {
+    let mut time = SystemTime {
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        milliseconds: 0,
+    };
+    GetLocalTime(&mut time);
+    let text = format!("{:02}:{:02}:{:02}", time.hour, time.minute, time.second);
+    set_text(state.clock, &text);
+}
+
+/// Restore the boot manager default to `{current}` and reboot, so a PE session
+/// launched through a temporary default does not trap the machine in PE. The
+/// EFI system partition is located by enumerating volumes, mounted to `S:`,
+/// and the BCD entry is rewritten with `bcdedit /store`.
+unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
+    let mut volume = [0u16; 512];
+    let handle = FindFirstVolumeW(volume.as_mut_ptr(), 512);
+    if handle as isize == -1 || handle.is_null() {
+        ExitWindowsEx(EWX_REBOOT, 0);
+        return;
+    }
+    let mut found_bcd = false;
+    loop {
+        let length = volume.iter().position(|&unit| unit == 0).unwrap_or(0);
+        let volume_path = String::from_utf16_lossy(&volume[..length]);
+        let mut volume_name = [0u16; 64];
+        let mut filesystem = [0u16; 64];
+        let mut serial = 0u32;
+        let mut max_component = 0u32;
+        let mut flags = 0u32;
+        let queried = GetVolumeInformationW(
+            wide(&volume_path).as_ptr(),
+            volume_name.as_mut_ptr(),
+            64,
+            &mut serial,
+            &mut max_component,
+            &mut flags,
+            filesystem.as_mut_ptr(),
+            64,
+        );
+        if queried != 0 {
+            let fs_length = filesystem
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(0);
+            let fs = String::from_utf16_lossy(&filesystem[..fs_length]).to_ascii_uppercase();
+            if fs == "FAT" || fs == "FAT32" {
+                let mount = wide("S:\\");
+                if SetVolumeMountPointW(mount.as_ptr(), wide(&volume_path).as_ptr()) != 0 {
+                    let bcd = wide("S:\\EFI\\Microsoft\\Boot\\BCD");
+                    if GetFileAttributesW(bcd.as_ptr()) != u32::MAX {
+                        let arguments = wide(
+                            "/store S:\\EFI\\Microsoft\\Boot\\BCD /set {bootmgr} default {current}",
+                        );
+                        let bcdedit = wide("bcdedit.exe");
+                        ShellExecuteW(hwnd, null(), bcdedit.as_ptr(), arguments.as_ptr(), null(), 0);
+                        Sleep(1500);
+                        found_bcd = true;
+                    }
+                    DeleteVolumeMountPointW(mount.as_ptr());
+                    if found_bcd {
+                        break;
+                    }
+                }
+            }
+        }
+        if FindNextVolumeW(handle, volume.as_mut_ptr(), 512) == 0 {
+            break;
+        }
+    }
+    FindVolumeClose(handle);
+    ExitWindowsEx(EWX_REBOOT, 0);
+}
+
+unsafe extern "system" fn window_proc_pe(
+    hwnd: Hwnd,
+    message: u32,
+    w_param: WParam,
+    l_param: LParam,
+) -> LResult {
+    if message == WM_CREATE {
+        let face = wide("Segoe UI");
+        let title_font = CreateFontW(-44, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 0, 0, face.as_ptr());
+        let card_font = CreateFontW(-30, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 0, 0, face.as_ptr());
+        let bar_font = CreateFontW(-18, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 0, 0, face.as_ptr());
+        let width = GetSystemMetrics(SM_CXSCREEN).max(640);
+        let height = GetSystemMetrics(SM_CYSCREEN).max(480);
+
+        let title = create_control(
+            hwnd,
+            "STATIC",
+            &format!("BackupRestore 恢复桌面  v{PROGRAM_VERSION}"),
+            SS_CENTER,
+            0,
+            36,
+            width,
+            64,
+            ID_PE_TITLE,
+        );
+        let card_width = 280;
+        let card_height = 108;
+        let gap = 36;
+        let grid_width = card_width * 3 + gap * 2;
+        let start_x = ((width - grid_width) / 2).max(0);
+        let start_y = ((height - (card_height * 2 + gap + 150)) / 2).max(16) + 24;
+        let cards: [(usize, &str, i32, i32); 6] = [
+            (ID_PE_BACKUP, "备份系统", 0, 0),
+            (ID_PE_RESTORE, "还原系统", 1, 0),
+            (ID_PE_SECONDARY, "安装第二系统", 2, 0),
+            (ID_PE_CMD, "命令提示符", 0, 1),
+            (ID_PE_EXIT, "返回 Windows", 1, 1),
+            (ID_PE_REBOOT, "重启", 2, 1),
+        ];
+        let mut card_controls = Vec::with_capacity(6);
+        for (id, text, column, row) in cards {
+            let x = start_x + column * (card_width + gap);
+            let y = start_y + row * (card_height + gap);
+            card_controls.push(create_control(
+                hwnd,
+                "BUTTON",
+                text,
+                WS_TABSTOP,
+                x,
+                y,
+                card_width,
+                card_height,
+                id,
+            ));
+        }
+        let bar_y = height - 44;
+        let version = create_control(
+            hwnd,
+            "STATIC",
+            &format!("BackupRestore v{PROGRAM_VERSION}  |  WinPE"),
+            0,
+            16,
+            bar_y,
+            360,
+            30,
+            ID_PE_VERSION,
+        );
+        let clock = create_control(
+            hwnd,
+            "STATIC",
+            "--:--:--",
+            SS_CENTER,
+            width - 220,
+            bar_y,
+            200,
+            30,
+            ID_PE_CLOCK,
+        );
+
+        SendMessageW(title, WM_SETFONT, title_font as WParam, 1);
+        for control in &card_controls {
+            SendMessageW(*control, WM_SETFONT, card_font as WParam, 1);
+        }
+        SendMessageW(version, WM_SETFONT, bar_font as WParam, 1);
+        SendMessageW(clock, WM_SETFONT, bar_font as WParam, 1);
+
+        let state = Box::new(PeDesktopState {
+            clock,
+            fonts: [title_font, card_font, bar_font],
+        });
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        SetTimer(hwnd, PE_TIMER_ID, 1000, None);
+        return 0;
+    }
+    let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PeDesktopState;
+    if !state_ptr.is_null() {
+        let state = &mut *state_ptr;
+        if message == WM_COMMAND {
+            let control_id = w_param & 0xffff;
+            match control_id {
+                ID_PE_BACKUP => {
+                    PE_EXIT_TAB.store(1, std::sync::atomic::Ordering::SeqCst);
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                ID_PE_RESTORE => {
+                    PE_EXIT_TAB.store(2, std::sync::atomic::Ordering::SeqCst);
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                ID_PE_SECONDARY => {
+                    PE_EXIT_TAB.store(3, std::sync::atomic::Ordering::SeqCst);
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                ID_PE_EXIT => {
+                    // Return to the main Windows installation: find the EFI
+                    // system partition that carries BCD, mount it, restore the
+                    // boot manager default to {current}, then reboot. Without
+                    // this step a PE set as the default would loop back into
+                    // PE forever.
+                    exit_pe_to_windows(hwnd);
+                    return 0;
+                }
+                ID_PE_CMD => {
+                    let cmd = wide("cmd.exe");
+                    ShellExecuteW(hwnd, null(), cmd.as_ptr(), null(), null(), SW_SHOW);
+                    return 0;
+                }
+                ID_PE_REBOOT => {
+                    if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
+                        let wpe = wide("wpeutil.exe");
+                        let argument = wide("reboot");
+                        ShellExecuteW(hwnd, null(), wpe.as_ptr(), argument.as_ptr(), null(), SW_SHOW);
+                    }
+                    return 0;
+                }
+                _ => {}
+            }
+        }
+        if message == WM_TIMER && w_param == PE_TIMER_ID {
+            update_pe_clock(state);
+            return 0;
+        }
+        if message == WM_CTLCOLORSTATIC || message == WM_CTLCOLORBTN {
+            let hdc = l_param as Handle;
+            SetBkMode(hdc, 1);
+            SetTextColor(hdc, PE_TITLE_TEXT);
+            return PE_BACKGROUND as LResult;
+        }
+        if message == WM_DESTROY {
+            KillTimer(hwnd, PE_TIMER_ID);
+            for font in state.fonts {
+                if !font.is_null() {
+                    DeleteObject(font);
+                }
+            }
+            drop(Box::from_raw(state_ptr));
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            PostQuitMessage(0);
+            return 0;
+        }
+    }
+    DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+/// Full-screen, shell-free recovery desktop for WinPE sessions. The main GUI
+/// follows when the technician picks backup/restore/secondary (returned as the
+/// operation tab index); `None` means the desktop was dismissed without one.
+pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
+    unsafe {
+        let common_controls = InitCommonControlsEx {
+            size: size_of::<InitCommonControlsEx>() as u32,
+            classes: ICC_WIN95_CLASSES,
+        };
+        InitCommonControlsEx(&common_controls);
+        if !is_elevated() {
+            relaunch_elevated()?;
+            return Ok(None);
+        }
+        close_previous_gui_windows();
+        let instance = GetModuleHandleW(null());
+        if instance.is_null() {
+            return Err(super::err("GetModuleHandleW failed"));
+        }
+        let background = CreateSolidBrush(PE_BACKGROUND);
+        let class_name = wide("BackupRestorePeDesktop");
+        let class = WndClassExW {
+            cb_size: size_of::<WndClassExW>() as u32,
+            style: 0,
+            wnd_proc: Some(window_proc_pe),
+            cb_cls_extra: 0,
+            cb_wnd_extra: 0,
+            h_instance: instance,
+            h_icon: null_mut(),
+            h_cursor: null_mut(),
+            h_brush: background,
+            menu_name: null(),
+            class_name: class_name.as_ptr(),
+            h_icon_sm: null_mut(),
+        };
+        if RegisterClassExW(&class) == 0 {
+            return Err(super::err("RegisterClassExW failed (PE desktop)"));
+        }
+        PE_EXIT_TAB.store(0, std::sync::atomic::Ordering::SeqCst);
+        let width = GetSystemMetrics(SM_CXSCREEN).max(640);
+        let height = GetSystemMetrics(SM_CYSCREEN).max(480);
+        let title = wide(&format!(
+            "BackupRestore - PE Recovery Desktop v{PROGRAM_VERSION}"
+        ));
+        let window = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            title.as_ptr(),
+            WS_POPUP | WS_VISIBLE,
+            0,
+            0,
+            width,
+            height,
+            null_mut(),
+            null_mut(),
+            instance,
+            null_mut(),
+        );
+        if window.is_null() {
+            return Err(super::err("CreateWindowExW failed (PE desktop)"));
+        }
+        ShowWindow(window, SW_SHOW);
+        let mut message = Msg {
+            hwnd: null_mut(),
+            message: 0,
+            w_param: 0,
+            l_param: 0,
+            time: 0,
+            point: Point { x: 0, y: 0 },
+        };
+        loop {
+            let result = GetMessageW(&mut message, null_mut(), 0, 0);
+            if result <= 0 {
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        let exit_tab = match PE_EXIT_TAB.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => Some(1),
+            2 => Some(2),
+            3 => Some(3),
+            _ => None,
+        };
+        Ok(exit_tab)
+    }
 }
 
 pub fn run() -> Result<(), super::TaskError> {

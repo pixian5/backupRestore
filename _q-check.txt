@@ -1,0 +1,61 @@
+﻿--- Q volume ---
+
+
+DriveLetter     : Q
+FileSystemLabel : 
+FileSystem      : NTFS
+Size            : 8589930496
+SizeRemaining   : 8379682816
+
+
+
+
+--- Q root (elevated) ---
+$RECYCLE.BIN
+BackupRestore-pkg
+fixture
+System Volume Information
+Windows
+Mac disk
+--- C:\BackupRestorePE\media\media ---
+bg-bg
+Boot
+cs-cz
+da-dk
+de-de
+EFI
+el-gr
+en-gb
+en-us
+es-es
+es-mx
+et-ee
+fi-fi
+fr-ca
+fr-fr
+hr-hr
+hu-hu
+it-it
+ja-jp
+ko-kr
+lt-lt
+lv-lv
+nb-no
+nl-nl
+pl-pl
+pt-br
+pt-pt
+ro-ro
+ru-ru
+sk-sk
+sl-si
+sources
+sr-latn-rs
+sv-se
+tr-tr
+uk-ua
+zh-cn
+zh-tw
+bootmgr.efi
+--- media\media\sources ---
+boot.wim 412674225

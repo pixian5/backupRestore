@@ -188,6 +188,19 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 - **环境清理**：验证后已恢复 `before-pe-boot-test` 快照还原现场；死条目 `{547dddcc-…}`（StageBootRepaired）已从 BCD 删除（`/delete /cleanup`，2026-09-10），displayorder 恢复仅 `{current}`。
 - **结论**：create-secondary 启动侧闭环（BCD 追加 → 菜单 → 引导第二系统）在真实引导链上验证通过（以 PE 作为第二系统）。完整 Windows 第二系统（非 PE）的引导机制与 PE 完全同构（同 bootmgr → ramdisk/分区 → winload.efi 路径），Q 死条目不构成 BCD 机制问题，属目标卷残缺；若需全量闭环可后续用完整系统 WIM 再验，非 V1 门槛。
 
+### 4.11 路线 3：自建 PE「恢复桌面」（实机完成，2026-09-10）
+
+**目标**（用户拍板路线 3）：PE 启动链（winpeshl.ini）直接启动产品 exe，以全屏「专用恢复桌面」呈现（深蓝背景 + 6 卡片 + 底部版本栏 + 数字时钟），真实重启进 PE 验证中文、卡片、可退出回 Windows。
+
+- **代码（已落地，编译通过）**：`crates/backuprestore-cli/src/native_gui.rs` 新增 PE 桌面全套——`run_pe_desktop()`（RegisterClassExW "BackupRestorePeDesktop" + WS_POPUP 全屏 + 消息循环）、`window_proc_pe()`（WM_CREATE 建 6 卡+时钟、WM_TIMER 每秒刷新、WM_CTLCOLORSTATIC/BTN 返回深蓝背景 0x00553a2b、WM_COMMAND 处理卡片、WM_DESTROY 清理）、`exit_pe_to_windows()`（枚举卷→挂 FAT/FAT32 到 S:\→ShellExecuteW bcdedit /store 改 default={current}→Sleep→卸载→ExitWindowsEx 重启）；`main.rs` 加 `--pe-desktop` 分支 + env `BACKUPRESTORE_OPEN_TAB`；`windows/winpeshl.ini` 入口改 `%SYSTEMROOT%\System32\BackupRestore.exe,--pe-desktop`。
+- **构建/打包管线（全本地化，零下载）**：`windows\build-windows.ps1 -Architecture arm64` → 包目录含 BackupRestore.exe/Recovery.exe/VCRUNTIME140*.dll/winpeshl.ini；`poc/build-backuprestore-pe.ps1`：DISM 挂载 ADK arm64 winpe.wim → 注入 5 payload → **`/Add-Package WinPE_OCS\WinPE-FontSupport-ZH-CN.cab`（中文字体，本轮新增）** → Commit/Export → copype 三环境变量配方 `_copype6.cmd` → 定制 boot.wim（412,676,713 B）。
+- **第一轮实机（2026-09-10 02:30）**：BCD 建 PE 条目 {179ca179-…} + {ramdiskoptions} + default=PE → 真实重启 → **PE 桌面成功显示**（深蓝背景、6 卡、时钟走动，截图 `pe-desktop-boot.png`），但**中文全乱码方块**（定制 wim 缺 CJK 字体）。
+- **第二轮失败 0xc0000225 根因定位**：加 FontSupport + 「返回 Windows」卡后重建 wim（fc81bcc5…）→ 部署 → 真实重启 → Boot Manager "Windows failed to start 0xc0000225"（截图 `boot-diag-2.png`、`key-91.png` 证明 Windows 键注入无效）。**回滚排查对比两次 BCD 差异：第一次成功条目含显式 `systemroot \windows` + `nx OptIn`，第二轮 `bcdedit /create` 新条目缺这两个字段 → 补上后（`_deploy3.ps1` 修订）重新部署 → 0xc0000225 消失**。附验证：Q:\sources\boot.wim SHA256 与源 media 完全一致（复制无损坏）。
+- **最终实机（2026-09-10 03:16）**：定制 wim（fc81bcc5…，含字体+EXIT）部署 + BCD 完整（displayorder {current} {179ca179}、default=PE、timeout 5）→ 真实重启 → **PE 恢复桌面完整显示：标题「BackupRestore 恢复桌面 v1.3.3」、六卡「备份系统/还原系统/安装第二系统/命令提示符/返回 Windows/重启」全部正常中文、底部版本栏「BackupRestore v1.3.3 | WinPE」+ 数字时钟 03:16:25 走动**（截图 `pe-desktop-zh.png`，OCR 全中文无乱码）。**中文显示 + 桌面本体 = 实机达成。**
+- **「返回 Windows」退出链路**：代码逻辑就绪（枚举卷→挂 FAT/FAT32 到 S:\→改 ESP BCD default={current}→ExitWindowsEx 重启）；Windows 侧已验证 ESP BCD 路径存在可读（`mountvol S: /S` → `S:\EFI\Microsoft\Boot\BCD` 存在）。**真实点击受 Parallels 环境限制**（PE 无 Tools 会话、prlctl send-key-event 在 PE 桌面亦不注入——本轮实测 6×Tab+Enter 无反应），自动化无法代点，留用户真实使用鼠标点击验收。
+- **收尾（菜单模式）**：验证完成后 BCD default 恢复 `{current}`（默认进 Windows），PE 条目保留在 displayorder（timeout 5 菜单可选）→ 真实重启**自动进 Windows 桌面**（截图 `win-back.png`，3:39 时间戳）。产品形态：**重启见菜单（Windows 11 / Windows PE Test），选 PE 进恢复桌面，PE 内「返回 Windows」退出回 Windows**。
+- **结论**：路线 3 核心目标（PE 桌面中文显示 + 引导链 + 可退出设计）实机验证达成；0xc0000225 根因（BCD osloader 条目缺 systemroot/nx）已修复并沉淀到 `_deploy3.ps1`。遗留：PE 内卡片点击自动化（Parallels 注入限制）与「返回 Windows」真机点击留用户手动，非产品缺陷。
+
 ## 5. 当前未完成与失败证据
 
 ### 5.1 阶段断电续跑
