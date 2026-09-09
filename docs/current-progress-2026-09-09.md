@@ -164,7 +164,7 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 
 ### 4.9 GUI 逐页真实验收（实机完成）
 
-最新包（exe hash `355c222d61ceeff5580c73bf6e940c7b9e4ebfdfba321a08c080f7310b3c8159`）保持前台，经 Windows 侧注入真实 WM_COMMAND/BM_CLICK（GUI 提升运行，注入任务以 Interactive+RunLevel Highest 同会话执行，绕过 UIPI）逐页完成，gui.log 28 条动作记录 + 6 张截图归档于 `.test-artifacts/root-captures/v133-gui-*.png`：
+最新包（exe hash `355c222d61ceeff5580c73bf6e940c7b9e4ebfdfba321a08c080f7310b3c8159`）保持前台，经 Windows 侧注入真实 WM_COMMAND/BM_CLICK（GUI 提升运行，注入任务以 Interactive+RunLevel Highest 同会话执行，绕过 UIPI）逐页完成，gui.log 30 条动作记录 + 8 张截图归档于 `.test-artifacts/root-captures/v133-gui-*.png`：
 
 - 启动：标题/版本正确，C: 显示 "| Windows" 与 "Windows 安装: 是"。
 - 刷新环境：`GUI action completed: refresh environment; eligible_volumes=6`。
@@ -173,6 +173,7 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 - 新增第二系统页：源卷（保留系统）/目标卷（第二系统）、第二系统名称默认 "Windows 备份"。
 - 读取镜像空路径：`GUI action blocked: invalid WIM path` + "参数校验失败" 对话框，可正常关闭。
 - 读取镜像 `H:\Images\CurrentEfiV131.wim`：`GUI action completed: read WIM metadata; indexes=1`，状态区显示 SHA-256 与索引 1 详情。
+- **多索引 WIM 下拉验收（2026-09-10 补齐）**：从 CurrentEfiV131.wim 用 DISM Export-Image 生成 `H:\Images\MultiIndexTest.wim`（索引 1/2，DISM `/Get-WimInfo` 实读确认，名称分别为 "Windows Backup Index 1/2"）；GUI 填入路径读取返回 `GUI action completed: read WIM metadata; indexes=2`（SHA-256 `7abab43c0e840f7080605f451712264833a02e28b8a941d1ac4725a5531c2f70`）；CB_SHOWDROPDOWN 展开后下拉列表显示 "索引 1 | Windows Backup Index 1" 与 "索引 2 | Windows Backup Index 2" 两项，截图归档 v133-gui-07-multiindex-loaded.png / v133-gui-08-multiindex-dropdown.png。
 - 刷新任务状态：started/completed 成对记录。
 
 ## 5. 当前未完成与失败证据

@@ -4,7 +4,7 @@
 适用范围：Windows 10/11 UEFI/GPT 开发测试版系统备份还原工具（当前 `VERSION`：1.3.3）
 配套文档：[project-status.md](project-status.md)、[verification-matrix.md](verification-matrix.md)、[implementation-notes.md](implementation-notes.md)、[development-execution-protocol.md](development-execution-protocol.md)
 
-本轮完整状态基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。该基线明确区分 v1.3.3 的代码/离线检查与尚未完成的三种阶段断电实机回归。
+本轮完整状态基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。该基线已记录 v1.3.3 三种阶段断电实机回归全部收口（见 §8.4 与 current-progress §4.5）。
 
 本方案是把“代码/离线证据”与“Windows/WinRE 实机证据”分开验收的操作手册。任何破坏性还原测试只允许在可回滚的虚拟机快照中执行；`C:` 不作为备份源或还原目标。判定口径沿用：**代码已覆盖 / 离线已验证 / 实机待验证 / 实机已验证**。
 
@@ -170,15 +170,15 @@
 | F-03 | 断电窗口续跑    | 通过 | 任务 `eba1f4f2-c1b7-4e86-babe-ed0ac0560c48`：prepare 持久化 `boot-requested` 后未请求关机（VM 未重启）；GUI 启动识别唯一待恢复任务并重新请求 WinRE；`Recovery.log` 记录 `Recovery completed`、`WinRE cleanup completed; task marked successful`、`wpeutil.exe reboot`；最终 `success/progress=100`、WinRE 恢复 Enabled、无挂载镜像 |
 | F-04 | 独立 EFI 引导（开发测试） | 已知失败 | 已复测为 `0xc0430001`；不作为产品功能，逐阶段断电组合不宣称全部覆盖 |
 
-### 8.4 v1.3.3 新增阶段故障（尚未收口）
+### 8.4 v1.3.3 新增阶段故障（已收口）
 
 | 用例 | 注入点 | 当前状态 | 已知问题与修复 |
 |---|---|---|---|
-| `power-loss-target-erased` | 目标格式化并持久化 `target-erased` 后重启 | 实机待验证 | 续跑允许目标卷序列号因格式化改变；marker 防止重复注入 |
-| `power-loss-image-applied` | DISM Apply 完成并持久化 `image-applied` 后重启 | 实机待验证 | 续跑重做 Apply，再进入 BCDBoot；marker 防止重复注入 |
-| `power-loss-boot-repaired` | 持久化 `boot-repaired` 后、BCDBoot 前重启 | 实机待验证 | 续跑只重做启动修复和验证；marker 防止重复注入 |
+| `power-loss-target-erased` | 目标格式化并持久化 `target-erased` 后重启 | 实机已验证 | 续跑允许目标卷序列号因格式化改变；marker 防止重复注入；任务 `7590b3ac-a869-4518-8ced-65099ae9797f` success/100 |
+| `power-loss-image-applied` | DISM Apply 完成并持久化 `image-applied` 后重启 | 实机已验证 | 续跑重做 Apply，再进入 BCDBoot；marker 防止重复注入；任务 `93abc3a2-5051-467f-8ea0-e2697f8e7014` success/100 |
+| `power-loss-boot-repaired` | 持久化 `boot-repaired` 后、BCDBoot 前重启 | 实机已验证 | 续跑只重做启动修复和验证；marker 防止重复注入；任务 `ce53efd6-9261-4148-8df6-f4be524c8adc` success/100 |
 
-这三项在 v1.3.3 完成真实 WinRE 回归前，不能写成“故障恢复已全部通过”。完整原因和执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。
+三个 fault 均在独立快照完成真实 WinRE 断电→续跑→success，fault marker 各恰好 1 个，WinRE 恢复 Enabled、无挂载 WIM，P↔Q 216 文件 216 大小一致。完整证据见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) §4.5。
 
 ### 8.3 快照基线
 
