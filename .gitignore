@@ -36,3 +36,22 @@ mountvol-*.png
 !.env.example
 secrets/
 nul
+
+# one-off deploy/debug artifacts
+/_*.txt
+/_probe.txt
+/_t2.txt
+/_wim-verify*
+/_rollback-check*
+/_rc2*
+/_state-check*
+/_q-check*
+/_verify-deploy*
+/_clean-pkg*
+/_deploy2*
+/_deploy3*
+/_build-pe*
+/_bcd-pe-default*
+/_copype6.cmd
+/_adk-font-check*
+/_deploy-pe*
