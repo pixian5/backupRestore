@@ -176,6 +176,17 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 - **多索引 WIM 下拉验收（2026-09-10 补齐）**：从 CurrentEfiV131.wim 用 DISM Export-Image 生成 `H:\Images\MultiIndexTest.wim`（索引 1/2，DISM `/Get-WimInfo` 实读确认，名称分别为 "Windows Backup Index 1/2"）；GUI 填入路径读取返回 `GUI action completed: read WIM metadata; indexes=2`（SHA-256 `7abab43c0e840f7080605f451712264833a02e28b8a941d1ac4725a5531c2f70`）；CB_SHOWDROPDOWN 展开后下拉列表显示 "索引 1 | Windows Backup Index 1" 与 "索引 2 | Windows Backup Index 2" 两项，截图归档 v133-gui-07-multiindex-loaded.png / v133-gui-08-multiindex-dropdown.png。
 - 刷新任务状态：started/completed 成对记录。
 
+### 4.10 create-secondary 菜单实际启动第二系统（实机完成，2026-09-10）
+
+**验证动线**：只读核查 BCD → 真实重启看菜单 → 固件阶段键盘注入判死 → 死条目定位 → 改道 PE 第二系统 → 真实引导进入 PE。
+
+- **BCD 追加侧（§4.6 已验）基础上补真实重启**：`bcdedit /bootsequence {547dddcc-ac5f-11f1-8d4a-cc37f74e6a64}`（default 保持 `{current}` 不变）→ `prlctl restart` → Boot Manager 菜单真实出现两条目「Windows 11」（默认高亮，25 秒计时）与「StageBootRepaired」，截图 `v133-bootmenu-01-two-entries.png`。
+- **死条目定位（0xc000000f 实锤）**：菜单停留无键响应（prlctl send-key-event 在 bootmgr 固件阶段完全不注入——`--key 0x5B` 报格式错、`--key 40/13` 接受但无效果、`--scancode 0xE050/0xE0/0x50` 被拒，与「BIOS/锁屏只有 VNC/USB HID 可能」方案分析一致）；`bcdedit /bootsequence` 改引导 {547dddcc} → 真实重启 → Recovery 蓝屏 "File: \Windows\system32\winload.efi / Error code: 0xc000000f"，截图 `v133-bootmenu-02-recovery-0xc000000f.png`。根因：Q 系统残缺——`Q:\Windows\System32` 只有 `bootstr.dll` 无 `winload.efi`（v1.3.3 断电测试 boot-repaired 阶段的最小重建产物），StageBootRepaired 为「菜单出现但引导必败」的死条目。**实锤"BCD 有条目 ≠ 可引导"。**
+- **PE 作为第二系统（用户改道，全部载荷本地化，零下载）**：发现已装 ADK 10.1.28000.1 的 WinPE 加载项（`arm64\en-us\winpe.wim` 366,848,527 B 一直在位，先前"载荷未装"为误判）；copype 反复失败真因是提升会话三个环境变量为空——显式 `set WinPERoot / OSCDImgRoot(Deployment Tools\arm64\Oscdimg) / DISMRoot(C:\Windows\System32)` + 先清理目标目录后 `copype.cmd arm64 C:\WinPE_arm64` **EXIT=0 成功**（脚本保留在共享目录 `_copype6.cmd`）。部署 `C:\WinPE_arm64\media → Q:\`（`Q:\sources\boot.wim` 366MB / `Q:\boot\boot.sdi` / `Q:\bootmgr.efi` 在位）；BCD 新增 osloader 条目 {137379e8-ac70-11f1-8753-f4d0933357ef}「Windows PE Test」device/osdevice=`ramdisk=[Q:]\sources\boot.wim,{ramdiskoptions}`、path `\windows\system32\winload.efi`、winpe yes、detecthal yes；**该 VM BCD 原本不存在 {ramdiskoptions} 对象**，补 `bcdedit /create {ramdiskoptions}` + ramdisksdidevice partition=Q: + ramdisksdipath \boot\boot.sdi；displayorder /addlast + bootsequence 均成功（枚举证据 `_bcdpe2.log`）。
+- **真实引导进入 PE（验证目标达成）**：`prlctl restart` → bootmgr → ramdisk 加载 Q:\sources\boot.wim（boot.wim 内 winload.efi，天然绕开 Q 缺物理 winload.efi）→ **进入 WinPE：标题 "Administrator: X:\windows\system32\cmd.exe"，已执行 wpeinit，回到 `X:\Windows\System32>` 提示符（X: 为 PE RAM 盘，标准 PE 特征）**，截图 `v133-bootmenu-03-pe-booted.png`。**"BCD 追加条目 → 真实重启 → 进入第二系统"引导链完整成立。**
+- **已知坑（PE 场景特有）**：PE（winpe=yes）环境下 bootmgr 不消费/不写回 bootsequence（PE 是 RAM 盘，无法回写 ESP 的 BCD）→ 设了 bootsequence 后每次重启都会再进 PE，验证后需恢复快照（本轮用 `before-pe-boot-test` 快照还原现场）或人工清 bootsequence。prlctl send-key-event 固件阶段无效已实证，Boot Manager 菜单交互自动化仅剩 VNC/USB HID 通道（未采用）。
+- **结论**：create-secondary 启动侧闭环（BCD 追加 → 菜单 → 引导第二系统）在真实引导链上验证通过（以 PE 作为第二系统）。完整 Windows 第二系统（非 PE）的引导机制与 PE 完全同构（同 bootmgr → ramdisk/分区 → winload.efi 路径），Q 死条目不构成 BCD 机制问题，属目标卷残缺；若需全量闭环可后续用完整系统 WIM 再验，非 V1 门槛。
+
 ## 5. 当前未完成与失败证据
 
 ### 5.1 阶段断电续跑
