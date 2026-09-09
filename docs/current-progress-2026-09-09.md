@@ -185,9 +185,9 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 ### 5.2 当前 EFI 第二系统与独立 EFI
 
 - 当前 EFI `create-secondary` 最新版回归已收口（§4.6）：Windows Boot Manager 只保留原菜单并追加 secondary，不混入 firmware entries。
-- 独立 EFI E: 从 Parallels 固件首启动反复得到 `0xc0430001`。即使 BCD 指向 U:、Secure Boot 切换、`bootmgfw.efi` 版本对齐，仍未进入 U:。
-- 独立 EFI 仅保留为开发测试功能，不进入普通 GUI，也不作为 V1 发布门槛；现阶段产品只修改当前系统 EFI。
-- 现有证据排除了“仅旧 BCD 残留”“仅 Secure Boot 开关”和“仅 bootmgfw 版本不同”，但不能仅凭 `0xc0430001` 断定唯一根因。**这是 V1 唯一已知失败项。**
+- 独立 EFI E: 从 Parallels 固件首启动反复得到 `0xc0430001`（BCD 指向 U:、Secure Boot 切换、bootmgfw 版本对齐均无效）。已排除“仅旧 BCD 残留”“仅 Secure Boot 开关”“仅 bootmgfw 版本不同”三个假设。
+- **决策（2026-09-10，用户确认）：独立 EFI 不作为开发投入。** 产品多系统通过当前系统 EFI 的 BCD 追加启动项实现（create-secondary，已实机验证）；独立 EFI 仅保留 `--test-efi-drive` 代码作内部诊断，不再排期排查 `0xc0430001`，标记为已知限制（不支持从独立 EFI 引导）。
+- 该项不进入普通 GUI、不作为 V1 发布门槛；V1 唯一已知失败项随之关闭为“已知限制”。
 
 ### 5.3 GUI、安装发现和 BitLocker
 
