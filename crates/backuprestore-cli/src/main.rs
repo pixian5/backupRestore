@@ -233,7 +233,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         let Ok(task) = read_json::<Task>(&task_path) else {
             continue;
         };
-        if task.status != Stage::BootRequested || task.validate().is_err() {
+        if !stage_resumable_after_interruption(task.status) || task.validate().is_err() {
             continue;
         }
         let Ok(status) = read_json::<StatusRecord>(&status_path) else {
@@ -241,7 +241,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         };
         if status.task_id.eq_ignore_ascii_case(&task.task_id)
             && status.operation == task.operation
-            && status.stage == Stage::BootRequested
+            && status.stage == task.status
             && task.task_id.eq_ignore_ascii_case(&task_id)
         {
             pending.push((task, entry.path()));
@@ -256,7 +256,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         append_log(
             &log,
             &format!(
-                "Pending boot recovery not resumed: {} valid boot-requested tasks found",
+                "Pending recovery not resumed: {} valid resumable tasks found",
                 pending.len()
             ),
         )?;
@@ -288,8 +288,8 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
     append_log(
         &log,
         &format!(
-            "Detected durable boot-requested task after normal Windows startup; resuming task {} operation={:?}",
-            task.task_id, task.operation
+            "Detected durable interrupted task after normal Windows startup; resuming task {} operation={:?} stage={:?}",
+            task.task_id, task.operation, task.status
         ),
     )?;
     let reagentc = Command::new("reagentc.exe")
@@ -329,6 +329,24 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         "Restart requested to resume pending task in Windows RE",
     )?;
     Ok(true)
+}
+
+/// A prepared task may be a deliberate `--no-reboot` diagnostic and must not
+/// start WinRE by itself. Every later non-terminal stage, however, represents
+/// an already authorized recovery that was interrupted after WinRE staging;
+/// it is safe to re-request the one-time WinRE boot after artifact validation.
+#[cfg(any(windows, test))]
+fn stage_resumable_after_interruption(stage: Stage) -> bool {
+    matches!(
+        stage,
+        Stage::BootRequested
+            | Stage::RecoveryStarted
+            | Stage::Preflight
+            | Stage::Capturing
+            | Stage::TargetErased
+            | Stage::ImageApplied
+            | Stage::BootRepaired
+    )
 }
 
 fn err(message: &str) -> TaskError {
@@ -533,14 +551,14 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // available.  Switch to the task directory immediately after mounting;
     // all task/recovery logs that survive WinRE are stored there.
     let mut early_log = PathBuf::from(r"X:\BackupRestore-Recovery-early.log");
-    let task_letter = mount_env_volume(&values, "WORKSPACE", 'T', &early_log)?;
+    let task_letter = mount_env_volume(&values, "WORKSPACE", 'T', &early_log, false)?;
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
     // Mount Recovery before loading/validating the task so the emergency
     // guard always uses the Recovery volume letter, never the workspace
     // letter. The old ordering could attempt restoration under T:\Recovery.
-    let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log)?;
+    let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log, false)?;
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, recovery_letter);
     let mut task = store.load(&task_id)?;
     if matches!(task.status, Stage::Success | Stage::Failed) {
@@ -594,21 +612,31 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             &staged,
         )?;
         // The payload task is the immutable copy staged before the one-time
-        // boot request. Compare every field, allowing only the normal status
-        // advance from Prepared to BootRequested in the workspace copy.
+        // boot request. Compare every field except the durable stage: after a
+        // real interruption the workspace task is legitimately at
+        // TargetErased/ImageApplied/BootRepaired while the immutable payload
+        // remains Prepared.
         let payload_task: Task = read_json(&task_json)?;
         payload_task.validate()?;
-        let mut expected_payload_task = task.clone();
-        expected_payload_task.status = Stage::Prepared;
-        if payload_task != expected_payload_task {
+        let mut comparable_payload = payload_task;
+        let mut comparable_workspace = task.clone();
+        // Drive letters are intentionally ephemeral.  WinRE remounts the
+        // same GUID-identified volumes using its own letters (for example
+        // P:/Q: become G:/H:).  Comparing those letters made every
+        // interrupted task fail before it could resume, despite all stable
+        // partition identities being identical.
+        clear_task_drive_letters(&mut comparable_payload);
+        clear_task_drive_letters(&mut comparable_workspace);
+        comparable_payload.status = comparable_workspace.status;
+        if comparable_payload != comparable_workspace {
             return Err(err(
                 "payload task does not match the workspace task prepared for this recovery",
             ));
         }
 
         let efi_letter = if task.operation != Operation::Probe {
-            let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log)?;
-            let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log)?;
+            let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log, false)?;
+            let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log, false)?;
             if let Some(source) = task.source.as_mut() {
                 source.drive_letter = Some(source_letter);
             }
@@ -619,10 +647,19 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 destination.volume.drive_letter = Some(image_letter);
             }
             if task.target.is_some() {
-                let target_letter = mount_env_volume(&values, "TARGET", 'W', &early_log)?;
+                let target_letter = mount_env_volume(
+                    &values,
+                    "TARGET",
+                    'W',
+                    &early_log,
+                    matches!(
+                        task.status,
+                        Stage::TargetErased | Stage::ImageApplied | Stage::BootRepaired
+                    ),
+                )?;
                 // WinRE may reuse E: for an image/data volume; keep EFI on a
                 // late temporary letter to avoid mount collisions.
-                let efi_letter = mount_env_volume(&values, "EFI", 'Z', &early_log)?;
+                let efi_letter = mount_env_volume(&values, "EFI", 'Z', &early_log, false)?;
                 if let Some(target) = task.target.as_mut() {
                     target.volume.drive_letter = Some(target_letter);
                 }
@@ -639,7 +676,8 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 .as_ref()
                 .ok_or_else(|| err("probe task is missing workspace volume identity"))?;
             if !workspace_volume.same_partition(source) {
-                source.drive_letter = Some(mount_env_volume(&values, "SOURCE", 'S', &early_log)?);
+                source.drive_letter =
+                    Some(mount_env_volume(&values, "SOURCE", 'S', &early_log, false)?);
             } else {
                 source.drive_letter = Some(task_letter);
                 append_log(
@@ -720,6 +758,26 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             }
             Err(recovery_error)
         }
+    }
+}
+
+#[cfg(any(windows, test))]
+#[allow(dead_code)]
+fn clear_task_drive_letters(task: &mut Task) {
+    if let Some(source) = task.source.as_mut() {
+        source.drive_letter = None;
+    }
+    if let Some(workspace) = task.workspace_volume.as_mut() {
+        workspace.drive_letter = None;
+    }
+    if let Some(image) = task.image.as_mut() {
+        image.volume.drive_letter = None;
+    }
+    if let Some(destination) = task.destination.as_mut() {
+        destination.volume.drive_letter = None;
+    }
+    if let Some(target) = task.target.as_mut() {
+        target.volume.drive_letter = None;
     }
 }
 
@@ -849,6 +907,7 @@ fn verify_task_identity_env(
         values: &BTreeMap<String, String>,
         prefix: &str,
         identity: &backuprestore_core::VolumeIdentity,
+        allow_reformatted_serial: bool,
     ) -> Result<(), TaskError> {
         for (suffix, expected, label) in [
             ("VOLUME_GUID", identity.volume_guid.as_str(), "volume"),
@@ -902,7 +961,7 @@ fn verify_task_identity_env(
                 )));
             }
         }
-        if !identity.volume_serial.trim().is_empty() {
+        if !allow_reformatted_serial && !identity.volume_serial.trim().is_empty() {
             let actual = env_required(values, &format!("{prefix}_VOLUME_SERIAL"))?;
             if !identity.volume_serial.eq_ignore_ascii_case(&actual) {
                 return Err(err(&format!(
@@ -914,20 +973,20 @@ fn verify_task_identity_env(
     }
 
     if let Some(source) = task.source.as_ref() {
-        verify(values, "SOURCE", source)?;
+        verify(values, "SOURCE", source, false)?;
     }
     let workspace_volume = task
         .workspace_volume
         .as_ref()
         .ok_or_else(|| err("task.json is missing workspace_volume identity"))?;
-    verify(values, "WORKSPACE", workspace_volume)?;
+    verify(values, "WORKSPACE", workspace_volume, false)?;
     match task.operation {
         Operation::Backup => {
             let destination = task
                 .destination
                 .as_ref()
                 .ok_or_else(|| err("backup task is missing destination"))?;
-            verify(values, "IMAGE", &destination.volume)?;
+            verify(values, "IMAGE", &destination.volume, false)?;
             verify_image_absolute_path(values, destination.absolute_path.as_deref())?;
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
@@ -935,13 +994,21 @@ fn verify_task_identity_env(
                 .image
                 .as_ref()
                 .ok_or_else(|| err("restore task is missing image"))?;
-            verify(values, "IMAGE", &image.volume)?;
+            verify(values, "IMAGE", &image.volume, false)?;
             verify_image_absolute_path(values, image.absolute_path.as_deref())?;
             let target = task
                 .target
                 .as_ref()
                 .ok_or_else(|| err("restore task is missing target"))?;
-            verify(values, "TARGET", &target.volume)?;
+            verify(
+                values,
+                "TARGET",
+                &target.volume,
+                matches!(
+                    task.status,
+                    Stage::TargetErased | Stage::ImageApplied | Stage::BootRepaired
+                ),
+            )?;
         }
         Operation::Probe => {}
     }
@@ -971,6 +1038,7 @@ fn mount_env_volume(
     prefix: &str,
     letter: char,
     log: &Path,
+    allow_reformatted_serial: bool,
 ) -> Result<char, TaskError> {
     let disk = env_u32(values, &format!("{prefix}_DISK_NUMBER"))?;
     let partition = env_u32(values, &format!("{prefix}_PARTITION_NUMBER"))?;
@@ -981,7 +1049,7 @@ fn mount_env_volume(
             &format!("{prefix} volume already mounted at {existing}:; reusing it"),
         )?;
         verify_mounted_volume(existing, &expected)?;
-        verify_live_volume_identity(existing, values, prefix)?;
+        verify_live_volume_identity(existing, values, prefix, allow_reformatted_serial)?;
         return Ok(existing);
     }
     // X: is the writable WinRE RAM disk. C: may be the offline Windows
@@ -1002,7 +1070,7 @@ fn mount_env_volume(
         {
             if actual.eq_ignore_ascii_case(&expected) {
                 verify_mounted_volume(letter, &expected)?;
-                verify_live_volume_identity(letter, values, prefix)?;
+                verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
                 return Ok(letter);
             }
             return Err(err(&format!(
@@ -1023,7 +1091,7 @@ fn mount_env_volume(
     )?;
     if direct_status.success() {
         verify_mounted_volume(letter, &expected)?;
-        verify_live_volume_identity(letter, values, prefix)?;
+        verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
         return Ok(letter);
     }
     let body =
@@ -1071,7 +1139,7 @@ fn mount_env_volume(
     )?;
     let _ = fs::remove_file(&script);
     verify_mounted_volume(letter, &expected)?;
-    verify_live_volume_identity(letter, values, prefix)?;
+    verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
     Ok(letter)
 }
 
@@ -1080,6 +1148,7 @@ fn verify_live_volume_identity(
     letter: char,
     values: &BTreeMap<String, String>,
     prefix: &str,
+    allow_reformatted_serial: bool,
 ) -> Result<(), TaskError> {
     // A volume GUID alone is insufficient: it can survive reformatting or a
     // stale mount assignment. Re-read the live GPT/device identity after
@@ -1138,13 +1207,15 @@ fn verify_live_volume_identity(
             )));
         }
     }
-    if let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL"))
-        && !live.volume_serial.is_empty()
-        && !live.volume_serial.eq_ignore_ascii_case(&expected)
-    {
-        return Err(err(&format!(
-            "{prefix} volume serial differs after mounting"
-        )));
+    if !allow_reformatted_serial {
+        if let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL"))
+            && !live.volume_serial.is_empty()
+            && !live.volume_serial.eq_ignore_ascii_case(&expected)
+        {
+            return Err(err(&format!(
+                "{prefix} volume serial differs after mounting"
+            )));
+        }
     }
     Ok(())
 }
@@ -1239,17 +1310,30 @@ fn restore_bcd_snapshot(
     if let Some(efi_store) = efi_store.filter(|path| path.exists()) {
         if raw_snapshot.is_file() {
             let expected = sha256_file(&raw_snapshot)?;
-            fs::copy(&raw_snapshot, &efi_store)?;
-            backuprestore_core::verify_sha256(&efi_store, &expected)?;
-            append_log(
-                log,
-                "Previous byte-for-byte EFI BCD snapshot restored after boot repair failure",
-            )?;
+            match fs::copy(&raw_snapshot, &efi_store) {
+                Ok(_) => {
+                    backuprestore_core::verify_sha256(&efi_store, &expected)?;
+                    append_log(
+                        log,
+                        "Previous byte-for-byte EFI BCD snapshot restored after boot repair failure",
+                    )?;
+                }
+                Err(error) if error.raw_os_error() == Some(32) => {
+                    let snapshot_arg = raw_snapshot.to_string_lossy().into_owned();
+                    run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
+                    append_log(
+                        log,
+                        "Raw EFI BCD restore was locked; imported the saved BCD snapshot",
+                    )?;
+                }
+                Err(error) => return Err(error.into()),
+            }
         } else {
-            // Old tasks only contain a logical BCD export. `bcdedit /import`
-            // cannot target an explicit test EFI partition, so retain the
-            // historical copy-and-open fallback for those tasks.
-            fs::copy(&snapshot, &efi_store)?;
+            // Older tasks only contain a logical BCD export. Import it into
+            // the selected EFI store; copying the export bytes is not a valid
+            // rollback because the file may be a different hive format.
+            let snapshot_arg = snapshot.to_string_lossy().into_owned();
+            run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
             append_log(
                 log,
                 "Legacy exported BCD snapshot restored after boot repair failure",
@@ -1257,9 +1341,9 @@ fn restore_bcd_snapshot(
         }
         // Do not invoke `bcdedit /store /enum` after the byte-level copy:
         // opening a BCD hive can rewrite its internal transaction metadata
-        // and change the SHA-256 that we just verified. The copy plus hash is
-        // the authoritative rollback proof; the legacy exported fallback
-        // retains its historical import behavior below.
+        // and change the SHA-256 that we just verified. The copy plus hash
+        // is the authoritative rollback proof; the logical fallback is
+        // recorded separately above.
     } else {
         let snapshot_arg = snapshot.to_string_lossy().into_owned();
         run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
@@ -1570,6 +1654,7 @@ fn recover_windows(
             // task versions persisted ImageApplied before DISM completed, so
             // resume from ImageApplied also re-runs Apply-Image defensively.
             if matches!(task.status, Stage::Preflight | Stage::TargetErased) {
+                let entering_target_erased = task.status == Stage::Preflight;
                 if task.status == Stage::Preflight {
                     store.write_transition(task, Stage::TargetErased)?;
                 }
@@ -1580,8 +1665,17 @@ fn recover_windows(
                     ));
                 }
                 verify_partition_identity_after_format(&target.volume, log)?;
+                if entering_target_erased {
+                    interrupt_after_stage_if_requested(
+                        metadata_context,
+                        "power-loss-target-erased",
+                        Stage::TargetErased,
+                        log,
+                    );
+                }
             }
             if matches!(task.status, Stage::TargetErased | Stage::ImageApplied) {
+                let entering_image_applied = task.status == Stage::TargetErased;
                 run_logged(
                     "dism.exe",
                     &[
@@ -1595,14 +1689,31 @@ fn recover_windows(
                 if task.status == Stage::TargetErased {
                     store.write_transition(task, Stage::ImageApplied)?;
                 }
+                if entering_image_applied {
+                    interrupt_after_stage_if_requested(
+                        metadata_context,
+                        "power-loss-image-applied",
+                        Stage::ImageApplied,
+                        log,
+                    );
+                }
             }
             let efi = find_efi_root(efi_root)?;
             if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
+                let entering_boot_repaired = task.status == Stage::ImageApplied;
                 // BootRepaired is recorded immediately before BCDBoot so a
                 // failure is eligible for BCD rollback.  A retry from that
                 // stage simply re-runs BCDBoot and validates its output.
                 if task.status == Stage::ImageApplied {
                     store.write_transition(task, Stage::BootRepaired)?;
+                }
+                if entering_boot_repaired {
+                    interrupt_after_stage_if_requested(
+                        metadata_context,
+                        "power-loss-boot-repaired",
+                        Stage::BootRepaired,
+                        log,
+                    );
                 }
                 if metadata_context
                     .and_then(|values| env_optional(values, "TEST_FAULT"))
@@ -1612,6 +1723,14 @@ fn recover_windows(
                     return Err(err("development test fault: BCDBoot failure injected"));
                 }
                 let windows_root = target_root.join("Windows");
+                // Capture the primary BCD state from the byte-for-byte task
+                // snapshot before BCDBoot.  It remains available even if a
+                // power failure occurs after BCDBoot changes the live store.
+                let previous_boot_manager = if target.role == TargetRole::NewWindows {
+                    Some(boot_manager_state_from_task_snapshot(store, task, log)?)
+                } else {
+                    None
+                };
                 let mut bcd_args = vec![
                     windows_root.to_string_lossy().into_owned(),
                     "/s".to_string(),
@@ -1635,7 +1754,13 @@ fn recover_windows(
                         .boot_menu_name
                         .as_deref()
                         .ok_or_else(|| err("secondary target has no boot menu name"))?;
-                    set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
+                    let identifier = set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
+                    preserve_primary_boot_manager(
+                        &efi,
+                        previous_boot_manager.as_ref().expect("secondary BCD state"),
+                        &identifier,
+                        log,
+                    )?;
                 }
                 if finalize_success {
                     store.write_transition(task, Stage::Success)?;
@@ -1650,6 +1775,47 @@ fn recover_windows(
     }
     append_log(log, "Recovery completed")?;
     Ok(())
+}
+
+/// Development-only fault injection for a power loss after a durable recovery
+/// stage.  Reboot immediately without writing `failed` or cleaning WinRE, so
+/// a subsequent normal-Windows GUI launch must detect and resume the task.
+#[cfg(windows)]
+fn interrupt_after_stage_if_requested(
+    metadata_context: Option<&BTreeMap<String, String>>,
+    fault: &str,
+    stage: Stage,
+    log: &Path,
+) {
+    if metadata_context
+        .and_then(|values| env_optional(values, "TEST_FAULT"))
+        .as_deref()
+        != Some(fault)
+    {
+        return;
+    }
+    // A simulated power-loss task is deliberately booted again by the normal
+    // GUI. Persist a one-shot marker before rebooting so the same injected
+    // fault cannot fire forever when the resumed stage is re-entered.
+    let marker = log.with_file_name(format!(".fault-{fault}.triggered"));
+    if marker.is_file() {
+        return;
+    }
+    if fs::write(&marker, format!("stage={stage:?}\n")).is_err() {
+        let _ = append_log(
+            log,
+            "Development test fault marker could not be persisted; refusing injection",
+        );
+        return;
+    }
+    let _ = append_log(
+        log,
+        &format!(
+            "Development test fault: simulating power loss after durable stage {stage:?}; rebooting without cleanup"
+        ),
+    );
+    let _ = run_logged("wpeutil.exe", &["reboot"], log);
+    std::process::exit(0);
 }
 
 #[cfg(windows)]
@@ -1868,7 +2034,7 @@ fn set_secondary_boot_menu(
     target_root: &Path,
     menu_name: &str,
     log: &Path,
-) -> Result<(), TaskError> {
+) -> Result<String, TaskError> {
     let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
     if !store.exists() {
         return Err(err("BCD store is missing after BCDBoot"));
@@ -1886,29 +2052,31 @@ fn set_secondary_boot_menu(
         .ok_or_else(|| err("secondary target has no drive letter"))?
         .to_ascii_lowercase();
     let target_needle = format!("partition={letter}:");
-    let mut current_id: Option<String> = None;
-    let mut matched = Vec::new();
-    for line in output.lines() {
-        let trimmed = line.trim();
-        let lower = trimmed.to_ascii_lowercase();
-        // `bcdedit` localizes its field names and on WinRE can emit an OEM
-        // code page. The BCD object GUID is invariant and occurs on each
-        // entry header before its device/osdevice fields, so use that instead
-        // of matching a translated "identifier" label.
-        if let Some(identifier) = bcd_identifier_from_line(trimmed) {
-            current_id = Some(identifier.to_string());
-        }
-        if lower.contains(&target_needle) {
-            if let Some(identifier) = current_id.as_ref() {
-                if !matched.contains(identifier) {
-                    matched.push(identifier.clone());
-                }
-            }
-        }
-    }
-    let identifier = matched.last().ok_or_else(|| {
-        err("BCDBoot created no Windows loader tied to the selected target partition")
-    })?;
+    // Parse blank-line-separated BCD objects. The first GUID in a block is
+    // the object identifier; later GUIDs belong to recovery/resume/inherit
+    // references. Restrict matches to a Windows loader path so a
+    // winresume.efi object cannot receive the secondary menu description.
+    let normalized_output = output.replace("\r\n", "\n");
+    let identifier = normalized_output
+        .split("\n\n")
+        .filter_map(|block| {
+            let identifier = block.lines().find_map(bcd_identifier_from_line)?;
+            let lower = block.to_ascii_lowercase();
+            let is_loader = lower.contains("winload.efi");
+            let targets_partition = lower.lines().any(|line| {
+                let line = line.trim_start();
+                (line.starts_with("device")
+                    || line.starts_with("osdevice")
+                    || line.starts_with("设备")
+                    || line.starts_with("os 设备"))
+                    && line.contains(&target_needle)
+            });
+            (is_loader && targets_partition).then_some(identifier.to_string())
+        })
+        .next()
+        .ok_or_else(|| {
+            err("BCDBoot created no Windows loader tied to the selected target partition")
+        })?;
     let description_args = [
         "/store",
         store_arg.as_str(),
@@ -1933,7 +2101,196 @@ fn set_secondary_boot_menu(
         log,
         &format!("Secondary Windows loader {identifier} named {menu_name}"),
     )?;
+    Ok(identifier.clone())
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BcdBootManagerState {
+    default: String,
+    display_order: Vec<String>,
+}
+
+/// Read the original Boot Manager state from the BCD snapshot captured while
+/// preparing the task. BCDBoot documents that `/addlast` is ignored when `/s`
+/// specifies a volume, and it can replace Boot Manager's default with the new
+/// loader. The snapshot is therefore the source of truth across retries.
+#[cfg(windows)]
+fn boot_manager_state_from_task_snapshot(
+    store: &TaskStore,
+    task: &Task,
+    log: &Path,
+) -> Result<BcdBootManagerState, TaskError> {
+    let task_dir = store.task_dir(&task.task_id)?;
+    let text_snapshot = task_dir.join("bcd-before-bootmgr.txt");
+    if text_snapshot.is_file() {
+        let output = fs::read_to_string(&text_snapshot)?;
+        return parse_boot_manager_state(&output)
+            .ok_or_else(|| err("saved Boot Manager state is missing or invalid"));
+    }
+    let raw_snapshot = task_dir.join("bcd-before-raw");
+    let snapshot = if raw_snapshot.is_file() {
+        raw_snapshot
+    } else {
+        task_dir.join("bcd-before-export")
+    };
+    if !snapshot.is_file() {
+        return Err(err(
+            "task BCD snapshot is missing before secondary boot repair",
+        ));
+    }
+    boot_manager_state_from_store(&snapshot, log)
+}
+
+#[cfg(windows)]
+fn boot_manager_state_from_store(
+    store: &Path,
+    log: &Path,
+) -> Result<BcdBootManagerState, TaskError> {
+    let store_arg = store.to_string_lossy().into_owned();
+    let output = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    parse_boot_manager_state(&output)
+        .ok_or_else(|| err("existing Boot Manager state is missing or invalid"))
+}
+
+/// Restore the exact previous default and display order, appending the newly
+/// created secondary loader last. This uses BCDEdit after BCDBoot because
+/// BCDBoot ignores `/addlast` when called with an explicit EFI root.
+#[cfg(windows)]
+fn preserve_primary_boot_manager(
+    efi_root: &Path,
+    previous: &BcdBootManagerState,
+    secondary_identifier: &str,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
+    let store_arg = store.to_string_lossy().into_owned();
+    run_logged(
+        "bcdedit.exe",
+        &[
+            "/store",
+            &store_arg,
+            "/set",
+            "{bootmgr}",
+            "default",
+            &previous.default,
+        ],
+        log,
+    )?;
+    let mut expected_order: Vec<String> = previous
+        .display_order
+        .iter()
+        .filter(|identifier| !identifier.eq_ignore_ascii_case(secondary_identifier))
+        .cloned()
+        .collect();
+    if expected_order.is_empty() {
+        expected_order.push(previous.default.clone());
+    }
+    expected_order.push(secondary_identifier.to_string());
+    let mut display_args = vec![
+        "/store".to_string(),
+        store_arg.clone(),
+        "/displayorder".to_string(),
+    ];
+    display_args.extend(expected_order.iter().cloned());
+    let display_refs: Vec<&str> = display_args.iter().map(String::as_str).collect();
+    run_logged("bcdedit.exe", &display_refs, log)?;
+    let verified_text = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    let verified = parse_boot_manager_state(&verified_text)
+        .ok_or_else(|| err("Boot Manager state could not be read after preserving order"))?;
+    if verified.default != previous.default
+        || verified
+            .display_order
+            .last()
+            .is_none_or(|identifier| !identifier.eq_ignore_ascii_case(secondary_identifier))
+        || expected_order.iter().any(|identifier| {
+            !verified
+                .display_order
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(identifier))
+        })
+    {
+        return Err(err(
+            "Boot Manager default or secondary display order could not be preserved",
+        ));
+    }
+    append_log(
+        log,
+        &format!(
+            "Preserved Boot Manager default {}; restored {} original display-order entries and appended secondary loader {secondary_identifier}",
+            previous.default,
+            expected_order.len().saturating_sub(1),
+        ),
+    )?;
     Ok(())
+}
+
+/// Parse the minimal Boot Manager state required to preserve the existing
+/// loader. The BCD field labels may be localized, but the value tokens are
+/// invariant braced identifiers.
+#[cfg(any(windows, test))]
+fn parse_boot_manager_state(output: &str) -> Option<BcdBootManagerState> {
+    // `/enum all` includes a firmware boot-manager object that also has a
+    // `displayorder`. Scope the parser to the Windows Boot Manager object;
+    // otherwise a secondary restore could put firmware entries in the
+    // Windows loader menu.
+    let output = output.replace("\r\n", "\n");
+    let boot_manager = output.split("\n\n").find(|block| {
+        block
+            .lines()
+            .find_map(bcd_identifier_from_line)
+            .is_some_and(|identifier| {
+                identifier.eq_ignore_ascii_case("{9dea862c-5cdd-4e70-acc1-f32b344d4795}")
+            })
+    })?;
+    let mut default = None;
+    let mut display_order = Vec::new();
+    let mut reading_display_order = false;
+    for line in boot_manager.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("default") || trimmed.starts_with("默认") {
+            default = bcd_value_from_line(trimmed).map(str::to_owned);
+            reading_display_order = false;
+            continue;
+        }
+        if lower.starts_with("displayorder") || trimmed.starts_with("显示顺序") {
+            reading_display_order = true;
+        }
+        if reading_display_order {
+            if let Some(value) = bcd_value_from_line(trimmed) {
+                display_order.push(value.to_owned());
+            } else if !trimmed.is_empty() {
+                reading_display_order = false;
+            }
+        }
+    }
+    Some(BcdBootManagerState {
+        default: default?,
+        display_order,
+    })
+}
+
+/// Accept GUIDs and BCDEdit's well-known aliases, but nothing that could turn
+/// captured BCD text into an argument injection.
+#[cfg(any(windows, test))]
+fn bcd_value_from_line(line: &str) -> Option<&str> {
+    let start = line.find('{')?;
+    let end = line[start..].find('}')? + start + 1;
+    let value = &line[start..end];
+    (value.len() >= 3
+        && value[1..value.len() - 1]
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-'))
+    .then_some(value)
 }
 
 #[cfg(windows)]
@@ -2020,9 +2377,10 @@ fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bcd_identifier_from_line, diskpart_format_script, parse_recover_options,
-        split_workspace_root_rel,
+        bcd_identifier_from_line, diskpart_format_script, parse_boot_manager_state,
+        parse_recover_options, split_workspace_root_rel, stage_resumable_after_interruption,
     };
+    use backuprestore_core::Stage;
 
     #[test]
     fn recover_options_accept_explicit_efi_root() {
@@ -2090,6 +2448,57 @@ mod tests {
         assert_eq!(bcd_identifier_from_line("{not-a-bcd-guid}"), None);
     }
 
+    #[test]
+    fn secondary_loader_selection_ignores_resume_object() {
+        let output = "Windows Boot Loader\nidentifier {11111111-2222-4333-8444-555555555555}\ndevice partition=Q:\nosdevice partition=Q:\npath \\Windows\\system32\\winload.efi\n\nWindows Resume Application\nidentifier {22222222-3333-4444-8555-666666666666}\ndevice partition=Q:\npath \\Windows\\system32\\winresume.efi";
+        let selected = output
+            .split("\n\n")
+            .filter_map(|block| {
+                let identifier = block.lines().find_map(bcd_identifier_from_line)?;
+                let lower = block.to_ascii_lowercase();
+                let targets_partition = lower.lines().any(|line| {
+                    let line = line.trim_start();
+                    (line.starts_with("device") || line.starts_with("osdevice"))
+                        && line.contains("partition=q:")
+                });
+                (lower.contains("winload.efi") && targets_partition).then_some(identifier)
+            })
+            .next();
+        assert_eq!(selected, Some("{11111111-2222-4333-8444-555555555555}"));
+    }
+
+    #[test]
+    fn boot_manager_state_parser_accepts_guid_and_alias_only() {
+        assert_eq!(
+            parse_boot_manager_state(
+                "Firmware Boot Manager\nidentifier {aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}\ndisplayorder {ffffffff-1111-4222-8333-444444444444}\n\nWindows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {11111111-2222-4333-8444-555555555555}\ndisplayorder {11111111-2222-4333-8444-555555555555}"
+            )
+            .unwrap()
+            .default,
+            "{11111111-2222-4333-8444-555555555555}"
+        );
+        assert_eq!(
+            parse_boot_manager_state(
+                "Windows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\n默认 {default}\n显示顺序 {default}"
+            )
+            .unwrap()
+            .display_order,
+            vec!["{default}"]
+        );
+        assert!(parse_boot_manager_state("default dangerous;value").is_none());
+    }
+
+    #[test]
+    fn interruption_resume_accepts_only_staged_nonterminal_tasks() {
+        assert!(!stage_resumable_after_interruption(Stage::Prepared));
+        assert!(stage_resumable_after_interruption(Stage::BootRequested));
+        assert!(stage_resumable_after_interruption(Stage::TargetErased));
+        assert!(stage_resumable_after_interruption(Stage::ImageApplied));
+        assert!(stage_resumable_after_interruption(Stage::BootRepaired));
+        assert!(!stage_resumable_after_interruption(Stage::Success));
+        assert!(!stage_resumable_after_interruption(Stage::Failed));
+    }
+
     #[cfg(windows)]
     #[test]
     fn prepare_options_reject_missing_image_or_invalid_drive() {
@@ -2144,6 +2553,18 @@ mod tests {
             assert!(
                 super::windows_prepare::parse_prepare_options(missing_efi).is_err(),
                 "{fault} must require an explicit development EFI"
+            );
+        }
+        for fault in [
+            "power-loss-target-erased",
+            "power-loss-image-applied",
+            "power-loss-boot-repaired",
+        ] {
+            let mut system_efi_fault = base.clone();
+            system_efi_fault.extend(["--test-fault".into(), fault.into()]);
+            assert!(
+                super::windows_prepare::parse_prepare_options(system_efi_fault).is_ok(),
+                "{fault} must use the current system EFI by default"
             );
         }
     }

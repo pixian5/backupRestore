@@ -24,7 +24,7 @@ use std::ptr::null_mut;
 use std::thread;
 use std::time::Duration;
 
-use crate::{append_log, err, run_logged};
+use crate::{append_log, capture_logged, err, run_logged};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -304,10 +304,15 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                 let fault = value("--test-fault", &mut args)?;
                 if !matches!(
                     fault.as_str(),
-                    "identity-env-mismatch" | "bcdboot-failure" | "power-loss-window"
+                    "identity-env-mismatch"
+                        | "bcdboot-failure"
+                        | "power-loss-window"
+                        | "power-loss-target-erased"
+                        | "power-loss-image-applied"
+                        | "power-loss-boot-repaired"
                 ) {
                     return Err(err(
-                        "--test-fault must be identity-env-mismatch, bcdboot-failure, or power-loss-window",
+                        "--test-fault must be identity-env-mismatch, bcdboot-failure, power-loss-window, power-loss-target-erased, power-loss-image-applied, or power-loss-boot-repaired",
                     ));
                 }
                 test_fault = Some(fault);
@@ -735,11 +740,45 @@ fn snapshot_raw_bcd(
         if !source.is_file() {
             return Err(err("EFI BCD store is missing while creating raw snapshot"));
         }
-        fs::copy(&source, &snapshot)?;
-        let hash = sha256_file(&snapshot)?;
-        backuprestore_core::verify_sha256(&source, &hash)?;
-        append_log(log, "Captured byte-for-byte EFI BCD snapshot")?;
-        Ok(hash)
+        // Keep a textual Boot Manager snapshot as well as the byte-level
+        // fallback. A `bcdedit /export` store can expose `{default}` as an
+        // alias after import, which is not sufficient to preserve which
+        // loader was actually default. Reading the active store before any
+        // mutation gives us the concrete display order for secondary mode.
+        let source_arg = source.to_string_lossy().into_owned();
+        let boot_manager = capture_logged(
+            "bcdedit.exe",
+            &["/store", &source_arg, "/enum", "all", "/v"],
+            log,
+        )
+        .or_else(|_| capture_logged("bcdedit.exe", &["/enum", "all", "/v"], log))?;
+        fs::write(task_dir.join("bcd-before-bootmgr.txt"), boot_manager)?;
+        match fs::copy(&source, &snapshot) {
+            Ok(_) => {
+                let hash = sha256_file(&snapshot)?;
+                backuprestore_core::verify_sha256(&source, &hash)?;
+                append_log(log, "Captured byte-for-byte EFI BCD snapshot")?;
+                Ok(hash)
+            }
+            Err(copy_error) if copy_error.raw_os_error() == Some(32) => {
+                // The active Boot Manager keeps its hive open without
+                // sharing, so a raw file copy can fail with
+                // ERROR_SHARING_VIOLATION. The bootstrap export was captured
+                // from this same active store before WinRE mutation; use it
+                // as a logical rollback snapshot and log the fallback.
+                let export = task_dir.join("bcd-before-export");
+                if !export.is_file() {
+                    return Err(copy_error.into());
+                }
+                let hash = sha256_file(&export)?;
+                append_log(
+                    log,
+                    "Active EFI BCD is locked; using bcdedit logical export for rollback",
+                )?;
+                Ok(hash)
+            }
+            Err(error) => Err(error.into()),
+        }
     })();
     if mounted_temporarily {
         let _ = Command::new("mountvol.exe")
@@ -765,12 +804,24 @@ fn rollback_boot_request(
         let store = PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD"));
         let result = (|| {
             let expected = sha256_file(&raw_snapshot)?;
-            fs::copy(&raw_snapshot, &store)?;
-            backuprestore_core::verify_sha256(&store, &expected)?;
-            append_log(
-                log,
-                "Restored byte-for-byte EFI BCD snapshot after preparation failure",
-            )?;
+            match fs::copy(&raw_snapshot, &store) {
+                Ok(_) => {
+                    backuprestore_core::verify_sha256(&store, &expected)?;
+                    append_log(
+                        log,
+                        "Restored byte-for-byte EFI BCD snapshot after preparation failure",
+                    )?;
+                }
+                Err(error) if error.raw_os_error() == Some(32) => {
+                    let snapshot_arg = raw_snapshot.to_string_lossy().into_owned();
+                    run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
+                    append_log(
+                        log,
+                        "Raw EFI BCD restore was locked; imported the saved BCD snapshot",
+                    )?;
+                }
+                Err(error) => return Err(error.into()),
+            }
             Ok(())
         })();
         if mounted_temporarily {
@@ -792,7 +843,10 @@ fn rollback_boot_request(
     }
     let snapshot_arg = snapshot.to_string_lossy().into_owned();
     run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
-    append_log(log, "Restored BCD snapshot after preparation failure")?;
+    append_log(
+        log,
+        "Restored logical BCD snapshot after preparation failure",
+    )?;
     Ok(())
 }
 
@@ -1523,18 +1577,11 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
         return Ok(identity);
     }
     // The system EFI partition is normally hidden and has no drive letter.
-    // Scanning C:..Z: alone therefore misses the normal boot partition. First
-    // reuse an already-mounted EFI, then ask mountvol to expose the hidden
-    // system partition on a genuinely free temporary letter, read its full
-    // identity, and immediately remove that assignment.
-    for letter in 'C'..='Z' {
-        let Ok(identity) = volume_identity(letter) else {
-            continue;
-        };
-        if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) {
-            return Ok(identity);
-        }
-    }
+    // More importantly, a development/test EFI can already be mounted (for
+    // example as E:). It must never win merely because it is visible first:
+    // `mountvol /S` is Windows' authoritative way to expose the EFI that the
+    // current system actually booted from. Only if that lookup genuinely
+    // fails do we fall back to an already-mounted EFI for diagnostics.
     let mut last_error = None;
     for letter in identity_drive_candidates('Z') {
         if !is_drive_letter_available(letter) {
@@ -1566,7 +1613,12 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             .creation_flags(CREATE_NO_WINDOW)
             .status();
         match identity {
-            Ok(identity) if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) => {
+            Ok(mut identity) if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) => {
+                // The letter was only a temporary mount used to inspect the
+                // hidden system ESP. Clear it before returning: later code
+                // must call ensure_volume_mounted again rather than treating
+                // an already-removed drive letter as authoritative.
+                identity.drive_letter = None;
                 return Ok(identity);
             }
             Ok(identity) => {
@@ -1579,6 +1631,10 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             Err(error) => last_error = Some(error),
         }
     }
+    // Never fall back to an arbitrary mounted EFI here. A development EFI
+    // may be visible as E: while the current system EFI is hidden; selecting
+    // it would write the wrong BCD and make the task appear successful while
+    // leaving the actual Boot Manager unchanged.
     Err(last_error.unwrap_or_else(|| err("system GPT EFI partition was not found")))
 }
 

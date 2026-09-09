@@ -1,8 +1,10 @@
 # BackupRestore 备份与还原测试方案
 
-更新时间：2026-08-30
-适用范围：Windows 10/11 UEFI/GPT 开发测试版系统备份还原工具（当前 `VERSION`：1.3.0）
+更新时间：2026-09-09
+适用范围：Windows 10/11 UEFI/GPT 开发测试版系统备份还原工具（当前 `VERSION`：1.3.3）
 配套文档：[project-status.md](project-status.md)、[verification-matrix.md](verification-matrix.md)、[implementation-notes.md](implementation-notes.md)、[development-execution-protocol.md](development-execution-protocol.md)
+
+本轮完整状态基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。该基线明确区分 v1.3.3 的代码/离线检查与尚未完成的三种阶段断电实机回归。
 
 本方案是把“代码/离线证据”与“Windows/WinRE 实机证据”分开验收的操作手册。任何破坏性还原测试只允许在可回滚的虚拟机快照中执行；`C:` 不作为备份源或还原目标。判定口径沿用：**代码已覆盖 / 离线已验证 / 实机待验证 / 实机已验证**。
 
@@ -37,7 +39,7 @@
 | fixture 卷 | P（源/单系统目标）、Q（第二系统目标）、H（WIM 镜像卷）、独立 E（开发 EFI）。C: 全程不触碰                                                                                          |
 | 构建        | `windows/build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\BackupRestoreBuild\target -OutputRoot C:\BackupRestoreBuild\package`         |
 | 离线门槛      | `cargo fmt --all -- --check`、`cargo test --workspace --all-targets --offline`、`cargo clippy ... -D warnings`、PowerShell AST、`git diff --check` |
-| 故障注入      | `--test-fault identity-env-mismatch \| bcdboot-failure \| power-loss-window`；`identity-env-mismatch`/`bcdboot-failure` 需同时给 `--test-efi-drive` |
+| 故障注入      | `--test-fault identity-env-mismatch \| bcdboot-failure \| power-loss-window \| power-loss-target-erased \| power-loss-image-applied \| power-loss-boot-repaired`；前两项需同时给 `--test-efi-drive`，阶段 fault 使用当前系统 EFI |
 | 无副作用      | `--no-reboot`（正常 Windows 内准备即停）、`validate-task`、`recover --dry-run`                                                                            |
 
 > 测试目标目录必须在客体本地（如 `C:\BackupRestoreBuild\test-target-v<版本>`），不能放在 Parallels 共享源码目录，否则 Cargo 测试不可信。
@@ -168,7 +170,16 @@
 | F-03 | 断电窗口续跑    | 通过 | 任务 `eba1f4f2-c1b7-4e86-babe-ed0ac0560c48`：prepare 持久化 `boot-requested` 后未请求关机（VM 未重启）；GUI 启动识别唯一待恢复任务并重新请求 WinRE；`Recovery.log` 记录 `Recovery completed`、`WinRE cleanup completed; task marked successful`、`wpeutil.exe reboot`；最终 `success/progress=100`、WinRE 恢复 Enabled、无挂载镜像 |
 | F-04 | 独立 EFI 引导（开发测试） | 已知失败 | 已复测为 `0xc0430001`；不作为产品功能，逐阶段断电组合不宣称全部覆盖 |
 
+### 8.4 v1.3.3 新增阶段故障（尚未收口）
+
+| 用例 | 注入点 | 当前状态 | 已知问题与修复 |
+|---|---|---|---|
+| `power-loss-target-erased` | 目标格式化并持久化 `target-erased` 后重启 | 实机待验证 | 续跑允许目标卷序列号因格式化改变；marker 防止重复注入 |
+| `power-loss-image-applied` | DISM Apply 完成并持久化 `image-applied` 后重启 | 实机待验证 | 续跑重做 Apply，再进入 BCDBoot；marker 防止重复注入 |
+| `power-loss-boot-repaired` | 持久化 `boot-repaired` 后、BCDBoot 前重启 | 实机待验证 | 续跑只重做启动修复和验证；marker 防止重复注入 |
+
+这三项在 v1.3.3 完成真实 WinRE 回归前，不能写成“故障恢复已全部通过”。完整原因和执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。
+
 ### 8.3 快照基线
 
 `F-baseline-afterE5`（`{fa61a33e-e2ab-4113-954e-a76ad83b351a}`）：E 层全部完成后、F 层执行前的独立回滚基线。F-01/F-02/F-03 全部在破坏性执行前确认目标分区身份与授权范围，结束后可随时恢复该基线。
-

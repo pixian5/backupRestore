@@ -2,6 +2,8 @@
 
 这份矩阵防止把静态代码检查误报为 Windows/WinRE 实机成功。状态只允许使用：
 
+当前版本基线：`1.3.3`。版本、失败根因和下一轮执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
+
 - **代码已覆盖**：源代码和离线测试已覆盖，仍可能需要实机确认；
 - **离线已验证**：本机命令已经通过，但不等同于 Windows 运行；
 - **实机待验证**：必须在管理员 Windows 11 ARM64 快照中执行；
@@ -30,6 +32,7 @@
 | 独立 EFI 实际引导（开发测试） | Parallels `hdd2` 首启动、EFI E:、U: 已 Apply Windows | **实机失败（ARM64，已复测）**；不属于普通 GUI/V1 发布门槛 | E: BCD 默认 loader `device/osdevice=partition=U:`，`bcdboot U:\Windows /s E: /f UEFI /v` 成功；关闭 Secure Boot、并替换 E: bootmgfw 为 U: 同哈希版本后，hdd2 仍进入 Recovery `0xc0430001`。启动顺序和 Secure Boot 已恢复。 |
 | 双系统还原 | `create-secondary`、`/addlast`、BCD menu name | **实机已验证（v1.3.0 ARM64，P/H/Q，Index 1/2/3）** | v1.2.9 任务 `21ecf1b9-72ce-4a65-b279-459880edcb88`、`eac6910f-8387-478b-babf-935135d78d8a` 和最终 v1.3.0 任务 `8f5ca68c-a7f5-410d-8cfc-2791f33a389d` 均为 `success`；每次均完成格式化、Apply、BCDBoot、目标绑定、WinRE 清理和重启，P/Q fixture 清单比较无差异。 |
 | 断电恢复 | `Stage`、`recover_windows` resume 分支、`resume_pending_boot_task`、`write_json_atomic` | **实机已验证（v1.3.0 ARM64，boot-requested 窗口）**；状态文件采用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`，GUI 能识别唯一合法 `boot-requested` 任务并重新请求 WinRE；逐阶段断电组合仍不宣称全部覆盖 | 最终包任务 `3dd7a348-9190-4e61-90d0-76ecf1fd45cf` 先持久化 `boot-requested` 且无重启，随后 GUI 日志记录检测、重新请求 WinRE 和重启；任务最终 `success`，Q: 恢复、WinRE 清理和重启完成。测试方案 F-03 任务 `eba1f4f2-c1b7-4e86-babe-ed0ac0560c48`（`power-loss-window`）：prepare 在持久化 `boot-requested` 后未请求关机，VM 未重启；GUI 启动后识别唯一待恢复任务并重新请求 WinRE，`Recovery.log` 记录 `Recovery completed`、`WinRE cleanup completed; task marked successful`、`wpeutil.exe reboot`，最终 `status.json=success/progress=100`，WinRE 恢复 Enabled、无挂载镜像。 |
+| v1.3.3 阶段断电续跑 | `power-loss-target-erased`、`power-loss-image-applied`、`power-loss-boot-repaired`、一次性 fault marker、目标重格式化序列号容忍 | **代码已覆盖、离线已验证、最新版 ARM64 实机待验证** | v1.3.1 曾暴露盘符参与 payload 比较；v1.3.2 曾暴露目标格式化后卷序列号变化和 fault 重复触发；v1.3.3 已修复三项，但尚未取得三种 fault 的最新版 WinRE 最终状态证据。 |
 | BCD 失败回滚 | `bcd-before-raw`、`restore_bcd_snapshot` | **实机已验证（v1.2.5/v1.3.0 ARM64）** | 任务 `635e39d3-034a-4390-873b-b0ae68843863` 在 `BootRepaired` 后注入失败；E: 与原始快照 SHA-256 均为 `FC1E0A...479D`，WinRE 已恢复。测试方案 F-02 任务 `127efbbc-d6ee-44fa-ba73-60b573f35849`（`bcdboot-failure`）：DISM Apply 达 100% 后注入 BCDBoot 失败，`Recovery.log` 记录 `Previous byte-for-byte EFI BCD snapshot restored after boot repair failure`，故障前后 E: BCD SHA-256 均为 `716A4E88...`（53248 字节），WinRE 恢复 Enabled、无挂载镜像 |
 | 开发 EFI 故障注入 | `--test-efi-drive`、`--test-fault` | **实机已验证（v1.3.0 ARM64）** | 最终包任务 `d557b7b7-7435-432a-a3f9-45b38ffd2588` 验证身份拒绝；历史任务 `635e39d3...` 验证 BCDBoot 回滚；普通 GUI 不可调用。测试方案 F-01 任务 `315be01f-5f15-4c33-9e7d-bf99428fd97f`（`identity-env-mismatch`）：WinRE 在 DISM/格式化/BCDBoot 前拒绝（`SOURCE volume serial differs between task.json and RecoveryTask.env`），`status.json=failed`，Y 卷未格式化（Windows/fixture 原样），WinRE 恢复 Enabled、无挂载镜像 |
 | Rust Win32 GUI 单窗口、二次确认和多语言 | `crates/backuprestore-cli/src/native_gui.rs`、`BackupRestore.exe` | **实机已验证（GUI 范围）**：`v0.6.5` 客户区动态排版在每次标签切换后重排，详情框 112 高度、行距 8、状态框 64；逐页实际矩形确认探测/备份/单系统还原/第二系统的字段显隐、镜像/按钮不重叠，第二系统按钮位于客户区内；v1.1.0 启动会正常关闭旧 GUI 并保留唯一最新实例 | v1.1.0 ARM64 实测 6 个历史 GUI 已收敛为 1 个响应中的 `BackupRestore - Rust GUI v1.1.0` 窗口。发布验收还要求包目录、`build-manifest.json` 与 GUI 标题版本三者一致；不包括 UAC、任务创建、WinRE 或磁盘写入。 |

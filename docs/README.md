@@ -1,5 +1,7 @@
 # BackupRestore 文档索引
 
+当前完整进度基线： [current-progress-2026-09-09.md](current-progress-2026-09-09.md)
+
 按下面顺序阅读，避免把离线检查误解成 Windows 恢复已验收：
 
 1. [project-status.md](project-status.md)：当前进度、用户决策、已完成与未完成项目、继续条件；

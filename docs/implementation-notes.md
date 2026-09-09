@@ -229,3 +229,6 @@ prepare 在 BCD 导出前先完成完整任务校验，导出并记录 BCD 哈�
 ## 2026-08-27 `v1.2.6` 断电后待恢复任务续跑
 
 - 实测在 `reagentc /boottore` 与实际重启之间强制断电，会留下唯一的 `boot-requested` 任务而正常进入 Windows；旧启动入口没有再次请求 WinRE。Rust GUI 启动前现在扫描程序目录下的任务，要求 `task.json`/`status.json` 一致、任务 ID 合法且 Recovery payload、manifest、原始/暂存 WinRE 均存在；确认唯一合法任务后隐藏调用 `reagentc /boottore` 与 `shutdown /r /t 0`，让用户重新启动程序即可继续。多个、损坏或缺少载荷的待恢复任务只写 `launcher-errors.log`/`prepare.log`，不猜测、不自动执行。
+# 2026-09-09 v1.3.3 当前基线
+
+完整状态已整理到 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。本版本包含当前 EFI 自动定位、Windows Boot Manager 状态保留、阶段中断续跑、盘符变化容忍、目标格式化后序列号处理和一次性故障注入 marker。macOS 离线检查为 CLI 8/8、core 17/17、fmt、Clippy、运行时边界审计和 diff 检查全部通过；Windows ARM64 Release 构建曾成功。三种新阶段 fault 的最新版 WinRE 实机最终状态仍待回归，不能以旧 v1.3.0/v1.3.1 任务替代。

@@ -1,11 +1,13 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-08-27
-当前开发版本：`1.3.0`（P/Q 隔离链路与故障边界已实机验证）
+更新时间：2026-09-09
+当前开发版本：`1.3.3`（完整当前基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)）
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
 本文件是当前状态的唯一摘要。它把用户对下载、功能完整性和交付方式的明确要求记录为工程约束；不逐字保存情绪化表达，只保留会影响后续行为的事实和结论。
+
+> 2026-09-09 起，涉及当前版本、阶段断电续跑和未完成项的结论以 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 为准；本文件后面的时间线保留历史证据，不自动代表 v1.3.3 已通过。
 
 每轮执行均遵守[开发执行协议](development-execution-protocol.md)：先规划、自审，再执行和验证。程序目录内的日志位置、格式和保留边界也以该文档为准。
 
@@ -77,7 +79,7 @@ pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestor
 git diff --check
 ```
 
-当前结果：macOS 本机 CLI 5 项 + core 17 项通过，Clippy 无 warning、运行时边界审计和差异无空白错误；Windows ARM64 v1.3.0 CLI 11 项 + core 17 项通过，包 manifest/双 EXE/前台窗口标题一致。共享桌面源码目录不能作为 Cargo 测试目标目录，必须使用客体本地 `C:\BackupRestoreBuild\test-target-v<版本>`。
+历史结果：macOS 本机 CLI 5 项 + core 17 项、Windows ARM64 v1.3.0 CLI 11 项 + core 17 项曾通过。当前 v1.3.3 的最新离线结果为 CLI 8/8、core 17/17、Clippy、运行时边界审计和差异检查全部通过；ARM64 Release 构建曾成功。共享桌面源码目录不能作为 Cargo 测试目标目录，必须使用客体本地 `C:\BackupRestoreBuild\test-target-v<版本>`。详细当前口径见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。
 
 2026-08-25 `v0.7.7` 前置重叠校验：`BackupRestore.exe prepare` 现在在解析工作目录所在卷和镜像卷身份之后、开始 WinRE 注入、BCD 导出或设置一次性恢复启动之前，拒绝非 probe 任务的“工作目录所在卷 = 镜像卷”。Rust GUI 也在用户点击创建任务时立即拒绝同一盘符组合。核心任务模型原有的 GUID 分区重叠检查保留为第二层防线。这样错误参数不再可能先重启进入 WinRE，再由 `validate-task` 拒绝。ARM64 实机以 `B:` 工作目录所在卷、`U:` 源卷和 `B:\...wim` 镜像路径验证：子进程退出码为 1，注册 WinRE SHA-256 前后均为 `0CBC86...6FDA1`。
 
