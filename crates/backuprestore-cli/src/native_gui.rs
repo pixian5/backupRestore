@@ -341,6 +341,37 @@ unsafe extern "system" {
     fn SetVolumeMountPointW(mount_point: *const u16, volume: *const u16) -> i32;
     fn DeleteVolumeMountPointW(mount_point: *const u16) -> i32;
     fn GetFileAttributesW(name: *const u16) -> u32;
+    fn CreateProcessW(
+        app_name: *const u16,
+        command_line: *mut u16,
+        process_attributes: *mut c_void,
+        thread_attributes: *mut c_void,
+        inherit_handles: i32,
+        creation_flags: u32,
+        environment: *mut c_void,
+        current_directory: *const u16,
+        startup_info: *mut StartupInfoW,
+        process_information: *mut ProcessInformation,
+    ) -> i32;
+    fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+    fn GetExitCodeProcess(process: Handle, exit_code: *mut u32) -> i32;
+    fn GetLastError() -> u32;
+    fn CreateFileW(
+        file_name: *const u16,
+        desired_access: u32,
+        share_mode: u32,
+        security_attributes: *mut c_void,
+        creation_disposition: u32,
+        flags_and_attributes: u32,
+        template_file: Handle,
+    ) -> Handle;
+    fn WriteFile(
+        file: Handle,
+        buffer: *const c_void,
+        bytes_to_write: u32,
+        bytes_written: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -2738,6 +2769,42 @@ unsafe extern "system" fn window_proc(
 /// window is destroyed inside WM_COMMAND.
 static PE_EXIT_TAB: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Guard so a double click on "返回 Windows" cannot run two BCD rewrites at
+/// once while the window stays alive during the exit sequence.
+static PE_EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Minimal Win32 structs used by `exit_pe_to_windows` to run `bcdedit.exe`
+/// synchronously and capture its exit code instead of a silent ShellExecuteW.
+#[repr(C)]
+struct StartupInfoW {
+    cb: u32,
+    reserved: *mut u16,
+    desktop: *mut u16,
+    title: *mut u16,
+    x: u32,
+    y: u32,
+    x_size: u32,
+    y_size: u32,
+    x_count_chars: u32,
+    y_count_chars: u32,
+    fill_attribute: u32,
+    flags: u32,
+    show_window: u16,
+    cb_reserved2: u16,
+    reserved2: *mut u8,
+    std_input: Handle,
+    std_output: Handle,
+    std_error: Handle,
+}
+
+#[repr(C)]
+struct ProcessInformation {
+    process: Handle,
+    thread: Handle,
+    process_id: u32,
+    thread_id: u32,
+}
+
 unsafe fn update_pe_clock(state: &PeDesktopState) {
     let mut time = SystemTime {
         year: 0,
@@ -2758,11 +2825,124 @@ unsafe fn update_pe_clock(state: &PeDesktopState) {
 /// launched through a temporary default does not trap the machine in PE. The
 /// EFI system partition is located by enumerating volumes, mounted to `S:`,
 /// and the BCD entry is rewritten with `bcdedit /store`.
+/// Append the UTF-16 encoding of `source` (without a trailing NUL) to a
+/// command-line buffer, so several `wide()` results can be joined safely.
+fn push_wide_into(target: &mut Vec<u16>, source: &str) {
+    target.extend(source.encode_utf16());
+}
+
+/// Reboot the PE session. `ExitWindowsEx` needs shutdown privileges that the
+/// PE shell may lack, so fall back to `wpeutil.exe reboot` (the PE-native
+/// restart tool) exactly like the restart card does.
+unsafe fn pe_reboot(hwnd: Hwnd) {
+    if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
+        let wpe = wide("wpeutil.exe");
+        let argument = wide("reboot");
+        ShellExecuteW(hwnd, null(), wpe.as_ptr(), argument.as_ptr(), null(), SW_SHOW);
+    }
+}
+
+/// Best-effort diagnostics written via the volume path
+/// (`\\?\Volume{GUID}\exit-pe.log`, survives unmount and reboot), plus
+/// `Q:\exit-pe.log` and `X:\exit-pe.log` (PE RAM disk) so a failed exit
+/// attempt can be diagnosed from the next Windows session. Writes go through
+/// CreateFileW/WriteFile directly because std::fs writes to mounted FAT
+/// volumes failed silently inside PE. Returns per-path failure details
+/// (including GetLastError) so the caller can surface them during development.
+fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<String> {
+    let text = entries.join("\r\n");
+    let mut failures: Vec<String> = Vec::new();
+    let mut paths = vec![
+        "Q:\\exit-pe.log".to_string(),
+        "X:\\exit-pe.log".to_string(),
+    ];
+    if let Some(vp) = esp_volume_path {
+        let mut full = vp.to_string();
+        if !full.ends_with('\\') {
+            full.push('\\');
+        }
+        full.push_str("exit-pe.log");
+        paths.push(full);
+    }
+    for path in paths {
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let file = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0x40000000, // GENERIC_WRITE
+                1,          // FILE_SHARE_READ
+                null_mut(),
+                2,    // CREATE_ALWAYS
+                0x80, // FILE_ATTRIBUTE_NORMAL
+                null_mut(),
+            )
+        };
+        if file as isize == -1 || file.is_null() {
+            failures.push(format!(
+                "create {} failed, err={}",
+                path,
+                unsafe { GetLastError() }
+            ));
+            continue;
+        }
+        let mut written: u32 = 0;
+        let ok = unsafe {
+            WriteFile(
+                file,
+                text.as_ptr() as *const c_void,
+                text.len() as u32,
+                &mut written,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            failures.push(format!(
+                "write {} failed, err={}",
+                path,
+                unsafe { GetLastError() }
+            ));
+        }
+        unsafe {
+            CloseHandle(file);
+        }
+    }
+    failures
+}
+
+/// Development aid: show the full exit diagnostics in a message box right
+/// before rebooting, because log files inside PE are unreliable (volume-path
+/// and drive-letter writes both failed in the Parallels PE session).
+fn show_diag_dialog(hwnd: Hwnd, diag: &[String]) {
+    let text = diag.join("\r\n");
+    let msg: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let cap: Vec<u16> = "BackupRestore exit diag"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    unsafe {
+        MessageBoxW(hwnd, msg.as_ptr(), cap.as_ptr(), 0x40); // MB_ICONINFORMATION
+    }
+}
+
+/// Restore the boot manager default to `{current}` and reboot, so a PE session
+/// launched through a temporary default does not trap the machine in PE. The
+/// EFI system partition is located by enumerating volumes, mounted at a free
+/// drive letter (S: preferred, then T:..Z:), and the BCD entry is rewritten by
+/// running `bcdedit.exe` synchronously with a captured exit code.
 unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
+    if PE_EXITING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let mut diag: Vec<String> = Vec::new();
+    diag.push("exit_pe_to_windows start".to_string());
+    let mut esp_volume_path: Option<String> = None;
     let mut volume = [0u16; 512];
     let handle = FindFirstVolumeW(volume.as_mut_ptr(), 512);
     if handle as isize == -1 || handle.is_null() {
-        ExitWindowsEx(EWX_REBOOT, 0);
+        diag.push("FindFirstVolumeW failed".to_string());
+        let _ = write_pe_exit_log(&diag, None);
+        show_diag_dialog(hwnd, &diag);
+        pe_reboot(hwnd);
         return;
     }
     let mut found_bcd = false;
@@ -2790,23 +2970,132 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                 .position(|&unit| unit == 0)
                 .unwrap_or(0);
             let fs = String::from_utf16_lossy(&filesystem[..fs_length]).to_ascii_uppercase();
+            diag.push(format!(
+                "volume: {} fs: {}",
+                volume_path.trim_end_matches('\\'),
+                fs
+            ));
             if fs == "FAT" || fs == "FAT32" {
-                let mount = wide("S:\\");
-                if SetVolumeMountPointW(mount.as_ptr(), wide(&volume_path).as_ptr()) != 0 {
-                    let bcd = wide("S:\\EFI\\Microsoft\\Boot\\BCD");
-                    if GetFileAttributesW(bcd.as_ptr()) != u32::MAX {
-                        let arguments = wide(
-                            "/store S:\\EFI\\Microsoft\\Boot\\BCD /set {bootmgr} default {current}",
-                        );
-                        let bcdedit = wide("bcdedit.exe");
-                        ShellExecuteW(hwnd, null(), bcdedit.as_ptr(), arguments.as_ptr(), null(), 0);
-                        Sleep(1500);
-                        found_bcd = true;
+                diag.push(format!("FAT volume: {}", volume_path.trim_end_matches('\\')));
+                // Try S: then T:..Z: for a free mount point (X: is the PE RAM disk).
+                let mut mounted_letter: Option<u16> = None;
+                for letter in ['S', 'T', 'U', 'V', 'W', 'Y', 'Z'] {
+                    let mut mount = [0u16; 4];
+                    mount[0] = letter as u16;
+                    mount[1] = ':' as u16;
+                    mount[2] = '\\' as u16;
+                    if SetVolumeMountPointW(mount.as_ptr(), wide(&volume_path).as_ptr()) != 0 {
+                        mounted_letter = Some(letter as u16);
+                        diag.push(format!("mounted at {}:", letter));
+                        break;
+                    } else {
+                        diag.push(format!(
+                            "mount {}: failed, last error: {}",
+                            letter,
+                            GetLastError()
+                        ));
                     }
-                    DeleteVolumeMountPointW(mount.as_ptr());
+                }
+                if let Some(letter) = mounted_letter {
+                    let mut bcd_path: Vec<u16> = Vec::new();
+                    bcd_path.push(letter);
+                    bcd_path.push(':' as u16);
+                    bcd_path.push('\\' as u16);
+                    push_wide_into(&mut bcd_path, "EFI\\Microsoft\\Boot\\BCD");
+                    bcd_path.push(0);
+                    if GetFileAttributesW(bcd_path.as_ptr()) != u32::MAX {
+                        diag.push("BCD file found".to_string());
+                        esp_volume_path = Some(volume_path.clone());
+                        // Read the Windows entry GUID written to the ESP at
+                        // deploy time (`bcdedit /enum {current} /v`). `{current}`
+                        // cannot be used here: inside PE it resolves to the PE
+                        // entry, which does not exist in the store we edit.
+                        let mut win_guid: Option<String> = None;
+                        let guid_path = format!("{}:\\pe-exit-guid.txt", letter as u8 as char);
+                        if let Ok(text) = std::fs::read_to_string(&guid_path) {
+                            let candidate = text.trim().to_string();
+                            if !candidate.is_empty() {
+                                win_guid = Some(candidate);
+                                diag.push(format!("deploy GUID: {}", win_guid.as_ref().unwrap()));
+                            }
+                        }
+                        if win_guid.is_none() {
+                            diag.push("no pe-exit-guid.txt on ESP".to_string());
+                        }
+                        let mut command_line: Vec<u16> = Vec::new();
+                        // Development: keep the console window visible, echo the
+                        // bcdedit exit code on the same window (call forces a
+                        // re-expansion of %errorlevel%) and hold it open with
+                        // `pause` so the output can be inspected before reboot.
+                        push_wide_into(&mut command_line, "cmd.exe /c ");
+                        push_wide_into(&mut command_line, "bcdedit.exe /store ");
+                        command_line.extend_from_slice(&bcd_path[..bcd_path.len() - 1]);
+                        match &win_guid {
+                            Some(guid) => {
+                                push_wide_into(&mut command_line, " /set {bootmgr} default ");
+                                push_wide_into(&mut command_line, guid);
+                            }
+                            None => {
+                                push_wide_into(&mut command_line, " /enum");
+                            }
+                        }
+                        push_wide_into(
+                            &mut command_line,
+                            " & call echo EXIT_CODE=%errorlevel% & pause",
+                        );
+                        command_line.push(0);
+                        let mut startup: StartupInfoW = std::mem::zeroed();
+                        startup.cb = size_of::<StartupInfoW>() as u32;
+                        let mut process: ProcessInformation = std::mem::zeroed();
+                        let created = CreateProcessW(
+                            null(),
+                            command_line.as_mut_ptr(),
+                            null_mut(),
+                            null_mut(),
+                            0,
+                            0, // visible console during development
+                            null_mut(),
+                            null_mut(),
+                            &mut startup,
+                            &mut process,
+                        );
+                        if created != 0 {
+                            // 60 s: enough for the developer to read the
+                            // paused bcdedit output and press a key.
+                            WaitForSingleObject(process.process, 60000);
+                            let mut code: u32 = 0;
+                            GetExitCodeProcess(process.process, &mut code);
+                            diag.push(format!("bcdedit exit code: {}", code));
+                            CloseHandle(process.thread);
+                            CloseHandle(process.process);
+                            found_bcd = true;
+                        } else {
+                            diag.push(format!(
+                                "CreateProcessW failed, last error: {}",
+                                GetLastError()
+                            ));
+                        }
+                    } else {
+                        diag.push("BCD file NOT found at mount point".to_string());
+                    }
+                    // Write diagnostics while the ESP is still mounted (volume
+                    // path also survives unmount, so this is belt and braces).
+                    diag.push("exit sequence done, rebooting".to_string());
+                    let write_failures = write_pe_exit_log(&diag, Some(&volume_path));
+                    for f in &write_failures {
+                        diag.push(f.clone());
+                    }
+                    // Development: surface the whole diagnostic chain (volume
+                    // enum, mount, bcdedit exit code, log-write errors) before
+                    // rebooting, since PE log files are unreliable.
+                    show_diag_dialog(hwnd, &diag);
+                    let mut unmount = [letter, ':' as u16, '\\' as u16, 0];
+                    DeleteVolumeMountPointW(unmount.as_mut_ptr());
                     if found_bcd {
                         break;
                     }
+                } else {
+                    diag.push("no free mount point".to_string());
                 }
             }
         }
@@ -2815,9 +3104,11 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
         }
     }
     FindVolumeClose(handle);
-    ExitWindowsEx(EWX_REBOOT, 0);
+    // Post-unmount best effort: volume path still works after unmount, plus
+    // Q: and X: (PE RAM disk).
+    let _ = write_pe_exit_log(&diag, esp_volume_path.as_deref());
+    pe_reboot(hwnd);
 }
-
 unsafe extern "system" fn window_proc_pe(
     hwnd: Hwnd,
     message: u32,

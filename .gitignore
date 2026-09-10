@@ -55,3 +55,12 @@ nul
 /_copype6.cmd
 /_adk-font-check*
 /_deploy-pe*
+
+# 一次性部署/探测脚本与日志（配方保留在共享目录，不入库）
+/_*.ps1
+/_*.txt
+/_bcd-diag*
+/_current-guid*
+/_write-guid*
+/_esp-log-check*
+/_probe*

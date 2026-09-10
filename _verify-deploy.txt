@@ -1,6 +1,0 @@
-﻿--- Q sources ---
---- Q boot.wim hash ---
---- Q boot.wim.stock hash ---
---- BCD full ---
-无法打开启动配置数据存储。
-拒绝访问。
