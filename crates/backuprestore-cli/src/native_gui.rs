@@ -3950,15 +3950,36 @@ fn pe_self_clean_bootsequence() {
         "bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /deletevalue {bootmgr} bootsequence",
         None,
     );
-    // 3. 把结果写到 ESP 根目录，供 Windows 侧读回验证。
+    // 3. 自清取证：全部自动执行并落盘 S:\pe-bootsequence-clean.log，
+    //    用户无需在 PE 里手动输入任何命令（PE 是 RAM 盘无法复制）。
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let log_line = format!(
+    let mut log = format!(
         "PE bootsequence self-clean: mountvol code={mount_code}, bcdedit code={clean_code}, ts={now}\n"
     );
-    let _ = std::fs::write("S:\\pe-bootsequence-clean.log", log_line);
+    // 取证 A：bootmgr 条目当前状态（确认 bootsequence 已清除）
+    run_cmd_to_file(
+        "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1",
+        None,
+    );
+    match std::fs::read_to_string("S:\\verify-bcd-enum.txt") {
+        Ok(text) => log.push_str(&format!("[ENUM_BOOTMGR]\n{text}\n")),
+        Err(_) => log.push_str("[ENUM_BOOTMGR] read failed\n"),
+    }
+    let _ = std::fs::write("S:\\pe-bootsequence-clean.log", &log);
+    // 取证 B：读回日志内容（确认已落盘 ESP）
+    match std::fs::read_to_string("S:\\pe-bootsequence-clean.log") {
+        Ok(text) => log.push_str(&format!("[LOG_READBACK]\n{text}\n")),
+        Err(_) => log.push_str("[LOG_READBACK] failed\n"),
+    }
+    // 取证 C：ESP 根目录文件列表（确认日志与取证文件都在）
+    run_cmd_to_file("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", None);
+    if let Ok(text) = std::fs::read_to_string("S:\\verify-dir.txt") {
+        log.push_str(&format!("[DIR_S]\n{text}\n"));
+    }
+    let _ = std::fs::write("S:\\pe-bootsequence-clean.log", &log);
 }
 
 pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
