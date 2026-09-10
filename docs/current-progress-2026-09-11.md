@@ -91,3 +91,22 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 1. **WM_COMMAND 注入编码**：`wParam = MAKEWPARAM(控件ID, 通知码)`——**ID 在低 16 位**（`1104` 直接传即可），先前写成 `1104 << 16`（ID 在高位）导致消息无响应。
 2. **注入通道不可靠**：`--current-user` PowerShell 的 `SendMessage` 到 GUI 主窗口有时卡住/无响应（FindWindow 按标题也返回 0），GUI 自动化建议以用户实点为准；调试脚本 `_pe-inject-*.ps1` 已 gitignore。
 3. **PE 自清取证命令**（下次进 PE 执行）：`type X:\Windows\System32\logs\gui.log | findstr self-clean`、`mountvol S: /S & dir S:\pe-bootsequence-clean.log`、`bcdedit /store S:\EFI\Microsoft\Boot\BCD /enum {bootmgr} | findstr bootsequence`。
+
+## 7. 配置驱动 PE 任务机制（v1.3.7+，2026-09-11 实机闭环）
+
+### 7.1 机制（用户文档明确要求：写配置 → PE 读配置执行 → 按配置决定是否重启）
+
+- **配置**：Windows 侧挂载 ESP 后写 `S:\pe-task.txt`（每行一个动作；`reboot` 行 = 执行完自动重启回 Windows）。
+- **PE 侧**：`pe_task_execute()`——**先 `mountvol S: /S` 挂载 ESP**（关键：PE 启动时 S: 未挂载，先挂载才能读到配置）→ 逐行执行动作 → 结果落 `S:\pe-task-result.txt` → 配置改名 `pe-task.txt.done` 防重复 → 按配置含 `reboot` 则 `wpeutil reboot` 自动回 Windows。
+- 支持动作：`clean_bootsequence`（清 {bootmgr} bootsequence）、`verify`（bcdedit enum + dir + 读回取证）。
+- **重启由配置决定**：配置含 reboot 才重启；后续其他功能（备份/恢复等）只需往配置加动作，不强制重启。
+
+### 7.2 实机验证（全自动，用户零操作）
+
+写配置（clean_bootsequence+verify+reboot）→ 设 bootsequence → `prlctl restart` → PE 读配置执行（mountvol=0）→ 自动回 Windows（16 秒）→ `S:\pe-task-result.txt` 落盘、`pe-task.txt.done` 生成、BCD 无 bootsequence 残留。
+
+### 7.3 踩坑记录
+
+1. **bootsequence 会被 bootmgr 消费**：ENUM_BEFORE 显示 PE 启动时 bootsequence 已不在 BCD（RAM 盘场景并非绝对不消费），故「检测 bootsequence 触发自动重启」不可靠 → 改用配置驱动。
+2. **先挂载再读配置**：配置在 ESP（S:），PE 启动 S: 未挂载，读配置必先 mountvol。
+3. **prlctl restart 对 PE 无 Tools 不响应**：ACPI 重启被取消，需 `prlctl stop --kill` + `start` 兜底。
