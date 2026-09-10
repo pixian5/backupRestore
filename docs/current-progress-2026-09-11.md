@@ -63,6 +63,31 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 
 ## 5. 未完成 / 下一轮建议
 
-- [ ] 真实重启 → Boot Manager 菜单选择「Windows PE (BackupRestore)」→ 进入 PE 恢复桌面的完整闭环回归（机制与 §4.10 PE Test 相同，建议随下次快照回归一并做）。
+- [x] 真实重启 → Boot Manager 菜单选择「Windows PE (BackupRestore)」→ 进入 PE 恢复桌面的完整闭环回归 —— **v1.3.6 已实机收口**（见 §6，PE 内「重启」回 Win11 且 Boot 菜单 default 仍 Win11）。
 - [ ] `set_operation_tabs` 中 `PE dev:` 诊断日志前缀在产品化时可收敛为正式日志。
 - [ ] 目标卷文件系统校验（NTFS）与 boot.sdi 缺失时从 ADK 自动复制的提示完善。
+
+## 6. v1.3.6 / v1.3.7（2026-09-11 追加）
+
+### 6.1 v1.3.6：bootsequence + PE 内启动后自清（零操作闭环，已实机验收）
+
+| 项 | 结果 |
+|---|---|
+| 自清实现 | `pe_self_clean_bootsequence()`：PE 桌面弹窗前静默执行 `mountvol.exe S: /S` + `bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /deletevalue {bootmgr} bootsequence`，结果写 `S:\pe-bootsequence-clean.log`（回 Windows 后可读回） |
+| 「重启进入 PE」按钮 | 主窗口 ID_PE_REBOOT_MAIN=1410，读 `pe-entry-guid.txt`（install-pe-secondary 写入的裸 GUID）→ `bcdedit /set {bootmgr} bootsequence {<guid>}` |
+| 实机闭环 | 用户点「重启进入 PE」（exit code=0）→ 手动重启自动进 PE 桌面 → PE 点「重启」→ **回 Win11、Boot 菜单 default 仍 Win11、`bcdedit /enum {bootmgr}` 无 bootsequence** |
+| 遗留取证 | ESP 上 `pe-bootsequence-clean.log` 未找到（CLEAN_LOG_MISSING）——闭环成立（bootsequence 被消费/清除）但自清代码是否落盘未取证，待下次进 PE 跑 3 条命令确认 |
+
+### 6.2 v1.3.7：GUI 创建桌面快捷方式
+
+- 「创建快捷方式」按钮（ID_PE_SHORTCUT=1411，PE 恢复 tab）：生成 **BackupRestore.lnk**（指向程序本身、无参数，双击打开 GUI）。
+- **Parallels 桌面重定向坑**：提升进程 `[Environment]::GetFolderPath('Desktop')` 返回 `C:\Mac\Home\Desktop` 或 systemprofile，**不是 Windows 物理桌面** → ps1 改为遍历 `GetFolderPath('Desktop')` + `$env:USERPROFILE\Desktop` 候选路径全部创建、去重。
+- `--pe-reboot` 独立入口：无窗口设置 bootsequence（供快捷方式复用；非提升先提权重启）。
+- 实机状态：手动脚本创建 `C:\Users\x\Desktop\BackupRestore.lnk` 成功（SHORTCUT_OK）；GUI 按钮已部署，**按钮点击待用户切 PE tab 实点确认**（注入 SendMessage 验证未成功——见 §6.3）。
+- 已提交 git `2623037`（v1.3.6→1.3.7）。
+
+### 6.3 开发调试经验（勿重踩）
+
+1. **WM_COMMAND 注入编码**：`wParam = MAKEWPARAM(控件ID, 通知码)`——**ID 在低 16 位**（`1104` 直接传即可），先前写成 `1104 << 16`（ID 在高位）导致消息无响应。
+2. **注入通道不可靠**：`--current-user` PowerShell 的 `SendMessage` 到 GUI 主窗口有时卡住/无响应（FindWindow 按标题也返回 0），GUI 自动化建议以用户实点为准；调试脚本 `_pe-inject-*.ps1` 已 gitignore。
+3. **PE 自清取证命令**（下次进 PE 执行）：`type X:\Windows\System32\logs\gui.log | findstr self-clean`、`mountvol S: /S & dir S:\pe-bootsequence-clean.log`、`bcdedit /store S:\EFI\Microsoft\Boot\BCD /enum {bootmgr} | findstr bootsequence`。
