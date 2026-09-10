@@ -79,6 +79,7 @@ const ID_OPERATION_PROBE: usize = 1100;
 const ID_OPERATION_BACKUP: usize = 1101;
 const ID_OPERATION_RESTORE: usize = 1102;
 const ID_OPERATION_SECONDARY: usize = 1103;
+const ID_OPERATION_PE: usize = 1104;
 const ID_SOURCE: usize = 1202;
 const ID_IMAGE: usize = 1203;
 const ID_TARGET: usize = 1204;
@@ -405,7 +406,7 @@ struct TokenElevation {
 
 struct Controls {
     language: Hwnd,
-    operation_tabs: [Hwnd; 4],
+    operation_tabs: [Hwnd; 5],
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
@@ -470,6 +471,7 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.operation_tabs[1], "backup"),
         (state.controls.operation_tabs[2], "restore"),
         (state.controls.operation_tabs[3], "secondary"),
+        (state.controls.operation_tabs[4], "pe"),
         (state.controls.source, "source"),
         (state.controls.target, "target"),
         (state.controls.image, "image"),
@@ -613,6 +615,10 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "secondary_hint") => {
             "新增第二系统：保留当前 Windows，把镜像部署到另一个分区并新增启动项。"
         }
+        (Language::Chinese, "pe") => "PE 恢复",
+        (Language::Chinese, "pe_hint") => {
+            "安装 PE 恢复环境：把 PE 镜像（boot.wim）部署为目标卷上的恢复环境，并新增 BCD 启动项「Windows PE (BackupRestore)」；不修改当前 Windows 默认启动。"
+        }
         (Language::English, "operation") => "Operation",
         (Language::English, "source") => "Windows source",
         (Language::English, "image") => "Image absolute path",
@@ -643,6 +649,10 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "secondary_hint") => {
             "Second system: keep the current Windows, deploy the image to another partition and add a boot entry."
+        }
+        (Language::English, "pe") => "PE recovery",
+        (Language::English, "pe_hint") => {
+            "Install PE recovery: deploy the PE image (boot.wim) to the target volume and add a BCD entry named \"Windows PE (BackupRestore)\". The current Windows default boot is untouched."
         }
         _ => "",
     }
@@ -798,6 +808,7 @@ unsafe fn selected_operation(state: &State) -> &'static str {
         1 => "backup",
         2 => "restore-existing",
         3 => "create-secondary",
+        4 => "install-pe-secondary",
         _ => "probe",
     }
 }
@@ -807,10 +818,14 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
         .controls
         .operation_tabs
         .iter()
-        .zip(["probe", "backup", "restore", "secondary"])
+        .zip(["probe", "backup", "restore", "secondary", "pe"])
         .enumerate()
     {
         set_text(*button, ui_text(language, key));
+        append_gui_log(
+            state,
+            &format!("PE dev: tab[{index}] key={key} hwnd={button:?} text_set"),
+        );
         SendMessageW(
             *button,
             BM_SETCHECK,
@@ -830,10 +845,12 @@ fn operation_display(language: Language, operation: &str) -> &'static str {
         (Language::Chinese, "backup") => "备份",
         (Language::Chinese, "restore-existing") => "单系统还原",
         (Language::Chinese, "create-secondary") => "新增第二系统",
+        (Language::Chinese, "install-pe-secondary") => "安装 PE 恢复环境",
         (Language::English, "probe") => "Inspect",
         (Language::English, "backup") => "Backup",
         (Language::English, "restore-existing") => "Restore",
         (Language::English, "create-secondary") => "Second system",
+        (Language::English, "install-pe-secondary") => "Install PE recovery",
         _ => "",
     }
 }
@@ -843,6 +860,7 @@ fn operation_hint_key(operation: &str) -> &'static str {
         "backup" => "backup_hint",
         "restore-existing" => "restore_hint",
         "create-secondary" => "secondary_hint",
+        "install-pe-secondary" => "pe_hint",
         _ => "probe_hint",
     }
 }
@@ -858,9 +876,10 @@ unsafe fn set_operation_guidance(state: &State) {
 unsafe fn set_operation_visibility(state: &State) {
     let operation = selected_operation(state);
     let show_image = operation != "probe";
-    let show_target = matches!(operation, "restore-existing" | "create-secondary");
+    let show_target =
+        matches!(operation, "restore-existing" | "create-secondary" | "install-pe-secondary");
     let show_index = matches!(operation, "restore-existing" | "create-secondary");
-    let show_menu = operation == "create-secondary";
+    let show_menu = operation == "create-secondary" || operation == "install-pe-secondary";
     let set_visible = |hwnd: Hwnd, visible: bool| {
         ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
@@ -901,7 +920,7 @@ unsafe fn layout_operation(state: &State) {
     let target_details_y = target_combo_y + 36;
     let target_visible = matches!(
         selected_operation(state),
-        "restore-existing" | "create-secondary"
+        "restore-existing" | "create-secondary" | "install-pe-secondary"
     );
     let image_visible = selected_operation(state) != "probe";
     let index_visible = matches!(
@@ -1032,10 +1051,12 @@ unsafe fn set_volume_labels(state: &State) {
         (Language::Chinese, "backup") => ("源卷（备份来源）", "目标卷（镜像位置）"),
         (Language::Chinese, "restore-existing") => ("源卷（当前系统）", "目标卷（覆盖还原）"),
         (Language::Chinese, "create-secondary") => ("源卷（保留系统）", "目标卷（第二系统）"),
+        (Language::Chinese, "install-pe-secondary") => ("源卷（不使用）", "目标卷（PE 安装位置）"),
         (Language::Chinese, _) => ("源卷（检查对象）", "目标卷（不使用）"),
         (Language::English, "backup") => ("Source (backup)", "Target (image)"),
         (Language::English, "restore-existing") => ("Source (current)", "Target (overwrite)"),
         (Language::English, "create-secondary") => ("Source (keep)", "Target (second system)"),
+        (Language::English, "install-pe-secondary") => ("Source (unused)", "Target (PE install)"),
         (Language::English, _) => ("Source (inspect)", "Target (unused)"),
     };
     set_child_text(state.root, 2003, source);
@@ -1043,7 +1064,7 @@ unsafe fn set_volume_labels(state: &State) {
 }
 
 unsafe fn select_operation(state: &mut State, index: usize) {
-    state.operation_index = index.min(3);
+    state.operation_index = index.min(4);
     set_operation_tabs(state, selected_language(state));
     if selected_operation(state) == "restore-existing"
         && let Some(source) = selected_drive_letter(state, state.controls.source)
@@ -2112,6 +2133,388 @@ unsafe fn browse_image(state: &State) {
     }
 }
 
+/// Run `bcdedit.exe` (or any command) synchronously via a visible-free cmd
+/// wrapper and return its exit code. Output is redirected to `out_file`
+/// (optional) so GUID-returning commands can be parsed afterwards.
+fn run_cmd_to_file(command: &str, out_file: Option<&std::path::Path>) -> u32 {
+    let mut full = String::from("cmd.exe /c ");
+    full.push_str(command);
+    if let Some(path) = out_file {
+        let quoted = format!("\"{}\"", path.to_string_lossy());
+        full.push_str(" > ");
+        full.push_str(&quoted);
+        full.push_str(" 2>&1");
+    }
+    let mut command_line: Vec<u16> = full.encode_utf16().chain(Some(0)).collect();
+    let mut startup: StartupInfoW = unsafe { std::mem::zeroed() };
+    startup.cb = size_of::<StartupInfoW>() as u32;
+    let mut process: ProcessInformation = unsafe { std::mem::zeroed() };
+    let created = unsafe {
+        CreateProcessW(
+            null(),
+            command_line.as_mut_ptr(),
+            null_mut(),
+            null_mut(),
+            0,
+            CREATE_NO_WINDOW,
+            null_mut(),
+            null_mut(),
+            &mut startup,
+            &mut process,
+        )
+    };
+    if created == 0 {
+        return u32::MAX;
+    }
+    unsafe {
+        WaitForSingleObject(process.process, 30000);
+        let mut code: u32 = 0;
+        GetExitCodeProcess(process.process, &mut code);
+        CloseHandle(process.thread);
+        CloseHandle(process.process);
+        code
+    }
+}
+
+/// Install the PE recovery environment as an additional boot entry. Copies
+/// the chosen PE boot.wim to `<target>:\sources\boot.wim` (backing up an
+/// existing one as `.stock`), ensures `<target>:\boot\boot.sdi`, then creates
+/// a dedicated ramdiskoptions entry plus an osloader entry named
+/// "Windows PE (BackupRestore)" and appends it to the boot display order.
+/// The current Windows default boot is left untouched.
+unsafe fn install_pe_secondary(state: &State) {
+    let language = selected_language(state);
+    let image_path = get_text(state.controls.image).trim().to_string();
+    if !PathBuf::from(&image_path).is_file() {
+        append_gui_log(state, "GUI action blocked: PE WIM file does not exist");
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!("PE WIM file not found: {image_path}")
+            } else {
+                format!("PE 镜像文件不存在：{image_path}")
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    let target_drive = match selected_drive_letter(state, state.controls.target) {
+        Some(value) => value,
+        None => {
+            append_gui_log(state, "GUI action blocked: no target volume selected");
+            show_message(
+                state.root,
+                &if language == Language::English {
+                    "Select a target volume for the PE recovery environment."
+                } else {
+                    "请为目标卷选择 PE 恢复环境所在卷。"
+                },
+                if language == Language::English {
+                    "Validation failed"
+                } else {
+                    "参数校验失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+    };
+    let drive_char = target_drive.chars().next().unwrap_or('C');
+    if drive_char == state.executable_dir.to_string_lossy().chars().next().unwrap_or(' ') {
+        append_gui_log(state, "GUI action blocked: target volume is the program volume");
+        show_message(
+            state.root,
+            &if language == Language::English {
+                "The target volume must differ from the volume that runs this program."
+            } else {
+                "目标卷不能与运行本程序的卷相同。"
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    // Destructive-ish confirmation: overwrites <target>:\sources\boot.wim and
+    // modifies the boot configuration. Nothing runs before this confirmation.
+    let answer = show_message(
+        state.root,
+        &if language == Language::English {
+            format!(
+                "Install the PE recovery environment onto volume {drive_char}:?\n\n- Copy the PE WIM to {drive_char}:\\sources\\boot.wim (existing file is kept as .stock)\n- Ensure {drive_char}:\\boot\\boot.sdi\n- Add boot entry \"Windows PE (BackupRestore)\" to the boot menu\n\nThe current Windows default boot is NOT changed. Continue?"
+            )
+        } else {
+            format!(
+                "将 PE 恢复环境安装到 {drive_char}: 卷？\n\n- 复制 PE 镜像到 {drive_char}:\\sources\\boot.wim（已有文件保留为 .stock）\n- 确保 {drive_char}:\\boot\\boot.sdi 存在\n- 在启动菜单新增「Windows PE (BackupRestore)」启动项\n\n不修改当前 Windows 默认启动。是否继续？"
+            )
+        },
+        if language == Language::English {
+            "Install PE recovery"
+        } else {
+            "安装 PE 恢复环境"
+        },
+        MB_YESNO | MB_ICONWARNING,
+    );
+    if answer != IDYES {
+        append_gui_log(state, "GUI action cancelled: PE install confirmation declined");
+        return;
+    }
+    append_gui_log(
+        state,
+        &format!("PE install started: wim={image_path} target={drive_char}:"),
+    );
+    let target_root = format!("{drive_char}:\\");
+    // 1. Copy the PE WIM into <target>:\sources\boot.wim, preserving an
+    //    existing file as .stock on first install.
+    let sources_dir = format!("{target_root}sources");
+    if !PathBuf::from(&sources_dir).is_dir() {
+        let _ = std::fs::create_dir_all(&sources_dir);
+    }
+    let wim_dest = PathBuf::from(format!("{sources_dir}\\boot.wim"));
+    if wim_dest.is_file() {
+        let stock = PathBuf::from(format!("{sources_dir}\\boot.wim.stock"));
+        if !stock.is_file() {
+            let _ = std::fs::copy(&wim_dest, &stock);
+            append_gui_log(state, "PE install: existing boot.wim kept as boot.wim.stock");
+        }
+    }
+    if let Err(error) = std::fs::copy(&image_path, &wim_dest) {
+        append_gui_log(
+            state,
+            &format!("PE install failed: copy boot.wim: {error}"),
+        );
+        show_message(
+            state.root,
+            &format!(
+                "{}: {error}",
+                if language == Language::English {
+                    "Failed to copy the PE WIM"
+                } else {
+                    "复制 PE 镜像失败"
+                }
+            ),
+            if language == Language::English {
+                "PE install failed"
+            } else {
+                "安装失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    // 2. Ensure <target>:\boot\boot.sdi exists (ramdisk SDI template).
+    let boot_dir = format!("{target_root}boot");
+    let sdi_dest = PathBuf::from(format!("{boot_dir}\\boot.sdi"));
+    if !sdi_dest.is_file() {
+        let _ = std::fs::create_dir_all(&boot_dir);
+        let mut sdi_source: Option<PathBuf> = None;
+        for candidate in [
+            "C:\\WinPE_arm64\\media\\boot\\boot.sdi",
+            "C:\\Program Files (x86)\\Windows Kits\\10\\Assessment and Deployment Kit\\Windows Preinstallation Environment\\arm64\\media\\boot\\boot.sdi",
+        ] {
+            if PathBuf::from(candidate).is_file() {
+                sdi_source = Some(PathBuf::from(candidate));
+                break;
+            }
+        }
+        if let Some(src) = sdi_source {
+            if let Err(error) = std::fs::copy(&src, &sdi_dest) {
+                append_gui_log(
+                    state,
+                    &format!("PE install failed: copy boot.sdi: {error}"),
+                );
+            }
+        }
+        if !sdi_dest.is_file() {
+            append_gui_log(
+                state,
+                "PE install blocked: <target>:\\boot\\boot.sdi is missing and no ADK copy was found",
+            );
+            show_message(
+                state.root,
+                &if language == Language::English {
+                    format!("{drive_char}:\\boot\\boot.sdi is missing and no ADK copy could be found. Place the Windows PE boot.sdi on the target volume and try again.")
+                } else {
+                    format!("{drive_char}:\\boot\\boot.sdi 不存在，且未找到 ADK 副本。请将 WinPE 的 boot.sdi 放到目标卷后重试。")
+                },
+                if language == Language::English {
+                    "PE install failed"
+                } else {
+                    "安装失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+    }
+    // 3. BCD: reuse the system {ramdiskoptions} entry (bcdedit on this
+    //    platform rejects /create /application ramdisk), repoint it at the
+    //    target volume, then create the PE osloader entry and append it to
+    //    the display order.
+    let guid_out = state.executable_dir.join("_pe-bcd-guid.txt");
+    let guid_out = guid_out.to_string_lossy().to_string();
+    let _ = std::fs::remove_file(&guid_out);
+    let ram_guid_path = "{ramdiskoptions}".to_string();
+    let mut steps = vec![
+        format!(
+            "bcdedit.exe /set {ram_guid_path} ramdisksdidevice partition={drive_char}:"
+        ),
+        format!("bcdedit.exe /set {ram_guid_path} ramdisksdipath \\boot\\boot.sdi"),
+    ];
+    let os_guid = {
+        let _ = std::fs::remove_file(&guid_out);
+        let code = run_cmd_to_file(
+            "bcdedit.exe /create /d \"Windows PE (BackupRestore)\" /application osloader",
+            Some(std::path::Path::new(&guid_out)),
+        );
+        if code != 0 {
+            append_gui_log(
+                state,
+                &format!("PE install failed: bcdedit create osloader code={code}"),
+            );
+            show_message(
+                state.root,
+                &if language == Language::English {
+                    format!("bcdedit failed to create the PE boot entry (code {code}).")
+                } else {
+                    format!("bcdedit 创建 PE 启动项失败（退出码 {code}）。")
+                },
+                if language == Language::English {
+                    "PE install failed"
+                } else {
+                    "安装失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+        match extract_bcd_guid(&guid_out) {
+            Some(guid) => guid,
+            None => {
+                show_message(
+                    state.root,
+                    &if language == Language::English {
+                        "Could not read the created PE boot entry GUID."
+                    } else {
+                        "无法读取新建的 PE 启动项 GUID。"
+                    },
+                    if language == Language::English {
+                        "PE install failed"
+                    } else {
+                        "安装失败"
+                    },
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
+        }
+    };
+    let os_guid_path = format!("{{{}}}", os_guid);
+    let ramdisk_device = format!("ramdisk=[{drive_char}:]\\sources\\boot.wim,{ram_guid_path}");
+    steps.push(format!("bcdedit.exe /set {os_guid_path} device {ramdisk_device}"));
+    steps.push(format!("bcdedit.exe /set {os_guid_path} osdevice {ramdisk_device}"));
+    steps.push(format!("bcdedit.exe /set {os_guid_path} winpe yes"));
+    steps.push(format!("bcdedit.exe /set {os_guid_path} detecthal yes"));
+    steps.push(format!("bcdedit.exe /set {os_guid_path} systemroot \\windows"));
+    steps.push(format!("bcdedit.exe /set {os_guid_path} nx OptIn"));
+    steps.push(format!(
+        "bcdedit.exe /set {os_guid_path} description \"Windows PE (BackupRestore)\""
+    ));
+    steps.push(format!("bcdedit.exe /displayorder {os_guid_path} /addlast"));
+    let mut failed_step: Option<String> = None;
+    for step in &steps {
+        let code = run_cmd_to_file(step, None);
+        append_gui_log(state, &format!("PE install bcdedit: {step} -> {code}"));
+        if code != 0 {
+            failed_step = Some(step.clone());
+            break;
+        }
+    }
+    if let Some(step) = failed_step {
+        show_message(
+            state.root,
+            &format!(
+                "{}: {}",
+                if language == Language::English {
+                    "bcdedit step failed"
+                } else {
+                    "bcdedit 步骤失败"
+                },
+                step
+            ),
+            if language == Language::English {
+                "PE install failed"
+            } else {
+                "安装失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    let _ = std::fs::remove_file(&guid_out);
+    append_gui_log(
+        state,
+        &format!(
+            "GUI action completed: PE recovery installed (wim -> {drive_char}:\\sources\\boot.wim, BCD entry {os_guid_path})"
+        ),
+    );
+    show_message(
+        state.root,
+        &if language == Language::English {
+            format!(
+                "PE recovery environment installed on {drive_char}:.\n\nThe boot menu now has \"Windows PE (BackupRestore)\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
+            )
+        } else {
+            format!(
+                "PE 恢复环境已安装到 {drive_char}: 卷。\n\n启动菜单已新增「Windows PE (BackupRestore)」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
+            )
+        },
+        if language == Language::English {
+            "Install complete"
+        } else {
+            "安装完成"
+        },
+        MB_OK,
+    );
+}
+
+/// Parse the first `{xxxxxxxx-....}` GUID from a bcdedit output file and
+/// return it WITHOUT the surrounding braces (callers wrap with `{}` as
+/// needed). bcdedit writes GBK/UTF-16LE output on Chinese/Japanese systems,
+/// so detect the interleaved-NUL pattern (or a BOM) and decode before
+/// scanning.
+fn extract_bcd_guid(path: &str) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let nul_count = bytes.iter().filter(|&&b| b == 0).count();
+    let text = if bytes.starts_with(&[0xFF, 0xFE])
+        || (bytes.len() >= 2 && nul_count > bytes.len() / 4)
+    {
+        let body = if bytes.starts_with(&[0xFF, 0xFE]) {
+            &bytes[2..]
+        } else {
+            &bytes[..]
+        };
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(&bytes).to_string()
+    };
+    let start = text.find('{')?;
+    let end = text[start..].find('}')? + start;
+    Some(text[start + 1..end].to_string())
+}
+
 unsafe fn create_task(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state).to_string();
@@ -2119,6 +2522,13 @@ unsafe fn create_task(state: &State) {
         state,
         &format!("GUI action started: create task; operation={operation}"),
     );
+    // The PE recovery install is a direct in-process operation (copy WIM +
+    // BCD entry), not a WinRE recovery task, so handle it before any of the
+    // restore-specific validation below.
+    if operation == "install-pe-secondary" {
+        install_pe_secondary(state);
+        return;
+    }
     let index = selected_wim_index(state);
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") && index.is_none() {
         append_gui_log(
@@ -2452,7 +2862,7 @@ unsafe extern "system" fn window_proc(
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
                     180,
                     60,
-                    115,
+                    95,
                     32,
                     ID_OPERATION_PROBE,
                 ),
@@ -2461,9 +2871,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    300,
+                    279,
                     60,
-                    115,
+                    95,
                     32,
                     ID_OPERATION_BACKUP,
                 ),
@@ -2472,9 +2882,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    420,
+                    378,
                     60,
-                    115,
+                    95,
                     32,
                     ID_OPERATION_RESTORE,
                 ),
@@ -2483,11 +2893,22 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    540,
+                    477,
                     60,
-                    115,
+                    95,
                     32,
                     ID_OPERATION_SECONDARY,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    576,
+                    60,
+                    95,
+                    32,
+                    ID_OPERATION_PE,
                 ),
             ],
             source: create_control(
@@ -2685,7 +3106,7 @@ unsafe extern "system" fn window_proc(
         }
         if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB") {
             if let Ok(index) = tab.parse::<usize>() {
-                if (1..=3).contains(&index) {
+                if (1..=4).contains(&index) {
                     select_operation(&mut *state_ptr, index);
                 }
             }
@@ -2712,6 +3133,7 @@ unsafe extern "system" fn window_proc(
                 ID_OPERATION_BACKUP => Some(1),
                 ID_OPERATION_RESTORE => Some(2),
                 ID_OPERATION_SECONDARY => Some(3),
+                ID_OPERATION_PE => Some(4),
                 _ => None,
             } {
                 select_operation(state, index);
