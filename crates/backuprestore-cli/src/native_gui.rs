@@ -2534,14 +2534,15 @@ unsafe fn pe_create_shortcut(state: &State) {
         .unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
     let executable_path = executable.to_string_lossy().to_string();
     let ps1 = state.executable_dir.join("_create-pe-shortcut.ps1");
-    // 提升进程的 GetFolderPath('Desktop') 可能被 Parallels 重定向到
-    // C:\Mac\Home\Desktop 或 systemprofile，实际 Windows 桌面是当前用户
-    // 物理桌面。遍历候选桌面路径全部创建，去重。
+    // Parallels 场景：用户实际桌面是 Mac 桌面映射 C:\Mac\Home\Desktop
+    // （Known Folder 已重定向，Windows 物理桌面不显示）。候选路径全部
+    // 创建、去重：Known Folder 桌面 + Mac 桌面映射 + 当前用户物理桌面。
     let script = format!(
         "$paths = @()\n\
          $d1 = [Environment]::GetFolderPath('Desktop')\n\
-         $d2 = Join-Path $env:USERPROFILE 'Desktop'\n\
-         foreach ($p in @($d1, $d2)) {{ if ($p -and (Test-Path $p) -and ($paths -notcontains $p)) {{ $paths += $p }} }}\n\
+         $d2 = 'C:\\Mac\\Home\\Desktop'\n\
+         $d3 = Join-Path $env:USERPROFILE 'Desktop'\n\
+         foreach ($p in @($d1, $d2, $d3)) {{ if ($p -and (Test-Path $p) -and ($paths -notcontains $p)) {{ $paths += $p }} }}\n\
          foreach ($p in $paths) {{\n\
          \x20 $s = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $p 'BackupRestore.lnk'))\n\
          \x20 $s.TargetPath = '{executable_path}'\n\
