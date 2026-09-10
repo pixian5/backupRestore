@@ -97,6 +97,20 @@ fn main() {
         }
         return;
     }
+    #[cfg(windows)]
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--pe-reboot")
+    {
+        // 桌面快捷方式入口：设置 bootsequence 指向已安装的 PE 恢复环境，
+        // 下次重启自动进入 PE。非提升进程会先提权重启。
+        let result = unsafe { native_gui::pe_reboot_standalone() };
+        if let Err(error) = result {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut args = arguments.into_iter();
     let result = match args.next().as_deref() {
         Some("validate-task") => args

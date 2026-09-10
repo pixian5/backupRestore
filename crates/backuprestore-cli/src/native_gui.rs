@@ -67,6 +67,7 @@ const MB_OK: u32 = 0x00000000;
 const MB_ICONERROR: u32 = 0x00000010;
 const MB_YESNO: u32 = 0x00000004;
 const MB_ICONWARNING: u32 = 0x00000030;
+const MB_ICONINFORMATION: u32 = 0x00000040;
 const IDYES: i32 = 6;
 
 const ID_REFRESH: usize = 1001;
@@ -117,6 +118,10 @@ const ID_PE_REBOOT: usize = 1406;
 const ID_PE_TITLE: usize = 1407;
 const ID_PE_VERSION: usize = 1408;
 const ID_PE_CLOCK: usize = 1409;
+// 主窗口「PE 恢复」tab 的"重启进入 PE"按钮（与 PE 桌面的 ID_PE_REBOOT 区分）
+const ID_PE_REBOOT_MAIN: usize = 1410;
+// 主窗口「PE 恢复」tab 的"创建桌面快捷方式"按钮
+const ID_PE_SHORTCUT: usize = 1411;
 const PE_TIMER_ID: usize = 1;
 // COLORREF values are 0x00BBGGRR.
 const PE_BACKGROUND: u32 = 0x00553a2b; // RGB(43, 58, 85), deep blue-grey.
@@ -899,6 +904,9 @@ unsafe fn set_operation_visibility(state: &State) {
     set_visible(state.controls.target, show_target);
     set_visible(state.controls.target_details, show_target);
     set_child_visible(2005, show_target);
+    // 「重启进入 PE」「创建快捷方式」只在 PE 恢复 tab 显示
+    set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-secondary");
+    set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-secondary");
 }
 
 unsafe fn layout_operation(state: &State) {
@@ -2460,6 +2468,9 @@ unsafe fn install_pe_secondary(state: &State) {
         return;
     }
     let _ = std::fs::remove_file(&guid_out);
+    // 记录 PE 启动项 GUID（裸 GUID），供「重启进入 PE」按钮设置 bootsequence 使用。
+    let guid_file = state.executable_dir.join("pe-entry-guid.txt");
+    let _ = std::fs::write(&guid_file, os_guid.trim());
     append_gui_log(
         state,
         &format!(
@@ -2513,6 +2524,203 @@ fn extract_bcd_guid(path: &str) -> Option<String> {
     let start = text.find('{')?;
     let end = text[start..].find('}')? + start;
     Some(text[start + 1..end].to_string())
+}
+
+/// 「创建快捷方式」：在用户桌面创建指向 BackupRestore.exe 本身的快捷方式
+/// 「BackupRestore.lnk」（无参数，双击直接打开主 GUI），方便日常启动程序。
+unsafe fn pe_create_shortcut(state: &State) {
+    let language = selected_language(state);
+    let executable = std::env::current_exe()
+        .unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
+    let executable_path = executable.to_string_lossy().to_string();
+    let ps1 = state.executable_dir.join("_create-pe-shortcut.ps1");
+    // 提升进程的 GetFolderPath('Desktop') 可能被 Parallels 重定向到
+    // C:\Mac\Home\Desktop 或 systemprofile，实际 Windows 桌面是当前用户
+    // 物理桌面。遍历候选桌面路径全部创建，去重。
+    let script = format!(
+        "$paths = @()\n\
+         $d1 = [Environment]::GetFolderPath('Desktop')\n\
+         $d2 = Join-Path $env:USERPROFILE 'Desktop'\n\
+         foreach ($p in @($d1, $d2)) {{ if ($p -and (Test-Path $p) -and ($paths -notcontains $p)) {{ $paths += $p }} }}\n\
+         foreach ($p in $paths) {{\n\
+         \x20 $s = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $p 'BackupRestore.lnk'))\n\
+         \x20 $s.TargetPath = '{executable_path}'\n\
+         \x20 $s.IconLocation = '{executable_path},0'\n\
+         \x20 $s.Save()\n\
+         }}\n\
+         'TARGETS=' + ($paths -join ';')\n"
+    );
+    // PowerShell 5.1 按 ANSI 读无 BOM 的 ps1，中文路径会乱码，加 UTF-8 BOM。
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(script.as_bytes());
+    let _ = std::fs::write(&ps1, bytes);
+    let command = format!(
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+        ps1.to_string_lossy()
+    );
+    append_gui_log(state, &format!("PE create shortcut: {command}"));
+    let out_file = state.executable_dir.join("_create-pe-shortcut.out");
+    let code = run_cmd_to_file(&command, Some(&out_file));
+    if let Ok(text) = std::fs::read_to_string(&out_file) {
+        append_gui_log(
+            state,
+            &format!("PE create shortcut output: {}", text.trim()),
+        );
+    }
+    append_gui_log(state, &format!("PE create shortcut: exit code={code}"));
+    if code == 0 {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                "Desktop shortcut \"BackupRestore\" created. Double-click it to open the program."
+            } else {
+                "已创建桌面快捷方式「BackupRestore」。双击即可打开程序。"
+            },
+            if language == Language::English {
+                "Shortcut created"
+            } else {
+                "快捷方式已创建"
+            },
+            MB_OK | MB_ICONINFORMATION,
+        );
+    } else {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!("Failed to create the shortcut (exit code {code}).")
+            } else {
+                format!("创建快捷方式失败（退出码 {code}）。")
+            },
+            if language == Language::English {
+                "Failed"
+            } else {
+                "创建失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+/// 「重启进入 PE」：设置 {bootmgr} bootsequence 指向已安装的 PE 启动项，
+/// 下次重启由 bootmgr 自动进入 PE 恢复环境（无需手动选菜单）。
+/// PE 恢复桌面启动时会自动清除该 bootsequence（见 pe_self_clean_bootsequence），
+/// 因此之后再重启会正常回到主系统，全程无需用户操作。
+unsafe fn pe_reboot_to_pe(state: &State) {
+    let language = selected_language(state);
+    let guid_file = state.executable_dir.join("pe-entry-guid.txt");
+    let guid = std::fs::read_to_string(&guid_file)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let Some(guid) = guid else {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                "No PE entry installed yet. Open the PE Recovery tab, choose a target volume and a PE WIM, then click Create Task first."
+            } else {
+                "尚未安装 PE 恢复环境。请先在「PE 恢复」页选择目标卷和 PE 镜像，点击「创建任务」完成安装。"
+            },
+            if language == Language::English {
+                "PE entry missing"
+            } else {
+                "未安装 PE 恢复环境"
+            },
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return;
+    };
+    let command = format!(
+        "bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}"
+    );
+    append_gui_log(state, &format!("PE reboot to PE: {command}"));
+    let code = run_cmd_to_file(&command, None);
+    append_gui_log(state, &format!("PE reboot to PE: exit code={code}"));
+    if code == 0 {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                "Boot sequence set. The next reboot enters the PE recovery desktop automatically; it cleans up the one-time entry on start, so later reboots return to Windows normally."
+            } else {
+                "已设置一次性启动项。下次重启将自动进入 PE 恢复桌面；PE 启动时会自动清除该启动项，之后重启正常回到 Windows。"
+            },
+            if language == Language::English {
+                "Boot sequence set"
+            } else {
+                "设置成功"
+            },
+            MB_OK | MB_ICONINFORMATION,
+        );
+    } else {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!("Failed to set boot sequence (bcdedit exit code {code}). Make sure you run as administrator.")
+            } else {
+                format!("设置 bootsequence 失败（bcdedit 退出码 {code}）。请确认以管理员身份运行。")
+            },
+            if language == Language::English {
+                "Failed"
+            } else {
+                "设置失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+/// 桌面快捷方式入口（`--pe-reboot`）：无主窗口，设置 bootsequence 指向
+/// 已安装的 PE 恢复环境，用无父窗口消息框提示结果。非提升进程先提权重启。
+pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
+    if !is_elevated() {
+        relaunch_elevated()?;
+        return Ok(());
+    }
+    let executable_dir = std::env::current_exe()
+        .map_err(|error| super::err(&format!("cannot resolve current executable: {error}")))?
+        .parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_default();
+    let guid_file = executable_dir.join("pe-entry-guid.txt");
+    let guid = std::fs::read_to_string(&guid_file)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let Some(guid) = guid else {
+        let text = wide(
+            "尚未安装 PE 恢复环境。请先打开 BackupRestore，在「PE 恢复」页安装后再使用本快捷方式。\n\nPE recovery environment not installed yet. Install it from the PE Recovery tab first.",
+        );
+        MessageBoxW(
+            null_mut(),
+            text.as_ptr(),
+            wide("未安装 PE 恢复环境").as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return Ok(());
+    };
+    let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
+    let code = run_cmd_to_file(&command, None);
+    if code == 0 {
+        let text = wide(
+            "已设置一次性启动项。重启后自动进入 PE 恢复桌面；PE 启动时会自动清除该启动项，之后重启正常回到 Windows。\n\nBoot sequence set. Reboot to enter the PE recovery desktop automatically.",
+        );
+        MessageBoxW(
+            null_mut(),
+            text.as_ptr(),
+            wide("设置成功").as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    } else {
+        let text = wide(&format!(
+            "设置 bootsequence 失败（bcdedit 退出码 {code}）。请确认以管理员身份运行。\n\nFailed to set boot sequence (exit code {code})."
+        ));
+        MessageBoxW(
+            null_mut(),
+            text.as_ptr(),
+            wide("设置失败").as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+    Ok(())
 }
 
 unsafe fn create_task(state: &State) {
@@ -3076,6 +3284,28 @@ unsafe extern "system" fn window_proc(
             28,
             ID_REFRESH_TASK,
         );
+        create_control(
+            hwnd,
+            "BUTTON",
+            "重启进入 PE",
+            WS_TABSTOP,
+            560,
+            630,
+            140,
+            28,
+            ID_PE_REBOOT_MAIN,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
+            "创建快捷方式",
+            WS_TABSTOP,
+            710,
+            630,
+            140,
+            28,
+            ID_PE_SHORTCUT,
+        );
         let state = Box::new(State {
             root: hwnd,
             tooltip: null_mut(),
@@ -3162,6 +3392,8 @@ unsafe extern "system" fn window_proc(
                 ID_BROWSE_IMAGE => browse_image(state),
                 ID_CREATE_TASK => create_task(state),
                 ID_REFRESH_TASK => refresh_task_status(state),
+                ID_PE_REBOOT_MAIN => pe_reboot_to_pe(state),
+                ID_PE_SHORTCUT => pe_create_shortcut(state),
                 _ => {}
             }
             return 0;
@@ -3700,6 +3932,34 @@ unsafe extern "system" fn window_proc_pe(
 /// Full-screen, shell-free recovery desktop for WinPE sessions. The main GUI
 /// follows when the technician picks backup/restore/secondary (returned as the
 /// operation tab index); `None` means the desktop was dismissed without one.
+/// PE 启动时自清 bootsequence。
+///
+/// PE 是 RAM 盘（X:\），bootmgr 引导 PE 后无法把"已消费 bootsequence"写回
+/// ESP 的 BCD，导致 bootsequence 残留：每次重启都会再次进入 PE、回不了
+/// 主系统。本函数在 PE 恢复桌面启动时（用户可见 UI 出现前）静默挂载 ESP
+/// 分区（S:）并清除 {bootmgr} bootsequence，恢复"下次重启回主系统"的
+/// 正常行为，全程无需用户操作。结果写入 ESP 根目录
+/// pe-bootsequence-clean.log，重启后可回到 Windows 读回验证。
+fn pe_self_clean_bootsequence() {
+    // 1. 把 EFI 系统分区挂载到 S:（PE 内 S: 默认空闲；失败则记录日志）
+    let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
+    // 2. 清除一次性启动项。从未设置过 bootsequence 时 bcdedit 也会返回
+    //    非零码（找不到值），属预期，忽略并记录。
+    let clean_code = run_cmd_to_file(
+        "bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /deletevalue {bootmgr} bootsequence",
+        None,
+    );
+    // 3. 把结果写到 ESP 根目录，供 Windows 侧读回验证。
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let log_line = format!(
+        "PE bootsequence self-clean: mountvol code={mount_code}, bcdedit code={clean_code}, ts={now}\n"
+    );
+    let _ = std::fs::write("S:\\pe-bootsequence-clean.log", log_line);
+}
+
 pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
     unsafe {
         let common_controls = InitCommonControlsEx {
@@ -3712,6 +3972,8 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             return Ok(None);
         }
         close_previous_gui_windows();
+        // PE 恢复桌面启动即自清 bootsequence，避免"每次重启都进 PE"。
+        pe_self_clean_bootsequence();
         let instance = GetModuleHandleW(null());
         if instance.is_null() {
             return Err(super::err("GetModuleHandleW failed"));
