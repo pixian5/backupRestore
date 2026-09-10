@@ -2630,24 +2630,31 @@ unsafe fn pe_reboot_to_pe(state: &State) {
         );
         return;
     };
+    // 1. 写 PE 任务配置到 ESP（PE 启动按配置自动执行，无需用户操作）
+    let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
+    append_gui_log(state, &format!("PE reboot to PE: mountvol S: code={mount_code}"));
+    let task = "clean_bootsequence\nverify\nreboot\n";
+    let write_ok = std::fs::write("S:\\pe-task.txt", task).is_ok();
+    append_gui_log(state, &format!("PE reboot to PE: write pe-task.txt ok={write_ok}"));
+    // 2. 设置 bootsequence 引导进 PE
     let command = format!(
         "bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}"
     );
     append_gui_log(state, &format!("PE reboot to PE: {command}"));
     let code = run_cmd_to_file(&command, None);
     append_gui_log(state, &format!("PE reboot to PE: exit code={code}"));
-    if code == 0 {
+    if code == 0 && write_ok {
         show_message(
             state.root,
             &if language == Language::English {
-                "Boot sequence set. The next reboot enters the PE recovery desktop automatically; it cleans up the one-time entry on start, so later reboots return to Windows normally."
+                "PE task configured and boot sequence set. The next reboot enters PE, runs the task automatically (clean bootsequence + verify), then reboots back to Windows on its own."
             } else {
-                "已设置一次性启动项。下次重启将自动进入 PE 恢复桌面；PE 启动时会自动清除该启动项，之后重启正常回到 Windows。"
+                "已写入 PE 任务配置并设置一次性启动项。下次重启自动进入 PE，自动执行任务（清除 bootsequence + 取证），完成后自动重启回 Windows，全程无需操作。"
             },
             if language == Language::English {
-                "Boot sequence set"
+                "PE task configured"
             } else {
-                "设置成功"
+                "配置成功"
             },
             MB_OK | MB_ICONINFORMATION,
         );
@@ -2655,9 +2662,9 @@ unsafe fn pe_reboot_to_pe(state: &State) {
         show_message(
             state.root,
             &if language == Language::English {
-                format!("Failed to set boot sequence (bcdedit exit code {code}). Make sure you run as administrator.")
+                format!("Failed to configure PE task (bcdedit code {code}, config write {write_ok}). Run as administrator.")
             } else {
-                format!("设置 bootsequence 失败（bcdedit 退出码 {code}）。请确认以管理员身份运行。")
+                format!("配置失败（bcdedit 退出码 {code}，配置写入 {write_ok}）。请确认以管理员身份运行。")
             },
             if language == Language::English {
                 "Failed"
@@ -3941,45 +3948,69 @@ unsafe extern "system" fn window_proc_pe(
 /// 分区（S:）并清除 {bootmgr} bootsequence，恢复"下次重启回主系统"的
 /// 正常行为，全程无需用户操作。结果写入 ESP 根目录
 /// pe-bootsequence-clean.log，重启后可回到 Windows 读回验证。
-fn pe_self_clean_bootsequence() {
-    // 1. 把 EFI 系统分区挂载到 S:（PE 内 S: 默认空闲；失败则记录日志）
+/// 配置驱动的 PE 任务执行：Windows 侧把要执行的动作写入 ESP 的
+/// `S:\pe-task.txt`（每行一个动作，`reboot` 表示执行完自动重启回
+/// Windows），PE 启动时读取并按配置逐条执行，结果落盘
+/// `S:\pe-task-result.txt`，配置改名为 `.done` 防止重复执行。
+/// 返回 `true` 表示配置要求执行后自动重启（调用方自动重启，无需用户
+/// 操作）；无配置返回 `false`（正常显示 PE 恢复桌面）。
+///
+/// 支持动作：
+/// - `clean_bootsequence`：挂载 ESP 并清除 {bootmgr} bootsequence
+/// - `verify`：取证（bootmgr 枚举 / ESP 目录列表 / 结果日志读回）
+fn pe_task_execute() -> bool {
+    // 0. 先挂载 ESP 到 S:——任务配置就存在 S:\pe-task.txt，PE 启动时
+    //    S: 尚未挂载，必须先挂载才能读到配置。
     let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-    // 2. 清除一次性启动项。从未设置过 bootsequence 时 bcdedit 也会返回
-    //    非零码（找不到值），属预期，忽略并记录。
-    let clean_code = run_cmd_to_file(
-        "bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /deletevalue {bootmgr} bootsequence",
-        None,
-    );
-    // 3. 自清取证：全部自动执行并落盘 S:\pe-bootsequence-clean.log，
-    //    用户无需在 PE 里手动输入任何命令（PE 是 RAM 盘无法复制）。
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let mut log = format!(
-        "PE bootsequence self-clean: mountvol code={mount_code}, bcdedit code={clean_code}, ts={now}\n"
-    );
-    // 取证 A：bootmgr 条目当前状态（确认 bootsequence 已清除）
-    run_cmd_to_file(
-        "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1",
-        None,
-    );
-    match std::fs::read_to_string("S:\\verify-bcd-enum.txt") {
-        Ok(text) => log.push_str(&format!("[ENUM_BOOTMGR]\n{text}\n")),
-        Err(_) => log.push_str("[ENUM_BOOTMGR] read failed\n"),
+    let task_file = "S:\\pe-task.txt";
+    let Ok(config) = std::fs::read_to_string(task_file) else {
+        return false; // 无配置：正常显示 PE 桌面
+    };
+    let mut reboot = false;
+    let mut result = format!("PE task execute start, mountvol={mount_code}\n");
+    for line in config.lines() {
+        let action = line.trim();
+        match action {
+            "" => {}
+            "reboot" => reboot = true,
+            "clean_bootsequence" => {
+                let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
+                let clean_code = run_cmd_to_file(
+                    "bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /deletevalue {bootmgr} bootsequence",
+                    None,
+                );
+                result.push_str(&format!(
+                    "clean_bootsequence: mountvol={mount_code}, clean={clean_code}\n"
+                ));
+            }
+            "verify" => {
+                // 取证 A：bootmgr 条目当前状态（确认 bootsequence 已清除）
+                run_cmd_to_file(
+                    "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1",
+                    None,
+                );
+                match std::fs::read_to_string("S:\\verify-bcd-enum.txt") {
+                    Ok(text) => result.push_str(&format!("[ENUM_BOOTMGR]\n{text}\n")),
+                    Err(_) => result.push_str("[ENUM_BOOTMGR] read failed\n"),
+                }
+                // 取证 B：ESP 根目录文件列表
+                run_cmd_to_file("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", None);
+                if let Ok(text) = std::fs::read_to_string("S:\\verify-dir.txt") {
+                    result.push_str(&format!("[DIR_S]\n{text}\n"));
+                }
+                // 取证 C：结果日志读回（确认已落盘）
+                match std::fs::read_to_string("S:\\pe-task-result.txt") {
+                    Ok(text) => result.push_str(&format!("[RESULT_READBACK]\n{text}\n")),
+                    Err(_) => result.push_str("[RESULT_READBACK] not yet written\n"),
+                }
+            }
+            other => result.push_str(&format!("unknown action: {other}\n")),
+        }
     }
-    let _ = std::fs::write("S:\\pe-bootsequence-clean.log", &log);
-    // 取证 B：读回日志内容（确认已落盘 ESP）
-    match std::fs::read_to_string("S:\\pe-bootsequence-clean.log") {
-        Ok(text) => log.push_str(&format!("[LOG_READBACK]\n{text}\n")),
-        Err(_) => log.push_str("[LOG_READBACK] failed\n"),
-    }
-    // 取证 C：ESP 根目录文件列表（确认日志与取证文件都在）
-    run_cmd_to_file("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", None);
-    if let Ok(text) = std::fs::read_to_string("S:\\verify-dir.txt") {
-        log.push_str(&format!("[DIR_S]\n{text}\n"));
-    }
-    let _ = std::fs::write("S:\\pe-bootsequence-clean.log", &log);
+    let _ = std::fs::write("S:\\pe-task-result.txt", &result);
+    // 配置标记完成（防下次重复执行）
+    let _ = std::fs::rename(task_file, "S:\\pe-task.txt.done");
+    reboot
 }
 
 pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
@@ -3994,8 +4025,14 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             return Ok(None);
         }
         close_previous_gui_windows();
-        // PE 恢复桌面启动即自清 bootsequence，避免"每次重启都进 PE"。
-        pe_self_clean_bootsequence();
+        // PE 恢复桌面启动：读取 Windows 侧写入 ESP 的任务配置
+        // S:\pe-task.txt，按配置执行动作；配置含 reboot 则执行完自动
+        // 重启回 Windows，全程无需用户操作。无配置则正常显示 PE 桌面。
+        let auto_reboot = pe_task_execute();
+        if auto_reboot {
+            let _ = run_cmd_to_file("wpeutil.exe reboot", None);
+            return Ok(None);
+        }
         let instance = GetModuleHandleW(null());
         if instance.is_null() {
             return Err(super::err("GetModuleHandleW failed"));
