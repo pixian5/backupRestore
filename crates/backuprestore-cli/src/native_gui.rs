@@ -951,6 +951,12 @@ unsafe fn set_operation_visibility(state: &State) {
     // 启动方式单选与目录行只在「PE 恢复」tab 显示；硬盘启动模式下隐藏目录名行
     let pe_mode_ram = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
     let pe_visible = operation == "install-pe-entry";
+    append_gui_log(
+        state,
+        &format!(
+            "PE visibility: op={operation} pe_visible={pe_visible} ram_checked={pe_mode_ram}"
+        ),
+    );
     set_child_visible(ID_PE_MODE_RAM as i32, pe_visible);
     set_child_visible(ID_PE_MODE_DISK as i32, pe_visible);
     set_child_visible(ID_PE_DIR_LABEL as i32, pe_visible && pe_mode_ram);
@@ -1044,6 +1050,12 @@ unsafe fn layout_operation(state: &State) {
     if selected_operation(state) == "install-pe-entry" {
         let mode_y = last_details_y + 18;
         let pe_ram_checked = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
+        append_gui_log(
+            state,
+            &format!(
+                "PE layout: last_details_y={last_details_y} mode_y={mode_y} ram_checked={pe_ram_checked}"
+            ),
+        );
         set_text(
             GetDlgItem(state.root, ID_PE_MODE_RAM as i32),
             if selected_language(state) == Language::English {
@@ -1097,13 +1109,17 @@ unsafe fn layout_operation(state: &State) {
             24,
         );
         // 硬盘模式下隐藏目录名行
-        ShowWindow(
-            GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
-            if pe_ram_checked { SW_SHOW } else { SW_HIDE },
-        );
-        ShowWindow(
-            GetDlgItem(state.root, ID_PE_DIR_EDIT as i32),
-            if pe_ram_checked { SW_SHOW } else { SW_HIDE },
+        let dir_label_hwnd = GetDlgItem(state.root, ID_PE_DIR_LABEL as i32);
+        let dir_edit_hwnd = GetDlgItem(state.root, ID_PE_DIR_EDIT as i32);
+        let label_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
+        let edit_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
+        ShowWindow(dir_label_hwnd, label_visible);
+        ShowWindow(dir_edit_hwnd, edit_visible);
+        append_gui_log(
+            state,
+            &format!(
+                "PE layout: dir_label hwnd={dir_label_hwnd:?} show={label_visible} edit hwnd={dir_edit_hwnd:?} show={edit_visible}"
+            ),
         );
     }
 
@@ -3942,6 +3958,14 @@ unsafe extern "system" fn window_proc(
             [None, Some(system_drive.clone()), Some(system_drive)],
         );
         apply_language(&mut *state_ptr);
+        append_gui_log(
+            &*state_ptr,
+            &format!(
+                "PE controls: ram_radio_checked={} dir_edit_visible={}",
+                IsDlgButtonChecked(hwnd, ID_PE_MODE_RAM as i32) != 0,
+                GetDlgItem(hwnd, ID_PE_DIR_EDIT as i32) != null_mut(),
+            ),
+        );
         if let Ok(image) = std::env::var("BACKUPRESTORE_OPEN_IMAGE") {
             if !image.trim().is_empty() {
                 select_operation(&mut *state_ptr, 2);
