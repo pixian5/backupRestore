@@ -98,7 +98,6 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 
 - **配置**：Windows 侧挂载 ESP 后写 `S:\pe-task.txt`（每行一个动作；`reboot` 行 = 执行完自动重启回 Windows）。
 - **PE 侧**：`pe_task_execute()`——**先 `mountvol S: /S` 挂载 ESP**（关键：PE 启动时 S: 未挂载，先挂载才能读到配置）→ 逐行执行动作 → 结果落 `S:\pe-task-result.txt` → 配置改名 `pe-task.txt.done` 防重复 → 按配置含 `reboot` 则 `wpeutil reboot` 自动回 Windows。
-- 支持动作：`clean_bootsequence`（清 {bootmgr} bootsequence）、`verify`（bcdedit enum + dir + 读回取证）。
 - **重启由配置决定**：配置含 reboot 才重启；后续其他功能（备份/恢复等）只需往配置加动作，不强制重启。
 
 ### 7.2 实机验证（全自动，用户零操作）
@@ -110,3 +109,40 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 1. **bootsequence 会被 bootmgr 消费**：ENUM_BEFORE 显示 PE 启动时 bootsequence 已不在 BCD（RAM 盘场景并非绝对不消费），故「检测 bootsequence 触发自动重启」不可靠 → 改用配置驱动。
 2. **先挂载再读配置**：配置在 ESP（S:），PE 启动 S: 未挂载，读配置必先 mountvol。
 3. **prlctl restart 对 PE 无 Tools 不响应**：ACPI 重启被取消，需 `prlctl stop --kill` + `start` 兜底。
+
+## 8. PE 下备份/还原小测试盘闭环（2026-09-11 实机验证）
+
+### 8.1 新增配置驱动动作（native_gui.rs pe_task_execute）
+
+| 动作 | 作用 |
+|---|---|
+| `attach-vhd <vhd路径> <盘符\|AUTO>` | diskpart 挂载 VHD；**必须先 `automount enable`**（PE 精简环境默认不自动分配盘符，手动 assign 也不生效——实测 T:/Z: 均无效，automount 后系统自动分配 J:），`AUTO` 表示枚举 marker.txt 所在盘符写入 `S:\pe-drive.txt` |
+| `backup <盘符\|AUTO> <wim路径>` | dism Capture-Image 捕获卷为 WIM |
+| `restore <wim路径> <盘符\|AUTO>` | dism Apply-Image 应用 WIM 到卷 |
+| `verify-file <路径>` | cmd `if exist` 检查文件（PE 无 PowerShell） |
+| `delete-file <路径>` | 删除文件（还原验证：删掉后 restore 应恢复） |
+| `dism-diag` | 诊断 dism 各参数变体 |
+
+盘符/路径支持 `AUTO` 前缀（`AUTO:\marker.txt`）→ 运行时解析为实际盘符。
+
+### 8.2 实机闭环结果（全自动，零用户操作）
+
+配置：`attach-vhd Q:\testdisk.vhd AUTO → backup AUTO H:\pe-wim1.wim → verify → delete marker → verify MISSING → restore → verify marker FOUND → reboot`
+
+| 步骤 | 结果 |
+|---|---|
+| attach VHD（1GB，含 marker + 100MB payload） | 成功，PE 自动分配 **J:** |
+| backup（dism Capture） | **The operation completed successfully** |
+| verify marker | FOUND |
+| delete marker | MISSING |
+| restore（dism Apply） | **The operation completed successfully** |
+| verify marker | **FOUND（还原恢复）** |
+| Windows 侧复核 | marker 内容正确 + payload.bin **104,857,600 字节完整** |
+
+### 8.3 PE 环境踩坑（勿重踩）
+
+1. **PE 的 dism（ADK 28000）对 WIM 文件名转义敏感**：`test-backup.wim`（含 `\t` `\b`）报 Error 123；用 `pe-wim1.wim` 成功。**WIM 文件名避免 `\a \b \f \n \r \t \v` 等字母组合**。
+2. **PE dism 的 `/Name` 值不能含连字符**：`/Name:PE-Test` 报 Error 123，`/Name:PE` 成功。
+3. **PE diskpart 手动 `assign letter=` 不生效**（报 success 但盘符无效）：需 `automount enable` 让系统自动分配。
+4. **PE 无 PowerShell**：验证用 cmd `if exist`。
+5. **PE 里盘符与 Windows 不同**：Windows Q:（backupRestore 卷）在 PE 里是 H:；VHD 位置需先搜索实际盘符（`for %d in (C..Z) do if exist %d:\xxx`）。
