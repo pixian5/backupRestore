@@ -39,6 +39,33 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 
 - `P:\BackupRestorePE`（RAM 模式安装产物，正式 GUI 再次安装会覆盖/复用）、`H:\Windows`（Apply 到测试镜像卷的 PE 文件，无引导入口）。均为测试卷内容，不影响正式环境。
 
+## B. v1.4.1–v1.4.4 增量（PE tab UI 实机验证 + GUI 自动化链路，2026-09-11 收口）
+
+### B.0 结论
+
+- **v1.4.1**：PE tab UI 加调试日志，实机确认「启动方式单选 + PE 目录名输入框」正常显示（22:17 截图 + 日志 `ram_checked=true`/`dir_label show=5`）。用户 22:07 截图缺失输入行的根因：21:47 部署的 exe 构建滞后（布局代码不完整），重构建后正常。
+- **v1.4.2**：EDIT 输入框加 `WS_BORDER`（用户反馈"输入框不明显"——无边框 EDIT 像普通文本）。
+- **v1.4.3**：GUI 加 `--tab N` 命令行参数支持（WM_CREATE args 解析）；发现 `main.rs` 未知第一参数直接 `usage()` 退出 → GUI 根本不会启动。
+- **v1.4.4**：`main.rs` 加 `--tab` 特判（照 `--open-image` 模式：`env::set_var("BACKUPRESTORE_OPEN_TAB")` + `launch_gui()`）；打通"自主启动用户会话 GUI"链路（schtasks /it /rl highest + 包装批处理），22:39 截图实机确认：**PE 恢复 tab 直接打开、单选 + 带边框输入框 + 中文文案全部正常**。
+
+### B.1 测试证据
+
+| 项 | 证据 |
+|---|---|
+| v1.4.1 目录行显示 | 22:17 prlctl capture 截图（2542×1694）：`PE 目录名` + `BackupRestorePE` 输入框可见；gui.log `PE layout: dir_label hwnd=0x300b4 show=5 edit hwnd=0x300b6 show=5` |
+| v1.4.4 `--tab 4` 直开 PE tab | 22:39 截图（v1.4.4）：操作模式高亮 PE 恢复、单选「RAM disk（不占分区）/硬盘启动（独立分区）」、带边框输入框；gui.log 14:35:23 `PE layout: mode_y=422 ram_checked=true` |
+| 启动链路 | 任务 LastTaskResult=0；进程 `Console 1` 用户会话；`C:\brgui-trace.txt` 到 `message-loop-start` |
+
+### B.2 踩坑与规避（详见 development-execution-protocol.md「VM 会话与 GUI 自动化」）
+
+1. prlctl exec = 服务会话：GUI 窗口不可见、hwnd 跨会话无效（SendMessage 报 1400）、exec 挂住等 GUI 退出。
+2. GUI 自动提升（`is_elevated→relaunch_elevated`）：非提升启动弹 UAC 空等退出 → schtasks `/it /rl highest`。
+3. 环境变量跨 UAC 提升丢失 → 命令行参数 `--tab`（提升保留）。
+4. `main.rs` 未知参数 → `usage()` 退出 → 新参数必须加特判。
+5. schtasks `/tr` 带空格路径+参数 → LastTaskResult=2 → 用包装批处理。
+6. 正式包 exe 被运行中 GUI 锁定 → copy "0 个文件" → 先 taskkill 再 copy。
+7. PowerShell 5.1 `IntPtr.Parse` 不存在；cmd 内联传 `$_` 被环境变量展开破坏。
+
 ## 0. 本轮结论（v1.3.5 开发测试版收口）
 
 - **新增第 5 操作模式「PE 恢复」**（`install-pe-secondary`）：程序内一键把 PE WIM 设为第二操作系统，替代此前半手工脚本链（copype → DISM 注入 → 部署 → BCD）。
