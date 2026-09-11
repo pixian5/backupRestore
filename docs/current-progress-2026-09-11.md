@@ -146,3 +146,29 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 3. **PE diskpart 手动 `assign letter=` 不生效**（报 success 但盘符无效）：需 `automount enable` 让系统自动分配。
 4. **PE 无 PowerShell**：验证用 cmd `if exist`。
 5. **PE 里盘符与 Windows 不同**：Windows Q:（backupRestore 卷）在 PE 里是 H:；VHD 位置需先搜索实际盘符（`for %d in (C..Z) do if exist %d:\xxx`）。
+
+## 9. 真实磁盘分区备份/还原闭环（2026-09-11 实机验证，v1.3.7 后续）
+
+### 9.1 用户否决 VHD 载体
+
+VHD 链路验证后，用户明确「不要备份还原 VHD，你应该备份还原真实的磁盘」。改用 VM 内真实 NTFS 分区 **P:**（8GB，含 fixture 100MB + Windows 73MB 测试数据，7.8GB 空闲）。
+
+### 9.2 新增 `find-drive` 动作
+
+- 作用：按标记文件枚举真实分区在 PE 中的实际盘符（真实分区 PE 自动挂载，无需 attach；但盘符与 Windows 不同，需按标记定位）→ 写入 `S:\pe-drive.txt`，供 `AUTO` 解析。
+- 实测：Windows P: → PE 中为 **G:**，`find-drive backup-test-marker.txt` 正确返回 G。
+
+### 9.3 实机闭环结果（全自动，零用户操作）
+
+Windows 侧 P:\ 放 `backup-test-marker.txt` → 配置：`find-drive → backup AUTO H:\pe-wim1.wim → verify → delete marker → verify MISSING → restore → verify marker FOUND → reboot`
+
+| 步骤 | 结果 |
+|---|---|
+| find-drive | 实际盘符 G:（= Windows P:） |
+| backup（dism Capture 全卷 174MB） | The operation completed successfully |
+| delete marker | MISSING |
+| restore（dism Apply） | The operation completed successfully |
+| verify marker | FOUND（还原恢复） |
+| Windows 侧复核 | marker 内容正确 + fixture **100,663,390 字节** + Windows **73,386,230 字节** 与还原前完全一致 |
+
+**结论**：真实分区全卷备份→还原数据 100% 恢复，链路与真实产品（dism WIM）完全一致。
