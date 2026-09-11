@@ -9,6 +9,36 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 
 本文是 v1.3.4 → v1.3.9 的增量基线。v1.3.3 及之前的完整历史与执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [verification-matrix.md](verification-matrix.md)。
 
+## A. v1.4.0 增量（双启动模式 PE 恢复，2026-09-11 实机收口）
+
+### A.0 结论
+
+- **操作模式改名**：`install-pe-secondary` → **`install-pe-entry`**（函数 `install_pe_secondary` → `install_pe_entry`，14 处全量替换）。原因：`secondary` 与「新增第二系统」（create-secondary）语义撞车，实际功能是安装 PE 恢复**启动项**。
+- **版本满十进一**：`1.3.9` → **`1.4.0`**（VERSION + 2×Cargo.toml）。
+- **双启动模式共存**（PE 恢复 tab 单选）：启动项名称不同、完全跟随程序 UI 语言（中文界面=中文名，英文界面=英文名，无中英混合）：
+  - **RAM disk（目录，不占分区）**：WIM + boot.sdi 复制到所选卷的任意目录（默认 `C:\BackupRestorePE`，可改），BCD 用 `ramdisk=[X:]\目录\sources\boot.wim,{ramdiskoptions}` + `ramdisksdipath \目录\boot\boot.sdi` 引导，从内存运行。启动项名：中文「Windows PE (BackupRestore) 内存启动」/ 英文「Windows PE (BackupRestore) RAM」。
+  - **硬盘启动（独立分区）**：目标独立分区（≥2GB，非系统盘/ESP/程序盘，含 Windows 的卷拒绝），确认后 dism Apply WIM（Index 1）到分区，BCD 建 osloader 条目（`device/osdevice partition=X:`、`path \Windows\system32\winload.efi`、`winpe yes`、`detecthal yes`）直接引导。启动项名：中文「Windows PE (BackupRestore) 硬盘启动」/ 英文「Windows PE (BackupRestore) Disk」。
+- **实机验证（Parallels Windows 11 ARM64，2026-09-11 21:5x）**：
+  1. RAM disk 目录方式（装到 `P:\BackupRestorePE`）→ 设 bootsequence → 重启 → **截图确认恢复桌面 v1.4.0 从 P: 目录内存启动**；
+  2. 硬盘启动方式（dism Apply 到 H: 分区，partition=H: 条目）→ 设 bootsequence → 重启 → **截图确认恢复桌面 v1.4.0 从 H: 分区引导**；
+  3. 两模式 BCD 条目共存（displayorder 同列）；
+  4. 两次冷重启（stop --kill + start）均正常回 Win11，`bootsequence` 清空（PE 内自清链路生效）；
+  5. 验证后删除测试条目 `{bd92505f}`（RAM Test）/ `{bd925060}`（Disk Test），BCD 恢复干净（保留历史正式条目 {f7636e88} 与 PE Test {179ca179}）。
+
+### A.1 代码改动
+
+| 文件 | 改动 |
+|---|---|
+| `native_gui.rs` | `selected_operation` 4 → `install-pe-entry`；新增常量 `ID_PE_MODE_RAM=1412`/`ID_PE_MODE_DISK=1413`/`ID_PE_DIR_LABEL=1414`/`ID_PE_DIR_EDIT=1415`（BS_AUTORADIOBUTTON 单选 + 目录名编辑框，默认 `BackupRestorePE`）；`set_operation_visibility`/`layout_operation` 按 PE tab 显示单选与目录行（硬盘模式隐藏目录行）；WM_COMMAND 处理单选切换（刷新布局/标签）；新增 `WS_GROUP`、extern `IsDlgButtonChecked` |
+| `install_pe_entry` | 改为入口分派：`IsDlgButtonChecked(ID_PE_MODE_RAM)` → `install_pe_ramdisk`（改造现状：目录路径 + 目录名校验 + 按语言条目名）/ `install_pe_harddisk`（新增：目标分区安全校验【非 C/S/程序盘 + 无 Windows + ≥2GB】→ diskpart 快速格式化 → dism Apply Index 1（600s）→ osloader BCD 含 winpe/detecthal） |
+| `pe_entry_description(language, mode_ram)` | 按语言+模式返回启动项名称 |
+| `pe-entry-guid.txt` | 两模式安装后都覆盖写（最近安装模式作为「重启进入 PE」目标） |
+| 版本 | VERSION + 2×Cargo.toml `1.3.9 → 1.4.0` |
+
+### A.2 验证后残留
+
+- `P:\BackupRestorePE`（RAM 模式安装产物，正式 GUI 再次安装会覆盖/复用）、`H:\Windows`（Apply 到测试镜像卷的 PE 文件，无引导入口）。均为测试卷内容，不影响正式环境。
+
 ## 0. 本轮结论（v1.3.5 开发测试版收口）
 
 - **新增第 5 操作模式「PE 恢复」**（`install-pe-secondary`）：程序内一键把 PE WIM 设为第二操作系统，替代此前半手工脚本链（copype → DISM 注入 → 部署 → BCD）。

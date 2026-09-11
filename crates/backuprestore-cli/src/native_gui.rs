@@ -2764,7 +2764,7 @@ unsafe fn install_pe_harddisk(state: &State) {
     for drive in &state.drives {
         if drive.letter.eq_ignore_ascii_case(&drive_char.to_string()) {
             is_system_volume = drive.has_windows_installation;
-            free_bytes = drive.free_bytes;
+            free_bytes = drive.free_bytes.unwrap_or(0);
             break;
         }
     }
@@ -2985,7 +2985,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         }
     };
     let os_guid_path = format!("{{{}}}", os_guid);
-    let mut steps = vec![
+    let steps = vec![
         format!("bcdedit.exe /set {os_guid_path} device partition={drive_char}:"),
         format!("bcdedit.exe /set {os_guid_path} osdevice partition={drive_char}:"),
         format!("bcdedit.exe /set {os_guid_path} path \\Windows\\system32\\winload.efi"),
