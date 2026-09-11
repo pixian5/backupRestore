@@ -79,6 +79,28 @@ fn main() {
     #[cfg(windows)]
     if arguments
         .first()
+        .is_some_and(|argument| argument == "--tab")
+    {
+        // GUI 启动选项：--tab N 打开指定操作模式（1=备份 2=单系统还原 3=新增第二系统 4=PE 恢复）
+        let tab = arguments
+            .get(1)
+            .ok_or_else(|| err("--tab requires an index 1..=4"));
+        let result = tab.and_then(|index| {
+            let _ = index
+                .parse::<usize>()
+                .map_err(|_| err("--tab index must be a number"))?;
+            unsafe { env::set_var("BACKUPRESTORE_OPEN_TAB", index.clone()) };
+            launch_gui()
+        });
+        if let Err(error) = result {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(windows)]
+    if arguments
+        .first()
         .is_some_and(|argument| argument == "--pe-desktop")
     {
         // WinPE recovery desktop: full-screen shell-free landing window. The

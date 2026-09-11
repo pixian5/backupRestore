@@ -3924,7 +3924,7 @@ unsafe extern "system" fn window_proc(
             hwnd,
             "EDIT",
             "BackupRestorePE",
-            WS_TABSTOP | ES_AUTOHSCROLL,
+            WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER,
             140,
             726,
             220,
@@ -3977,6 +3977,19 @@ unsafe extern "system" fn window_proc(
             if let Ok(index) = tab.parse::<usize>() {
                 if (1..=4).contains(&index) {
                     select_operation(&mut *state_ptr, index);
+                }
+            }
+        }
+        // 命令行参数 --tab N（UAC 提升后命令行参数保留，比环境变量可靠）
+        {
+            let args: Vec<String> = std::env::args().collect();
+            if let Some(pos) = args.iter().position(|a| a == "--tab") {
+                if let Some(value) = args.get(pos + 1) {
+                    if let Ok(index) = value.parse::<usize>() {
+                        if (1..=4).contains(&index) {
+                            select_operation(&mut *state_ptr, index);
+                        }
+                    }
                 }
             }
         }
@@ -5794,6 +5807,7 @@ pub fn run() -> Result<(), super::TaskError> {
             return Err(super::err("RegisterClassExW failed"));
         }
         let title = wide(&format!("BackupRestore - Rust GUI v{PROGRAM_VERSION}"));
+        let _ = std::fs::write("C:\\brgui-trace.txt", "before-create-window\n");
         let window = CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -5808,10 +5822,16 @@ pub fn run() -> Result<(), super::TaskError> {
             instance,
             null_mut(),
         );
+        let _ = std::fs::write(
+            "C:\\brgui-trace.txt",
+            format!("after-create-window null={}\n", window.is_null()),
+        );
         if window.is_null() {
             return Err(super::err("CreateWindowExW failed"));
         }
+        let _ = std::fs::write("C:\\brgui-trace.txt", "before-show-window\n");
         ShowWindow(window, SW_MAXIMIZE);
+        let _ = std::fs::write("C:\\brgui-trace.txt", "message-loop-start\n");
         let mut message = Msg {
             hwnd: null_mut(),
             message: 0,
