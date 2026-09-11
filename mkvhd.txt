@@ -1,0 +1,6 @@
+create vdisk file=Q:\testdisk.vhd maximum=1024 type=fixed
+select vdisk file=Q:\testdisk.vhd
+attach vdisk
+create partition primary
+format fs=ntfs quick label=TestDisk
+assign letter=T:

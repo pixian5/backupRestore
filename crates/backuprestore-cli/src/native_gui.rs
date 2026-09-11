@@ -3955,9 +3955,37 @@ unsafe extern "system" fn window_proc_pe(
 /// 返回 `true` 表示配置要求执行后自动重启（调用方自动重启，无需用户
 /// 操作）；无配置返回 `false`（正常显示 PE 恢复桌面）。
 ///
-/// 支持动作：
+/// 解析动作里的盘符参数：`AUTO` 表示用 attach-vhd 实际挂载出的盘符
+/// （PE 里 diskpart 手动 assign 不生效，VHD 分区由系统自动分配盘符，
+/// 通过枚举 marker.txt 所在盘符得到）。
+fn resolve_drive(drive: &str) -> String {
+    if drive.eq_ignore_ascii_case("AUTO") {
+        std::fs::read_to_string("S:\\pe-drive.txt")
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    } else {
+        drive.to_string()
+    }
+}
+
+/// 解析动作里的路径参数：路径中的 `AUTO:` 前缀替换为实际盘符。
+fn resolve_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("AUTO:") {
+        format!("{}:{rest}", resolve_drive("AUTO"))
+    } else {
+        path.to_string()
+    }
+}
+
+/// 支持动作（每行一个，空格分隔参数）：
 /// - `clean_bootsequence`：挂载 ESP 并清除 {bootmgr} bootsequence
 /// - `verify`：取证（bootmgr 枚举 / ESP 目录列表 / 结果日志读回）
+/// - `attach-vhd <路径> <盘符>`：diskpart 挂载 VHD 并分配盘符（PE 测试用）
+/// - `backup <盘符> <wim路径>`：dism 捕获卷为 WIM
+/// - `restore <wim路径> <盘符>`：dism 应用 WIM 到卷
+/// - `verify-file <路径>`：检查文件是否存在（测试验证）
+/// - `reboot`：全部执行完后自动重启回 Windows
 fn pe_task_execute() -> bool {
     // 0. 先挂载 ESP 到 S:——任务配置就存在 S:\pe-task.txt，PE 启动时
     //    S: 尚未挂载，必须先挂载才能读到配置。
@@ -3970,10 +3998,11 @@ fn pe_task_execute() -> bool {
     let mut result = format!("PE task execute start, mountvol={mount_code}\n");
     for line in config.lines() {
         let action = line.trim();
-        match action {
-            "" => {}
-            "reboot" => reboot = true,
-            "clean_bootsequence" => {
+        let parts: Vec<&str> = action.split_whitespace().collect();
+        match parts.as_slice() {
+            [] => {}
+            ["reboot"] => reboot = true,
+            ["clean_bootsequence"] => {
                 let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
                 let clean_code = run_cmd_to_file(
                     "bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /deletevalue {bootmgr} bootsequence",
@@ -3983,7 +4012,7 @@ fn pe_task_execute() -> bool {
                     "clean_bootsequence: mountvol={mount_code}, clean={clean_code}\n"
                 ));
             }
-            "verify" => {
+            ["verify"] => {
                 // 取证 A：bootmgr 条目当前状态（确认 bootsequence 已清除）
                 run_cmd_to_file(
                     "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1",
@@ -4004,7 +4033,168 @@ fn pe_task_execute() -> bool {
                     Err(_) => result.push_str("[RESULT_READBACK] not yet written\n"),
                 }
             }
-            other => result.push_str(&format!("unknown action: {other}\n")),
+            ["attach-vhd", vhd, drive] => {
+                // PE 里盘符可能与 Windows 不同：先搜索 VHD 文件实际所在盘符，
+                // 再用实际路径 attach（diskpart 路径错误会直接失败）。
+                let file = vhd
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(vhd)
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(vhd);
+                let find_out = "S:\\find-vhd.txt";
+                run_cmd_to_file(
+                    &format!(
+                        "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{file} echo %d > {find_out}"
+                    ),
+                    None,
+                );
+                let mut real_vhd = vhd.to_string();
+                if let Ok(text) = std::fs::read_to_string(find_out) {
+                    if let Some(line) = text.lines().next() {
+                        let drv = line.trim().trim_end_matches(':');
+                        if drv.len() == 1 && drv.as_bytes()[0].is_ascii_alphabetic() {
+                            real_vhd = format!("{drv}:\\{file}");
+                        }
+                    }
+                }
+                result.push_str(&format!("attach-vhd: file={vhd}, resolved={real_vhd}\n"));
+                // diskpart 挂载 VHD（先 automount enable 确保 PE 自动分配盘符，
+                // 不手动 assign——PE 里 assign 不生效）
+                let script = format!(
+                    "automount enable\nselect vdisk file={real_vhd}\nattach vdisk\n"
+                );
+                let script_file = "X:\\attach-vhd.txt";
+                let _ = std::fs::write(script_file, &script);
+                let code = run_cmd_to_file(
+                    &format!("cmd /c diskpart /s {script_file} > S:\\attach-vhd-out.txt 2>&1"),
+                    None,
+                );
+                result.push_str(&format!("attach-vhd {real_vhd}: code={code}\n"));
+                if let Ok(text) = std::fs::read_to_string("S:\\attach-vhd-out.txt") {
+                    result.push_str(&format!("[ATTACH_VHD]\n{text}\n"));
+                }
+                // 枚举 marker.txt 所在盘符（VHD 卷自动分配的盘符）
+                run_cmd_to_file(
+                    "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\marker.txt echo %d > S:\\find-marker.txt",
+                    None,
+                );
+                let mut actual = String::new();
+                if let Ok(text) = std::fs::read_to_string("S:\\find-marker.txt") {
+                    actual = text.lines().next().unwrap_or("").trim().to_string();
+                }
+                let _ = std::fs::write("S:\\pe-drive.txt", &actual);
+                result.push_str(&format!("attach-vhd: actual drive = {actual}\n"));
+                // 诊断：attach 后实际盘符卷内容
+                if !actual.is_empty() {
+                    run_cmd_to_file(
+                        &format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"),
+                        None,
+                    );
+                    if let Ok(text) = std::fs::read_to_string("S:\\dir-attached.txt") {
+                        result.push_str(&format!("[DIR_ATTACHED {actual}:]\n{text}\n"));
+                    }
+                }
+            }
+            ["backup", drive, wim] => {
+                // dism 捕获卷为 WIM（程序备份核心就是 dism Capture-Image）
+                // 目标 WIM 已存在时 dism 会追加索引，先删除保证单索引
+                let d = resolve_drive(drive);
+                let _ = std::fs::remove_file(wim);
+                let out = "S:\\backup-out.txt";
+                // PE 的 dism 对长参数敏感，用最小参数集（Name 值不能含连字符）
+                run_cmd_to_file(
+                    &format!(
+                        "cmd /c dism.exe /Capture-Image /ImageFile:{wim} /CaptureDir:{d}:\\ /Name:PE > {out} 2>&1"
+                    ),
+                    None,
+                );
+                if let Ok(text) = std::fs::read_to_string(out) {
+                    result.push_str(&format!("[BACKUP {d}: -> {wim}]\n{text}\n"));
+                } else {
+                    result.push_str(&format!("backup {d}: -> {wim}: no output\n"));
+                }
+            }
+            ["delete-file", path] => {
+                // 删除文件（还原验证：删掉后 restore 应恢复它）
+                let p = resolve_path(path);
+                let out = "S:\\delete-out.txt";
+                run_cmd_to_file(&format!("cmd /c del /q {p} > {out} 2>&1"), None);
+                if let Ok(text) = std::fs::read_to_string(out) {
+                    result.push_str(&format!("[DELETE_FILE {p}]\n{text}\n"));
+                } else {
+                    result.push_str(&format!("delete-file {p}: no output\n"));
+                }
+            }
+            ["dism-diag"] => {
+                // 诊断 PE 的 dism Capture-Image 各变体（一次进 PE 拿全部信息）
+                let cases: [(&str, &str); 4] = [
+                    (
+                        "c1_img=H:\\pe-wim1.wim dir=T:\\",
+                        "cmd /c dism.exe /Capture-Image /ImageFile:H:\\pe-wim1.wim /CaptureDir:T:\\ /Name:X > S:\\diag1.txt 2>&1",
+                    ),
+                    (
+                        "c2_img=X:\\pe-wim1.wim dir=T:\\",
+                        "cmd /c dism.exe /Capture-Image /ImageFile:X:\\pe-wim1.wim /CaptureDir:T:\\ /Name:X > S:\\diag2.txt 2>&1",
+                    ),
+                    (
+                        "c3_img=H:\\pe-wim1.wim dir=T:",
+                        "cmd /c dism.exe /Capture-Image /ImageFile:H:\\pe-wim1.wim /CaptureDir:T: /Name:X > S:\\diag3.txt 2>&1",
+                    ),
+                    (
+                        "c4_img=H:\\pewim1.wim dir=T:\\",
+                        "cmd /c dism.exe /Capture-Image /ImageFile:H:\\pewim1.wim /CaptureDir:T:\\ /Name:X > S:\\diag4.txt 2>&1",
+                    ),
+                ];
+                for (label, command) in cases {
+                    let out = match label.chars().nth(1) {
+                        Some('1') => "S:\\diag1.txt",
+                        Some('2') => "S:\\diag2.txt",
+                        Some('3') => "S:\\diag3.txt",
+                        _ => "S:\\diag4.txt",
+                    };
+                    run_cmd_to_file(command, None);
+                    result.push_str(&format!("[{label}]\n"));
+                    if let Ok(text) = std::fs::read_to_string(out) {
+                        result.push_str(&text);
+                        result.push('\n');
+                    } else {
+                        result.push_str("no output\n");
+                    }
+                }
+            }
+            ["restore", wim, drive] => {
+                // dism 应用 WIM 到卷
+                let d = resolve_drive(drive);
+                let out = "S:\\restore-out.txt";
+                run_cmd_to_file(
+                    &format!(
+                        "cmd /c dism.exe /Apply-Image /ImageFile:{wim} /Index:1 /ApplyDir:{d}:\\ > {out} 2>&1"
+                    ),
+                    None,
+                );
+                if let Ok(text) = std::fs::read_to_string(out) {
+                    result.push_str(&format!("[RESTORE {wim} -> {d}:]\n{text}\n"));
+                } else {
+                    result.push_str(&format!("restore {wim} -> {d}: no output\n"));
+                }
+            }
+            ["verify-file", path] => {
+                // 检查文件是否存在（PE 精简版无 PowerShell，用 cmd if exist）
+                let p = resolve_path(path);
+                let out = "S:\\verify-file-out.txt";
+                run_cmd_to_file(
+                    &format!("cmd /c if exist {p} (echo FOUND) else (echo MISSING) > {out} 2>&1"),
+                    None,
+                );
+                if let Ok(text) = std::fs::read_to_string(out) {
+                    result.push_str(&format!("[VERIFY_FILE {p}]\n{text}\n"));
+                } else {
+                    result.push_str(&format!("verify-file {p}: no output\n"));
+                }
+            }
+            other => result.push_str(&format!("unknown action: {}\n", other.join(" "))),
         }
     }
     let _ = std::fs::write("S:\\pe-task-result.txt", &result);

@@ -1,0 +1,4 @@
+select vdisk file=Q:\testdisk.vhd
+attach vdisk
+select partition 1
+assign letter=T:
