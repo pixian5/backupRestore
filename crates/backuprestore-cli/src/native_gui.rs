@@ -4127,6 +4127,31 @@ fn pe_task_execute() -> bool {
                     result.push_str(&format!("delete-file {p}: no output\n"));
                 }
             }
+            ["find-drive", marker] => {
+                // 枚举含标记文件的盘符（真实分区在 PE 里盘符可能变化，
+                // 物理分区会自动挂载，只需找到实际盘符）
+                run_cmd_to_file(
+                    &format!(
+                        "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{marker} echo %d > S:\\find-drive.txt"
+                    ),
+                    None,
+                );
+                let mut actual = String::new();
+                if let Ok(text) = std::fs::read_to_string("S:\\find-drive.txt") {
+                    actual = text.lines().next().unwrap_or("").trim().to_string();
+                }
+                let _ = std::fs::write("S:\\pe-drive.txt", &actual);
+                result.push_str(&format!("find-drive {marker}: actual drive = {actual}\n"));
+                if !actual.is_empty() {
+                    run_cmd_to_file(
+                        &format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"),
+                        None,
+                    );
+                    if let Ok(text) = std::fs::read_to_string("S:\\dir-attached.txt") {
+                        result.push_str(&format!("[DIR_ATTACHED {actual}:]\n{text}\n"));
+                    }
+                }
+            }
             ["dism-diag"] => {
                 // 诊断 PE 的 dism Capture-Image 各变体（一次进 PE 拿全部信息）
                 let cases: [(&str, &str); 4] = [
