@@ -64,3 +64,8 @@ nul
 /_write-guid*
 /_esp-log-check*
 /_probe*
+attach.txt
+detach.txt
+mkvhd.txt
+dp.txt
+attach-vhd.txt
