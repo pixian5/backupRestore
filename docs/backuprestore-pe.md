@@ -68,3 +68,62 @@ C:\BackupRestorePE\elevate-build.exe
 本次验证证明 WIM 可由 DISM 挂载、提交、导出并再次只读挂载，且关键文件齐全；同时生成了 ADK ARM64 RAMDISK ISO。2026-08-26 的 Parallels 实测中，VM CPU 明确为 ARM，UEFI 能识别 `UEFI Virtual DVD-ROM` 并显示“Press any key to boot from CD or DVD”。确认后返回的是 Parallels UEFI 固件主菜单（`Boot Manager` 的上级菜单），不是 PE；这表示启动链在 `boot.wim` 加载前失败。随后将固件切换为 Parallels 明确支持 Apple Silicon 的 `efi-arm64`，并关闭“允许选择启动设备”后重置，仍停在同一固件菜单；方向键、回车和空格均未改变菜单状态。由此本轮只能确认对照 ISO 尚未进入 PE，不能把失败归因于自定义 `BackupRestorePE.wim`；当前更像是 Parallels UEFI 菜单/输入状态或其启动链兼容性问题。测试后 VM 已恢复 `efi64`、Secure Boot 开启、硬盘优先。
 
 因此尚未验证 `X:`、`Recovery.exe` 的独立 PE 启动，亦未执行真实 U 盘拔出测试；更不能宣称完整的 Windows → PE → 自动 `Recovery.exe` → 返回 Windows 重启流程成功。
+
+## 2026-09-12 RAM 模式 GUI 自动安装验收（v1.4.7+test hook）
+
+目标：通过真实 GUI 完成一次 RAM 模式 PE 安装（目标卷 Q:、目录 `Q:\BackupRestorePE`、
+启动项名 `MyCustomPE`），并以 BCD 实机证据收口「启动项名称以文本框输入为准」。
+
+### 结果（铁证）
+
+- `Q:\BackupRestorePE\sources\boot.wim` 466,320,191 B（复制完成，stock 保留）。
+- BCD 新条目 `{bd925061-ade7-11f1-8776-cbc94fdb67d3}`：
+  - `description "MyCustomPE"`（启动项名 = 文本框实际输入）
+  - `device/osdevice ramdisk=[Q:]\BackupRestorePE\sources\boot.wim,{ramdiskoptions}`
+  - `ramdisksdipath \BackupRestorePE\boot\boot.sdi`、`winpe yes`、`detecthal yes`
+  - `displayorder ... /addlast`（不修改 Windows 默认启动）
+- GUI 日志：`GUI action completed: PE recovery installed (RAM disk wim -> Q:\...、BCD entry {bd925061-...})`；
+  GUI 弹出「安装完成」对话框。
+
+### 新增：测试钩子（test hook）
+
+GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选自动安装（跳过确认框）。
+字段：
+
+```json
+{ "mode": "ram", "target_volume": "Q", "pe_dir": "Q:\\BackupRestorePE",
+  "pe_name": "MyCustomPE", "pe_image": "Q:\\sources\\boot.wim", "auto_install": true }
+```
+
+- 触发点：`window_proc` 的 `WM_CREATE` 末尾（`test_hook_auto_install`），
+  自动安装通过 `PostMessage(WM_APP_TEST_INSTALL)` 延迟到窗口显示后执行。
+- 确认框跳过：`install_pe_ramdisk` / `install_pe_harddisk` 在
+  `TEST_AUTO_CONFIRM` 置位时直接取 `IDYES`，日志记录 `auto-accepted`。
+- 用法：写好 json → 启动 GUI（schtasks BRPE_GUI）→ 全自动安装 → 查
+  `logs\gui.log` + `bcdedit /enum`。测试完必须删除 `C:\br-test.json`，否则下次启动重复安装。
+
+### 目录盘符校验放宽（用户需求）
+
+`install_pe_ramdisk` 不再强制「目录盘符必须等于目标卷」。现在仅校验路径形式
+（`X:\目录`、目录非空、无 `*?<>|"`）与「目录盘符 ≠ 程序卷」。目录盘符可为任意
+合法盘符；实际安装位置由目录路径决定（`{drive}:{dir}\sources\boot.wim`）。
+
+### 本轮踩坑（务必留存）
+
+1. **RDP（Windows App）会话中文输入法（微软拼音）拦截键盘输入**：
+   `type_text` 打英文进候选、`Ctrl+V` 粘贴内容被吞、`Alt+Shift`/`Shift`/`Ctrl+Space`
+   均无法从 macOS 端可靠切换（macOS 会拦截 ctrl/alt 组合）。**结论**：RDP 窗口内
+   的文本输入不可靠，改用 test hook / 程序内 SendMessage 写参数。
+2. **macOS 剪贴板 → RDP 剪贴板同步失败**：`pbcopy` 的内容在 RDP 里 `Ctrl+V`
+   得不到（本机测试是输入法吞字，非同步问题；不要依赖该通道）。
+3. **schtasks `/it` + `start powershell` 不启动**：任务结果 0 但 PowerShell
+   子进程不出现（服务会话报「不支持请求的会话」，交互会话静默失败）。
+   **GUI exe（start BackupRestore.exe）可以**，PowerShell 不行；不要在自动化
+   里依赖 schtasks 跑 PS 脚本注入 GUI。
+4. **cargo 产物名是 `backuprestore-cli.exe`**，不是 `BackupRestore.exe`：
+   复制部署前先确认产物名（`dir target\...\release\*.exe`），否则 copy 了不存在的
+   文件而 GUI 仍是旧版。
+5. **复制 exe 前必须先 `taskkill /f /im BackupRestore.exe`**：文件被运行中进程
+   锁定，`copy /y` 静默失败（`>nul` 吞错误），时间戳不变即失败信号。
+6. **GUI 目标卷下拉坐标/RDP 窗口坐标随分辨率变化**：手工点击坐标不可复用；
+   自动化一律用控件 ID + 程序内逻辑，不用坐标。

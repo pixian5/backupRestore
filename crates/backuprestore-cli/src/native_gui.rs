@@ -71,6 +71,10 @@ const MB_ICONWARNING: u32 = 0x00000030;
 const MB_ICONINFORMATION: u32 = 0x00000040;
 const MB_ICONQUESTION: u32 = 0x00000020;
 const IDYES: i32 = 6;
+const WM_APP_TEST_INSTALL: u32 = 0x8001;
+/// 测试钩子：自动安装时跳过确认框（验收/自动化测试用）。
+static TEST_AUTO_CONFIRM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 const ID_REFRESH: usize = 1001;
 const ID_READ_IMAGE: usize = 1002;
@@ -129,6 +133,8 @@ const ID_PE_MODE_RAM: usize = 1412;
 const ID_PE_MODE_DISK: usize = 1413;
 const ID_PE_DIR_LABEL: usize = 1414;
 const ID_PE_DIR_EDIT: usize = 1415;
+const ID_PE_NAME_LABEL: usize = 1416;
+const ID_PE_NAME_EDIT: usize = 1417;
 // PE 桌面"备份/还原/第二系统"任务对话框控件
 const ID_PE_DLG_LABEL1: usize = 1456;
 const ID_PE_DLG_LABEL2: usize = 1457;
@@ -959,6 +965,10 @@ unsafe fn set_operation_visibility(state: &State) {
     );
     set_child_visible(ID_PE_MODE_RAM as i32, pe_visible);
     set_child_visible(ID_PE_MODE_DISK as i32, pe_visible);
+    // 「PE 启动项名称」输入框两种模式通用，在「PE 恢复」tab 始终显示
+    set_child_visible(ID_PE_NAME_LABEL as i32, pe_visible);
+    set_child_visible(ID_PE_NAME_EDIT as i32, pe_visible);
+    // PE 目录名仅 RAM disk 模式需要（WIM 复制目录），硬盘启动模式隐藏
     set_child_visible(ID_PE_DIR_LABEL as i32, pe_visible && pe_mode_ram);
     set_child_visible(ID_PE_DIR_EDIT as i32, pe_visible && pe_mode_ram);
 }
@@ -994,9 +1004,9 @@ unsafe fn layout_operation(state: &State) {
     } else {
         source_details_y + details_height
     };
-    // 「PE 恢复」tab 的启动方式单选 + 目录行占一行（约 60px），后续 status 下移
+    // 「PE 恢复」tab 的启动方式单选占三行（约 90px：单选行 + 启动项名行 + 目录行），后续 status 下移
     let pe_extra_y = if selected_operation(state) == "install-pe-entry" {
-        60
+        90
     } else {
         0
     };
@@ -1046,7 +1056,8 @@ unsafe fn layout_operation(state: &State) {
     );
     reposition(state.controls.status, 20, status_y, client_width - 40, 64);
 
-    // 「PE 恢复」tab：启动方式单选（y=last_details_y+18）+ 目录行（y=last_details_y+46）
+    // 「PE 恢复」tab：行1 RAM disk 单选 + PE 目录名（完整路径，同排）；
+    // 行2 硬盘启动单选；行3 PE 启动项名称（两种模式通用）
     if selected_operation(state) == "install-pe-entry" {
         let mode_y = last_details_y + 18;
         let pe_ram_checked = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
@@ -1075,7 +1086,7 @@ unsafe fn layout_operation(state: &State) {
         set_text(
             GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
             if selected_language(state) == Language::English {
-                "PE folder"
+                "PE folder path"
             } else {
                 "PE 目录名"
             },
@@ -1087,40 +1098,87 @@ unsafe fn layout_operation(state: &State) {
             260,
             22,
         );
+        // 行2：硬盘启动单选
         reposition(
             GetDlgItem(state.root, ID_PE_MODE_DISK as i32),
-            field_x + 270,
-            mode_y,
+            field_x,
+            mode_y + 28,
             280,
             22,
         );
+        // 「PE 目录名」输入框：完整路径（如 C:\BackupRestorePE），仅 RAM 行显示。
+        // 为空时按目标卷填默认；若仍是默认形式（X:\BackupRestorePE）且目标卷已变则跟随更新
+        let dir_edit_hwnd = GetDlgItem(state.root, ID_PE_DIR_EDIT as i32);
+        let target_char = selected_drive_letter(state, state.controls.target)
+            .and_then(|v| v.chars().next())
+            .unwrap_or('C');
+        let default_dir_path = format!("{target_char}:\\BackupRestorePE");
+        let dir_text = get_text(dir_edit_hwnd);
+        let dir_trimmed = dir_text.trim();
+        if dir_trimmed.is_empty() {
+            set_text(dir_edit_hwnd, &default_dir_path);
+        } else {
+            // 默认形式路径跟随目标卷：X:\BackupRestorePE 且 X != 目标卷 -> 更新
+            let lower = dir_trimmed.to_ascii_lowercase();
+            let is_default_form = lower.len() == default_dir_path.len()
+                && lower.chars().nth(0).unwrap_or(' ') >= 'a'
+                && lower.chars().nth(0).unwrap_or(' ') <= 'z'
+                && lower.ends_with(":\\backuprestorepe");
+            if is_default_form
+                && !lower.starts_with(&target_char.to_ascii_lowercase().to_string())
+            {
+                set_text(dir_edit_hwnd, &default_dir_path);
+            }
+        }
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
-            field_x,
-            mode_y + 28,
+            field_x + 270,
+            mode_y,
             110,
             22,
         );
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_EDIT as i32),
-            field_x + 120,
-            mode_y + 26,
-            240,
+            field_x + 380,
+            mode_y,
+            260,
             24,
         );
-        // 硬盘模式下隐藏目录名行
+        // 行3：「PE 启动项名称」（两种模式通用，始终显示）
+        set_text(
+            GetDlgItem(state.root, ID_PE_NAME_LABEL as i32),
+            if selected_language(state) == Language::English {
+                "Boot entry name"
+            } else {
+                "PE 启动项名称"
+            },
+        );
+        // 输入框为空时按语言+当前模式填默认名（用户自定义后保留）
+        let name_edit_hwnd = GetDlgItem(state.root, ID_PE_NAME_EDIT as i32);
+        if get_text(name_edit_hwnd).trim().is_empty() {
+            let default_name = pe_entry_description(selected_language(state), pe_ram_checked);
+            set_text(name_edit_hwnd, &default_name);
+        }
+        reposition(
+            GetDlgItem(state.root, ID_PE_NAME_LABEL as i32),
+            field_x,
+            mode_y + 56,
+            130,
+            22,
+        );
+        reposition(
+            GetDlgItem(state.root, ID_PE_NAME_EDIT as i32),
+            field_x + 140,
+            mode_y + 54,
+            300,
+            24,
+        );
+        // 硬盘模式下隐藏 PE 目录名（路径）行，仅 RAM disk 显示
         let dir_label_hwnd = GetDlgItem(state.root, ID_PE_DIR_LABEL as i32);
-        let dir_edit_hwnd = GetDlgItem(state.root, ID_PE_DIR_EDIT as i32);
         let label_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
         let edit_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
         ShowWindow(dir_label_hwnd, label_visible);
         ShowWindow(dir_edit_hwnd, edit_visible);
-        append_gui_log(
-            state,
-            &format!(
-                "PE layout: dir_label hwnd={dir_label_hwnd:?} show={label_visible} edit hwnd={dir_edit_hwnd:?} show={edit_visible}"
-            ),
-        );
     }
 
     let image_width = (field_width - 90).max(400);
@@ -2333,6 +2391,86 @@ fn run_cmd_to_file_timeout(
 
 /// PE 恢复安装入口：按启动方式单选分派到 RAM disk（目录，不占分区）
 /// 或硬盘启动（独立分区）。两种模式可共存，启动项名称不同。
+/// 测试钩子（开发/验收用）：启动时若存在 C:\br-test.json 则读取并自动
+/// 设置 PE 恢复参数；auto_install=true 时延迟触发安装（确认框自动接受）。
+unsafe fn test_hook_auto_install(state: &mut State) {
+    let path = "C:\\br-test.json";
+    if !PathBuf::from(path).is_file() {
+        return;
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(value) => value,
+        Err(_) => {
+            append_gui_log(state, "test hook: br-test.json parse failed");
+            return;
+        }
+    };
+    append_gui_log(state, "test hook: config loaded");
+    // 1. 操作模式 → PE 恢复
+    select_operation(state, 4);
+    // 2. 启动方式：ram / disk
+    let mode_ram = json
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "ram")
+        .unwrap_or(true);
+    let ram_hwnd = GetDlgItem(state.root, ID_PE_MODE_RAM as i32);
+    let disk_hwnd = GetDlgItem(state.root, ID_PE_MODE_DISK as i32);
+    SendMessageW(
+        ram_hwnd,
+        BM_SETCHECK,
+        if mode_ram { BST_CHECKED } else { BST_UNCHECKED },
+        0,
+    );
+    SendMessageW(
+        disk_hwnd,
+        BM_SETCHECK,
+        if mode_ram { BST_UNCHECKED } else { BST_CHECKED },
+        0,
+    );
+    set_operation_visibility(state);
+    layout_operation(state);
+    set_volume_labels(state);
+    // 3. 目标卷（按盘符在 drives 列表定位）
+    if let Some(vol) = json.get("target_volume").and_then(|v| v.as_str()) {
+        if let Some(pos) = state
+            .drives
+            .iter()
+            .position(|d| d.letter.eq_ignore_ascii_case(vol))
+        {
+            SendMessageW(state.controls.target, CB_SETCURSEL, pos, 0);
+            append_gui_log(state, &format!("test hook: target={vol} pos={pos}"));
+        } else {
+            append_gui_log(state, &format!("test hook: target vol {vol} not found"));
+        }
+    }
+    // 4. 目录 / 启动项名称 / 镜像路径
+    if let Some(dir) = json.get("pe_dir").and_then(|v| v.as_str()) {
+        set_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32), dir);
+    }
+    if let Some(name) = json.get("pe_name").and_then(|v| v.as_str()) {
+        set_text(GetDlgItem(state.root, ID_PE_NAME_EDIT as i32), name);
+    }
+    if let Some(img) = json.get("pe_image").and_then(|v| v.as_str()) {
+        set_text(state.controls.image, img);
+    }
+    append_gui_log(state, "test hook: fields set");
+    // 5. 自动安装：跳过确认框，窗口显示后延迟触发
+    if json
+        .get("auto_install")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        TEST_AUTO_CONFIRM.store(true, std::sync::atomic::Ordering::SeqCst);
+        PostMessageW(state.root, WM_APP_TEST_INSTALL, 0, 0);
+        append_gui_log(state, "test hook: install posted");
+    }
+}
+
 unsafe fn install_pe_entry(state: &State) {
     let mode_ram = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
     if mode_ram {
@@ -2401,27 +2539,54 @@ unsafe fn install_pe_ramdisk(state: &State) {
             return;
         }
     };
-    let drive_char = target_drive.chars().next().unwrap_or('C');
-    // 读 PE 目录名（RAM disk 模式：WIM 复制到 {卷}:\{目录}）
-    let dir_name = get_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32))
+    let target_char = target_drive.chars().next().unwrap_or('C');
+    // 读 PE 目录完整路径（RAM disk 模式：WIM 复制到 {路径}\sources\boot.wim）。
+    // 输入框填具体路径，如 C:\BackupRestorePE；盘符必须等于目标卷。
+    let dir_path = get_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32))
         .trim()
         .to_string();
-    let dir_name = if dir_name.is_empty() {
-        "BackupRestorePE".to_string()
+    let dir_path = if dir_path.is_empty() {
+        format!("{target_char}:\\BackupRestorePE")
     } else {
-        dir_name.trim_start_matches('\\').trim_end_matches('\\').to_string()
+        dir_path.trim_end_matches('\\').to_string()
     };
-    if dir_name.contains(':') || dir_name.contains('*') || dir_name.contains('?')
-        || dir_name.contains('<') || dir_name.contains('>') || dir_name.contains('|')
-        || dir_name.contains('"')
+    // 解析路径：盘符 + 相对目录（如 C:\BackupRestorePE -> C: / BackupRestorePE）
+    let path_bytes = dir_path.as_bytes();
+    let valid_prefix = path_bytes.len() >= 3
+        && path_bytes[0].is_ascii_alphabetic()
+        && path_bytes[1] == b':'
+        && path_bytes[2] == b'\\';
+    let drive_char = if valid_prefix {
+        dir_path.chars().next().unwrap_or('C')
+    } else {
+        '?'
+    };
+    let dir_name = if valid_prefix && dir_path.len() > 3 {
+        dir_path[3..].to_string()
+    } else {
+        String::new()
+    };
+    let invalid_dir = dir_name.is_empty()
+        || dir_name.contains('*')
+        || dir_name.contains('?')
+        || dir_name.contains('<')
+        || dir_name.contains('>')
+        || dir_name.contains('|')
+        || dir_name.contains('"');
+    // 目录盘符可以是任意合法盘符（不要求与目标卷一致），仅校验路径形式与非法字符。
+    if !valid_prefix || invalid_dir
     {
-        append_gui_log(state, "GUI action blocked: invalid PE folder name");
+        append_gui_log(state, "GUI action blocked: invalid PE folder path");
         show_message(
             state.root,
             &if language == Language::English {
-                "Invalid PE folder name. Use letters, digits, '-' and '_' only."
+                format!(
+                    "Invalid PE folder path \"{dir_path}\". Use the form X:\\BackupRestorePE with any valid drive letter."
+                )
             } else {
-                "PE 目录名不合法，只能使用字母、数字、- 和 _。"
+                format!(
+                    "PE 目录路径不合法：\"{dir_path}\"。请填写形如 X:\\BackupRestorePE 的完整路径（盘符可为任意合法盘符）。"
+                )
             },
             if language == Language::English {
                 "Validation failed"
@@ -2432,7 +2597,17 @@ unsafe fn install_pe_ramdisk(state: &State) {
         );
         return;
     }
-    let entry_name = pe_entry_description(language, true);
+    // 启动项名称：读共用的「PE 启动项名称」输入框，空则按语言+模式用默认名
+    let entry_name = {
+        let typed = get_text(GetDlgItem(state.root, ID_PE_NAME_EDIT as i32))
+            .trim()
+            .to_string();
+        if typed.is_empty() {
+            pe_entry_description(language, true)
+        } else {
+            typed
+        }
+    };
     if drive_char
         == state
             .executable_dir
@@ -2463,7 +2638,14 @@ unsafe fn install_pe_ramdisk(state: &State) {
     }
     // Destructive-ish confirmation: overwrites <target>:\<dir>\sources\boot.wim
     // and modifies the boot configuration. Nothing runs before this confirmation.
-    let answer = show_message(
+    let answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
+        append_gui_log(
+            state,
+            "test hook: RAM disk confirmation auto-accepted",
+        );
+        IDYES
+    } else {
+        show_message(
         state.root,
         &if language == Language::English {
             format!(
@@ -2480,7 +2662,8 @@ unsafe fn install_pe_ramdisk(state: &State) {
             "安装 PE 恢复环境"
         },
         MB_YESNO | MB_ICONWARNING,
-    );
+    )
+    };
     if answer != IDYES {
         append_gui_log(
             state,
@@ -2847,9 +3030,26 @@ unsafe fn install_pe_harddisk(state: &State) {
         );
         return;
     }
-    let entry_name = pe_entry_description(language, false);
+    // 启动项名称：读共用的「PE 启动项名称」输入框，空则按语言+模式用默认名
+    let entry_name = {
+        let typed = get_text(GetDlgItem(state.root, ID_PE_NAME_EDIT as i32))
+            .trim()
+            .to_string();
+        if typed.is_empty() {
+            pe_entry_description(language, false)
+        } else {
+            typed
+        }
+    };
     // 破坏性确认：目标分区将被格式化 + 写入 PE 系统
-    let answer = show_message(
+    let answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
+        append_gui_log(
+            state,
+            "test hook: hard disk confirmation auto-accepted",
+        );
+        IDYES
+    } else {
+        show_message(
         state.root,
         &if language == Language::English {
             format!(
@@ -2866,7 +3066,8 @@ unsafe fn install_pe_harddisk(state: &State) {
             "安装 PE 恢复环境"
         },
         MB_YESNO | MB_ICONWARNING,
-    );
+    )
+    };
     if answer != IDYES {
         append_gui_log(
             state,
@@ -3923,13 +4124,27 @@ unsafe extern "system" fn window_proc(
         create_control(
             hwnd,
             "EDIT",
-            "BackupRestorePE",
+            "",
             WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER,
             140,
             726,
-            220,
+            260,
             24,
             ID_PE_DIR_EDIT,
+        );
+        // 「PE 启动项名称」输入框（两种启动方式通用：开机 Boot Manager
+        // 菜单里显示的名字，用户可自定义，默认按语言+模式自动填）
+        create_control(hwnd, "STATIC", "", 0, 20, 750, 130, 22, ID_PE_NAME_LABEL);
+        create_control(
+            hwnd,
+            "EDIT",
+            "",
+            WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER,
+            140,
+            748,
+            300,
+            24,
+            ID_PE_NAME_EDIT,
         );
         SendMessageW(
             GetDlgItem(hwnd, ID_PE_MODE_RAM as i32),
@@ -3993,11 +4208,18 @@ unsafe extern "system" fn window_proc(
                 }
             }
         }
+        // 测试钩子：C:\br-test.json 存在时自动设置参数并可选自动安装
+        test_hook_auto_install(&mut *state_ptr);
         return 0;
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
     if !state_ptr.is_null() {
         let state = &mut *state_ptr;
+        if message == WM_APP_TEST_INSTALL {
+            append_gui_log(state, "test hook: install triggered");
+            create_task(state);
+            return 0;
+        }
         if message == WM_SIZE {
             layout_operation(state);
             return 0;
@@ -4047,7 +4269,20 @@ unsafe extern "system" fn window_proc(
                 ID_PE_REBOOT_MAIN => pe_reboot_to_pe(state),
                 ID_PE_SHORTCUT => pe_create_shortcut(state),
                 ID_PE_MODE_RAM | ID_PE_MODE_DISK => {
-                    // 切换启动方式：刷新目录行显隐与布局
+                    // 切换启动方式：刷新目录行显隐与布局；
+                    // 若启动项名称还是旧模式的默认名（用户未自定义），跟随新模式更新
+                    let language = selected_language(state);
+                    let ram_now = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
+                    let name_edit_hwnd = GetDlgItem(state.root, ID_PE_NAME_EDIT as i32);
+                    let current = get_text(name_edit_hwnd);
+                    let trimmed = current.trim().to_string();
+                    if !trimmed.is_empty()
+                        && (trimmed == pe_entry_description(language, !ram_now)
+                            || trimmed == pe_entry_description(language, ram_now))
+                    {
+                        let default_name = pe_entry_description(language, ram_now);
+                        set_text(name_edit_hwnd, &default_name);
+                    }
                     set_operation_visibility(state);
                     layout_operation(state);
                     set_volume_labels(state);
