@@ -1,13 +1,13 @@
 # BackupRestore 当前完整进度基线
 
 更新时间：2026-09-11  
-源码版本：`1.3.5`  
+源码版本：`1.3.9`  
 分支：`main`  
 仓库：`/Users/x/code/backupRestore`  
 Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`  
 目标平台：Windows 11 ARM64 / UEFI / GPT
 
-本文是 v1.3.4 → v1.3.5 的增量基线。v1.3.3 及之前的完整历史与执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [verification-matrix.md](verification-matrix.md)。
+本文是 v1.3.4 → v1.3.9 的增量基线。v1.3.3 及之前的完整历史与执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [verification-matrix.md](verification-matrix.md)。
 
 ## 0. 本轮结论（v1.3.5 开发测试版收口）
 
@@ -172,3 +172,52 @@ Windows 侧 P:\ 放 `backup-test-marker.txt` → 配置：`find-drive → backup
 | Windows 侧复核 | marker 内容正确 + fixture **100,663,390 字节** + Windows **73,386,230 字节** 与还原前完全一致 |
 
 **结论**：真实分区全卷备份→还原数据 100% 恢复，链路与真实产品（dism WIM）完全一致。
+
+## 10. PE 桌面三按钮接入 + bcdboot default 恢复（2026-09-11 实机验证，v1.3.8 → 1.3.9）
+
+### 10.1 需求背景（P0 缺口①）
+
+完整核对文档时发现：PE 恢复桌面「备份系统/还原系统/安装第二系统」三个核心按钮此前是占位（只 `PE_EXIT_TAB.store` + DestroyWindow，跳主 GUI 后 prepare 依赖正常 Windows，PE 内实际完不成任务）。用户拍板：三个按钮改为 **PE 会话内直接执行**，不依赖重启、不依赖 WinRE。
+
+### 10.2 方案（已确认）
+
+- 把 `pe_task_execute()` 的动作执行逻辑抽成可复用执行器 `execute_pe_task_line(line, &mut result, &mut reboot)`，人工点击与配置驱动共用同一套动作。
+- 新增 4 个动作：
+  - `find-system-drive`：枚举含 `\Windows\System32\Config\SYSTEM` 的卷写 `S:\pe-drive.txt`
+  - `format <盘符> [--allow-system]`：diskpart 快速格式化，默认拒绝 X:(PE) / S:(ESP) / 含 Windows 的卷
+  - `bcdboot <系统盘符> [<esp>]`：目标为系统卷时 `bcdboot <d>:\Windows /s <esp> /f UEFI`
+  - `add-secondary-entry <盘符> <菜单名...>`：bcdedit osloader 条目（device/osdevice/path/systemroot/nx 全字段避 0xc0000225），displayorder /addlast，default 保持 Windows 第一
+- 三个 PE 流程函数 + `pe_dialog` 模态对话框（卷下拉/镜像路径/可选菜单名/红色警告/执行取消）+ `pe_list_volumes` + `pe_default_image_drive` + `pe_result_preview`。
+- 安全防线：format 三道拒绝、还原二次确认、WIM 文件名避开 dism 转义字母、日志写 ESP。
+
+### 10.3 bcdboot 关键缺陷与修复（实机发现，两轮修复）
+
+**缺陷**：`bcdboot <测试盘>: /s S:` 会把 Boot Manager 的 default 指向目标卷。第一版恢复逻辑解析 `{bootmgr}` 的 default 字段得到 `{default}` **别名**——但 bcdboot 执行后该别名已重新绑定到新条目，`set default {default}` 等于没恢复 → 真实重启 0xc000000f（winload.efi 缺失，Recovery 蓝屏）。
+
+**修复**：bcdboot 前 `enum {default}` 记录原默认条目引用的 **partition=X:**；bcdboot 后枚举 BCD 全条目，按 `device partition=X:` 找回真实 GUID → `set {bootmgr} default {GUID}` + `displayorder {GUID} /addfirst`。解析兼容中文"标识符"/英文"identifier"。
+
+### 10.4 实机验证（配置驱动全自动，P: 测试盘，两轮）
+
+第一轮（旧版）：`find-drive → backup → format(REFUSED ✓) → bcdboot(code=0, DEFAULT_RESTORE 报成功但无效) → restore → reboot` → 重启 Recovery 蓝屏（default 被改 P:），复现缺陷。
+
+第二轮（修复版，最终收口）：
+| 步骤 | 结果 |
+|---|---|
+| find-drive | G:（= Windows P:） |
+| verify marker | FOUND |
+| backup G: → H:\pe-bk-test.wim | 成功 100% |
+| format G: | REFUSED（含 SYSTEM，无 --allow-system）✓ |
+| bcdboot G: /s S: | code=0 + `[DEFAULT_RESTORE {581bfd2c-…}] The operation completed successfully`（真实 GUID 恢复）|
+| restore | 成功 100% |
+| verify marker | FOUND |
+| reboot → 真实重启 | **正常进 Windows 桌面**（非 Recovery）✓ |
+| Windows 侧 BCD 复核 | `default {default}` → device partition=C:，description "Windows 11"；displayorder 第一 {default}(C:)；bootsequence 已清；S:\pe-task.txt 已改名 .done |
+
+**结论**：format 保护、bcdboot 执行 + default 恢复、重启回 Windows 全部实机闭环；P: 备份/还原数据完整。测试盘 bcdboot 创建的残留 osloader 条目已用 `displayorder /remove` 移出菜单（不删除条目，default 不受影响）。
+
+### 10.5 版本与产物
+
+- VERSION + 2×Cargo.toml：`1.3.7 → 1.3.8`（三按钮）→ `1.3.9`（bcdboot 修复）
+- 正式 GUI `C:\Users\Public\backupRestore-package-v12\BackupRestore.exe`（1,326,080 字节）
+- PE WIM `Q:\sources\boot.wim` 已更新（20:37:08，含 v1.3.9）
+- **遗留**：PE 桌面三按钮 UI 真实点击验收（对话框→点击→执行→结果弹窗）留用户手动（Parallels 无法注入 PE 输入）；执行器核心链路已由配置驱动全自动实机验证。
