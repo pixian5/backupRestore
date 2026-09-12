@@ -235,3 +235,49 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
 - **关键修复确认**：exit 链四根因（145 预期 fallback / 259 误报 / 日志去 Q: /
   exit 识别）全部修复；"卡 PE"真正原因是手动重建 PE 条目 ramdisksdipath 指向
   boot.wim（应为 boot.sdi）+ 缺 nx OptIn，修正后 PE 正常启动。
+
+### 主程序 PE 恢复 tab UI 修复与验证（2026-09-12，v1.5.0）
+
+- 问题（用户截图取证 v1.4.8）：①「PE 目录名」输入框显示完整路径
+  `C:\BackupRestorePE`（应为纯目录名，盘符由目标卷决定）；②「PE 启动项名称」
+  默认带"内存启动"字样且模式感过强。
+- 修复（native_gui.rs）：目录名输入框语义改为**目录名**（默认 BackupRestorePE，
+  空则填默认）；兼容旧版完整路径（含 `\` 或 `:` 时取最后一段迁移）；英文标签
+  "PE folder path"→"PE folder name"；install_pe_ramdisk 不再从输入框解析盘符
+  （dir_name=目录名，drive_char=目标卷决定）；启动项名称空则按语言+当前模式填
+  默认，若当前值恰为另一模式默认名（未自定义）则切模式时跟随更新。
+- 实机验证（控件文本读取，Session 0 通道，零鼠标键盘）：
+  - LBL=[PE 目录名]；DIR=[BackupRestorePE]（纯目录名 ✓）
+  - BM_CLICK 切硬盘 → NAME=[Windows PE (BackupRestore) 硬盘启动] ✓
+  - BM_CLICK 切回 RAM → NAME=[Windows PE (BackupRestore) 内存启动] ✓
+- 版本：1.4.9 → 1.5.0（修好并验证通过后才升，满十进一）。
+
+21. **Session 0 无交互桌面，GUI 验证不能截图**：prlctl exec 启动的 GUI 程序落在
+    Session 0（Services，MainWindowHandle=0），CopyFromScreen 卡死/空白，
+    PrintWindow 返回纯白图（1040x784，3291B）。**可行通道**：EnumWindows 按标题
+    找主窗口 + GetDlgItem 按控件 ID 取子控件 + SendMessageW(WM_GETTEXT) 读
+    EDIT 文本（GetWindowText 读不了跨进程 EDIT；P/Invoke 需 CharSet.Unicode，
+    EntryPoint="SendMessageW" 避免方法名冲突）。
+22. **schtasks /it 不工作（再次确认）**：/create 需显式 /ru 用户名 /rp 密码
+    （否则 "No mapping between account names and security IDs"），/run 报
+    "Element not found"（once 触发器过期），无法用计划任务在用户会话启动 GUI。
+    用户会话验证改走：Session 0 启动 + 控件文本读取；单选/按钮用
+    SendMessage(BM_CLICK=0x00F5) 模拟真实点击（WM_COMMAND 直发不切换状态，
+    因为程序按 IsDlgButtonChecked 读状态）。
+23. **macOS 交叉编译 aarch64-pc-windows-msvc 的完整环境（重要，勿再丢）**：
+    - `rustup target add aarch64-pc-windows-msvc`（rust-std，~50-80MB；本轮发现
+      该 target 曾丢失导致 `error[E0463]: can't find crate for core`）。
+    - linker 用 rust 自带：`rust-lld`（在
+      `~/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-lld`）。
+      不要用 `gcc-ld/lld-link`（包装不认 `-flavor link`）。设置
+      `CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=<rust-lld>`。
+    - Windows SDK/VC import libs 从 VM 复制到 `~/win-sdk-arm64/`（走 Parallels
+      共享，不耗流量）：`um/arm64`（C:\Program Files (x86)\Windows Kits\10\Lib\
+      10.0.26100.0\um\arm64）、`ucrt/arm64`（同 SDK 的 ucrt）、`vc/arm64`
+      （C:\BuildTools\VC\Tools\MSVC\14.44.35207\lib\arm64——含 msvcrt.lib /
+      vcruntime.lib）。全部约 970MB。
+    - 链接参数：`RUSTFLAGS="-C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/um/arm64
+      -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/ucrt/arm64
+      -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/vc/arm64"`。缺 msvcrt.lib 报
+      `could not open 'msvcrt.lib'`。
+    - 一键构建见仓库根 `build-win.sh`。

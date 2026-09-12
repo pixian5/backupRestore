@@ -1094,7 +1094,7 @@ unsafe fn layout_operation(state: &State) {
         set_text(
             GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
             if selected_language(state) == Language::English {
-                "PE folder path"
+                "PE folder name"
             } else {
                 "PE 目录名"
             },
@@ -1114,28 +1114,23 @@ unsafe fn layout_operation(state: &State) {
             280,
             22,
         );
-        // 「PE 目录名」输入框：完整路径（如 C:\BackupRestorePE），仅 RAM 行显示。
-        // 为空时按目标卷填默认；若仍是默认形式（X:\BackupRestorePE）且目标卷已变则跟随更新
+        // 「PE 目录名」输入框：只填目录名（如 BackupRestorePE），不含盘符。
+        // 安装位置 = {目标卷盘符}:\{目录名}（RAM disk 模式，WIM 复制到该目录）。
+        // 为空时填默认目录名；兼容旧版完整路径（X:\BackupRestorePE）自动取最后一段。
         let dir_edit_hwnd = GetDlgItem(state.root, ID_PE_DIR_EDIT as i32);
-        let target_char = selected_drive_letter(state, state.controls.target)
-            .and_then(|v| v.chars().next())
-            .unwrap_or('C');
-        let default_dir_path = format!("{target_char}:\\BackupRestorePE");
         let dir_text = get_text(dir_edit_hwnd);
         let dir_trimmed = dir_text.trim();
         if dir_trimmed.is_empty() {
-            set_text(dir_edit_hwnd, &default_dir_path);
-        } else {
-            // 默认形式路径跟随目标卷：X:\BackupRestorePE 且 X != 目标卷 -> 更新
-            let lower = dir_trimmed.to_ascii_lowercase();
-            let is_default_form = lower.len() == default_dir_path.len()
-                && lower.chars().nth(0).unwrap_or(' ') >= 'a'
-                && lower.chars().nth(0).unwrap_or(' ') <= 'z'
-                && lower.ends_with(":\\backuprestorepe");
-            if is_default_form
-                && !lower.starts_with(&target_char.to_ascii_lowercase().to_string())
-            {
-                set_text(dir_edit_hwnd, &default_dir_path);
+            set_text(dir_edit_hwnd, "BackupRestorePE");
+        } else if dir_trimmed.contains('\\') || dir_trimmed.contains(':') {
+            // 旧版完整路径（X:\BackupRestorePE）迁移：只保留目录名
+            let name = dir_trimmed
+                .rsplit(['\\', ':'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !name.is_empty() {
+                set_text(dir_edit_hwnd, name);
             }
         }
         reposition(
@@ -1161,11 +1156,18 @@ unsafe fn layout_operation(state: &State) {
                 "PE 启动项名称"
             },
         );
-        // 输入框为空时按语言+当前模式填默认名（用户自定义后保留）
+        // 输入框为空时按语言+当前模式填默认名；若仍是另一模式的默认名
+        // （用户未自定义），切换模式时跟随更新（用户自定义后保留）。
         let name_edit_hwnd = GetDlgItem(state.root, ID_PE_NAME_EDIT as i32);
-        if get_text(name_edit_hwnd).trim().is_empty() {
-            let default_name = pe_entry_description(selected_language(state), pe_ram_checked);
+        let default_name = pe_entry_description(selected_language(state), pe_ram_checked);
+        let current_name = get_text(name_edit_hwnd).trim().to_string();
+        if current_name.is_empty() {
             set_text(name_edit_hwnd, &default_name);
+        } else {
+            let other_default = pe_entry_description(selected_language(state), !pe_ram_checked);
+            if current_name == other_default {
+                set_text(name_edit_hwnd, &default_name);
+            }
         }
         reposition(
             GetDlgItem(state.root, ID_PE_NAME_LABEL as i32),
@@ -2558,52 +2560,45 @@ unsafe fn install_pe_ramdisk(state: &State) {
         }
     };
     let target_char = target_drive.chars().next().unwrap_or('C');
-    // 读 PE 目录完整路径（RAM disk 模式：WIM 复制到 {路径}\sources\boot.wim）。
-    // 输入框填具体路径，如 C:\BackupRestorePE；盘符必须等于目标卷。
-    let dir_path = get_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32))
+    // 读 PE 目录名（RAM disk 模式：WIM 复制到 {目标卷}:\{目录名}\sources\boot.wim）。
+    // 输入框只填目录名（如 BackupRestorePE），不含盘符；盘符由目标卷决定。
+    let mut dir_name = get_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32))
+        .trim()
+        .trim_start_matches('\\')
+        .trim_end_matches('\\')
+        .to_string();
+    // 兼容旧版完整路径（X:\BackupRestorePE）：只取最后一段目录名
+    dir_name = dir_name
+        .rsplit(['\\', ':'])
+        .next()
+        .unwrap_or("")
         .trim()
         .to_string();
-    let dir_path = if dir_path.is_empty() {
-        format!("{target_char}:\\BackupRestorePE")
-    } else {
-        dir_path.trim_end_matches('\\').to_string()
-    };
-    // 解析路径：盘符 + 相对目录（如 C:\BackupRestorePE -> C: / BackupRestorePE）
-    let path_bytes = dir_path.as_bytes();
-    let valid_prefix = path_bytes.len() >= 3
-        && path_bytes[0].is_ascii_alphabetic()
-        && path_bytes[1] == b':'
-        && path_bytes[2] == b'\\';
-    let drive_char = if valid_prefix {
-        dir_path.chars().next().unwrap_or('C')
-    } else {
-        '?'
-    };
-    let dir_name = if valid_prefix && dir_path.len() > 3 {
-        dir_path[3..].to_string()
-    } else {
-        String::new()
-    };
+    if dir_name.is_empty() {
+        dir_name = "BackupRestorePE".to_string();
+    }
     let invalid_dir = dir_name.is_empty()
         || dir_name.contains('*')
         || dir_name.contains('?')
         || dir_name.contains('<')
         || dir_name.contains('>')
         || dir_name.contains('|')
-        || dir_name.contains('"');
-    // 目录盘符可以是任意合法盘符（不要求与目标卷一致），仅校验路径形式与非法字符。
-    if !valid_prefix || invalid_dir
-    {
-        append_gui_log(state, "GUI action blocked: invalid PE folder path");
+        || dir_name.contains('"')
+        || dir_name.contains(':')
+        || dir_name.contains('\\')
+        || dir_name.contains('/');
+    // 目录名合法即可，安装盘符固定为目标卷（用户可在 UI 选择任意目标卷）。
+    if invalid_dir {
+        append_gui_log(state, "GUI action blocked: invalid PE folder name");
         show_message(
             state.root,
             &if language == Language::English {
                 format!(
-                    "Invalid PE folder path \"{dir_path}\". Use the form X:\\BackupRestorePE with any valid drive letter."
+                    "Invalid PE folder name \"{dir_name}\". Enter a folder name like BackupRestorePE; the drive comes from the target volume."
                 )
             } else {
                 format!(
-                    "PE 目录路径不合法：\"{dir_path}\"。请填写形如 X:\\BackupRestorePE 的完整路径（盘符可为任意合法盘符）。"
+                    "PE 目录名不合法：\"{dir_name}\"。请填写目录名（如 BackupRestorePE），盘符由目标卷决定。"
                 )
             },
             if language == Language::English {
@@ -2615,6 +2610,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
         );
         return;
     }
+    let drive_char = target_char;
     // 启动项名称：读共用的「PE 启动项名称」输入框，空则按语言+模式用默认名
     let entry_name = {
         let typed = get_text(GetDlgItem(state.root, ID_PE_NAME_EDIT as i32))
