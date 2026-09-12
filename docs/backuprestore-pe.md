@@ -127,3 +127,29 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
    锁定，`copy /y` 静默失败（`>nul` 吞错误），时间戳不变即失败信号。
 6. **GUI 目标卷下拉坐标/RDP 窗口坐标随分辨率变化**：手工点击坐标不可复用；
    自动化一律用控件 ID + 程序内逻辑，不用坐标。
+
+### PE 自动备份/还原验证记录（2026-09-12，配置驱动，零鼠标键盘）
+
+- 流程：Win11 侧写 `S:\pe-task.txt`（ESP，mountvol S: /S）→ `bcdedit /set {bootmgr} bootsequence {pe-guid}` → 重启进 PE → PE 启动读配置自动执行 → 自动重启回 Win11。
+- 实测任务：`clean_bootsequence → find-drive marker.txt → backup AUTO H:\pe-backup-test-v2.wim → verify-file → delete-file → verify-file → restore H:\pe-backup-test-v2.wim AUTO → verify-file → verify → reboot`。
+- 结果（全部成功）：find-drive 定位测试盘（PE 盘符 G:）✓；backup dism 100% ✓；verify FOUND ✓；delete 后 verify MISSING ✓；restore dism 100% ✓；restore 后 verify FOUND ✓；Win11 侧 `dir P:\backup-test-file.txt` 34 字节确认恢复 ✓；clean_bootsequence 后 BCD 无 bootsequence（无死循环，正常回 Win11）✓。
+- 关键：backup/restore 目标 WIM 路径不要写 ESP（S: 仅 278MB，8G 卷必报 Error 112 空间不足）；目标盘用数据盘。
+
+### 本轮踩坑（2026-09-12 追加）
+
+7. **PE 内盘符漂移（重要）**：PE 启动后盘符按发现顺序分配，与 Win11 侧**不固定对应**。
+   本次实测：PE 的 `G:` = Win11 的 `P:`（测试盘，靠 find-drive marker 定位），
+   PE 的 `H:` = Win11 的 `Q:`（PE 源盘！）——backup 写 `H:\pe-backup-test-v2.wim`
+   实际落在 Win11 的 `Q:\`。**结论**：PE 任务里一律用 `find-drive`/`AUTO` 解析目标盘，
+   WIM 目标路径也要用 `AUTO` 或确认盘符对应关系，别写死 Win11 盘符。
+8. **Windows 系统「自定义缩放」≠ Windows App 缩放**：Win11 显示设置里若设了
+   「自定义缩放比例」（如 200%），RDP/远程会话看起来全屏放大。修复：
+   设置 → 系统 → 屏幕 → 「关闭自定义缩放并注销」，注销重登即恢复 100%。
+   注册表 `HKCU\Control Panel\Desktop\LogPixels` 可能不存在（自定义缩放存别处），
+   别只查注册表。
+9. **PE 任务 result 文件**：`S:\pe-task-result.txt` 是**覆盖写**；`verify` 动作会把
+   当前 result 文件内容回显进 `[RESULT_READBACK]`（执行中读到的是上一轮残留或
+   "not yet written"）。**看每步结果以中间文件为准**：`S:\backup-out.txt`、
+   `S:\restore-out.txt`、`S:\verify-file-out.txt`、`S:\delete-out.txt`。
+10. **prlctl exec 偶发 `PrlJob_GetRetCode: Invalid argument`**：VM 注销/重启后立即
+    exec 可能报此错，等 3-5 秒重试即可。
