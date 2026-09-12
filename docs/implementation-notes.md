@@ -1,5 +1,15 @@
 # V1 实现说明
 
+## 2026-09-13 `v1.4.8` DISM 备份排除配置
+
+- 备份捕获增加 `/ConfigFile` 排除（WinRE 主流程与 PE 直连备份两条路径）：
+  - 固定排除：`\$Recycle.Bin`、`\$WINDOWS.~BT`、`\$WINDOWS.~WS`、`\Windows.old`、`\Temp`、`\Windows\Temp`、`\Windows\SoftwareDistribution\Download`、`\Windows\Prefetch`、`\Windows\Logs`、`\Windows\Panther`、`\ProgramData\Microsoft\Windows\WER`。
+  - 按真实用户枚举（逐用户字面路径）：`\Users\<p>\AppData\Local\Temp`、Chrome/Edge/Brave/Vivaldi 的 `User Data\<配置>\{Cache,Code Cache,GPUCache,Service Worker\CacheStorage,Service Worker\ScriptCache}`、Firefox `Profiles\<配置>\{cache2,cache2\entries,OfflineCache,startupCache}`、Opera Stable 缓存、INetCache。
+  - `hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information` 由 DISM 默认排除，未重复列出。
+- 关键技术边界（DISM 配置文档约束）：排除表是「根路径锚定」写法；通配符只允许出现在**不以反斜杠开头的路径的最后一段**，因此 `\Users\*\AppData\...` 中间通配符不合法。浏览器缓存目录必须在备份时枚举真实用户目录生成无通配符的字面路径（`crates/backuprestore-core` 的 `build_capture_exclusions`）。
+- 配置文件写到 `env::temp_dir()`（WinRE/PE 的 X: RAM 盘），不落在捕获卷内；PE 直连备份生成失败时降级为不带排除继续捕获。WinRE 路径生成失败则返回错误。
+- 验证：本机 core 19 项测试通过（含新排除测试，断言无中间通配符）；`cargo check/build --target aarch64-pc-windows-msvc` 通过；VM `Win11-repair` 上 `test-artifacts/run-exclusions-validate.cmd` 真实验证 DISM 接受该 `/ConfigFile` 语法，`\junk` 排除成功、保留目录内容在镜像内。
+
 ## 2026-08-27 `v1.2.2` 开发 EFI 故障注入
 
 - 仅开发 CLI 在同时指定 `--test-efi-drive` 时接受 `--test-fault identity-env-mismatch` 或 `bcdboot-failure`；普通 GUI 和正常 EFI 流程不暴露该参数。

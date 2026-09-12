@@ -1567,6 +1567,14 @@ fn recover_windows(
                 .ok()
                 .flatten();
 
+            // 生成 DISM 排除配置（回收站/临时目录/更新缓存/各用户浏览器缓存），
+            // WinRE 的 TEMP 位于 X: RAM 盘，配置文件不会落在捕获卷内。
+            // 排除项会显著缩小 WIM 体积，且全部为 DISM 规范内的根路径写法。
+            let exclude_config = backuprestore_core::build_capture_exclusions(&source_path)?;
+            let exclude_config_path = env::temp_dir().join("BackupRestore-exclusions.ini");
+            fs::write(&exclude_config_path, exclude_config)?;
+            let exclude_arg = format!("/ConfigFile:{}", exclude_config_path.display());
+
             // A power loss can leave a partial WIM behind.  For the first
             // capture, only that partial file is removed.  For an existing
             // WIM, copy it to a same-volume candidate and append there; the
@@ -1587,6 +1595,7 @@ fn recover_windows(
                     &format!("/CaptureDir:{}", source_path.display()),
                     "/Name:Windows Backup",
                     "/CheckIntegrity",
+                    &exclude_arg,
                 ];
                 let append_result = run_logged("dism.exe", &append_args, log);
                 if let Err(error) = append_result {
@@ -1614,6 +1623,7 @@ fn recover_windows(
                         "/Name:Windows Backup",
                         "/Compress:max",
                         "/CheckIntegrity",
+                        &exclude_arg,
                     ],
                     log,
                 )?;

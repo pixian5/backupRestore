@@ -12,7 +12,7 @@ use std::ffi::c_void;
 use std::fs;
 use std::mem::size_of;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
 
@@ -975,7 +975,7 @@ unsafe fn set_operation_visibility(state: &State) {
         operation == "install-pe-entry",
     );
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
-    // 启动方式单选与目录行只在「PE 恢复」tab 显示；硬盘启动模式下隐藏目录名行
+    // 启动方式单选与目录行只在「PE 恢复」tab 显示；硬盘启动模式下隐藏目录路径行
     let pe_mode_ram = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
     let pe_visible = operation == "install-pe-entry";
     append_gui_log(
@@ -989,7 +989,7 @@ unsafe fn set_operation_visibility(state: &State) {
     // 「PE 启动项名称」输入框两种模式通用，在「PE 恢复」tab 始终显示
     set_child_visible(ID_PE_NAME_LABEL as i32, pe_visible);
     set_child_visible(ID_PE_NAME_EDIT as i32, pe_visible);
-    // PE 目录名仅 RAM disk 模式需要（WIM 复制目录），硬盘启动模式隐藏
+    // PE 目录路径仅 RAM disk 模式需要（WIM 复制目录），硬盘启动模式隐藏
     set_child_visible(ID_PE_DIR_LABEL as i32, pe_visible && pe_mode_ram);
     set_child_visible(ID_PE_DIR_EDIT as i32, pe_visible && pe_mode_ram);
 }
@@ -1077,7 +1077,7 @@ unsafe fn layout_operation(state: &State) {
     );
     reposition(state.controls.status, 20, status_y, client_width - 40, 64);
 
-    // 「PE 恢复」tab：行1 RAM disk 单选 + PE 目录名（完整路径，同排）；
+    // 「PE 恢复」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
     // 行2 硬盘启动单选；行3 PE 启动项名称（两种模式通用）
     if selected_operation(state) == "install-pe-entry" {
         let mode_y = last_details_y + 18;
@@ -1107,9 +1107,9 @@ unsafe fn layout_operation(state: &State) {
         set_text(
             GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
             if selected_language(state) == Language::English {
-                "PE folder name"
+                "PE folder path"
             } else {
-                "PE 目录名"
+                "PE 目录路径"
             },
         );
         reposition(
@@ -1127,24 +1127,39 @@ unsafe fn layout_operation(state: &State) {
             280,
             22,
         );
-        // 「PE 目录名」输入框：只填目录名（如 BackupRestorePE），不含盘符。
-        // 安装位置 = {目标卷盘符}:\{目录名}（RAM disk 模式，WIM 复制到该目录）。
-        // 为空时填默认目录名；兼容旧版完整路径（X:\BackupRestorePE）自动取最后一段。
+        // 「PE 目录路径」输入框：填完整路径（如 C:\BackupRestorePE，盘符可
+        // 任意合法目录，不限于 C）。WIM 复制到该路径的 sources\boot.wim。
+        // 为空时按语言+当前目标卷填默认完整路径；已有内容（含完整路径）原样保留。
         let dir_edit_hwnd = GetDlgItem(state.root, ID_PE_DIR_EDIT as i32);
         let dir_text = get_text(dir_edit_hwnd);
         let dir_trimmed = dir_text.trim();
         if dir_trimmed.is_empty() {
-            set_text(dir_edit_hwnd, "BackupRestorePE");
-        } else if dir_trimmed.contains('\\') || dir_trimmed.contains(':') {
-            // 旧版完整路径（X:\BackupRestorePE）迁移：只保留目录名
-            let name = dir_trimmed
-                .rsplit(['\\', ':'])
+            let exe_drive = state
+                .executable_dir
+                .to_string_lossy()
+                .chars()
                 .next()
-                .unwrap_or("")
-                .trim();
-            if !name.is_empty() {
-                set_text(dir_edit_hwnd, name);
-            }
+                .unwrap_or('C')
+                .to_ascii_uppercase();
+            let default_drive = state
+                .drives
+                .iter()
+                .map(|d| d.letter.to_ascii_uppercase())
+                .find(|letter| {
+                    letter
+                        .chars()
+                        .next()
+                        .map(|c| c != exe_drive)
+                        .unwrap_or(true)
+                })
+                .unwrap_or_else(|| {
+                    std::env::var("SystemDrive")
+                        .unwrap_or_else(|_| "C:".to_string())
+                        .trim()
+                        .trim_end_matches(':')
+                        .to_ascii_uppercase()
+                });
+            set_text(dir_edit_hwnd, &format!("{default_drive}:\\BackupRestorePE"));
         }
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
@@ -1196,7 +1211,7 @@ unsafe fn layout_operation(state: &State) {
             300,
             24,
         );
-        // 硬盘模式下隐藏 PE 目录名（路径）行，仅 RAM disk 显示
+        // 硬盘模式下隐藏 PE 目录路径（完整路径）行，仅 RAM disk 显示
         let dir_label_hwnd = GetDlgItem(state.root, ID_PE_DIR_LABEL as i32);
         let label_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
         let edit_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
@@ -2555,6 +2570,32 @@ fn pe_entry_description(language: Language, mode_ram: bool) -> String {
     }
 }
 
+/// 解析「PE 目录路径」输入框的完整路径（如 C:\BackupRestorePE 或 D:\a\PE）。
+/// 返回 (盘符字符, 相对根目录路径，如 "\BackupRestorePE" / "\a\PE")。
+/// 非法（缺盘符、根目录、含非法字符）返回 None。
+fn split_pe_dir_path(raw: &str) -> Option<(char, String)> {
+    let path = raw.trim().trim_end_matches('\\').trim_end_matches('/');
+    if path.len() < 3 {
+        return None;
+    }
+    let bytes = path.as_bytes();
+    let drive = bytes[0].to_ascii_uppercase();
+    if !drive.is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
+        return None;
+    }
+    if path[3..].is_empty() {
+        // 根目录（如 C:\），不允许：会把 PE 文件散落到盘根
+        return None;
+    }
+    for ch in path[3..].chars() {
+        if matches!(ch, '*' | '?' | '<' | '>' | '|' | '"') {
+            return None;
+        }
+    }
+    let rel = format!("\\{}", &path[3..]);
+    Some((drive as char, rel))
+}
+
 /// RAM disk 模式：把 boot.wim 复制到 `{卷}:\{目录}`（不占独立分区），
 /// bootmgr 通过 {ramdiskoptions} + boot.sdi 从内存启动。
 unsafe fn install_pe_ramdisk(state: &State) {
@@ -2578,16 +2619,38 @@ unsafe fn install_pe_ramdisk(state: &State) {
         );
         return;
     }
-    let target_drive = match selected_drive_letter(state, state.controls.target) {
+    // 读「PE 目录路径」：完整路径（如 C:\BackupRestorePE，盘符任意合法目录）。
+    // RAM disk 模式把 boot.wim 复制到该路径的 sources\boot.wim，不占独立分区。
+    let dir_path = {
+        let raw = get_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32))
+            .trim()
+            .to_string();
+        if raw.trim().is_empty() {
+            // 布局层已填默认值，这里防御性兜底
+            let system = std::env::var("SystemDrive")
+                .unwrap_or_else(|_| "C:".to_string())
+                .trim()
+                .trim_end_matches(':')
+                .to_ascii_uppercase();
+            format!("{system}:\\BackupRestorePE")
+        } else {
+            raw
+        }
+    };
+    let (target_char, rel_path) = match split_pe_dir_path(&dir_path) {
         Some(value) => value,
         None => {
-            append_gui_log(state, "GUI action blocked: no target volume selected");
+            append_gui_log(state, "GUI action blocked: invalid PE directory path");
             show_message(
                 state.root,
                 &if language == Language::English {
-                    "Select a target volume for the PE recovery environment."
+                    format!(
+                        "Invalid PE directory path \"{dir_path}\". Enter a full path like C:\\BackupRestorePE (any drive letter is allowed); it must not be a drive root."
+                    )
                 } else {
-                    "请为目标卷选择 PE 恢复环境所在卷。"
+                    format!(
+                        "PE 目录路径不合法：\"{dir_path}\"。请填写完整路径（如 C:\\BackupRestorePE，盘符可以是任意合法目录），不能是盘符根目录。"
+                    )
                 },
                 if language == Language::English {
                     "Validation failed"
@@ -2599,58 +2662,6 @@ unsafe fn install_pe_ramdisk(state: &State) {
             return;
         }
     };
-    let target_char = target_drive.chars().next().unwrap_or('C');
-    // 读 PE 目录名（RAM disk 模式：WIM 复制到 {目标卷}:\{目录名}\sources\boot.wim）。
-    // 输入框只填目录名（如 BackupRestorePE），不含盘符；盘符由目标卷决定。
-    let mut dir_name = get_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32))
-        .trim()
-        .trim_start_matches('\\')
-        .trim_end_matches('\\')
-        .to_string();
-    // 兼容旧版完整路径（X:\BackupRestorePE）：只取最后一段目录名
-    dir_name = dir_name
-        .rsplit(['\\', ':'])
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if dir_name.is_empty() {
-        dir_name = "BackupRestorePE".to_string();
-    }
-    let invalid_dir = dir_name.is_empty()
-        || dir_name.contains('*')
-        || dir_name.contains('?')
-        || dir_name.contains('<')
-        || dir_name.contains('>')
-        || dir_name.contains('|')
-        || dir_name.contains('"')
-        || dir_name.contains(':')
-        || dir_name.contains('\\')
-        || dir_name.contains('/');
-    // 目录名合法即可，安装盘符固定为目标卷（用户可在 UI 选择任意目标卷）。
-    if invalid_dir {
-        append_gui_log(state, "GUI action blocked: invalid PE folder name");
-        show_message(
-            state.root,
-            &if language == Language::English {
-                format!(
-                    "Invalid PE folder name \"{dir_name}\". Enter a folder name like BackupRestorePE; the drive comes from the target volume."
-                )
-            } else {
-                format!(
-                    "PE 目录名不合法：\"{dir_name}\"。请填写目录名（如 BackupRestorePE），盘符由目标卷决定。"
-                )
-            },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
-        return;
-    }
-    let drive_char = target_char;
     // 启动项名称：读共用的「PE 启动项名称」输入框，空则按语言+模式用默认名
     let entry_name = {
         let typed = get_text(GetDlgItem(state.root, ID_PE_NAME_EDIT as i32))
@@ -2662,7 +2673,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
             typed
         }
     };
-    if drive_char
+    if target_char
         == state
             .executable_dir
             .to_string_lossy()
@@ -2703,11 +2714,11 @@ unsafe fn install_pe_ramdisk(state: &State) {
         state.root,
         &if language == Language::English {
             format!(
-                "Install the PE recovery environment (RAM disk) to {drive_char}:\\{dir_name}?\n\n- Copy the PE WIM to {drive_char}:\\{dir_name}\\sources\\boot.wim\n- Ensure {drive_char}:\\{dir_name}\\boot\\boot.sdi\n- Add boot entry \"{entry_name}\" to the boot menu\n\nNo extra partition is used. The current Windows default boot is NOT changed. Continue?"
+                "Install the PE recovery environment (RAM disk) to {dir_path}?\n\n- Copy the PE WIM to {dir_path}\\sources\\boot.wim\n- Ensure {dir_path}\\boot\\boot.sdi\n- Add boot entry \"{entry_name}\" to the boot menu\n\nNo extra partition is used. The current Windows default boot is NOT changed. Continue?"
             )
         } else {
             format!(
-                "以 RAM disk 方式安装 PE 恢复环境到 {drive_char}:\\{dir_name}？\n\n- 复制 PE 镜像到 {drive_char}:\\{dir_name}\\sources\\boot.wim\n- 确保 {drive_char}:\\{dir_name}\\boot\\boot.sdi 存在\n- 在启动菜单新增「{entry_name}」启动项\n\n不占用独立分区。不修改当前 Windows 默认启动。是否继续？"
+                "以 RAM disk 方式安装 PE 恢复环境到 {dir_path}？\n\n- 复制 PE 镜像到 {dir_path}\\sources\\boot.wim\n- 确保 {dir_path}\\boot\\boot.sdi 存在\n- 在启动菜单新增「{entry_name}」启动项\n\n不占用独立分区。不修改当前 Windows 默认启动。是否继续？"
             )
         },
         if language == Language::English {
@@ -2728,10 +2739,10 @@ unsafe fn install_pe_ramdisk(state: &State) {
     append_gui_log(
         state,
         &format!(
-            "PE RAM disk install started: wim={image_path} target={drive_char}:\\{dir_name}"
+            "PE RAM disk install started: wim={image_path} target={dir_path}"
         ),
     );
-    let target_root = format!("{drive_char}:\\{dir_name}\\");
+    let target_root = format!("{dir_path}\\");;
     // 1. Copy the PE WIM into <target>:\<dir>\sources\boot.wim, preserving an
     //    existing file as .stock on first install.
     let sources_dir = format!("{target_root}sources");
@@ -2799,11 +2810,11 @@ unsafe fn install_pe_ramdisk(state: &State) {
                 state.root,
                 &if language == Language::English {
                     format!(
-                        "{drive_char}:\\{dir_name}\\boot\\boot.sdi is missing and no ADK copy could be found. Place the Windows PE boot.sdi on the target volume and try again."
+                        "{dir_path}\\boot\\boot.sdi is missing and no ADK copy could be found. Place the Windows PE boot.sdi on the target volume and try again."
                     )
                 } else {
                     format!(
-                        "{drive_char}:\\{dir_name}\\boot\\boot.sdi 不存在，且未找到 ADK 副本。请将 WinPE 的 boot.sdi 放到目标卷后重试。"
+                        "{dir_path}\\boot\\boot.sdi 不存在，且未找到 ADK 副本。请将 WinPE 的 boot.sdi 放到目标卷后重试。"
                     )
                 },
                 if language == Language::English {
@@ -2825,9 +2836,9 @@ unsafe fn install_pe_ramdisk(state: &State) {
     let _ = std::fs::remove_file(&guid_out);
     let ram_guid_path = "{ramdiskoptions}".to_string();
     let mut steps = vec![
-        format!("bcdedit.exe /set {ram_guid_path} ramdisksdidevice partition={drive_char}:"),
+        format!("bcdedit.exe /set {ram_guid_path} ramdisksdidevice partition={target_char}:"),
         format!(
-            "bcdedit.exe /set {ram_guid_path} ramdisksdipath \\{dir_name}\\boot\\boot.sdi"
+            "bcdedit.exe /set {ram_guid_path} ramdisksdipath {rel_path}\\boot\\boot.sdi"
         ),
     ];
     let os_guid = {
@@ -2882,7 +2893,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
     };
     let os_guid_path = format!("{{{}}}", os_guid);
     let ramdisk_device = format!(
-        "ramdisk=[{drive_char}:]\\{dir_name}\\sources\\boot.wim,{ram_guid_path}"
+        "ramdisk=[{target_char}:]{rel_path}\\sources\\boot.wim,{ram_guid_path}"
     );
     steps.push(format!(
         "bcdedit.exe /set {os_guid_path} device {ramdisk_device}"
@@ -2937,18 +2948,18 @@ unsafe fn install_pe_ramdisk(state: &State) {
     append_gui_log(
         state,
         &format!(
-            "GUI action completed: PE recovery installed (RAM disk wim -> {drive_char}:\\{dir_name}\\sources\\boot.wim, BCD entry {os_guid_path})"
+            "GUI action completed: PE recovery installed (RAM disk wim -> {dir_path}\\sources\\boot.wim, BCD entry {os_guid_path})"
         ),
     );
     show_message(
         state.root,
         &if language == Language::English {
             format!(
-                "PE recovery environment (RAM disk) installed to {drive_char}:\\{dir_name}.\n\nThe boot menu now has \"{entry_name}\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
+                "PE recovery environment (RAM disk) installed to {dir_path}.\n\nThe boot menu now has \"{entry_name}\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
             )
         } else {
             format!(
-                "PE 恢复环境（RAM disk）已安装到 {drive_char}:\\{dir_name}。\n\n启动菜单已新增「{entry_name}」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
+                "PE 恢复环境（RAM disk）已安装到 {dir_path}。\n\n启动菜单已新增「{entry_name}」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
             )
         },
         if language == Language::English {
@@ -5790,10 +5801,20 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             let d = resolve_drive(drive);
             let _ = std::fs::remove_file(wim);
             let out = "S:\\backup-out.txt";
+            // 生成 DISM 排除配置（临时目录/回收站/浏览器缓存），写到 PE 的
+            // X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
+            let mut exclude_arg = String::new();
+            let config_path = std::env::temp_dir().join("BackupRestore-exclusions.ini");
+            let source_root = format!("{d}:\\");
+            if let Ok(text) = backuprestore_core::build_capture_exclusions(Path::new(&source_root)) {
+                if std::fs::write(&config_path, text).is_ok() {
+                    exclude_arg = format!(" /ConfigFile:{}", config_path.display());
+                }
+            }
             // PE 的 dism 对长参数敏感，用最小参数集（Name 值不能含连字符）
             run_cmd_to_file_timeout(
                 &format!(
-                    "cmd /c dism.exe /Capture-Image /ImageFile:{wim} /CaptureDir:{d}:\\ /Name:PE > {out} 2>&1"
+                    "cmd /c dism.exe /Capture-Image /ImageFile:{wim} /CaptureDir:{d}:\\ /Name:PE{exclude_arg} > {out} 2>&1"
                 ),
                 None,
                 600000,

@@ -1082,6 +1082,150 @@ pub fn ensure_bitlocker_accessible(states: &[BitLockerState]) -> Result<(), Task
     Ok(())
 }
 
+/// 生成 DISM `/ConfigFile` 配置文件内容（WimScript.ini 语法）。
+///
+/// 用途：备份捕获时可排除 \$Recycle.Bin、临时目录、更新缓存、浏览器缓存等
+/// 可再生内容，缩小 WIM 镜像体积。
+///
+/// DISM 配置文件的排除表是"根路径锚定"的（带前导 `\` 只匹配根下精确路径），
+/// 且通配符只能出现在"不以反斜杠开头的路径的最后一段"。因此 `\Users\*\
+/// AppData\...` 这类中间通配符不在规范内，浏览器缓存目录必须在捕获时
+/// 枚举真实的 `Users\<用户>\AppData\Local\...` 字面路径生成。
+///
+/// `source_root` 是待捕获卷的根（如 `X:\`，要求是物理卷根，枚举时不要求
+/// 该卷可写）。返回的文本写入后传给：
+/// `dism /Capture-Image ... /ConfigFile:<path>` 或
+/// `dism /Append-Image ... /ConfigFile:<path>`。
+pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError> {
+    // 固定的根级可排除项（全部为 DISM 规范内的根路径锚定写法，无通配符）。
+    // 注意：hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information
+    // 由 DISM 默认排除，无需在此重复。
+    let mut lines = vec![
+        "\\$Recycle.Bin".to_string(),
+        "\\$WINDOWS.~BT".to_string(),
+        "\\$WINDOWS.~WS".to_string(),
+        "\\Windows.old".to_string(),
+        "\\Temp".to_string(),
+        "\\Windows\\Temp".to_string(),
+        "\\Windows\\SoftwareDistribution\\Download".to_string(),
+        "\\Windows\\Prefetch".to_string(),
+        "\\Windows\\Logs".to_string(),
+        "\\Windows\\Panther".to_string(),
+        "\\ProgramData\\Microsoft\\Windows\\WER".to_string(),
+    ];
+
+    // 枚举真实用户配置文件，补上按用户字面路径的排除项。
+    let users_root = source_root.join("Users");
+    if let Ok(profiles) = fs::read_dir(&users_root) {
+        let mut user_entries: Vec<String> = Vec::new();
+        for profile in profiles.flatten() {
+            let Some(name) = profile.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let local = users_root.join(&name).join("AppData").join("Local");
+            // 每个用户自己的临时目录
+            user_entries.push(format!("\\Users\\{name}\\AppData\\Local\\Temp"));
+            // Chromium 系浏览器的媒体缓存目录（User Data 下每个配置子目录）
+            for child in [
+                "Google\\Chrome",
+                "Microsoft\\Edge",
+                "BraveSoftware\\Brave-Browser",
+                "Vivaldi",
+            ] {
+                let mut base = local.clone();
+                for part in child.split('\\') {
+                    base = base.join(part);
+                }
+                let user_data = base.join("User Data");
+                for profile_dir in read_subdirs(&user_data) {
+                    user_entries.push(format!(
+                        "\\Users\\{name}\\AppData\\Local\\{child}\\User Data\\{profile_dir}\\Cache"
+                    ));
+                    user_entries.push(format!(
+                        "\\Users\\{name}\\AppData\\Local\\{child}\\User Data\\{profile_dir}\\Code Cache"
+                    ));
+                    user_entries.push(format!(
+                        "\\Users\\{name}\\AppData\\Local\\{child}\\User Data\\{profile_dir}\\GPUCache"
+                    ));
+                    user_entries.push(format!(
+                        "\\Users\\{name}\\AppData\\Local\\{child}\\User Data\\{profile_dir}\\Service Worker\\CacheStorage"
+                    ));
+                    user_entries.push(format!(
+                        "\\Users\\{name}\\AppData\\Local\\{child}\\User Data\\{profile_dir}\\Service Worker\\ScriptCache"
+                    ));
+                }
+            }
+            // Opera：稳定配置文件直接位于 Opera Stable 下
+            let opera = local.join("Opera Software").join("Opera Stable");
+            if opera.is_dir() {
+                user_entries.extend([
+                    format!("\\Users\\{name}\\AppData\\Local\\Opera Software\\Opera Stable\\Cache"),
+                    format!(
+                        "\\Users\\{name}\\AppData\\Local\\Opera Software\\Opera Stable\\GPUCache"
+                    ),
+                ]);
+            }
+            // Firefox：Profiles 下每个配置的缓存目录
+            let firefox = local.join("Mozilla").join("Firefox").join("Profiles");
+            for profile_dir in read_subdirs(&firefox) {
+                user_entries.extend([
+                    format!(
+                        "\\Users\\{name}\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\{profile_dir}\\cache2"
+                    ),
+                    format!(
+                        "\\Users\\{name}\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\{profile_dir}\\cache2\\entries"
+                    ),
+                    format!(
+                        "\\Users\\{name}\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\{profile_dir}\\OfflineCache"
+                    ),
+                    format!(
+                        "\\Users\\{name}\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\{profile_dir}\\startupCache"
+                    ),
+                ]);
+            }
+            // 旧版 IE / 系统组件缓存
+            let inet_cache = local
+                .join("Microsoft")
+                .join("Windows")
+                .join("INetCache");
+            if inet_cache.is_dir() {
+                user_entries.push(format!(
+                    "\\Users\\{name}\\AppData\\Local\\Microsoft\\Windows\\INetCache"
+                ));
+            }
+        }
+        user_entries.sort();
+        user_entries.dedup();
+        lines.extend(user_entries);
+    }
+
+    let mut text = String::from("[ExclusionList]\r\n");
+    for line in lines {
+        text.push_str(&line);
+        text.push_str("\r\n");
+    }
+    Ok(text)
+}
+
+/// 列出 `root` 下的一级子目录名（失败时返回空），供枚举浏览器配置目录使用。
+fn read_subdirs(root: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1493,5 +1637,86 @@ mod tests {
         assert_eq!(metadata.required_target_size(), 100);
         assert!(ensure_capacity(99, &metadata).is_err());
         assert!(ensure_capacity(100, &metadata).is_ok());
+    }
+
+    #[test]
+    fn capture_exclusions_include_fixed_and_per_user_browser_entries() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-excl-{suffix}"));
+        let users = root.join("Users");
+        let alice = users.join("alice").join("AppData").join("Local");
+        fs::create_dir_all(
+            alice.join("Google").join("Chrome").join("User Data").join("Default").join("Cache"),
+        )
+        .unwrap();
+        fs::create_dir_all(
+            alice.join("Mozilla").join("Firefox").join("Profiles").join("abc.default").join("cache2"),
+        )
+        .unwrap();
+
+        let ini = build_capture_exclusions(&root).unwrap();
+        let lines: Vec<&str> = ini.lines().collect();
+        let list = lines
+            .iter()
+            .position(|l| *l == "[ExclusionList]")
+            .expect("配置应包含 [ExclusionList] 节");
+        let all: Vec<&str> = lines[list + 1..].iter().filter(|l| !l.is_empty()).copied().collect();
+
+        // 固定根级排除项
+        for fixed in [
+            "\\$Recycle.Bin",
+            "\\$WINDOWS.~BT",
+            "\\Windows.old",
+            "\\Temp",
+            "\\Windows\\Temp",
+            "\\Windows\\SoftwareDistribution\\Download",
+        ] {
+            assert!(all.contains(&fixed), "缺少固定排除项 {fixed}: {ini}");
+        }
+        // 每个用户字面路径
+        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Temp"));
+        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache"));
+        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Code Cache"));
+        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\abc.default\\cache2"));
+        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\abc.default\\cache2\\entries"));
+        // 规范内不得出现中间通配符（DISM 只允许最后一段通配）
+        for entry in &all {
+            let normalized = entry.replace('/', "\\");
+            let parts: Vec<&str> = normalized.split('\\').collect();
+            let (first, _) = parts.split_first().unwrap();
+            if *first == "" {
+                // 根路径锚定写法（\x\y）：除最后一段外其余段不得含 *
+                if let Some((head, tail)) = parts.split_first() {
+                    assert!(
+                        !head.contains('*'),
+                        "根锚定路径的首段不应含通配符: {entry}"
+                    );
+                    for part in tail.split_last().unwrap().1 {
+                        assert!(
+                            !part.contains('*'),
+                            "根锚定路径的中间段不应含通配符: {entry}"
+                        );
+                    }
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn capture_exclusions_without_users_keeps_fixed_list() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-excl2-{suffix}"));
+        let ini = build_capture_exclusions(&root).unwrap();
+        assert!(ini.starts_with("[ExclusionList]\r\n"));
+        assert!(ini.contains("\r\n\\$Recycle.Bin\r\n"));
+        assert!(!ini.contains("\\Users\\"));
+        let _ = fs::remove_dir_all(root);
     }
 }
