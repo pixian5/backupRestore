@@ -59,9 +59,42 @@ C:\Users\Public\backupRestore-package\BackupRestore.exe
 - **PE 启动项不依赖部署目录**：BCD 的 BackupRestore PE 指向 `ramdisk=[unknown]\BackupRestorePE\sources\boot.wim`，迁移无影响
 - 本地 tools/*.ps1、docs 已批量替换 v12 路径（历史文档 current-progress-2026-09-11.md 保留原样）
 
-## 六、快照清理（2026-09-13 追加）
+## 六、快照清理（2026-09-13）
 
 VM 全部 11 个历史测试快照已删除（叶→根逐个 `prlctl snapshot-delete -i <id>`）：
 before-current-efi-secondary-test/boot-20260908、before-v131-*、v131/v132/v133-stage-fault-baseline(-2)、
 before-bcd-menu-boot、before-pe-boot-test、pe-click-test-1——均为 9 月 PE/BCD/断电测试残留，功能已收口，无回退价值。
-删除后快照树为空，释放快照差异文件空间。
+删除后快照树为空，释放快照差异文件空间（.pvm 237G→208G）。
+
+## 七、C 盘 100G 占用分析与清理（2026-09-13）
+
+### 清理前构成（已用 ~109GB / 254.5GB）
+
+| 目录 | 大小 | 判断 |
+|---|---|---|
+| C:\BackupRestoreBuild | 39.2 GB | 🔴 Windows 侧历史构建产物（BackupRestore-windows-arm64-v1.1.1~v1.3.3 发布包 + package-v1.2.7~v1.3.1 + target*） |
+| C:\Windows | 31 GB | 系统本体（正常，含 WinSxS） |
+| C:\Program Files (x86) | 16 GB | Microsoft Visual Studio + Windows Kits（交叉编译 SDK 来源，保留） |
+| C:\BRTest\tasks | 9 GB | 🔴 旧版测试任务存储（TaskStore root，当前程序已改用 exe 目录） |
+| C:\Program Files | 8.2 GB | WindowsApps（UWP 系统应用）+ Google，保留 |
+| C:\System Volume Information | 5.8 GB | 系统还原点，已清 |
+| C:\Users\x | 5.5 GB | AppData 2G + .rustup 1.3G + Downloads 1.1G（构建缓存备份）+ .codex 0.8G |
+| C:\ProgramData | 5.1 GB | Package Cache 3G（VS 安装缓存，保留）+ Microsoft |
+| C:\BuildTools | 4 GB | VS Build Tools（构建用，保留） |
+| C:\BackupRestorePE | 1.2 GB | PE media/work（PE 恢复功能，保留） |
+| C:\brsrc | 0.1 GB | 🔴 源码构建缓存副本 |
+
+### 已清理（释放 ~48GB）
+- 删除：C:\BackupRestoreBuild（39.2G）、C:\BRTest（9G）、C:\brsrc（0.1G）、空测试目录（Quick Scan C/ESPRead/PEMount/pewimmount/PEVerify/DiskGenius_WinPE）
+- 系统还原点：`vssadmin delete shadows /all /quiet`（SYSTEM 计划任务提权执行，SVI 5830MB→0）
+- DISM：`Dism /online /Cleanup-Image /StartComponentCleanup`（SYSTEM 提权）
+- 结果：C 盘可用 145.0 → **192.6 GB**（已用降至 ~61.9GB），GUI v1.5.3 验证正常
+
+### 踩坑：prlctl exec 非管理员上下文
+`vssadmin`/`DISM` 在线命令在 prlctl exec 下无权限（输出版权信息即未执行），
+必须用 `schtasks /create /tr "<cmd>" /ru SYSTEM /rl HIGHEST /f` + `/run` 提权执行，用完删任务。
+
+### 仍可考虑（未动，等确认）
+- C:\Users\x\Downloads 下 backupRestore-cargo-v2~v11 / toolchain(-cache) / build-v2~v4（~1.1GB，早期 Windows 侧构建缓存的手动备份，mac 侧构建已稳定后可删）
+- C:\Users\x\.codex（~0.8GB，Codex CLI 数据）
+- AppData 内浏览器/系统缓存（保守未动）
