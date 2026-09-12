@@ -1,5 +1,5 @@
 # List size of each dir under C:\Users\Public (ASCII output)
-$out = "C:\Users\Public\backupRestore-package-v12\pubdirs.log"
+$out = "C:\Users\Public\backupRestore-package\pubdirs.log"
 $lines = New-Object System.Collections.ArrayList
 Get-ChildItem C:\Users\Public -Directory -ErrorAction SilentlyContinue | ForEach-Object {
     $s = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum

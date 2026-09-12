@@ -40,8 +40,8 @@ $si = New-Object Win32P+STARTUPINFO
 $si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
 $si.lpDesktop = "winsta0\default"
 $pi = New-Object Win32P+PROCESS_INFORMATION
-$exe = "C:\Users\Public\backupRestore-package-v12\BackupRestore.exe"
-$ok3 = [Win32P]::CreateProcessAsUser($hDup, $exe, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00000010, [IntPtr]::Zero, "C:\Users\Public\backupRestore-package-v12", [ref]$si, [ref]$pi)
+$exe = "C:\Users\Public\backupRestore-package\BackupRestore.exe"
+$ok3 = [Win32P]::CreateProcessAsUser($hDup, $exe, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00000010, [IntPtr]::Zero, "C:\Users\Public\backupRestore-package", [ref]$si, [ref]$pi)
 Write-Output ("createprocess=" + $ok3 + " pid=" + $pi.dwProcessId)
 [void][Win32P]::CloseHandle($hDup)
 [void][Win32P]::CloseHandle($hToken)

@@ -16,7 +16,7 @@ public class Win32FS {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\fast-switch.log"
+$log = "C:\Users\Public\backupRestore-package\fast-switch.log"
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 $global:glist = New-Object System.Collections.ArrayList
 $cb = [Win32FS+EnumProc]{
@@ -61,7 +61,7 @@ $w = $wr.Right - $wr.Left; $h = $wr.Bottom - $wr.Top
 $bmp = New-Object System.Drawing.Bitmap($w, $h)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($wr.Left, $wr.Top, 0, 0, $bmp.Size)
-$bmp.Save("C:\Users\Public\backupRestore-package-v12\fast-switch-final.png", [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Save("C:\Users\Public\backupRestore-package\fast-switch-final.png", [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose(); $bmp.Dispose()
 Log "saved fast-switch-final.png"
 Log "DONE"

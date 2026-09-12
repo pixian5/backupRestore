@@ -5,7 +5,7 @@
 ### 1. VM 内 C:\Users\Public 开发历史残留（已删）
 - `backupRestore-package`、`backupRestore-package-v2~v11`（历史构建包，共 ~21MB）
 - `backupRestore-src`、`backupRestore-src-v2~v11`（源码+构建产物备份，12 份 × ~1.5GB ≈ **18GB**）
-- 保留：`backupRestore-package-v12`（当前部署 v1.5.3，build-win.sh 固定覆盖目标）
+- 保留：`backupRestore-package`（当前部署 v1.5.3，build-win.sh 固定覆盖目标）
 
 ### 2. 宿主侧测试盘（已删，释放 ~44GB 虚拟磁盘）
 - `backuprestore-full-e2e.hdd`（24GB，磁盘 1：E:BREFI 测试 ESP + F:BRSource 源卷 + G: 目标 + H:BRImages 镜像）
@@ -34,7 +34,7 @@
 
 **不会**。`build-win.sh` 已固定部署目标：
 ```
-C:\Users\Public\backupRestore-package-v12\BackupRestore.exe
+C:\Users\Public\backupRestore-package\BackupRestore.exe
 ```
 每次 `./build-win.sh --deploy` 是 taskkill 旧进程 + copy 覆盖同一路径，不新建版本目录。
 （目录名带 v12 只是命名习惯，不会累积 v13/v14。）
@@ -46,8 +46,22 @@ C:\Users\Public\backupRestore-package-v12\BackupRestore.exe
 2. VM：运行 `tools/create-test-disks.ps1`（按型号匹配，自动 GPT 初始化 + 分区 + 卷标）
 3. 重建结果：磁盘1 = MSR + E:BREFI(FAT32 ESP) + F:BRSource + G: + H:BRImages；磁盘2 = MSR + P: + Q:
 
-## 五、待确认：快照树
+## 五、部署目录去版本号（2026-09-13 追加）
 
-VM 仍有 11 个历史测试快照链（before-*-test / v131/v132/v133-stage-fault-baseline / pe-click-test 等），
-引用测试盘的部分已被 force 删除时清除，快照本身保留（主盘快照，仍可回退）。
-若确认不需要，可逐个 `prlctl snapshot-delete "Windows 11" -i <SNAPSHOT_ID>` 释放快照差异文件空间。
+确认 build-win.sh 固定覆盖部署后，不再产生版本号目录，故去掉 v12 字样：
+
+- VM 内：`C:\Users\Public\backupRestore-package-v12` → **`C:\Users\Public\backupRestore-package`**（整目录重命名）
+- `build-win.sh` 部署目标同步改为 `C:\Users\Public\backupRestore-package\BackupRestore.exe`
+- 桌面快捷方式 `BackupRestore.lnk` 目标同步更新（WScript.Shell 改 TargetPath）
+- 删除测试残留 `BR-new.exe`；删除 8 个历史计划任务
+  （BackupRestoreInteractiveSessionProbe / LatestInteractive / RustUiInteractiveTest / UiAction / V084/V127/V128/V129Interactive）
+- 验证：Session 1 启动 GUI v1.5.3 正常，C 盘可用 145 GiB
+- **PE 启动项不依赖部署目录**：BCD 的 BackupRestore PE 指向 `ramdisk=[unknown]\BackupRestorePE\sources\boot.wim`，迁移无影响
+- 本地 tools/*.ps1、docs 已批量替换 v12 路径（历史文档 current-progress-2026-09-11.md 保留原样）
+
+## 六、快照清理（2026-09-13 追加）
+
+VM 全部 11 个历史测试快照已删除（叶→根逐个 `prlctl snapshot-delete -i <id>`）：
+before-current-efi-secondary-test/boot-20260908、before-v131-*、v131/v132/v133-stage-fault-baseline(-2)、
+before-bcd-menu-boot、before-pe-boot-test、pe-click-test-1——均为 9 月 PE/BCD/断电测试残留，功能已收口，无回退价值。
+删除后快照树为空，释放快照差异文件空间。

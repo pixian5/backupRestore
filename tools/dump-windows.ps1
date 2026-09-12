@@ -13,7 +13,7 @@ public class Win32W {
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\dump-windows.log"
+$log = "C:\Users\Public\backupRestore-package\dump-windows.log"
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 $list = New-Object System.Collections.ArrayList
 $cb = [Win32W+EnumProc]{

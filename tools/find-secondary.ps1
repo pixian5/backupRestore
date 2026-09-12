@@ -17,7 +17,7 @@ public class Win32F {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\find-secondary.log"
+$log = "C:\Users\Public\backupRestore-package\find-secondary.log"
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 Log ("=== scan " + (Get-Date -Format "HH:mm:ss") + " ===")
 

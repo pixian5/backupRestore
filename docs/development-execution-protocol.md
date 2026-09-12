@@ -48,7 +48,7 @@ GUI 日志是诊断记录，采用尽力写入，不能因日志卷暂时不可�
 ```text
 # C:\brgui.cmd（包装脚本，避免 schtasks /tr 引号解析问题）
 @echo off
-start "" "C:\Users\Public\backupRestore-package-v12\BackupRestore.exe" --tab 4
+start "" "C:\Users\Public\backupRestore-package\BackupRestore.exe" --tab 4
 
 # 创建并运行（SYSTEM 权限创建，/it=交互令牌 /rl highest=提升令牌绕过 UAC）
 schtasks /create /tn BRGUITest /tr C:\brgui.cmd /sc once /st 23:35 /ru x /it /rl highest

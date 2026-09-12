@@ -1,5 +1,5 @@
 # Dump partition & volume layout (ASCII-safe output to file)
-$out = "C:\Users\Public\backupRestore-package-v12\partitions.log"
+$out = "C:\Users\Public\backupRestore-package\partitions.log"
 $lines = New-Object System.Collections.ArrayList
 [void]$lines.Add("== PARTITIONS ==")
 Get-Partition | Sort-Object DiskNumber, PartitionNumber | ForEach-Object {

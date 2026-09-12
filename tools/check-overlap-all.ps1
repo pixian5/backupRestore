@@ -19,7 +19,7 @@ public class Win32O {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\overlap-session1.log"
+$log = "C:\Users\Public\backupRestore-package\overlap-session1.log"
 $GWL_STYLE = -16
 $WS_VISIBLE = 0x10000000
 $WM_COMMAND = 0x0111

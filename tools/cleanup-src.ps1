@@ -1,5 +1,5 @@
 # Delete backupRestore-src* dirs using \\?\ long-path prefix (handles reserved names like nul)
-$log = 'C:\Users\Public\backupRestore-package-v12\cleanup-src.log'
+$log = 'C:\Users\Public\backupRestore-package\cleanup-src.log'
 $result = New-Object System.Collections.ArrayList
 $names = @('backupRestore-src') + (2..11 | ForEach-Object { "backupRestore-src-v$_" })
 foreach ($n in $names) {

@@ -5,7 +5,7 @@
 # 磁盘 1（backuprestore-full-e2e SSD，24GB）：MSR + E:BREFI(FAT32 ESP) + F:BRSource + G: + H:BRImages
 # 磁盘 2（backuprestore-blank-compare，20GB）：MSR + P: + Q:
 $ErrorActionPreference = 'Stop'
-$log = 'C:\Users\Public\backupRestore-package-v12\create-test-disks.log'
+$log = 'C:\Users\Public\backupRestore-package\create-test-disks.log'
 function Log($m) { Add-Content -Path $log -Value $m -Encoding ascii }
 
 $EFI_GUID = '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'

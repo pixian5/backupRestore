@@ -15,7 +15,7 @@ public class Win32S2 {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\sendinput-session1.log"
+$log = "C:\Users\Public\backupRestore-package\sendinput-session1.log"
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 $found = [IntPtr]::Zero
 $cb = [Win32S2+EnumProc]{ param($h,$l)

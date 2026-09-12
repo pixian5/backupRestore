@@ -16,7 +16,7 @@ public class Win32Q {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\tab-stress-session1.log"
+$log = "C:\Users\Public\backupRestore-package\tab-stress-session1.log"
 $WM_COMMAND = 0x0111
 $BM_CLICK = 0x00F5
 

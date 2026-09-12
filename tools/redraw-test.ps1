@@ -15,7 +15,7 @@ public class Win32D {
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\redraw-test.log"
+$log = "C:\Users\Public\backupRestore-package\redraw-test.log"
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 $found = [IntPtr]::Zero
 $cb = [Win32D+EnumProc]{ param($h,$l)

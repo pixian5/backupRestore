@@ -18,8 +18,8 @@ public class Win32G {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\frames\shot.log"
-New-Item -ItemType Directory -Force -Path "C:\Users\Public\backupRestore-package-v12\frames" | Out-Null
+$log = "C:\Users\Public\backupRestore-package\frames\shot.log"
+New-Item -ItemType Directory -Force -Path "C:\Users\Public\backupRestore-package\frames" | Out-Null
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 $found = [IntPtr]::Zero
 $cb = [Win32G+EnumProc]{ param($h,$l)
@@ -54,7 +54,7 @@ function Snap($name) {
     $bmp = New-Object System.Drawing.Bitmap($w, $h)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.CopyFromScreen($wr.Left, $wr.Top, 0, 0, $bmp.Size)
-    $path = "C:\Users\Public\backupRestore-package-v12\frames\" + $name + ".png"
+    $path = "C:\Users\Public\backupRestore-package\frames\" + $name + ".png"
     $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $bmp.Dispose()
     Log ("saved " + $name + " w=" + $w + " h=" + $h)

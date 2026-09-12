@@ -1,5 +1,5 @@
 # Inspect program location and E:/F:/H: contents (ASCII-safe)
-$out = "C:\Users\Public\backupRestore-package-v12\drives.log"
+$out = "C:\Users\Public\backupRestore-package\drives.log"
 $lines = New-Object System.Collections.ArrayList
 
 [void]$lines.Add("== PROGRAM ==")

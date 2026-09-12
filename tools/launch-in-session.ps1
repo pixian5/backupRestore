@@ -38,7 +38,7 @@ $si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
 $si.lpDesktop = "winsta0\default"
 $pi = New-Object Win32L+PROCESS_INFORMATION
 $cmd = "powershell -ExecutionPolicy Bypass -NoProfile -File `"$ScriptPath`""
-$ok3 = [Win32L]::CreateProcessAsUser($hDup, "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00000010, [IntPtr]::Zero, "C:\Users\Public\backupRestore-package-v12", [ref]$si, [ref]$pi)
+$ok3 = [Win32L]::CreateProcessAsUser($hDup, "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00000010, [IntPtr]::Zero, "C:\Users\Public\backupRestore-package", [ref]$si, [ref]$pi)
 "launch_result=$ok3 pid=$($pi.dwProcessId)" | Out-File $LogPath -Encoding ascii
 [void][Win32L]::CloseHandle($hDup)
 [void][Win32L]::CloseHandle($hToken)

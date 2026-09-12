@@ -13,7 +13,7 @@ public class Win32R {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$log = "C:\Users\Public\backupRestore-package-v12\repro-session1.log"
+$log = "C:\Users\Public\backupRestore-package\repro-session1.log"
 $BM_CLICK = 0x00F5
 function Log($msg) { Add-Content -Path $log -Value $msg -Encoding ascii }
 $found = [IntPtr]::Zero

@@ -23,9 +23,9 @@ prlctl set "Windows 11" --device-add hdd --image "/Users/x/Parallels/Windows 11.
 ## 二、VM 内（Windows 11）：初始化分区
 
 ```cmd
-copy /y \\Mac\backupRestore\tools\create-test-disks.ps1 C:\Users\Public\backupRestore-package-v12\
-powershell -ExecutionPolicy Bypass -File C:\Users\Public\backupRestore-package-v12\create-test-disks.ps1
-type C:\Users\Public\backupRestore-package-v12\create-test-disks.log
+copy /y \\Mac\backupRestore\tools\create-test-disks.ps1 C:\Users\Public\backupRestore-package\
+powershell -ExecutionPolicy Bypass -File C:\Users\Public\backupRestore-package\create-test-disks.ps1
+type C:\Users\Public\backupRestore-package\create-test-disks.log
 ```
 
 脚本按磁盘型号自动匹配，重建结果：

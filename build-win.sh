@@ -1,7 +1,7 @@
 #!/bin/bash
 # BackupRestore macOS 交叉编译 Windows ARM64 一键构建脚本
 # 用法：./build-win.sh [--deploy]
-#   --deploy  构建后复制到 VM 部署目录（C:\Users\Public\backupRestore-package-v12\BackupRestore.exe）
+#   --deploy  构建后复制到 VM 部署目录（C:\Users\Public\backupRestore-package\BackupRestore.exe）
 # 依赖（见 docs/backuprestore-pe.md 踩坑 23）：
 #   - rustup target add aarch64-pc-windows-msvc（rust-std）
 #   - ~/win-sdk-arm64/{um,ucrt,vc}/arm64（从 VM 复制的 Windows SDK + VC import libs）
@@ -31,6 +31,6 @@ echo ">> 产物：$(ls -la target/aarch64-pc-windows-msvc/release/BackupRestore.
 
 if [ "$1" = "--deploy" ]; then
   echo ">> 部署到 VM"
-  prlctl exec "Windows 11" cmd /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe 2>nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package-v12\\BackupRestore.exe >nul & echo DEPLOYED"
+  prlctl exec "Windows 11" cmd /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe 2>nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul & echo DEPLOYED"
 fi
 echo ">> 完成"

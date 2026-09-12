@@ -1,6 +1,6 @@
 # 清理 C:\Users\Public 下 BackupRestore 开发历史残留（保留 v12 当前部署）
 # 删除：backupRestore-package、backupRestore-package-v2..v11、backupRestore-src、backupRestore-src-v2..v11
-$log = 'C:\Users\Public\backupRestore-package-v12\cleanup.log'
+$log = 'C:\Users\Public\backupRestore-package\cleanup.log'
 $removed = New-Object System.Collections.ArrayList
 $targets = @(
     'C:\Users\Public\backupRestore-package',
