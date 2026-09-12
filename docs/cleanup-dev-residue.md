@@ -98,3 +98,34 @@ before-bcd-menu-boot、before-pe-boot-test、pe-click-test-1——均为 9 月 P
 - C:\Users\x\Downloads 下 backupRestore-cargo-v2~v11 / toolchain(-cache) / build-v2~v4（~1.1GB，早期 Windows 侧构建缓存的手动备份，mac 侧构建已稳定后可删）
 - C:\Users\x\.codex（~0.8GB，Codex CLI 数据）
 - AppData 内浏览器/系统缓存（保守未动）
+
+## 八、孤儿快照层 .hds 回收（2026-09-13，最大头 206G→62G）
+
+### 现象
+快照树已空（GUI「无可用的快照」+ `prlctl snapshot-list` 空），但
+`Windows 11.pvm/harddisk.hdd/` 下仍残留 **12 个 .hds 层文件 ≈206GB**
+（含 135G 根层 + 各快照差异层），Parallels 配置页显示「快照 210.58GB / 可回收 0KB」，
+`.pvm` 整体 208G。磁盘「回收...」按钮仅提示实时优化，不清理层。
+
+### 根因
+历史 11 个快照删除时 VM 处于运行态，Parallels 只删了快照树节点，
+**差异层 .hds 文件未被合并/回收**，且 DiskDescriptor.xml 仍把 12 层全部
+列为 Storage 链——快照树空但层无法再通过 GUI/CLI 删除，形成「孤儿层」。
+
+### 解决（官方工具，非手动删文件）
+```bash
+# VM 必须停止
+prlctl stop "Windows 11"
+# 1) 合并所有快照层 → 单层（12 层 206G → 单层 139G）
+"/Applications/Parallels Desktop.app/Contents/MacOS/prl_disk_tool" merge --hdd "/Users/x/Parallels/Windows 11.pvm/harddisk.hdd"
+# 2) 实际回收已删数据块（139G → 62G = 实际数据量）
+"/Applications/Parallels Desktop.app/Contents/MacOS/prl_disk_tool" compact --hdd "/Users/x/Parallels/Windows 11.pvm/harddisk.hdd"
+```
+结果：.pvm 208G→62G，宿主可用 176→254Gi，Windows 11 启动验证正常（桌面/此电脑/C 盘数据完整）。
+
+### 踩坑记录
+- `prl_disk_tool merge` 语法是 `--hdd <路径>`，**不带 -i**；带 `-i` 报「The 'i' option cannot be used for the 'merge' operation」。
+- `compact -i --buildmap` 估算「无空洞」时 compact 无效；**必须先 merge 再 compact** 才有回收空间（merge 后 Parallels 才标出「可回收 83GB」）。
+- GUI 快照管理「删除」按钮需先选中左侧快照卡片，但卡片是自定义绘制控件、AX 树不可见，只能坐标点击且无法确认选中状态——**CLI 删除（prlctl snapshot-delete）更可靠**。
+- 删除快照建议在 VM 停止状态进行，删完用 `ls .../harddisk.hdd/ | grep -c .hds` 核对层文件数，防止孤儿残留。
+- DiskDescriptor.xml 的 `<UID>{e54cbaf2...}</UID>` 是磁盘自身 UID 不是层文件；层文件只认 `<Image><GUID>` 列表。
