@@ -141,6 +141,8 @@ const ID_PE_MODE_RAM: usize = 1412;
 const ID_PE_MODE_DISK: usize = 1413;
 const ID_PE_DIR_LABEL: usize = 1414;
 const ID_PE_DIR_EDIT: usize = 1415;
+// 「PE 目录路径」旁的浏览按钮：弹文件夹选择对话框回填完整路径
+const ID_PE_DIR_BROWSE: usize = 1418;
 const ID_PE_NAME_LABEL: usize = 1416;
 const ID_PE_NAME_EDIT: usize = 1417;
 // PE 桌面"备份/还原/第二系统"任务对话框控件
@@ -339,6 +341,21 @@ unsafe extern "system" {
     ) -> i32;
 }
 
+#[repr(C)]
+struct BrowseInfoW {
+    hwnd_owner: Hwnd,
+    pidl_root: *const c_void,
+    display_name: *mut u16,
+    title: *const u16,
+    flags: u32,
+    callback: Option<unsafe extern "system" fn(Hwnd, u32, isize, isize) -> i32>,
+    l_param: isize,
+    image: i32,
+}
+
+const BIF_RETURNONLYFSDIRS: u32 = 0x00000001;
+const BIF_NEWDIALOGSTYLE: u32 = 0x00000040;
+
 #[link(name = "shell32")]
 unsafe extern "system" {
     fn ShellExecuteW(
@@ -349,7 +366,19 @@ unsafe extern "system" {
         directory: *const u16,
         show: i32,
     ) -> isize;
+    fn SHBrowseForFolderW(info: *const BrowseInfoW) -> *mut c_void;
+    fn SHGetPathFromIDListW(pidl: *const c_void, path: *mut u16) -> i32;
 }
+
+#[link(name = "ole32")]
+unsafe extern "system" {
+    fn CoTaskMemFree(pv: *mut c_void);
+    fn CoInitializeEx(reserved: *const c_void, co_init: u32) -> i32;
+    fn CoUninitialize();
+}
+
+const COINIT_APARTMENTTHREADED: u32 = 0x2;
+const COINIT_DISABLE_OLE1DDE: u32 = 0x4;
 
 #[link(name = "comctl32")]
 unsafe extern "system" {
@@ -992,6 +1021,7 @@ unsafe fn set_operation_visibility(state: &State) {
     // PE 目录路径仅 RAM disk 模式需要（WIM 复制目录），硬盘启动模式隐藏
     set_child_visible(ID_PE_DIR_LABEL as i32, pe_visible && pe_mode_ram);
     set_child_visible(ID_PE_DIR_EDIT as i32, pe_visible && pe_mode_ram);
+    set_child_visible(ID_PE_DIR_BROWSE as i32, pe_visible && pe_mode_ram);
 }
 
 unsafe fn layout_operation(state: &State) {
@@ -1081,7 +1111,27 @@ unsafe fn layout_operation(state: &State) {
     // 行2 硬盘启动单选；行3 PE 启动项名称（两种模式通用）
     if selected_operation(state) == "install-pe-entry" {
         let mode_y = last_details_y + 18;
-        let pe_ram_checked = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
+        let pe_ram_checked = {
+            let ram_checked = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
+            let disk_checked = IsDlgButtonChecked(state.root, ID_PE_MODE_DISK as i32) != 0;
+            if !ram_checked && !disk_checked {
+                // 双保险：任何路径（切换 tab 等）导致两个单选都未选中时，
+                // 恢复默认选中 RAM disk，避免目录行被隐藏、模式语义丢失。
+                SendMessageW(
+                    GetDlgItem(state.root, ID_PE_MODE_RAM as i32),
+                    BM_SETCHECK,
+                    BST_CHECKED,
+                    0,
+                );
+                append_gui_log(
+                    state,
+                    "PE layout: both radios unchecked -> reset to RAM disk",
+                );
+                true
+            } else {
+                ram_checked
+            }
+        };
         append_gui_log(
             state,
             &format!(
@@ -1172,7 +1222,15 @@ unsafe fn layout_operation(state: &State) {
             GetDlgItem(state.root, ID_PE_DIR_EDIT as i32),
             field_x + 380,
             mode_y,
-            260,
+            200,
+            24,
+        );
+        // 浏览按钮紧贴目录输入框右侧（输入框 380..580，按钮 586..646）
+        reposition(
+            GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32),
+            field_x + 586,
+            mode_y,
+            60,
             24,
         );
         // 行3：「PE 启动项名称」（两种模式通用，始终显示）
@@ -1217,6 +1275,10 @@ unsafe fn layout_operation(state: &State) {
         let edit_visible = if pe_ram_checked { SW_SHOW } else { SW_HIDE };
         ShowWindow(dir_label_hwnd, label_visible);
         ShowWindow(dir_edit_hwnd, edit_visible);
+        ShowWindow(
+            GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32),
+            edit_visible,
+        );
     }
 
     let image_width = (field_width - 90).max(400);
@@ -1863,6 +1925,7 @@ unsafe fn apply_language(state: &mut State) {
         (ID_REFRESH, "refresh"),
         (ID_READ_IMAGE, "read_image"),
         (ID_BROWSE_IMAGE, "browse"),
+        (ID_PE_DIR_BROWSE, "browse"),
         (ID_CREATE_TASK, "create_task"),
         (ID_REFRESH_TASK, "refresh_task"),
     ] {
@@ -2409,6 +2472,61 @@ unsafe fn browse_image(state: &State) {
     } else {
         append_gui_log(state, "GUI action cancelled: image file dialog");
     }
+}
+
+/// 「PE 目录路径」浏览按钮：弹出文件夹选择对话框（SHBrowseForFolderW，
+/// 系统原生，ARM64 可用），选中后把完整路径回填到 ID_PE_DIR_EDIT。
+unsafe fn browse_pe_dir(state: &State) {
+    // BIF_NEWDIALOGSTYLE 要求调用线程先初始化 COM（OLE），否则对话框
+    // 会立即失败返回；CoInitializeEx 返回 0(S_OK) 或 1(S_FALSE) 都算可用，
+    // 0x80010106(RPC_E_CHANGED_MODE) 表示线程已是其他模式，跳过不配对。
+    let co_init = CoInitializeEx(
+        null(),
+        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
+    );
+    let com_ok = co_init == 0 || co_init == 1;
+    let language = selected_language(state);
+    let mut display_name = [0_u16; 260];
+    let title = wide(if language == Language::English {
+        "Choose PE folder"
+    } else {
+        "选择 PE 目录"
+    });
+    let mut info = BrowseInfoW {
+        hwnd_owner: state.root,
+        pidl_root: null(),
+        display_name: display_name.as_mut_ptr(),
+        title: title.as_ptr(),
+        flags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+        callback: None,
+        l_param: 0,
+        image: 0,
+    };
+    let pidl = SHBrowseForFolderW(&info);
+    if com_ok {
+        CoUninitialize();
+    }
+    if pidl.is_null() {
+        append_gui_log(state, "GUI action cancelled: PE folder browse dialog");
+        return;
+    }
+    let mut buffer = [0_u16; 32768];
+    let ok = SHGetPathFromIDListW(pidl, buffer.as_mut_ptr());
+    CoTaskMemFree(pidl);
+    if ok == 0 {
+        append_gui_log(state, "GUI action cancelled: PE folder browse dialog");
+        return;
+    }
+    let length = buffer.iter().position(|value| *value == 0).unwrap_or(0);
+    let path = String::from_utf16_lossy(&buffer[..length]);
+    set_text(
+        GetDlgItem(state.root, ID_PE_DIR_EDIT as i32),
+        &path,
+    );
+    append_gui_log(
+        state,
+        "GUI action completed: PE folder path selected from browse dialog",
+    );
 }
 
 /// Run `bcdedit.exe` (or any command) synchronously via a visible-free cmd
@@ -4217,6 +4335,18 @@ unsafe extern "system" fn window_proc(
             24,
             ID_PE_DIR_EDIT,
         );
+        // 「PE 目录路径」旁的浏览按钮（仅 RAM disk 模式显示，随目录行隐藏）
+        create_control(
+            hwnd,
+            "BUTTON",
+            "浏览…",
+            WS_TABSTOP,
+            410,
+            726,
+            60,
+            24,
+            ID_PE_DIR_BROWSE,
+        );
         // 「PE 启动项名称」输入框（两种启动方式通用：开机 Boot Manager
         // 菜单里显示的名字，用户可自定义，默认按语言+模式自动填）
         create_control(hwnd, "STATIC", "", 0, 20, 750, 130, 22, ID_PE_NAME_LABEL);
@@ -4349,6 +4479,7 @@ unsafe extern "system" fn window_proc(
                 ID_REFRESH => refresh_environment(state),
                 ID_READ_IMAGE => read_image(state),
                 ID_BROWSE_IMAGE => browse_image(state),
+                ID_PE_DIR_BROWSE => browse_pe_dir(state),
                 ID_CREATE_TASK => create_task(state),
                 ID_REFRESH_TASK => refresh_task_status(state),
                 ID_PE_REBOOT_MAIN => pe_reboot_to_pe(state),
