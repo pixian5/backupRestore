@@ -304,3 +304,40 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
     （S:\pe-task-result.txt）→ 自动重启回 Win11 → bootsequence 已清空、default 正常。
   - 结论：真实用户交互会话 ExitWindowsEx 直接成功；Session 0 测试环境走 shutdown
     兜底同样完整走通。
+
+### 「PE 恢复」tab 右下角控件遮挡修复（2026-09-12，v1.5.2）
+
+- 现象：v1.5.1「PE 恢复」tab 右下角「创建快捷方式」按钮区域出现残字"dc"；
+  点击文本框后「创建快捷方式」按钮上叠出"Windows 备份"文字，按钮被文本框盖住。
+- 根因（两处，均与 layout 有关）：
+  1. **menu 控件（第二系统名称输入框，ID_MENU=1207，默认文本"Windows 备份"）在
+     「PE 恢复」tab 被错误显示**：`set_operation_visibility` 中
+     `show_menu = operation == "create-secondary" || operation == "install-pe-entry"`
+     把 PE tab 也算进去了。而 `layout_operation` 无条件把 menu reposition 到
+     `(field_x+500, secondary_y)`（=680,628），恰好覆盖「创建快捷方式」按钮
+     （创建坐标 710,630）。z 序上 menu 创建于 3991、按钮创建于 4123（更后），
+     按钮在上、menu 被盖住只露出文字残迹"dc"；点击（EDIT 获得焦点/重绘）后
+     menu 文本"Windows 备份"叠到按钮上。
+     → 修复：`show_menu = operation == "create-secondary"`（PE tab 隐藏 menu 及
+       其标签 2008）。
+  2. **「重启进入 PE」（ID_PE_REBOOT_MAIN=1410）与「创建快捷方式」（ID_PE_SHORTCUT
+     =1411）创建时用固定坐标（560/710, 630），layout_operation 的按钮循环只排
+     4 个通用按钮（1001-1004），PE 两个按钮不随布局 reposition**，一旦窗口/
+     布局变化会错位。
+     → 修复：`layout_operation` 末尾追加 PE 两个按钮的 reposition 到
+     `(560/710, buttons_y, 140, 28)`，与通用按钮行同 y 对齐。
+  3. 顺带发现：新增第二系统 tab 中「第二系统名称」标签（2008，x=570 起）与 WIM
+     索引下拉框（index，create-secondary 时宽 440 → x 180-620）重叠 50px（标签
+     文字压在下拉框右缘）。→ 修复：create-secondary 时 index 宽度 440→380
+     （x 180-560），与标签不再重叠。
+- 验证（Session 0 控件通道，脚本 tools/check-overlap.ps1、dump-controls.ps1、
+  switch-and-check.ps1）：
+  - PE tab：menu_edit(1207)/menu_label(2008)/index_list(1206) 全部 WS_VISIBLE=False；
+    按钮行 6 按钮（20/150/280/410/560/710，宽 120/120/120/140/140/140）同 y、等距
+    10px、无重叠；status/镜像行/PE 三行层次正确。
+  - 全 tab（备份/单系统还原/新增第二系统/PE 恢复）SendMessage 切 tab 验证：
+    WS_VISIBLE 控件两两重叠面积均 ≤200，无显著遮挡。
+  - 踩坑补充：**验证时不要反复 taskkill/重启 GUI 进程**——程序窗口在 VM 可见
+    桌面（Parallels 控制台即 Session 0），循环重启会让用户看到程序闪烁、且窗口
+    初始化瞬时状态可能截到"旧 tab 提示文本 + 新布局"的混合画面，易被误认为新
+    bug；改用 SendMessage WM_COMMAND 切 tab（switch-and-check.ps1）不打扰用户。

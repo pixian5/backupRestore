@@ -936,7 +936,10 @@ unsafe fn set_operation_visibility(state: &State) {
         "restore-existing" | "create-secondary" | "install-pe-entry"
     );
     let show_index = matches!(operation, "restore-existing" | "create-secondary");
-    let show_menu = operation == "create-secondary" || operation == "install-pe-entry";
+    // 「第二系统名称」输入框及其标签只在「新增第二系统」tab 显示；
+    // 「PE 恢复」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
+    // 其布局位置（field_x+500, secondary_y）会恰好覆盖右下角「创建快捷方式」按钮。
+    let show_menu = operation == "create-secondary";
     let set_visible = |hwnd: Hwnd, visible: bool| {
         ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
@@ -1200,8 +1203,10 @@ unsafe fn layout_operation(state: &State) {
         80,
         24,
     );
+    // 「新增第二系统」tab 的 WIM 索引下拉框：宽度 380，右端到 field_x+380=560，
+    // 避免与右侧「第二系统名称」标签（2008，x=570 起）重叠（历史布局 440 会遮住下拉框右缘）。
     let index_width = if selected_operation(state) == "create-secondary" {
-        440
+        380
     } else {
         field_width
     };
@@ -1248,6 +1253,25 @@ unsafe fn layout_operation(state: &State) {
             x,
             buttons_y,
             if id == ID_REFRESH_TASK { 140 } else { 120 },
+            28,
+        );
+    }
+    // 「PE 恢复」tab 专属按钮（重启进入 PE / 创建快捷方式）：
+    // 创建时使用固定坐标（560/710, 630），这里与通用按钮行同 y 对齐，
+    // 避免窗口/布局变化时与右侧控件错位或遮挡。
+    if selected_operation(state) == "install-pe-entry" {
+        reposition(
+            GetDlgItem(state.root, ID_PE_REBOOT_MAIN as i32),
+            560,
+            buttons_y,
+            140,
+            28,
+        );
+        reposition(
+            GetDlgItem(state.root, ID_PE_SHORTCUT as i32),
+            710,
+            buttons_y,
+            140,
             28,
         );
     }
