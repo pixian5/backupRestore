@@ -178,3 +178,60 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
     G: 自身）。排除 find-drive 定位的盘符后再枚举。
 13. **PE 里 WIM 路径别写 Win11 盘符**：PE 盘符漂移（Win11 Q: 在 PE 里通常是 H:），
     直接写 `Q:\...` 会 Error 3（路径不存在）。用 `AUTO:PE\` 前缀自动定位。
+
+### 本轮踩坑（2026-09-12 追加，exit 链 + 手动重建 PE 条目）
+
+14. **mount S: 报 145 是预期行为，不是故障**：PE 桌面启动流程已把 ESP 挂到 S:，
+    exit 时再次 SetVolumeMountPoint 报已占用(145)，代码 fallback 挂到 T: 继续。
+    看到 "mount S: failed, last error: 145" + "mounted at T:" 是正常 fallback。
+15. **cmd /c 带 pause 时 GetExitCodeProcess 误报 259**：开发模式 cmd 末尾有 pause，
+    WaitForSingleObject(60s) 超时后 GetExitCodeProcess 返回 STILL_ACTIVE=259，
+    被误判 bcdedit 失败。修复：先检查 WaitForSingleObject 返回值==0 才取退出码，
+    超时则记 "cmd paused, waiting for key"。
+16. **PE 内 Q: 不存在，exit 日志别写 Q:**：PE 盘符漂移，Q: 是 Win11 盘符；PE 内
+    写 Q:\exit-pe.log 必报 err=3。修复：日志写到卷路径（\\?\Volume{GUID}\，最可靠）
+    + S:\exit-pe.log + X:\exit-pe.log（X: RAM 盘重启丢）。
+17. **read_pe_click_config 漏 action "exit" 会导致 exit 配置不被消费**：自动投递
+    match 漏 ID_PE_EXIT，S:\pe-click.txt 内容 exit 不触发按钮，VM 停在 PE 桌面。
+    修复：action match 补 "exit" + 自动投递补 Some(("exit", _)) => Some(ID_PE_EXIT)。
+18. **手动重建 PE BCD 条目时 ramdisksdipath 必须指向 boot.sdi，不是 boot.wim**：
+    bcdedit /set {ramdiskoptions} ramdisksdipath 的正确值是
+    `\BackupRestorePE\boot\boot.sdi`（boot.sdi 是 WIM 启动的 RAM 盘基础）；
+    误设成 `sources\boot.wim` 时 PE 启动失败（bootmgr 错误→静默回 Win11 或卡黑屏）。
+    **同时要补 `nx OptIn`**（权威参数见 install_pe_ramdisk：ramdisksdidevice +
+    ramdisksdipath(boot.sdi) + device/osdevice ramdisk=...,{ramdiskoptions} +
+    winpe yes + detecthal yes + systemroot \windows + nx OptIn + description +
+    displayorder /addlast）。缺 boot.sdi 或 nx 是本轮多次"重启后 25-50s 回 Win11
+    （PE 根本没起来）"的真凶。
+19. **恢复快照会同时回滚 BCD 与 boot.wim/exe**：快照回滚后 BCD 里 PE 条目消失
+    （bootsequence 指向不存在条目被 bootmgr 静默忽略→直接回 Win11，表现为
+    "没进 PE"），Q:\BackupRestorePE\sources\boot.wim 与 BackupRestore.exe 也回退
+    到拍快照时的旧版。**恢复快照后必须**：① 重编部署 exe ② dism 更新 boot.wim
+    ③ 重建 PE BCD 条目（GUID 每次会变，pe-entry-guid.txt 需同步）。
+20. **bcdboot {目标盘} S: 会把目标盘 BCD 条目复制进 ESP**：restore 流程的
+    bcdboot G: /s S: 会把测试盘历史测试条目（backuprestore-blank-compare 等）写进
+    ESP BCD，污染菜单。测试后需 bcdedit /delete 清理；displayorder 也可能被改写
+    （default 不受影响，exit 已恢复）。
+
+### PE 桌面按钮自动点击全链路验证（2026-09-12，v1.4.8+，零鼠标键盘）
+
+- 配置驱动：Win11 侧写 `S:\pe-click.txt`（action + 参数）→ 设 bootsequence →
+  重启 → PE 桌面自动 PostMessage 按钮 → 执行 → exit_pe_to_windows（恢复 BCD
+  default + 清 bootsequence + 重启）→ 自动回 Win11。全程无人工。
+- **backup 实测通过**：`backup AUTO AUTO:PE\pe-click-bk.wim` → find-drive=G: →
+  find_pe_source_drive=H: → dism backup G:→H:\pe-click-bk.wim **100%** →
+  exit 自动回 Win11 → WIM 落 Win11 Q:\pe-click-bk.wim → bootsequence 清 + default 恢复。
+- **restore 实测通过**：`restore AUTO:PE\pe-click-bk.wim AUTO` → format G: 100% →
+  restore H:\pe-click-bk.wim→G: 成功 → bcdboot G: /s S: code=0 → exit 回 Win11 →
+  Win11 P:\backup-test-file.txt / marker.txt 全部恢复。
+- **secondary 实测通过**：`secondary AUTO:PE\pe-click-bk.wim AUTO TestSecond` →
+  restore 成功 → add-secondary-entry 创建 BCD 条目 {402a8ed4}（device=partition=P:，
+  description=TestSecond）→ displayorder code=0 → exit 回 Win11。（注：测试盘被
+  restore 的 bcdboot 标记为 system 卷，secondary 的 format 无 --allow-system 被
+  REFUSED——保护机制生效，产品场景第二系统盘无预置引导不受影响。）
+- **exit 独立实测通过**：`exit` → .done 消费 → mount S: 145（预期）→ fallback T: →
+  BCD 恢复 → bootsequence 清 → default={d2264b2f}(Win11) → 自动重启回 Win11 →
+  S:\exit-pe.log 896B 正常落盘（此前 Q:\exit-pe.log err=3 问题已修复）。
+- **关键修复确认**：exit 链四根因（145 预期 fallback / 259 误报 / 日志去 Q: /
+  exit 识别）全部修复；"卡 PE"真正原因是手动重建 PE 条目 ramdisksdipath 指向
+  boot.wim（应为 boot.sdi）+ 缺 nx OptIn，修正后 PE 正常启动。

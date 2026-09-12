@@ -4424,7 +4424,10 @@ unsafe fn pe_reboot(hwnd: Hwnd) {
 fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<String> {
     let text = entries.join("\r\n");
     let mut failures: Vec<String> = Vec::new();
-    let mut paths = vec!["Q:\\exit-pe.log".to_string(), "X:\\exit-pe.log".to_string()];
+    // 优先写卷路径（\\.\Volume{GUID}\ 独立于盘符，PE 内最可靠，重启后仍
+    // 保留在 ESP 上）；再写 S:（若已挂载）与 X:（PE RAM 盘，重启丢失）。
+    // 注意：不要写 Q: —— PE 里 Q: 通常不存在（Win11 侧盘符漂移）。
+    let mut paths: Vec<String> = Vec::new();
     if let Some(vp) = esp_volume_path {
         let mut full = vp.to_string();
         if !full.ends_with('\\') {
@@ -4433,6 +4436,8 @@ fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<S
         full.push_str("exit-pe.log");
         paths.push(full);
     }
+    paths.push("S:\\exit-pe.log".to_string());
+    paths.push("X:\\exit-pe.log".to_string());
     for path in paths {
         let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
         let file = unsafe {
@@ -4648,10 +4653,23 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                         if created != 0 {
                             // 60 s: enough for the developer to read the
                             // paused bcdedit output and press a key.
-                            WaitForSingleObject(process.process, 60000);
-                            let mut code: u32 = 0;
-                            GetExitCodeProcess(process.process, &mut code);
-                            diag.push(format!("bcdedit exit code: {}", code));
+                            let wait = WaitForSingleObject(process.process, 60000);
+                            if wait == 0 {
+                                let mut code: u32 = 0;
+                                GetExitCodeProcess(process.process, &mut code);
+                                diag.push(format!("bcdedit exit code: {}", code));
+                                // deletevalue 无值可删时 bcdedit 也返回非 0
+                                // （"Element not found"），default 已设置则无碍。
+                                if code != 0 {
+                                    diag.push(format!("bcdedit reported failure (exit {})", code));
+                                }
+                            } else {
+                                // 超时 = cmd 还挂在 pause 等待人工按键（手动
+                                // 开发模式）；bcdedit 命令本身早已执行完。
+                                diag.push(
+                                    "bcdedit wait timed out (cmd paused, waiting for key)".to_string(),
+                                );
+                            }
                             CloseHandle(process.thread);
                             CloseHandle(process.process);
                             found_bcd = true;
@@ -5581,6 +5599,7 @@ fn read_pe_click_config() -> Option<(&'static str, Vec<String>)> {
         "backup" => "backup",
         "restore" => "restore",
         "secondary" => "secondary",
+        "exit" => "exit",
         _ => return None,
     };
     Some((action, params))
@@ -6160,6 +6179,7 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             Some(("backup", _)) => Some(ID_PE_BACKUP),
             Some(("restore", _)) => Some(ID_PE_RESTORE),
             Some(("secondary", _)) => Some(ID_PE_SECONDARY),
+            Some(("exit", _)) => Some(ID_PE_EXIT),
             _ => None,
         };
         if let Some(btn_id) = auto_click_id {
