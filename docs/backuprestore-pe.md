@@ -153,3 +153,28 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
    `S:\restore-out.txt`、`S:\verify-file-out.txt`、`S:\delete-out.txt`。
 10. **prlctl exec 偶发 `PrlJob_GetRetCode: Invalid argument`**：VM 注销/重启后立即
     exec 可能报此错，等 3-5 秒重试即可。
+
+### PE 桌面按钮「自动点击」验证记录（2026-09-12，v1.4.8）
+
+- **机制**：Win11 侧写 `S:\pe-click.txt`（首行 action + 空格参数）→ 设 bootsequence →
+  重启进 PE → PE 桌面启动后自动 `PostMessageW(WM_COMMAND, 按钮ID)`（与真实鼠标点击
+  走完全相同的分发路径）→ 所有确认框自动接受（等效持续点"是"）→ 执行完成后
+  `exit_pe_to_windows`（恢复 BCD default + 清 bootsequence + 重启回 Win11）。
+- **配置格式**：`backup <源盘|AUTO> <wim>` / `restore <wim> <目标盘|AUTO>`
+  / `secondary <wim> <目标盘|AUTO> [菜单名]`。`AUTO` = find-drive 定位含 marker.txt
+  的数据盘；WIM 路径支持 `AUTO:PE\xxx.wim` 前缀（PE 内自动定位 PE 源盘）。
+- **实测（备份按钮）**：`backup AUTO AUTO:PE\pe-click-bk.wim` → PE 桌面自动点
+  「备份系统」→ find-drive 定位 G:（测试盘）→ find_pe_source_drive 定位 H:（PE 源盘）
+  → dism backup G: → H:\pe-click-bk.wim **100% completed** → 自动恢复 BCD 回 Win11 →
+  WIM 落在 Win11 `Q:\pe-click-bk.wim`（PE H: ↔ Win11 Q: 映射确认）→ BCD default={default}
+  + bootsequence 已清。全程零鼠标键盘。
+
+### 本轮踩坑（2026-09-12 追加）
+
+11. **自动点击的配置文件命名时机**：`S:\pe-click.txt` 在 PostMessage 前改名 `.done`
+    （防重复触发），因此**按钮 handler 里读参数要读 `.done`**，不是 `.txt`。
+12. **find_pe_source_drive 必须排除数据盘**：测试盘上也可能有 `BackupRestorePE`
+    目录（RAM 模式部署过），不排除会把 WIM 写到源盘上（实测曾把 backup 目标解析成
+    G: 自身）。排除 find-drive 定位的盘符后再枚举。
+13. **PE 里 WIM 路径别写 Win11 盘符**：PE 盘符漂移（Win11 Q: 在 PE 里通常是 H:），
+    直接写 `Q:\...` 会 Error 3（路径不存在）。用 `AUTO:PE\` 前缀自动定位。
