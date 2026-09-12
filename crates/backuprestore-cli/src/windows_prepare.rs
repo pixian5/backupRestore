@@ -611,7 +611,10 @@ fn prepare_payload(
     fs::copy(&registered_wim, original.join("Winre.wim"))?;
     let original_hash = sha256_file(original.join("Winre.wim"))?;
 
-    for name in ["winpeshl.ini", "Recovery.exe"] {
+    // 必须存在的运行时载荷：启动配置、恢复程序、启动包装器
+    // RecoveryLauncher.cmd 读 RecoveryTask.env 后调用 Recovery.exe recover-env，
+    // 是 winpeshl.ini 指定的入口，缺失会导致 WinRE 启动后无程序可跑、超时回 Windows。
+    for name in ["winpeshl.ini", "Recovery.exe", "RecoveryLauncher.cmd"] {
         let source = executable_dir.join(name);
         if !source.is_file() {
             return Err(err(&format!(
@@ -877,6 +880,7 @@ fn inject_winre_payload(mount: &Path, payload: &Path) -> Result<(), TaskError> {
         "task.json",
         "winpeshl.ini",
         "Recovery.exe",
+        "RecoveryLauncher.cmd",
         "VCRUNTIME140.dll",
         "VCRUNTIME140_1.dll",
     ] {
