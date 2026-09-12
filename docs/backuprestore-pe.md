@@ -281,3 +281,26 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
       -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/vc/arm64"`。缺 msvcrt.lib 报
       `could not open 'msvcrt.lib'`。
     - 一键构建见仓库根 `build-win.sh`。
+24. **pe-entry-guid.txt 必须与 BCD 实际 PE 条目同步**：快照恢复或手动重建 PE 条目后
+    GUID 会变，但 exe 目录的 pe-entry-guid.txt 不会自动更新；「重启进入 PE」按
+    旧 GUID 设 bootsequence 会被 bootmgr 静默忽略（指向不存在条目）→ 重启后不进
+    PE 直接回 Win11，表现为"按钮没生效"。排查：`type <exe目录>\pe-entry-guid.txt`
+    对比 `bcdedit /enum | findstr "BackupRestore PE"` 的 identifier，不一致就同步。
+
+### 「重启进入 PE」自动重启（2026-09-12，v1.5.1）
+
+- 需求：主程序「重启进入 PE」原本配置完 bootsequence 后只弹提示、需用户手动重启；
+  改为**配置成功后立即自动重启**，全程无需用户操作。
+- 实现（native_gui.rs `pe_reboot_to_pe`）：bootsequence 设置成功（code=0 且
+  pe-task.txt 写入成功）后直接 `ExitWindowsEx(EWX_REBOOT, 0)`；失败（如 Session 0
+  缺关机权限）回退 `shutdown.exe /r /t 0 /f`；两条路都失败才弹"自动重启失败，
+  请手动重启"错误框。
+- 实机验证（零鼠标键盘，控件触发 ID_PE_REBOOT_MAIN=1410）：
+  - 日志：mountvol S: code=0 → write pe-task.txt ok=true → bcdedit bootsequence
+    {39435381-...} code=0 → "auto reboot now" → ExitWindowsEx failed（Session 0
+    特例）→ shutdown.exe fallback code=0。
+  - 结果：VM 自动重启 → bootmgr 消费 bootsequence 进 PE → PE 桌面自动执行
+    pe-task.txt（S:\pe-task.txt.done 生成）→ clean_bootsequence mountvol=1 clean=1
+    （S:\pe-task-result.txt）→ 自动重启回 Win11 → bootsequence 已清空、default 正常。
+  - 结论：真实用户交互会话 ExitWindowsEx 直接成功；Session 0 测试环境走 shutdown
+    兜底同样完整走通。

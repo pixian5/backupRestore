@@ -3392,9 +3392,10 @@ unsafe fn pe_create_shortcut(state: &State) {
 }
 
 /// 「重启进入 PE」：设置 {bootmgr} bootsequence 指向已安装的 PE 启动项，
-/// 下次重启由 bootmgr 自动进入 PE 恢复环境（无需手动选菜单）。
-/// PE 恢复桌面启动时会自动清除该 bootsequence（见 pe_self_clean_bootsequence），
-/// 因此之后再重启会正常回到主系统，全程无需用户操作。
+/// 配置成功后**立即自动重启**（无需用户手动重启），由 bootmgr 自动进入 PE
+/// 恢复环境（无需手动选菜单）。PE 恢复桌面启动时会自动清除该 bootsequence
+/// （见 pe_self_clean_bootsequence），因此之后再重启会正常回到主系统，
+/// 全程无需用户操作。
 unsafe fn pe_reboot_to_pe(state: &State) {
     let language = selected_language(state);
     let guid_file = state.executable_dir.join("pe-entry-guid.txt");
@@ -3437,20 +3438,39 @@ unsafe fn pe_reboot_to_pe(state: &State) {
     let code = run_cmd_to_file(&command, None);
     append_gui_log(state, &format!("PE reboot to PE: exit code={code}"));
     if code == 0 && write_ok {
-        show_message(
-            state.root,
-            &if language == Language::English {
-                "PE task configured and boot sequence set. The next reboot enters PE, runs the task automatically (clean bootsequence + verify), then reboots back to Windows on its own."
-            } else {
-                "已写入 PE 任务配置并设置一次性启动项。下次重启自动进入 PE，自动执行任务（清除 bootsequence + 取证），完成后自动重启回 Windows，全程无需操作。"
-            },
-            if language == Language::English {
-                "PE task configured"
-            } else {
-                "配置成功"
-            },
-            MB_OK | MB_ICONINFORMATION,
-        );
+        // 配置成功：立即自动重启进入 PE（无需用户手动重启）
+        append_gui_log(state, "PE reboot to PE: bootsequence set, auto reboot now");
+        if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
+            // ExitWindowsEx 失败（缺关机权限等）时回退 shutdown.exe /r /t 0
+            let fallback = run_cmd_to_file("shutdown.exe /r /t 0 /f", None);
+            append_gui_log(
+                state,
+                &format!(
+                    "PE reboot to PE: ExitWindowsEx failed, shutdown.exe fallback code={fallback}"
+                ),
+            );
+            if fallback != 0 {
+                // 两条路都失败：提示用户手动重启
+                show_message(
+                    state.root,
+                    &if language == Language::English {
+                        format!(
+                            "PE task configured and boot sequence set, but auto-reboot failed (ExitWindowsEx and shutdown.exe both failed). Please restart manually."
+                        )
+                    } else {
+                        format!(
+                            "已写入 PE 任务配置并设置一次性启动项，但自动重启失败（ExitWindowsEx 与 shutdown.exe 均失败），请手动重启进入 PE。"
+                        )
+                    },
+                    if language == Language::English {
+                        "Auto-reboot failed"
+                    } else {
+                        "自动重启失败"
+                    },
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
     } else {
         show_message(
             state.root,
