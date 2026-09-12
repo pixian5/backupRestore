@@ -71,9 +71,17 @@ const MB_ICONWARNING: u32 = 0x00000030;
 const MB_ICONINFORMATION: u32 = 0x00000040;
 const MB_ICONQUESTION: u32 = 0x00000020;
 const IDYES: i32 = 6;
+const IDOK: i32 = 1;
 const WM_APP_TEST_INSTALL: u32 = 0x8001;
 /// 测试钩子：自动安装时跳过确认框（验收/自动化测试用）。
 static TEST_AUTO_CONFIRM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// PE 桌面「自动点击」模式：存在 S:\pe-click.txt 时置位。PE 桌面启动后
+/// 自动向主窗口投递对应按钮的 WM_COMMAND（与真实鼠标点击走完全相同的
+/// 分发路径），所有确认框自动接受（等效用户点"是"），执行完成后自动
+/// 恢复 BCD default、清除 bootsequence 并重启回 Windows。
+static PE_AUTO_CLICK: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 const ID_REFRESH: usize = 1001;
@@ -1852,6 +1860,16 @@ fn rust_cli_output(arguments: &[&str]) -> Result<String, String> {
 }
 
 unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32 {
+    // PE 桌面自动点击模式：所有对话框自动接受（等效用户持续点"是"），
+    // 避免在无输入注入通道的 PE 里阻塞自动化流程。
+    if PE_AUTO_CLICK.load(std::sync::atomic::Ordering::SeqCst) {
+        let style = flags & 0x0f;
+        return if style == 0x04 /* MB_YESNO */ || style == 0x03 /* MB_YESNOCANCEL */ {
+            IDYES
+        } else {
+            IDOK
+        };
+    }
     let text = wide(text);
     let caption = wide(caption);
     MessageBoxW(hwnd, text.as_ptr(), caption.as_ptr(), flags)
@@ -4460,6 +4478,10 @@ fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<S
 /// before rebooting, because log files inside PE are unreliable (volume-path
 /// and drive-letter writes both failed in the Parallels PE session).
 fn show_diag_dialog(hwnd: Hwnd, diag: &[String]) {
+    // 自动点击模式：跳过诊断弹窗（无输入通道，弹窗会阻塞自动流程）。
+    if PE_AUTO_CLICK.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let text = diag.join("\r\n");
     let msg: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     let cap: Vec<u16> = "BackupRestore exit diag"
@@ -4571,9 +4593,11 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                         }
                         let mut command_line: Vec<u16> = Vec::new();
                         // Development: keep the console window visible, echo the
-                        // bcdedit exit code on the same window (call forces a
-                        // re-expansion of %errorlevel%) and hold it open with
-                        // `pause` so the output can be inspected before reboot.
+                        // bcdedit exit codes on the same window and hold it open
+                        // with `pause` so the output can be inspected before
+                        // reboot. In auto-click mode the pause/echo are omitted
+                        // (no human to press a key) so the reboot happens right
+                        // after bcdedit finishes.
                         push_wide_into(&mut command_line, "cmd.exe /c ");
                         push_wide_into(&mut command_line, "bcdedit.exe /store ");
                         command_line.extend_from_slice(&bcd_path[..bcd_path.len() - 1]);
@@ -4586,10 +4610,25 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                                 push_wide_into(&mut command_line, " /enum");
                             }
                         }
+                        // 同时清除 bootsequence：若进 PE 用的是 bootsequence
+                        // 方式（PE RAM 盘无法回写消费），不清会导致每次重启
+                        // 都再进 PE（死循环）。无 bootsequence 时该命令报错
+                        // 无害（default 已设置）。
                         push_wide_into(
                             &mut command_line,
-                            " & call echo EXIT_CODE=%errorlevel% & pause",
+                            " & bcdedit.exe /store ",
                         );
+                        command_line.extend_from_slice(&bcd_path[..bcd_path.len() - 1]);
+                        push_wide_into(
+                            &mut command_line,
+                            " /deletevalue {bootmgr} bootsequence",
+                        );
+                        if !PE_AUTO_CLICK.load(std::sync::atomic::Ordering::SeqCst) {
+                            push_wide_into(
+                                &mut command_line,
+                                " & call echo EXIT_CODE=%errorlevel% & pause",
+                            );
+                        }
                         command_line.push(0);
                         let mut startup: StartupInfoW = std::mem::zeroed();
                         startup.cb = size_of::<StartupInfoW>() as u32;
@@ -5019,6 +5058,25 @@ unsafe fn pe_dialog(
 
 /// PE 桌面「备份系统」：PE 内直接 dism 捕获，不再跳主 GUI。
 unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
+    // 自动点击模式（S:\pe-click.txt）：跳过对话框，用配置参数直接执行，
+    // 完成后恢复 BCD 并自动重启回 Windows（等效鼠标点击整条链路）。
+    if let Some(params) = pe_click_params("backup") {
+        if params.len() >= 2 {
+            let mut result = String::new();
+            let mut reboot = false;
+            let mut src = params[0].trim_end_matches(':').to_string();
+            // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
+            if src == "AUTO" {
+                execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
+                src = resolve_drive("AUTO");
+            }
+            let wim = resolve_pe_wim_path(&params[1], &src);
+            execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
+            let _ = std::fs::write("S:\\pe-gui-backup.txt", &result);
+            exit_pe_to_windows(hwnd);
+            return;
+        }
+    }
     // 1. 定位系统卷（默认源卷）
     let mut result = String::new();
     let mut reboot = false;
@@ -5075,6 +5133,30 @@ unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
 
 /// PE 桌面「还原系统」：格式化目标卷 + Apply WIM + BCDBoot（目标为系统卷时）。
 unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
+    // 自动点击模式：跳过对话框与二次确认，直接格式化+还原+修复引导。
+    if let Some(params) = pe_click_params("restore") {
+        if params.len() >= 2 {
+            let mut result = String::new();
+            let mut reboot = false;
+            let mut target = params[1].trim_end_matches(':').to_string();
+            // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
+            if target == "AUTO" {
+                execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
+                target = resolve_drive("AUTO");
+            }
+            let wim = resolve_pe_wim_path(&params[0], &target);
+            execute_pe_task_line(
+                &format!("format {target} --allow-system"),
+                &mut result,
+                &mut reboot,
+            );
+            execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
+            execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
+            let _ = std::fs::write("S:\\pe-gui-restore.txt", &result);
+            exit_pe_to_windows(hwnd);
+            return;
+        }
+    }
     let mut result = String::new();
     let mut reboot = false;
     execute_pe_task_line("find-system-drive", &mut result, &mut reboot);
@@ -5145,6 +5227,35 @@ unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
 
 /// PE 桌面「安装第二系统」：Apply WIM 到目标卷 + BCD 追加启动项。
 unsafe fn pe_secondary_from_desktop(hwnd: Hwnd) {
+    // 自动点击模式：跳过对话框与确认，直接格式化+还原+追加启动项。
+    if let Some(params) = pe_click_params("secondary") {
+        if params.len() >= 2 {
+            let mut result = String::new();
+            let mut reboot = false;
+            let mut target = params[1].trim_end_matches(':').to_string();
+            // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
+            if target == "AUTO" {
+                execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
+                target = resolve_drive("AUTO");
+            }
+            let wim = resolve_pe_wim_path(&params[0], &target);
+            let menu = if params.len() >= 3 {
+                params[2].clone()
+            } else {
+                "Windows 备份".to_string()
+            };
+            execute_pe_task_line(&format!("format {target}"), &mut result, &mut reboot);
+            execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
+            execute_pe_task_line(
+                &format!("add-secondary-entry {target} {menu}"),
+                &mut result,
+                &mut reboot,
+            );
+            let _ = std::fs::write("S:\\pe-gui-secondary.txt", &result);
+            exit_pe_to_windows(hwnd);
+            return;
+        }
+    }
     let out = pe_dialog(
         hwnd,
         "安装第二系统 - BackupRestore",
@@ -5425,6 +5536,68 @@ fn resolve_path(path: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// 解析自动点击配置里的 WIM 路径：`AUTO:PE\xxx.wim` 前缀在 PE 内自动
+/// 定位「PE 源盘」（含 BackupRestorePE\sources\boot.wim 的卷），解决
+/// Win11 侧盘符（如 Q:）在 PE 里盘符漂移、路径不存在的问题。
+/// `exclude` 为数据盘盘符（find-drive 定位的源/目标盘），排除它是因为
+/// 数据盘上也可能残留 BackupRestorePE 目录（如 RAM 模式验证部署过）。
+fn resolve_pe_wim_path(wim: &str, exclude: &str) -> String {
+    if let Some(rest) = wim.strip_prefix("AUTO:PE") {
+        format!("{}:{rest}", find_pe_source_drive(exclude))
+    } else {
+        wim.to_string()
+    }
+}
+
+/// 在 PE 内定位「PE 源盘」：枚举 C:-Z: 找含
+/// BackupRestorePE\sources\boot.wim 的卷（PE 从它内存启动）。
+fn find_pe_source_drive(exclude: &str) -> String {
+    for letter in 'C'..='Z' {
+        let letter = letter.to_string();
+        if letter == exclude {
+            continue;
+        }
+        let path = format!("{letter}:\\BackupRestorePE\\sources\\boot.wim");
+        if std::path::Path::new(&path).exists() {
+            return letter;
+        }
+    }
+    "Q".to_string() // 兜底：Win11 侧约定盘符（PE 找不到时按字面尝试）
+}
+
+/// 读取 PE 桌面自动点击配置 S:\pe-click.txt（首行 action，空格分隔参数）。
+/// 格式：`backup <源盘> <wim路径>` / `restore <wim路径> <目标盘>`
+/// / `secondary <wim路径> <目标盘> [菜单名]`。文件不存在返回 None。
+/// 该机制让「Win11 配置 → 重启进 PE → 自动点击按钮（与鼠标点击同路径）
+/// → 自动执行 → 自动回 Win11」全链路无需任何人工操作。
+fn read_pe_click_config() -> Option<(&'static str, Vec<String>)> {
+    let config = std::fs::read_to_string("S:\\pe-click.txt").ok()?;
+    let mut parts = config.split_whitespace();
+    let action = parts.next()?;
+    let params: Vec<String> = parts.map(|s| s.to_string()).collect();
+    let action = match action {
+        "backup" => "backup",
+        "restore" => "restore",
+        "secondary" => "secondary",
+        _ => return None,
+    };
+    Some((action, params))
+}
+
+/// 供 PE 桌面按钮 handler 使用的自动参数分支：返回动作与参数配置，
+/// 存在且动作匹配时调用方应跳过对话框、直接执行。
+/// 注意：handler 运行时 `S:\pe-click.txt` 已被启动流程改名 `.done`
+/// （防止重复触发），因此这里读 `.done` 才能拿到本次点击的参数。
+fn pe_click_params(action: &str) -> Option<Vec<String>> {
+    let config = std::fs::read_to_string("S:\\pe-click.txt.done").ok()?;
+    let mut parts = config.split_whitespace();
+    let config_action = parts.next()?;
+    if config_action != action {
+        return None;
+    }
+    Some(parts.map(|s| s.to_string()).collect())
 }
 
 /// 支持动作（每行一个，空格分隔参数）：
@@ -5979,6 +6152,21 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             return Err(super::err("CreateWindowExW failed (PE desktop)"));
         }
         ShowWindow(window, SW_SHOW);
+        // PE 桌面「自动点击」（开发/验收）：存在 S:\pe-click.txt 时，自动
+        // 向主窗口投递对应按钮的 WM_COMMAND——与真实鼠标点击走完全相同
+        // 的分发路径（window_proc_pe → handler → 确认框自动接受 → 执行 →
+        // 恢复 BCD 并重启回 Windows）。配置随即改名 .done 防重复执行。
+        let auto_click_id = match read_pe_click_config() {
+            Some(("backup", _)) => Some(ID_PE_BACKUP),
+            Some(("restore", _)) => Some(ID_PE_RESTORE),
+            Some(("secondary", _)) => Some(ID_PE_SECONDARY),
+            _ => None,
+        };
+        if let Some(btn_id) = auto_click_id {
+            PE_AUTO_CLICK.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = std::fs::rename("S:\\pe-click.txt", "S:\\pe-click.txt.done");
+            PostMessageW(window, WM_COMMAND, btn_id as WParam, 0);
+        }
         let mut message = Msg {
             hwnd: null_mut(),
             message: 0,
