@@ -1,10 +1,10 @@
 # BackupRestore 备份与还原测试方案
 
-更新时间：2026-09-11
-适用范围：Windows 10/11 UEFI/GPT 开发测试版系统备份还原工具（当前 `VERSION`：1.3.9）
+更新时间：2026-09-12
+适用范围：Windows 10/11 UEFI/GPT 开发测试版系统备份还原工具（当前 `VERSION`：1.4.7）
 配套文档：[project-status.md](project-status.md)、[verification-matrix.md](verification-matrix.md)、[implementation-notes.md](implementation-notes.md)、[development-execution-protocol.md](development-execution-protocol.md)
 
-本轮完整状态基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [current-progress-2026-09-11.md](current-progress-2026-09-11.md)。该基线已记录 v1.3.3 三种阶段断电实机回归全部收口（见 §8.4 与 current-progress §4.5）；v1.3.6 bootsequence 自清、v1.3.7 配置驱动与 P: 真实分区备份/还原、v1.3.8→1.3.9 PE 桌面三按钮执行器与 bcdboot default 恢复均已在 VM 实机收口（见 current-progress §6-§10）。
+本轮完整状态基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [current-progress-2026-09-11.md](current-progress-2026-09-11.md)。该基线已记录 v1.3.3 三种阶段断电实机回归全部收口（见 §8.4 与 current-progress §4.5）；v1.3.6 bootsequence 自清、v1.3.7 配置驱动与 P: 真实分区备份/还原、v1.3.8→1.3.9 PE 桌面三按钮执行器与 bcdboot default 恢复均已在 VM 实机收口（见 current-progress §6-§10）。v1.4.x：PE 恢复一键安装双模式（v1.4.0）、PE 恢复 tab UI（v1.4.1/1.4.4）、test hook 自动安装 + 目录盘符放宽 + 启动项名以文本框为准（v1.4.7）、PE 配置驱动真实磁盘备份/还原全链路（2026-09-12）均实机收口。
 
 本方案是把“代码/离线证据”与“Windows/WinRE 实机证据”分开验收的操作手册。任何破坏性还原测试只允许在可回滚的虚拟机快照中执行；`C:` 不作为备份源或还原目标。判定口径沿用：**代码已覆盖 / 离线已验证 / 实机待验证 / 实机已验证**。
 

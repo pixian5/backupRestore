@@ -2,9 +2,11 @@
 
 这份矩阵防止把静态代码检查误报为 Windows/WinRE 实机成功。状态只允许使用：
 
-当前版本基线：`1.3.9`。版本、失败根因和下一轮执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [current-progress-2026-09-11.md](current-progress-2026-09-11.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
+当前版本基线：`1.4.7`。版本、失败根因和下一轮执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [current-progress-2026-09-11.md](current-progress-2026-09-11.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
 
 > v1.3.6+ 已实机收口：bootsequence+PE 自清（v1.3.6）、配置驱动机制（v1.3.7，含 P: 真实分区备份/还原闭环）、PE 桌面三按钮接入 execute_pe_task_line + 4 新动作 + bcdboot default 恢复（v1.3.8→1.3.9）。三阶段断电（v1.3.3）实机回归证据见下 E-01 行，已收口。
+> v1.4.x 已实机收口：PE 恢复一键安装双模式（v1.4.0，RAM disk 目录 + 硬盘启动分区，两条目共存、启动项名按语言）；PE 恢复 tab UI 显示（v1.4.1/1.4.4，启动方式单选 + PE 目录名输入框 WS_BORDER + --tab）；test hook 自动安装 + 目录盘符放宽 + BCD 启动项名以文本框为准（v1.4.7，MyCustomPE 实机铁证）；PE 配置驱动真实磁盘备份/还原全链路（2026-09-12，P: 8G 卷 backup→delete→restore→verify，100% + P: 文件恢复确认 + bootsequence 自清回 Win11）。
+> **已知未实机项**：PE 桌面六按钮中「备份/还原/安装第二系统」的**按钮真实点击**（底层动作均已配置驱动实机跑通，但 PE 内无 Parallels 输入注入通道，按钮点击只能用户手动，见第 36 行）。
 
 - **代码已覆盖**：源代码和离线测试已覆盖，仍可能需要实机确认；
 - **离线已验证**：本机命令已经通过，但不等同于 Windows 运行；
