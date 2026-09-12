@@ -341,3 +341,44 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
     桌面（Parallels 控制台即 Session 0），循环重启会让用户看到程序闪烁、且窗口
     初始化瞬时状态可能截到"旧 tab 提示文本 + 新布局"的混合画面，易被误认为新
     bug；改用 SendMessage WM_COMMAND 切 tab（switch-and-check.ps1）不打扰用户。
+
+## v1.5.3：修复「多切几次 tab 后控件叠加/重绘残留」GUI bug
+
+- **现象**：用户实测（截图 23:11/23:17）PE 恢复 tab 左下角「镜像绝对路径」标签行
+  叠出上一 tab（新增第二系统）的 status 提示文本「新增第二系统: 保留当前 Windows…」；
+  多切几次 tab 必现。v1.5.2 的三处静态布局修复（show_menu/menu 位置/index 宽度）
+  未解决此问题。
+- **根因（实锤）**：`set_text` 只调 `SetWindowTextW`——WM_SETTEXT 只把控件区域
+  标为异步失效（InvalidateRect 排队），**不保证立即重绘**。快速连续切换 tab 时
+  layout_operation 对十余个控件连续 MoveWindow/SetWindowText，WM_PAINT 被合并/
+  延迟，STATIC/EDIT 控件区域出现「文本层（GetWindowText 读新文本）与像素层
+  （屏幕残留旧文本）不一致」——文本层检测全部干净（2004len=6），但屏幕上旧
+  status 文本残留在新 tab 控件区域。
+- **修复（双保险）**：
+  1. `set_text` 末尾追加 `InvalidateRect(hwnd, NULL, 1) + UpdateWindow(hwnd)`
+     强制控件立即重绘（新增 user32 extern 声明 InvalidateRect/UpdateWindow）。
+  2. `select_operation` 末尾与 PE 启动方式（RAM/硬盘）切换处理末尾追加
+     `InvalidateRect(root, NULL, 1) + UpdateWindow(root)` 整窗同步重绘，
+     布局/文案就绪后彻底擦除残留像素。
+- **验证（Session 1 真实窗口，v1.5.3）**：WM_COMMAND 快速切换 secondary↔PE
+  30 轮（间隔 20ms，比用户操作更极端），结束后 PE tab：
+  - 2004（镜像绝对路径）len=6、status len=34，文本层正常；
+  - prlctl capture 视觉确认：RAM disk/硬盘启动/PE 目录名/启动项名称/status/
+    镜像绝对路径/六按钮全部正常，镜像标签行无任何叠加文本。
+- **验证通道踩坑（重要，后续勿再踩）**：
+  1. **Session 0（prlctl exec，SYSTEM）看不到 Session 1 GUI 窗口**；用
+     `schtasks /create /it /ru x /rp 1 /rl HIGHEST` + `/run` 在 Session 1 交互
+     桌面运行验证脚本（find-secondary/stress-session1/fast-switch 等）。
+  2. **PowerShell 委托回调里 `$script:xxx` 赋值不可靠**（EnumWindows 回调在
+     .NET 线程执行，作用域隔离），必须用 `$global:gxxx` 或 ArrayList 收集；
+     否则会假报 WINDOW NOT FOUND。
+  3. **Add-Type 里用 System.Drawing.Imaging 必须加 `-ReferencedAssemblies
+     System.Drawing.dll`**，否则 Add-Type 编译失败 → EnumWindows 类不存在 →
+     假报 WINDOW NOT FOUND（frames-session1.ps1 早期即此原因）。
+  4. **WM_COMMAND 发 tab 切换**：wParam 低 16 位是控件 ID（1100-1104），高 16
+     位是通知码 0；写成 `(id << 16) | 0` 会把控件 ID 变成 0，切换无效（窗口
+     停在原 tab，验证会得出假结论）。
+  5. **schtasks 任务创建时机绑定会话/桌面**：任务在用户会话未就绪时创建可能
+     绑定错误桌面，找不到窗口；窗口确认在屏后仍失败时，重建任务或换名重试。
+  6. Get-Process 的 MainWindowHandle 在跨会话视角可能为 0，不能作为窗口存在
+     依据；以 EnumWindows（同桌面）为准。

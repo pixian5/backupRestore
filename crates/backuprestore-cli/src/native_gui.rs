@@ -450,6 +450,10 @@ unsafe extern "system" {
         pitch_and_family: u32,
         face_name: *const u16,
     ) -> Handle;
+    // 强制同步重绘：SetWindowTextW 只做异步失效，快速切换 tab 时旧文本会
+    // 残留在控件区域，这里立即失效并更新窗口，保证像素层与文本层一致。
+    fn InvalidateRect(hwnd: Handle, rect: *const Rect, erase: i32) -> i32;
+    fn UpdateWindow(hwnd: Handle) -> i32;
 }
 
 const GWLP_USERDATA: i32 = -21;
@@ -784,6 +788,12 @@ unsafe fn set_text(hwnd: Hwnd, value: &str) {
     let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
     let value = wide(&normalized.replace('\n', "\r\n"));
     SetWindowTextW(hwnd, value.as_ptr());
+    // 强制立即重绘（历史 bug 根因修复）：SetWindowTextW 只把控件区域标为
+    // 异步失效，快速连续切换 tab 时 WM_PAINT 会被合并/延迟，旧文本会残留
+    // 在控件区域直到下一次重绘——表现为「PE tab 镜像标签行叠出上一 tab
+    // 的 status 文本」。这里立即失效并同步更新，保证文本层与像素层一致。
+    InvalidateRect(hwnd, null(), 1);
+    UpdateWindow(hwnd);
 }
 
 unsafe fn get_text(hwnd: Hwnd) -> String {
@@ -1313,6 +1323,12 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     layout_operation(state);
     set_operation_guidance(state);
     set_drive_details(state);
+    // 整窗强制重绘（历史 bug 双保险）：layout_operation 会对十余个控件做
+    // MoveWindow，快速连续切换 tab 时重绘风暴容易让个别控件区域残留上一
+    // tab 的文本（表现为「PE tab 镜像标签行叠出上一 tab 的 status 文本」）。
+    // 在全部布局与文案就绪后同步重绘整窗，彻底擦除残留像素。
+    InvalidateRect(state.root, null(), 1);
+    UpdateWindow(state.root);
 }
 
 unsafe fn selected_drive_letter(state: &State, control: Hwnd) -> Option<String> {
@@ -4344,6 +4360,9 @@ unsafe extern "system" fn window_proc(
                     set_operation_visibility(state);
                     layout_operation(state);
                     set_volume_labels(state);
+                    // 启动方式切换同样会引发重绘风暴，整窗同步重绘清除残留
+                    InvalidateRect(state.root, null(), 1);
+                    UpdateWindow(state.root);
                 }
                 _ => {}
             }
