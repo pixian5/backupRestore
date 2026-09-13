@@ -364,3 +364,26 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 - 固件不支持一次性启动（BootNext/bootsequence 消费后无法启动非默认条目，reagentc /boottore 必然假成功）；
 - NVRAM 无法从旧 VM 移植（UUID 绑定）。
 → **WinRE 自动进入在本 VM 不可修复**。智能分流 RE 路实机闭环需：旧 VM（Windows 11.pvm，固件完整）验证 或 真实硬件/VirtualBox/QEMU 验证。PE 路不受影响（Boot Manager 菜单选择，不依赖固件一次性启动）。
+
+### L.6 数据卷备份/还原 fast 全链路实机验证（旧 VM Windows 11.pvm，2026-09-13 18:30-19:05）
+**目标**：用户要求「完整测试程序的备份还原（fast 就行）」，且避免完整 C 盘测试 → 用 5GB 测试分区 T: 验证备份→还原闭环。
+
+**测试环境**：
+- 旧 VM `Windows 11.pvm`（26200.9168，IP 10.211.55.13，用户 x 密码 1）
+- diskpart 从 C: 收缩 5GB 建 T:（testvol/NTFS），写入 4×52,428,800B（data1~4.bin，共 200MB）
+- 镜像 `C:\Users\Public\br-test\test-backup.wim`
+- **核心代码改动（未提交前）**：
+  1. `windows_prepare.rs::assert_environment()`：数据卷（无 SYSTEM hive）允许在线备份/还原，仅系统卷强制要求 WinRE 可用——**已实机验证**。
+  2. `main.rs` 还原 BootRepaired 阶段：目标卷无 `\Windows\System32\config\SYSTEM`（数据卷）→ 跳过 BCDBoot 并走状态机过渡（ImageApplied→BootRepaired→Success）——修复原「数据卷还原误跑 bcdboot.exe T:\Windows → 0x80092003」失败。
+
+**验证结果**：
+- **备份成功**：GUI 在线备份（Session 0 hook 触发）→ test-backup.wim **428KB**（fast/XPRESS 压缩 200MB 全零数据，压缩比 ~470:1）。CLI 路径 `prepare --operation backup --source-drive T --image-path … --compress fast --no-reboot` + `recover` 任务创建/执行均正常。
+- **还原成功**：还原前在 T: 添加 newfile.txt 标记 → `prepare restore-existing` + `recover --efi-root S:\` → 格式化 T: + DISM /Apply-Image 100% → **data1~4.bin 完整恢复、newfile.txt 被清除**，status.json `stage=success, progress=100`。
+- **bcdboot 修复生效**：日志 `data-volume restore: target has no SYSTEM hive; skipping BCDBoot` → `Recovery completed`，无错误退出。
+
+**CLI 踩坑（重要，后续复现）**：
+1. `recover <root> <id>` 的 root 必须是 **workspace 根**（如 `C:\Users\Public\backupRestore-package`），TaskStore 内部会拼 `/tasks/{id}`——传任务目录会 os error 3，传 tasks 目录（父级）同样 os error 3。
+2. 还原执行必须传 `--efi-root <已挂载 ESP 根>`（`mountvol S: /S` 后传 `S:\`），否则 `EFI root must be explicitly mounted before recovery`。
+3. `prepare` 的 find_system_efi 会跳过**已挂载**的盘符（S: 被手动挂载时全部扫描失败 → `system GPT EFI partition was not found`）——先 `mountvol S: /D` 再 prepare。
+4. 任务一旦 Failed 即终端，重跑同一任务报 `task is failed`——须重新 prepare 新建任务。
+5. 备份目标 wim 已存在时 CLI recover 捕获报 `os error 2`（文件冲突）；GUI 在线备份（首次创建 wim）已验证成功。增量/覆盖策略后续需明确（如 /Append 或提示先删除）。

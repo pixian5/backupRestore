@@ -1318,19 +1318,18 @@ fn operation_name(operation: Operation) -> &'static str {
 }
 
 fn assert_environment(source_drive: char) -> Result<(), TaskError> {
-    if !Path::new(&format!(
+    // 数据卷（无 SYSTEM hive）可在当前 Windows 在线备份/还原，无需恢复环境；
+    // 仅系统卷（存在 SYSTEM hive）要求 WinRE 可用（备份/还原在 PE/RE 中执行）。
+    if Path::new(&format!(
         r"{}:\Windows\System32\config\SYSTEM",
         source_drive
     ))
     .is_file()
     {
-        return Err(err(&format!(
-            "source volume {source_drive}: has no Windows SYSTEM hive"
-        )));
-    }
-    let reagent = capture("reagentc.exe", &["/info"])?;
-    if !(reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE")) {
-        return Err(err("Windows RE is disabled or unavailable"));
+        let reagent = capture("reagentc.exe", &["/info"])?;
+        if !(reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE")) {
+            return Err(err("Windows RE is disabled or unavailable"));
+        }
     }
     Ok(())
 }

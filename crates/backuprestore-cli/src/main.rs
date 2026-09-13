@@ -1842,8 +1842,13 @@ fn recover_windows(
                     );
                 }
             }
-            let efi = find_efi_root(efi_root)?;
-            if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
+            if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired)
+                && target_root
+                    .join("Windows")
+                    .join("System32\\config\\SYSTEM")
+                    .is_file()
+            {
+                let efi = find_efi_root(efi_root)?;
                 let entering_boot_repaired = task.status == Stage::ImageApplied;
                 // BootRepaired is recorded immediately before BCDBoot so a
                 // failure is eligible for BCD rollback.  A retry from that
@@ -1905,6 +1910,18 @@ fn recover_windows(
                         &identifier,
                         log,
                     )?;
+                }
+                if finalize_success {
+                    store.write_transition(task, Stage::Success)?;
+                }
+            } else if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
+                // 数据卷还原：目标卷无 SYSTEM hive（非 Windows 系统），跳过 BCDBoot 启动修复。
+                append_log(
+                    log,
+                    "data-volume restore: target has no SYSTEM hive; skipping BCDBoot",
+                )?;
+                if task.status == Stage::ImageApplied {
+                    store.write_transition(task, Stage::BootRepaired)?;
                 }
                 if finalize_success {
                     store.write_transition(task, Stage::Success)?;
