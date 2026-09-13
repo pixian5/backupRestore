@@ -1,6 +1,6 @@
 # BackupRestore 文档索引
 
-当前完整进度基线： [current-progress-2026-09-09.md](current-progress-2026-09-09.md)
+当前完整进度基线： [current-progress-2026-09-13.md](current-progress-2026-09-13.md)
 
 按下面顺序阅读，避免把离线检查误解成 Windows 恢复已验收：
 

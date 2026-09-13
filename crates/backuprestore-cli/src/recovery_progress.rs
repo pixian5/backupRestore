@@ -29,6 +29,7 @@ const ES_MULTILINE: u32 = 0x0004;
 const ES_AUTOVSCROLL: u32 = 0x0040;
 const ES_READONLY: u32 = 0x0800;
 const WM_CREATE: u32 = 0x0001;
+const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
 const WM_TIMER: u32 = 0x0113;
 const WM_SETFONT: u32 = 0x0030;
@@ -46,6 +47,9 @@ pub struct ProgressShared {
     pub log_path: Mutex<PathBuf>,
     pub log_offset: Mutex<u64>,
     pub window_up: AtomicBool,
+    /// 进度窗口句柄（窗口线程创建后回填；主线程执行完请求关闭用 usize 存，
+    /// 避免 *mut c_void 不满足跨线程 Send）。
+    pub hwnd: Mutex<Option<usize>>,
 }
 
 #[repr(C)]
@@ -97,6 +101,7 @@ unsafe extern "system" {
     fn DispatchMessageW(message: *const Msg) -> LResult;
     fn TranslateMessage(message: *const Msg) -> i32;
     fn PostQuitMessage(exit_code: i32);
+    fn PostMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> i32;
     fn SendMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> LResult;
     fn SetTimer(
         hwnd: Hwnd,
@@ -168,17 +173,25 @@ fn classify(line: &str) -> (Option<String>, Option<u32>, Option<String>) {
         } else if line.contains("/Apply-Image") {
             stage = Some("正在还原系统分区…".to_string());
         }
+    } else if line.contains("Operating on the") || line.contains("Scanning") {
+        stage = Some("正在扫描系统分区…".to_string());
+    } else if line.contains("Saving image") {
+        stage = Some("正在备份系统分区…".to_string());
+    } else if line.contains("Applying image") {
+        stage = Some("正在还原系统分区…".to_string());
     } else if line.contains("Backup capture finished") {
         stage = Some("备份完成，正在校验镜像…".to_string());
-    } else if line.contains("Recovery completed") {
-        stage = Some("恢复完成，即将重启…".to_string());
+    } else if line.contains("The operation completed successfully")
+        || line.contains("Recovery completed")
+    {
+        stage = Some("操作完成".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {
         stage = Some("正在准备恢复环境…".to_string());
     }
     let percent = parse_percent(line);
     let detail = if line.trim().is_empty() {
         None
-    } else if line.starts_with("[stdout] [") && line.contains('%') {
+    } else if (line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%') {
         None // 纯进度行不占详情
     } else {
         Some(line.trim_end().to_string())
@@ -219,7 +232,9 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let mut latest_stage: Option<String> = None;
     let mut latest_percent: Option<u32> = None;
     let mut details: Vec<String> = Vec::new();
-    for line in buffer.lines() {
+    // DISM 进度条用 \r 原地刷新（重定向到文件时不带 \n），先把整段按
+    // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
+    for line in buffer.split(|c| c == '\n' || c == '\r') {
         let (stage, percent, detail) = classify(line);
         if let Some(value) = stage {
             latest_stage = Some(value);
@@ -343,6 +358,7 @@ pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
         log_path: Mutex::new(initial_log),
         log_offset: Mutex::new(0),
         window_up: AtomicBool::new(false),
+        hwnd: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);
     let _ = thread::spawn(move || {
@@ -350,6 +366,17 @@ pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
         unsafe { run_window(&thread_shared) };
     });
     shared
+}
+
+/// 请求关闭进度窗口（主线程操作执行完毕后调用，避免窗口残留在前台）。
+pub fn request_close(shared: &ProgressShared) {
+    if let Some(hwnd) = *shared.hwnd.lock().unwrap() {
+        if hwnd != 0 {
+            unsafe {
+                PostMessageW(hwnd as Hwnd, WM_CLOSE, 0, 0);
+            }
+        }
+    }
 }
 
 unsafe fn run_window(shared: &Arc<ProgressShared>) {
@@ -403,6 +430,7 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
     unsafe {
         SetWindowLongPtrW(hwnd, GWL_USERDATA, raw);
     }
+    *shared.hwnd.lock().unwrap() = Some(hwnd as usize);
     shared.window_up.store(true, Ordering::SeqCst);
     unsafe {
         ShowWindow(hwnd, 1); // SW_SHOWNORMAL

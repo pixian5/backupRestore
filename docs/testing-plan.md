@@ -23,7 +23,7 @@
 
 | 覆盖                                                   | 不覆盖（不在 V1）                 |
 | ---------------------------------------------------- | -------------------------- |
-| probe / backup / restore-existing / create-secondary | 自研 PE、分区布局重构               |
+| probe / backup / restore-existing / create-secondary / 自定义 PE 恢复（RAM disk / 硬盘启动两种模式） | 分区布局重构               |
 | 磁盘/分区身份、盘符变更、容量、BitLocker 拒绝                         | 网络/增量/差异镜像                 |
 | 断电续跑、BCD 失败回滚、身份篡改拒绝                                 | Legacy BIOS、自动修改 BitLocker |
 | 隔离多索引 WIM（Index 1/2/3）                               | 独立 EFI 固件首启动（仅开发测试）        |

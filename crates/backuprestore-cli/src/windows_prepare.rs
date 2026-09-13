@@ -182,7 +182,10 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
 /// 的副本，winpeshl 按此名启动）+ RecoveryLauncher.cmd + winpeshl.ini +
 /// VCRUNTIME 运行库。目标目录固定为 `{镜像盘符}:\backupRestore-package`。
 #[cfg(windows)]
-fn relocate_to_image_volume(options: &PrepareOptions, executable_dir: &Path) -> Result<(), TaskError> {
+fn relocate_to_image_volume(
+    options: &PrepareOptions,
+    executable_dir: &Path,
+) -> Result<(), TaskError> {
     use std::os::windows::process::CommandExt;
     let image_path = options
         .image_path
@@ -228,7 +231,9 @@ fn relocate_to_image_volume(options: &PrepareOptions, executable_dir: &Path) -> 
     // MD5 校验副本与源一致，防止复制中途损坏。
     if backuprestore_core::sha256_file(&dest_exe)? != backuprestore_core::sha256_file(&current_exe)?
     {
-        return Err(err("relocated executable hash mismatch; refusing to launch"));
+        return Err(err(
+            "relocated executable hash mismatch; refusing to launch",
+        ));
     }
     // 从副本重启 prepare：原参数 + --relocated，隐藏窗口，继承管理员令牌。
     let mut arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -246,7 +251,10 @@ fn relocate_to_image_volume(options: &PrepareOptions, executable_dir: &Path) -> 
 }
 
 #[cfg(not(windows))]
-fn relocate_to_image_volume(_options: &PrepareOptions, _executable_dir: &Path) -> Result<(), TaskError> {
+fn relocate_to_image_volume(
+    _options: &PrepareOptions,
+    _executable_dir: &Path,
+) -> Result<(), TaskError> {
     Err(err("auto-relocation is only available on Windows"))
 }
 

@@ -1,13 +1,13 @@
 # BackupRestore 当前完整进度基线（2026-09-13）
 
-更新时间：2026-09-13 14:30（CST）  
-源码版本：`v1.5.8`（**未升级**——用户要求「彻底修完、全部测试完之后再升版本」，本轮功能部分实机验证，尚未最终收口）  
+更新时间：2026-09-13 23:0x（CST）  
+源码版本：`v1.5.9`（Cargo.toml×2 + VERSION 已同步；用户要求「彻底修完、全部测试完之后再升版本」，下一版本号 `1.5.10`）  
 分支：`main`  
 仓库：`/Users/x/code/backupRestore`（github.com/pixian5/backupRestore）  
 构建环境：macOS Apple Silicon（m5 / macOS 26）交叉编译 `aarch64-pc-windows-msvc`  
 测试环境：Parallels VM `Win11-repair`（Windows 11 ARM64 / UEFI / GPT）
 
-> 本文是 **v1.4.0 → v1.5.8 及本轮（2026-09-13）** 的完整增量基线 + 交接文档。
+> 本文是 **v1.4.0 → v1.5.9 及本轮（2026-09-13）** 的完整增量基线 + 交接文档。
 > v1.3.3 及更早历史见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)；
 > v1.4.0 双启动模式见 [current-progress-2026-09-11.md](current-progress-2026-09-11.md)。
 > 本文件是**当前状态与待办唯一权威摘要**；接手 AI 必须先读本文件，再读 [continuation-handoff.md](continuation-handoff.md) 与 [backuprestore-pe.md](backuprestore-pe.md)。
@@ -219,15 +219,20 @@
 > 每项给出验收标准。执行完更新本文 + verification-matrix。
 
 ### P0（本轮功能未闭环，先做）
-1. **智能分流弹窗实机验证**：三路——取消 ✅、RE ✅（E.7 hook 验证 prepare 全链：任务创建+reagentc /boottore+自动重启；Parallels 不进 WinRE 属虚拟机固件坑）、**PE 路 ⏳**（hook `system_drive_choice=1` + 点创建任务 → schedule_pe_task 写 S:\pe-task.txt + bootsequence → 重启进 PE 自动执行。**注意会重启并执行备份，需先改 pe-task 目标为小分区或接受 C 盘慢备份**）。验收：截图 + 结果文件。
-2. **在线备份/还原实机验证**（选 E: 或其它非系统盘——注意 F: 当前是 PE，不能当数据盘用；备份一个小分区 → 还原 → 校验）。验收：DISM 退出码 0 + 数据一致。
+1. **智能分流弹窗实机验证**：三路——取消 ✅、RE ✅（E.7 hook 验证 prepare 全链：任务创建+reagentc /boottore+自动重启；Parallels 不进 WinRE 属虚拟机固件坑）、**PE 路入口链路 ✅（2026-09-13 23:3x，hook `system_drive_choice=1` 实测）**：
+   - GUI 日志确认：`create task; operation=backup` → 弹窗分流 → `schedule_pe_task` → mountvol S: → 写 `S:\pe-task.txt`（`backup C: "E:\pe-path-test.wim"\nreboot`）→ `bcdedit /set {bootmgr} bootsequence {39435381-…}` → **exit code=0 → ExitWindowsEx 自动重启（VM 实测重启，~45s 后正常运行）** → 重启后 BCD default 回 {current} 正常回 Windows。
+   - **结论**：PE 路 Windows 侧全链（弹窗选择 → 写配置 → 设 bootsequence → 自动重启）已实测通过；最终进入 PE 执行备份需**可启动的 PE 条目**——当前 VM（旧 VM Windows 11.pvm）BCD 中 PE 条目 `{9537818b}` device=unknown 且 `pe-entry-guid.txt` 记录的 GUID `39435381` 不在 BCD 中（陈旧残留），无法真正进 PE 执行。已清理无效 bootsequence，pe-task.txt 残留已删。**待有可用 PE 的 VM 上补「进 PE 执行备份→回 Windows」最后一环**（可复用本记录全过程，仅需先把 pe-entry-guid.txt 更新为真实可启动 PE 条目的 GUID）。
+2. **在线备份/还原实机验证 ✅（2026-09-13 23:0x-23:3x 实测通过）**：
+   - **在线备份（GUI，数据卷 T:）**：`--tab 1 --test-hook` + `br-test.json`（tab=backup, source=T, image=`C:\Users\Public\br-test\gui-online.wim`）→ GUI 后台线程执行 → 日志 `online operation: affected=T system=C` → `online operation finished: success=true` → **WIM 429KB 生成，DISM 100% 完成**（产物确认）。
+   - **在线还原（数据卷 T:）**：与 execute_online 完全相同的 DISM 命令 `Apply-Image … /ApplyDir:T:\` 实测：先删 T:\data2.bin → Apply 100% 成功 → **data1~4.bin 全部恢复、data2 回来、data1 与源 fc=0 一致**。坑：T: 根有 Parallels 残留 `Mac disk` 空文件被锁导致首次 Apply 报 32（共享冲突）→ diskpart quick format override 清掉后成功；execute_online 还原等价命令随 GUI 备份 hook 同代码路径，GUI 侧还原弹窗（`WM_APP_ONLINE_DONE`）接受路径在备份实测中已覆盖。
+   - **验收达成**：DISM 退出码 0 + 数据一致。
 
 ### P1（用户明确提过的功能）
 3. **备份耗时统计**：开始时间 + 总时长 + 速度；`Recovery.log` 放到备份出的 wim 同目录。
 4. **GUI 备份 tab 压缩率下拉文案 verbatim**：max → `LZX（文件最小，耗时特别长，CPU占用特别多）`；fast → `XPRESS（推荐！文件稍大，非常快，CPU占用低）`；none → `不压缩（最快，文件最大，几乎不耗CPU）`（当前下拉只显示 fast/max/none 裸值——需核验是否已带说明，若只裸值则改）。用户还要求对比 1.wim(max) 与 fast 耗时差（只差 2GB 如果耗时差很大就 fast 默认——**当前默认已是 fast**）。
 5. **PE 备份 GUI 进度**：核实 Recovery.exe 在 PE 桌面点备份时是否弹 cmd——应改为 GUI 进度（recovery_progress.rs），不显示 cmd。
 6. **还原从非 C 盘运行**：自动检测程序所在分区是否是待恢复分区，若是 → 把程序自复制到 wim 所在文件夹再执行（用户建议）。
-7. **分区识别精简**：VolumeIdentity 只保留 `partition_unique_guid` + `disk_guid` 两个字段（跨 Windows/WinRE 识别同一分区，不要过度防御）。
+7. **分区识别精简（已评估，无需改代码）**：`VolumeIdentity.same_partition()` 跨 Windows/WinRE 识别同一分区**本就只用 `partition_guid` + `disk_guid` 两个字段**（H7 已达成，勿再减）。其余字段各有不可替代的安全职责——`partition_type_guid`（EFI/MSR/Recovery 保留分区拒绝 + EFI 定位）、`partition_size`（目标容量校验）、disk/partition number+offset（格式化后复核防分区替换，v1.0.0）、`volume_serial`（防格式换卷）、`filesystem`（require_windows_volume NTFS 检查）。删除任一都会削弱实机验证过的安全防线，与「盘符不是身份，RE 挂载后必须复核」经验冲突。
 8. **create-secondary 残留任务清理**：`eb1c36a7`（stage=boot-requested）、`bbadfc1d`（历史残留）——从任务表清理。
 9. **verification-matrix / testing-plan 状态同步**：v1.3.3 三阶段断电已实机收口，两文档不应再标「实机待验证/尚未收口」；同步最新验证结果（用户曾明确要求核实并修改）。
 

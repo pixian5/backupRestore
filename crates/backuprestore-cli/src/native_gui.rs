@@ -90,15 +90,13 @@ const WM_APP_TEST_INSTALL: u32 = 0x8001;
 /// 在线备份/还原后台线程完成通知（结果在 ONLINE_RESULT 全局读）。
 const WM_APP_ONLINE_DONE: u32 = 0x8002;
 /// 测试钩子：自动安装时跳过确认框（验收/自动化测试用）。
-static TEST_AUTO_CONFIRM: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static TEST_AUTO_CONFIRM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// PE 桌面「自动点击」模式：存在 S:\pe-click.txt 时置位。PE 桌面启动后
 /// 自动向主窗口投递对应按钮的 WM_COMMAND（与真实鼠标点击走完全相同的
 /// 分发路径），所有确认框自动接受（等效用户点"是"），执行完成后自动
 /// 恢复 BCD default、清除 bootsequence 并重启回 Windows。
-static PE_AUTO_CLICK: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PE_AUTO_CLICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const ID_REFRESH: usize = 1001;
 const ID_READ_IMAGE: usize = 1002;
@@ -1083,19 +1081,14 @@ unsafe fn set_operation_visibility(state: &State) {
     set_visible(state.controls.target_details, show_target);
     set_child_visible(2005, show_target);
     // 「重启进入 PE」「创建快捷方式」只在 PE 恢复 tab 显示
-    set_child_visible(
-        ID_PE_REBOOT_MAIN as i32,
-        operation == "install-pe-entry",
-    );
+    set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-entry");
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
     // 启动方式单选与目录行只在「PE 恢复」tab 显示；硬盘启动模式下隐藏目录路径行
     let pe_mode_ram = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
     let pe_visible = operation == "install-pe-entry";
     append_gui_log(
         state,
-        &format!(
-            "PE visibility: op={operation} pe_visible={pe_visible} ram_checked={pe_mode_ram}"
-        ),
+        &format!("PE visibility: op={operation} pe_visible={pe_visible} ram_checked={pe_mode_ram}"),
     );
     set_child_visible(ID_PE_MODE_RAM as i32, pe_visible);
     set_child_visible(ID_PE_MODE_DISK as i32, pe_visible);
@@ -1395,20 +1388,8 @@ unsafe fn layout_operation(state: &State) {
     );
     // 「备份」tab 的压缩率下拉：WIM 索引/第二系统名称行（secondary_y）在
     // 备份模式下控件均隐藏，压缩率独占该行：标签在左侧，下拉框在右侧。
-    reposition(
-        GetDlgItem(state.root, 2014),
-        20,
-        secondary_y + 2,
-        150,
-        24,
-    );
-    reposition(
-        state.controls.compress,
-        field_x,
-        secondary_y,
-        280,
-        220,
-    );
+    reposition(GetDlgItem(state.root, 2014), 20, secondary_y + 2, 150, 24);
+    reposition(state.controls.compress, field_x, secondary_y, 280, 220);
 
     reposition(
         GetDlgItem(state.root, 2003),
@@ -1450,13 +1431,7 @@ unsafe fn layout_operation(state: &State) {
         100,
         24,
     );
-    reposition(
-        state.controls.keep,
-        field_x + 430,
-        index_name_y - 2,
-        80,
-        24,
-    );
+    reposition(state.controls.keep, field_x + 430, index_name_y - 2, 80, 24);
     for (id, x) in [
         (ID_REFRESH, 20),
         (ID_READ_IMAGE, 150),
@@ -2145,7 +2120,9 @@ unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32
     // 避免在无输入注入通道的 PE 里阻塞自动化流程。
     if PE_AUTO_CLICK.load(std::sync::atomic::Ordering::SeqCst) {
         let style = flags & 0x0f;
-        return if style == 0x04 /* MB_YESNO */ || style == 0x03 /* MB_YESNOCANCEL */ {
+        return if style == 0x04 /* MB_YESNO */ || style == 0x03
+        /* MB_YESNOCANCEL */
+        {
             IDYES
         } else {
             IDOK
@@ -2165,8 +2142,7 @@ const ID_CHOICE_PE: usize = 2001;
 const ID_CHOICE_RE: usize = 2002;
 const ID_CHOICE_CANCEL: usize = 2003;
 /// 对话框文案语言：0=中文 1=English（模态期间单实例，用静态即可）。
-static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(0);
+static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 unsafe extern "system" fn window_proc_system_choice(
     hwnd: Hwnd,
@@ -2841,10 +2817,7 @@ unsafe fn browse_pe_dir(state: &State) {
     // BIF_NEWDIALOGSTYLE 要求调用线程先初始化 COM（OLE），否则对话框
     // 会立即失败返回；CoInitializeEx 返回 0(S_OK) 或 1(S_FALSE) 都算可用，
     // 0x80010106(RPC_E_CHANGED_MODE) 表示线程已是其他模式，跳过不配对。
-    let co_init = CoInitializeEx(
-        null(),
-        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE,
-    );
+    let co_init = CoInitializeEx(null(), COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     let com_ok = co_init == 0 || co_init == 1;
     let language = selected_language(state);
     let mut display_name = [0_u16; 260];
@@ -2880,10 +2853,7 @@ unsafe fn browse_pe_dir(state: &State) {
     }
     let length = buffer.iter().position(|value| *value == 0).unwrap_or(0);
     let path = String::from_utf16_lossy(&buffer[..length]);
-    set_text(
-        GetDlgItem(state.root, ID_PE_DIR_EDIT as i32),
-        &path,
-    );
+    set_text(GetDlgItem(state.root, ID_PE_DIR_EDIT as i32), &path);
     append_gui_log(
         state,
         "GUI action completed: PE folder path selected from browse dialog",
@@ -2965,10 +2935,7 @@ unsafe fn test_hook_auto_install(state: &mut State) {
     };
     append_gui_log(state, "test hook: config loaded");
     // 1. 操作模式：默认 PE 恢复；支持 "tab":"backup"（备份）/"restore"/"secondary" 等
-    let tab = json
-        .get("tab")
-        .and_then(|v| v.as_str())
-        .unwrap_or("pe");
+    let tab = json.get("tab").and_then(|v| v.as_str()).unwrap_or("pe");
     let op_index = match tab {
         "backup" => 1,
         "restore" => 2,
@@ -3047,10 +3014,7 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         .filter(|v| *v >= 0 && *v <= 2)
         .map(|v| v as i32);
     if let Some(choice) = state.test_drive_choice {
-        append_gui_log(
-            state,
-            &format!("test hook: system_drive_choice={choice}"),
-        );
+        append_gui_log(state, &format!("test hook: system_drive_choice={choice}"));
     }
     // 6. 自动安装：跳过确认框，窗口显示后延迟触发
     if json
@@ -3222,30 +3186,27 @@ unsafe fn install_pe_ramdisk(state: &State) {
     // Destructive-ish confirmation: overwrites <target>:\<dir>\sources\boot.wim
     // and modifies the boot configuration. Nothing runs before this confirmation.
     let answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
-        append_gui_log(
-            state,
-            "test hook: RAM disk confirmation auto-accepted",
-        );
+        append_gui_log(state, "test hook: RAM disk confirmation auto-accepted");
         IDYES
     } else {
         show_message(
-        state.root,
-        &if language == Language::English {
-            format!(
-                "Install the PE recovery environment (RAM disk) to {dir_path}?\n\n- Copy the PE WIM to {dir_path}\\sources\\boot.wim\n- Ensure {dir_path}\\boot\\boot.sdi\n- Add boot entry \"{entry_name}\" to the boot menu\n\nNo extra partition is used. The current Windows default boot is NOT changed. Continue?"
-            )
-        } else {
-            format!(
-                "以 RAM disk 方式安装 PE 恢复环境到 {dir_path}？\n\n- 复制 PE 镜像到 {dir_path}\\sources\\boot.wim\n- 确保 {dir_path}\\boot\\boot.sdi 存在\n- 在启动菜单新增「{entry_name}」启动项\n\n不占用独立分区。不修改当前 Windows 默认启动。是否继续？"
-            )
-        },
-        if language == Language::English {
-            "Install PE recovery"
-        } else {
-            "安装 PE 恢复环境"
-        },
-        MB_YESNO | MB_ICONWARNING,
-    )
+            state.root,
+            &if language == Language::English {
+                format!(
+                    "Install the PE recovery environment (RAM disk) to {dir_path}?\n\n- Copy the PE WIM to {dir_path}\\sources\\boot.wim\n- Ensure {dir_path}\\boot\\boot.sdi\n- Add boot entry \"{entry_name}\" to the boot menu\n\nNo extra partition is used. The current Windows default boot is NOT changed. Continue?"
+                )
+            } else {
+                format!(
+                    "以 RAM disk 方式安装 PE 恢复环境到 {dir_path}？\n\n- 复制 PE 镜像到 {dir_path}\\sources\\boot.wim\n- 确保 {dir_path}\\boot\\boot.sdi 存在\n- 在启动菜单新增「{entry_name}」启动项\n\n不占用独立分区。不修改当前 Windows 默认启动。是否继续？"
+                )
+            },
+            if language == Language::English {
+                "Install PE recovery"
+            } else {
+                "安装 PE 恢复环境"
+            },
+            MB_YESNO | MB_ICONWARNING,
+        )
     };
     if answer != IDYES {
         append_gui_log(
@@ -3256,11 +3217,9 @@ unsafe fn install_pe_ramdisk(state: &State) {
     }
     append_gui_log(
         state,
-        &format!(
-            "PE RAM disk install started: wim={image_path} target={dir_path}"
-        ),
+        &format!("PE RAM disk install started: wim={image_path} target={dir_path}"),
     );
-    let target_root = format!("{dir_path}\\");;
+    let target_root = format!("{dir_path}\\");
     // 1. Copy the PE WIM into <target>:\<dir>\sources\boot.wim, preserving an
     //    existing file as .stock on first install.
     let sources_dir = format!("{target_root}sources");
@@ -3355,16 +3314,12 @@ unsafe fn install_pe_ramdisk(state: &State) {
     let ram_guid_path = "{ramdiskoptions}".to_string();
     let mut steps = vec![
         format!("bcdedit.exe /set {ram_guid_path} ramdisksdidevice partition={target_char}:"),
-        format!(
-            "bcdedit.exe /set {ram_guid_path} ramdisksdipath {rel_path}\\boot\\boot.sdi"
-        ),
+        format!("bcdedit.exe /set {ram_guid_path} ramdisksdipath {rel_path}\\boot\\boot.sdi"),
     ];
     let os_guid = {
         let _ = std::fs::remove_file(&guid_out);
         let code = run_cmd_to_file(
-            &format!(
-                "bcdedit.exe /create /d \"{entry_name}\" /application osloader"
-            ),
+            &format!("bcdedit.exe /create /d \"{entry_name}\" /application osloader"),
             Some(std::path::Path::new(&guid_out)),
         );
         if code != 0 {
@@ -3410,9 +3365,8 @@ unsafe fn install_pe_ramdisk(state: &State) {
         }
     };
     let os_guid_path = format!("{{{}}}", os_guid);
-    let ramdisk_device = format!(
-        "ramdisk=[{target_char}:]{rel_path}\\sources\\boot.wim,{ram_guid_path}"
-    );
+    let ramdisk_device =
+        format!("ramdisk=[{target_char}:]{rel_path}\\sources\\boot.wim,{ram_guid_path}");
     steps.push(format!(
         "bcdedit.exe /set {os_guid_path} device {ramdisk_device}"
     ));
@@ -3600,9 +3554,15 @@ unsafe fn install_pe_harddisk(state: &State) {
         show_message(
             state.root,
             &if language == Language::English {
-                format!("Target partition {drive_char}: free space is below 2 GB ({}).", format_bytes(Some(free_bytes)))
+                format!(
+                    "Target partition {drive_char}: free space is below 2 GB ({}).",
+                    format_bytes(Some(free_bytes))
+                )
             } else {
-                format!("目标分区 {drive_char}: 可用空间不足 2GB（{}）。", format_bytes(Some(free_bytes)))
+                format!(
+                    "目标分区 {drive_char}: 可用空间不足 2GB（{}）。",
+                    format_bytes(Some(free_bytes))
+                )
             },
             if language == Language::English {
                 "Validation failed"
@@ -3626,30 +3586,27 @@ unsafe fn install_pe_harddisk(state: &State) {
     };
     // 破坏性确认：目标分区将被格式化 + 写入 PE 系统
     let answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
-        append_gui_log(
-            state,
-            "test hook: hard disk confirmation auto-accepted",
-        );
+        append_gui_log(state, "test hook: hard disk confirmation auto-accepted");
         IDYES
     } else {
         show_message(
-        state.root,
-        &if language == Language::English {
-            format!(
-                "Install the PE recovery environment (hard disk boot) to partition {drive_char}:?\n\n- The partition WILL BE FORMATTED (all data on it is lost)\n- Apply the PE WIM to {drive_char}:\\\n- Add boot entry \"{entry_name}\" to the boot menu\n\nThe current Windows default boot is NOT changed. Continue?"
-            )
-        } else {
-            format!(
-                "以硬盘启动方式安装 PE 恢复环境到分区 {drive_char}:？\n\n- 该分区将被格式化（数据全部丢失！）\n- 将 PE 镜像展开到 {drive_char}:\\\n- 在启动菜单新增「{entry_name}」启动项\n\n不修改当前 Windows 默认启动。是否继续？"
-            )
-        },
-        if language == Language::English {
-            "Install PE recovery"
-        } else {
-            "安装 PE 恢复环境"
-        },
-        MB_YESNO | MB_ICONWARNING,
-    )
+            state.root,
+            &if language == Language::English {
+                format!(
+                    "Install the PE recovery environment (hard disk boot) to partition {drive_char}:?\n\n- The partition WILL BE FORMATTED (all data on it is lost)\n- Apply the PE WIM to {drive_char}:\\\n- Add boot entry \"{entry_name}\" to the boot menu\n\nThe current Windows default boot is NOT changed. Continue?"
+                )
+            } else {
+                format!(
+                    "以硬盘启动方式安装 PE 恢复环境到分区 {drive_char}:？\n\n- 该分区将被格式化（数据全部丢失！）\n- 将 PE 镜像展开到 {drive_char}:\\\n- 在启动菜单新增「{entry_name}」启动项\n\n不修改当前 Windows 默认启动。是否继续？"
+                )
+            },
+            if language == Language::English {
+                "Install PE recovery"
+            } else {
+                "安装 PE 恢复环境"
+            },
+            MB_YESNO | MB_ICONWARNING,
+        )
     };
     if answer != IDYES {
         append_gui_log(
@@ -3660,9 +3617,7 @@ unsafe fn install_pe_harddisk(state: &State) {
     }
     append_gui_log(
         state,
-        &format!(
-            "PE hard disk install started: wim={image_path} partition={drive_char}:"
-        ),
+        &format!("PE hard disk install started: wim={image_path} partition={drive_char}:"),
     );
     // 1. 格式化目标分区（diskpart，快速 NTFS）
     let script = format!("select volume {drive_char}\nformat fs=ntfs quick\n");
@@ -3740,9 +3695,7 @@ unsafe fn install_pe_harddisk(state: &State) {
     let _ = std::fs::remove_file(&guid_out);
     let os_guid = {
         let code = run_cmd_to_file(
-            &format!(
-                "bcdedit.exe /create /d \"{entry_name}\" /application osloader"
-            ),
+            &format!("bcdedit.exe /create /d \"{entry_name}\" /application osloader"),
             Some(std::path::Path::new(&guid_out)),
         );
         if code != 0 {
@@ -4349,15 +4302,10 @@ unsafe fn create_task(state: &State) {
         && PathBuf::from(&image_path).is_file()
     {
         let index_number = index.parse::<u32>().unwrap_or(1);
-        let metadata_check = crate::read_index_metadata(
-            Path::new(&image_path),
-            index_number,
-        );
+        let metadata_check = crate::read_index_metadata(Path::new(&image_path), index_number);
         let hash_ok = match &metadata_check {
             Ok(metadata) => backuprestore_core::sha256_file(&image_path)
-                .map(|actual| {
-                    actual.eq_ignore_ascii_case(&metadata.image_sha256)
-                })
+                .map(|actual| actual.eq_ignore_ascii_case(&metadata.image_sha256))
                 .unwrap_or(false),
             Err(_) => false,
         };
@@ -4403,12 +4351,7 @@ unsafe fn create_task(state: &State) {
             (String::new(), String::new())
         };
         if !prompt.is_empty()
-            && show_message(
-                state.root,
-                &prompt,
-                &title,
-                MB_YESNO | MB_ICONWARNING,
-            ) != IDYES
+            && show_message(state.root, &prompt, &title, MB_YESNO | MB_ICONWARNING) != IDYES
         {
             append_gui_log(
                 state,
@@ -4525,9 +4468,7 @@ unsafe fn create_task(state: &State) {
             // 非当前活动系统（数据盘 / 未运行的第二系统）：在线直接执行，不重启
             append_gui_log(
                 state,
-                &format!(
-                    "online operation: affected={affected_upper} system={system_upper}"
-                ),
+                &format!("online operation: affected={affected_upper} system={system_upper}"),
             );
             run_online_operation(
                 state,
@@ -4721,7 +4662,10 @@ unsafe fn schedule_pe_task(
         return;
     }
     let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-    append_gui_log(state, &format!("schedule_pe_task: mountvol S: code={mount_code}"));
+    append_gui_log(
+        state,
+        &format!("schedule_pe_task: mountvol S: code={mount_code}"),
+    );
     let task = if operation == "backup" {
         format!("backup {source_drive} \"{image_path}\"\nreboot\n")
     } else {
@@ -4735,7 +4679,10 @@ unsafe fn schedule_pe_task(
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
     append_gui_log(state, &format!("schedule_pe_task: {command}"));
     let code = run_cmd_to_file(&command, None);
-    append_gui_log(state, &format!("schedule_pe_task: bcdedit exit code={code}"));
+    append_gui_log(
+        state,
+        &format!("schedule_pe_task: bcdedit exit code={code}"),
+    );
     if code == 0 && write_ok {
         append_gui_log(state, "schedule_pe_task: bootsequence set, auto reboot now");
         if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
@@ -4796,8 +4743,7 @@ struct OnlineOpParams {
 }
 
 /// 在线执行结果（后台线程写完，主窗口 WM_APP_ONLINE_DONE 读取显示）。
-static ONLINE_RESULT: std::sync::Mutex<Option<String>> =
-    std::sync::Mutex::new(None);
+static ONLINE_RESULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// 后台执行 DISM 在线备份/还原（数据盘/非活动系统），完成后回主窗口消息。
 /// 备份：镜像不存在 → /Capture-Image；存在 → /Append-Image 追加新索引；
@@ -4865,7 +4811,9 @@ fn execute_online(params: &OnlineOpParams) -> String {
             removed += 1;
         }
         if removed > 0 {
-            summary.push_str(&format!("[keep] removed {removed} older index(es), kept latest {keep}\n"));
+            summary.push_str(&format!(
+                "[keep] removed {removed} older index(es), kept latest {keep}\n"
+            ));
         }
     }
     summary
@@ -5865,15 +5813,9 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                         // 方式（PE RAM 盘无法回写消费），不清会导致每次重启
                         // 都再进 PE（死循环）。无 bootsequence 时该命令报错
                         // 无害（default 已设置）。
-                        push_wide_into(
-                            &mut command_line,
-                            " & bcdedit.exe /store ",
-                        );
+                        push_wide_into(&mut command_line, " & bcdedit.exe /store ");
                         command_line.extend_from_slice(&bcd_path[..bcd_path.len() - 1]);
-                        push_wide_into(
-                            &mut command_line,
-                            " /deletevalue {bootmgr} bootsequence",
-                        );
+                        push_wide_into(&mut command_line, " /deletevalue {bootmgr} bootsequence");
                         if !PE_AUTO_CLICK.load(std::sync::atomic::Ordering::SeqCst) {
                             push_wide_into(
                                 &mut command_line,
@@ -5913,7 +5855,8 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                                 // 超时 = cmd 还挂在 pause 等待人工按键（手动
                                 // 开发模式）；bcdedit 命令本身早已执行完。
                                 diag.push(
-                                    "bcdedit wait timed out (cmd paused, waiting for key)".to_string(),
+                                    "bcdedit wait timed out (cmd paused, waiting for key)"
+                                        .to_string(),
                                 );
                             }
                             CloseHandle(process.thread);
@@ -6725,8 +6668,9 @@ unsafe extern "system" fn window_proc_pe(
                     // 注意：当前 exe 名为 Recovery.exe，不满足 main.rs
                     // should_launch_gui 的 "BackupRestore" 检查，无参数启动
                     // 不会进 GUI；必须带 --tab 1（备份页）直接进入。
-                    let executable = std::env::current_exe()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("X:\\Windows\\System32\\Recovery.exe"));
+                    let executable = std::env::current_exe().unwrap_or_else(|_| {
+                        std::path::PathBuf::from("X:\\Windows\\System32\\Recovery.exe")
+                    });
                     let exe_wide = wide(&executable.to_string_lossy());
                     let argument = wide("--tab 1");
                     ShellExecuteW(
@@ -6985,12 +6929,16 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             let d = resolve_drive(drive);
             let _ = std::fs::remove_file(wim);
             let out = "S:\\backup-out.txt";
+            // 备份进度 GUI：后台窗口线程读 DISM 输出文件实时刷新，
+            // 不弹 cmd 黑窗、不阻塞界面（见 recovery_progress.rs）。
+            let progress = crate::recovery_progress::spawn(PathBuf::from(out));
             // 生成 DISM 排除配置（临时目录/回收站/浏览器缓存），写到 PE 的
             // X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
             let mut exclude_arg = String::new();
             let config_path = std::env::temp_dir().join("BackupRestore-exclusions.ini");
             let source_root = format!("{d}:\\");
-            if let Ok(text) = backuprestore_core::build_capture_exclusions(Path::new(&source_root)) {
+            if let Ok(text) = backuprestore_core::build_capture_exclusions(Path::new(&source_root))
+            {
                 if std::fs::write(&config_path, text).is_ok() {
                     exclude_arg = format!(" /ConfigFile:{}", config_path.display());
                 }
@@ -7003,6 +6951,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
                 600000,
             );
+            crate::recovery_progress::request_close(&progress);
             if let Ok(text) = std::fs::read_to_string(out) {
                 result.push_str(&format!("[BACKUP {d}: -> {wim}]\n{text}\n"));
             } else {
@@ -7086,6 +7035,8 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             // dism 应用 WIM 到卷
             let d = resolve_drive(drive);
             let out = "S:\\restore-out.txt";
+            // 还原进度 GUI（同备份：后台窗口线程读 DISM 输出实时刷新）。
+            let progress = crate::recovery_progress::spawn(PathBuf::from(out));
             run_cmd_to_file_timeout(
                 &format!(
                     "cmd /c dism.exe /Apply-Image /ImageFile:{wim} /Index:1 /ApplyDir:{d}:\\ > {out} 2>&1"
@@ -7093,6 +7044,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
                 600000,
             );
+            crate::recovery_progress::request_close(&progress);
             if let Ok(text) = std::fs::read_to_string(out) {
                 result.push_str(&format!("[RESTORE {wim} -> {d}:]\n{text}\n"));
             } else {
@@ -7561,8 +7513,7 @@ pub fn run() -> Result<(), super::TaskError> {
             // F5 刷新：IsDialogMessage 会消费 F5（对话框键盘处理吞掉该键），
             // 导致窗口过程收不到 WM_KEYDOWN，故必须在它之前拦截。
             if message.message == WM_KEYDOWN && ((message.w_param & 0xFFFF) as u32) == 116 {
-                let ctrl_down =
-                    ((GetAsyncKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
+                let ctrl_down = ((GetAsyncKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
                 if !ctrl_down {
                     PostMessageW(window, WM_COMMAND as u32, ID_REFRESH as usize, 0);
                     continue;

@@ -1208,10 +1208,7 @@ pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError>
                 ]);
             }
             // 旧版 IE / 系统组件缓存
-            let inet_cache = local
-                .join("Microsoft")
-                .join("Windows")
-                .join("INetCache");
+            let inet_cache = local.join("Microsoft").join("Windows").join("INetCache");
             if inet_cache.is_dir() {
                 user_entries.push(format!(
                     "\\Users\\{name}\\AppData\\Local\\Microsoft\\Windows\\INetCache"
@@ -1351,6 +1348,7 @@ mod tests {
             sha256: "a".repeat(64),
             size_bytes: 1,
             index: 1,
+            name: None,
         });
         task.target = Some(TargetSpec {
             volume: identity("source", 200),
@@ -1415,6 +1413,7 @@ mod tests {
             sha256: "a".repeat(64),
             size_bytes: 1,
             index: 1,
+            name: None,
         });
         task.target = Some(TargetSpec {
             volume: target,
@@ -1466,6 +1465,7 @@ mod tests {
             sha256: "a".repeat(64),
             size_bytes: 1,
             index: 1,
+            name: None,
         });
         task.target = Some(TargetSpec {
             volume: identity("target", 200),
@@ -1499,6 +1499,7 @@ mod tests {
             sha256: "a".repeat(64),
             size_bytes: 1,
             index: 1,
+            name: None,
         });
         task.target = Some(TargetSpec {
             volume: identity("source", 200),
@@ -1644,6 +1645,9 @@ mod tests {
             version: 1,
             image_type: "wim".into(),
             created: Utc::now(),
+            started: None,
+            duration_secs: None,
+            bytes_per_sec: None,
             computer: "test".into(),
             windows_edition: "Pro".into(),
             architecture: "amd64".into(),
@@ -1673,11 +1677,21 @@ mod tests {
         let users = root.join("Users");
         let alice = users.join("alice").join("AppData").join("Local");
         fs::create_dir_all(
-            alice.join("Google").join("Chrome").join("User Data").join("Default").join("Cache"),
+            alice
+                .join("Google")
+                .join("Chrome")
+                .join("User Data")
+                .join("Default")
+                .join("Cache"),
         )
         .unwrap();
         fs::create_dir_all(
-            alice.join("Mozilla").join("Firefox").join("Profiles").join("abc.default").join("cache2"),
+            alice
+                .join("Mozilla")
+                .join("Firefox")
+                .join("Profiles")
+                .join("abc.default")
+                .join("cache2"),
         )
         .unwrap();
 
@@ -1687,7 +1701,11 @@ mod tests {
             .iter()
             .position(|l| *l == "[ExclusionList]")
             .expect("配置应包含 [ExclusionList] 节");
-        let all: Vec<&str> = lines[list + 1..].iter().filter(|l| !l.is_empty()).copied().collect();
+        let all: Vec<&str> = lines[list + 1..]
+            .iter()
+            .filter(|l| !l.is_empty())
+            .copied()
+            .collect();
 
         // 固定根级排除项
         for fixed in [
@@ -1702,9 +1720,15 @@ mod tests {
         }
         // 每个用户字面路径
         assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Temp"));
-        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache"));
-        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Code Cache"));
-        assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\abc.default\\cache2"));
+        assert!(all.contains(
+            &"\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache"
+        ));
+        assert!(all.contains(
+            &"\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Code Cache"
+        ));
+        assert!(all.contains(
+            &"\\Users\\alice\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\abc.default\\cache2"
+        ));
         assert!(all.contains(&"\\Users\\alice\\AppData\\Local\\Mozilla\\Firefox\\Profiles\\abc.default\\cache2\\entries"));
         // 规范内不得出现中间通配符（DISM 只允许最后一段通配）
         for entry in &all {
@@ -1714,10 +1738,7 @@ mod tests {
             if *first == "" {
                 // 根路径锚定写法（\x\y）：除最后一段外其余段不得含 *
                 if let Some((head, tail)) = parts.split_first() {
-                    assert!(
-                        !head.contains('*'),
-                        "根锚定路径的首段不应含通配符: {entry}"
-                    );
+                    assert!(!head.contains('*'), "根锚定路径的首段不应含通配符: {entry}");
                     for part in tail.split_last().unwrap().1 {
                         assert!(
                             !part.contains('*'),

@@ -2,11 +2,12 @@
 
 这份矩阵防止把静态代码检查误报为 Windows/WinRE 实机成功。状态只允许使用：
 
-当前版本基线：`1.4.7`。版本、失败根因和下一轮执行顺序见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 与 [current-progress-2026-09-11.md](current-progress-2026-09-11.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
+当前版本基线：`1.5.9`。版本、失败根因和下一轮执行顺序见 [current-progress-2026-09-13.md](current-progress-2026-09-13.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
 
 > v1.3.6+ 已实机收口：bootsequence+PE 自清（v1.3.6）、配置驱动机制（v1.3.7，含 P: 真实分区备份/还原闭环）、PE 桌面三按钮接入 execute_pe_task_line + 4 新动作 + bcdboot default 恢复（v1.3.8→1.3.9）。三阶段断电（v1.3.3）实机回归证据见下 E-01 行，已收口。
 > v1.4.x 已实机收口：PE 恢复一键安装双模式（v1.4.0，RAM disk 目录 + 硬盘启动分区，两条目共存、启动项名按语言）；PE 恢复 tab UI 显示（v1.4.1/1.4.4，启动方式单选 + PE 目录名输入框 WS_BORDER + --tab）；test hook 自动安装 + 目录盘符放宽 + BCD 启动项名以文本框为准（v1.4.7，MyCustomPE 实机铁证）；PE 配置驱动真实磁盘备份/还原全链路（2026-09-12，P: 8G 卷 backup→delete→restore→verify，100% + P: 文件恢复确认 + bootsequence 自清回 Win11）。
 > **已知未实机项**：~~PE 桌面六按钮中「备份/还原/安装第二系统」的按钮真实点击~~ → **已实机收口（v1.4.8，2026-09-12）**：新增 `S:\pe-click.txt` 自动点击机制（PostMessage WM_COMMAND 等效鼠标点击、确认框自动接受、AUTO/AUTO:PE 参数解析、完成后自动恢复 BCD 回 Win11），「备份系统」按钮自动点击实测全链路通过（backup 100% + WIM 落盘 + BCD 恢复）；「还原/安装第二系统」按钮走同一 WM_COMMAND 分发路径与同一 handler 自动分支，机制同源，未单独重复实测。
+> v1.5.x 已实机收口（2026-09-13，细节见 [current-progress-2026-09-13.md](current-progress-2026-09-13.md)）：硬盘版 PE 分区启动（标准 PE boot.wim 到 F: + bcdboot，WinRE.wim 不可用）；PE 桌面 6 按钮新布局 + 「打开完整程序」（完整多 tab GUI 在 PE 内运行）+ 「重启」合并进「返回 Windows」；pe-click 新增 `main` 动作；智能分流实现（%SystemDrive% 判断 + 自绘 3 按钮弹窗 + 在线后台 DISM）；数据卷（T: 5G）备份/还原 fast 全链路闭环（备份 428KB/XPRESS、还原 100% 含格式化、bcdboot 跳过数据卷）；WIM 追加索引 + 索引名 + 保留最近 N 个全链实测（追加+keep 删除最旧+还原校验）；GUI 在线备份 exit=87 修复（索引名带空格加引号）+ 档案缺失/哈希不匹配降级为弹窗确认（--force-restore-hash）+ keep=0 全部保留；全量审计「拼字符串执行命令」类隐患（仅 PE diskpart 脚本路径加引号，其余安全）；键盘导航改造（Ctrl+B/R/P/O、F5、Tab、方向键；GetAsyncKeyState） + prlctl send-key-event 宿主导入通道 + VM 内注入器（clicker/run-in-session/activate/diag）。智能分流 RE 路（prepare 全链：任务创建+reagentc /boottore+自动重启）经 test hook `system_drive_choice=2` 验证；Parallels 固件不消费一次性 WinRE 启动属 VM 限制（真实硬件有效），PE 路与在线执行路待实机验证（H-P0）。
 
 - **代码已覆盖**：源代码和离线测试已覆盖，仍可能需要实机确认；
 - **离线已验证**：本机命令已经通过，但不等同于 Windows 运行；
@@ -54,6 +55,15 @@
 | 工作目录所在卷与镜像卷重叠拒绝 | `native_gui.rs:create_task`、Rust `prepare`、core `Task::validate` | **实机已验证（v1.2.5 ARM64）** | Rust prepare 在任何 BCD/WinRE 写入前按 GUID 拒绝；GUI 保留同一早期检查，核心校验作为防御纵深 |
 | 任务结果不虚报 | `last-task.json`、结果页文案、`status.json` | 实机已验证（Win11 ARM64 probe） | 自动 probe 任务 `c12026c0-6a9e-4093-8a8b-2971968a31f7` 的 `status.json` 为 `success` 仅出现在原始 WinRE hash 恢复校验之后；新 `-NoReboot` 任务 `760fcfe1-392d-4142-94af-b830f4286296` 保持 `prepared`，dry-run 不会伪造成功 |
 | 网络/工具链下载规则 | `~/.codex/skills/pixian-dev-workflow/SKILL.md` | 流程已覆盖 | 每个大下载前保留网络检查和授权证据 |
+| 硬盘版 PE 分区启动 | 标准 PE boot.wim Apply 到分区 + bcdboot（不用 WinRE.wim） | **实机已验证（v1.5.8，2026-09-13）** | F:（10G）Apply 标准 PE boot.wim Index 1 + bcdboot 分区引导 → 真实重启进 PE 恢复桌面；WinRE.wim 分区启动失败/ramdisk 崩 VM（已记录为禁用路径） |
+| PE 桌面 6 按钮新布局 + 打开完整程序 | `--pe-desktop`、`ID_PE_MAIN_GUI=1406`、`ShellExecuteW(当前exe + --tab 1)`；重启合并进返回 Windows（`ID_PE_EXIT`） | **实机已验证（v1.5.8，2026-09-13）** | 截图确认 6 按钮新布局（备份/还原/安装第二系统、命令提示符/返回 Windows/打开完整程序）；「打开完整程序」在 PE 内启动完整多 tab GUI（源卷枚举到 X:、压缩率下拉 fast、语言中文）；「返回 Windows」BCD default 回 {current}（bcdedit 实测）；pe-click `main` 动作自动点「打开完整程序」（消费后 .done） |
+| 智能分流（目标==当前活动系统 → 弹窗 PE/RE/取消；数据盘 → 在线执行） | `create_task` 内 `%SystemDrive%` 判断、`ask_system_drive_handler` 自绘 3 按钮、`schedule_pe_task`（写 `S:\pe-task.txt` + bootsequence + 重启）、`run_online_operation` 后台 DISM | **RE 路实机已验证（v1.5.8 hook `system_drive_choice=2`）**；**PE 路 Windows 侧全链实机已验证（2026-09-13 hook `system_drive_choice=1`：写 pe-task.txt + bcdedit bootsequence exit 0 + 自动重启 + 回 Windows）**；真进 PE 执行备份待可用 PE 环境补最后一环；**在线执行实机已验证（2026-09-13，T: 数据卷备份 WIM 429KB exit 0 + 还原 Apply 100% 文件一致）** | RE 路：点「创建任务」→ 确认框 → prepare 创建任务 `12f95494`（backup、E:\1.wim、stage=boot-requested）→ prepare.log 记录 `reagentc.exe /boottore` 成功 → shutdown 自动重启；Parallels 重启回 Win11（固件不消费一次性 WinRE 启动，真实硬件应有效）。在线路：GUI hook 备份 T: → `online operation finished: success=true` + WIM 落盘；还原 Apply 100% 后 data1~4.bin 全恢复（data1 fc=0）。弹窗三按钮 GUI 多轮截图确认出现 |
+| 数据卷备份/还原 fast 全链路（旧 VM `Windows 11.pvm`） | 数据卷（无 SYSTEM hive）在线备份/还原放行 + 还原跳过 BCDBoot（`assert_environment`、BootRepaired→Success 过渡） | **实机已验证（2026-09-13，旧 VM T: 5G）** | 备份：test-backup.wim 428KB（fast/XPRESS 压缩 200MB 全零数据，~470:1）；还原：T: 格式化 + Apply 100% → data1~4.bin 完整、新增标记文件被清除、status.json stage=success、日志 `data-volume restore: target has no SYSTEM hive; skipping BCDBoot` |
+| WIM 追加索引 + 索引名 + 保留最近 N 个 | `ImageSpec.name`、`/Append-Image`、`--image-name`、`--keep-indexes`、`GUI ID_INDEX_NAME_EDIT/ID_KEEP_EDIT`、candidate 复制 + `/CheckIntegrity` + rename 防掉电 | **实机已验证（2026-09-13，旧 VM test2-backup.wim）** | 首次 Capture `/Name:` 正确；二次 Append 索引 2（keep 未触发）；三次 Append 索引 3 + keep=2 自动删最旧（wim-info 剩 2）；keep 后还原校验通过（修复 hash mismatch：keep_cleaned 后重算 sidecar 哈希）；GUI 还原 tab 下拉实时读全部索引 |
+| 备份档案降级为弹窗确认（可还原） | `--force-restore-hash`；档案缺失→弹「直接还原可能错误」、哈希不匹配→弹「镜像可能损坏」；keep=0/留空=全部保留 | **实机已验证（2026-09-13）** | `--force-restore-hash` 被 prepare 正常接受（metadata 匹配时无副作用）；`--keep-indexes 0` 不再报错（解析为 None）；GUI 弹窗路径代码完成，人工点击检查清单已写入文档（L.8 1-7） |
+| 命令执行通道两类隐患审计 | `run_logged`（参数数组，安全）vs `run_cmd_to_file*`（cmd 整串，动态值必须自加引号） | **代码审计完成（2026-09-13），1 处修复** | PE 硬盘安装 `diskpart /s {script_file}` → `diskpart /s "{script_file}"`；其余 9 类入口确认安全（参数数组或 GUID/盘符无空格） |
+| 键盘导航（纯键盘操作 GUI） | 三个消息循环 `IsDialogMessageW`、Ctrl+B/R/P/O、F5（GetAsyncKeyState + IsDialogMessage 前拦截 + PS/2 scancode）、Ctrl+Enter 创建任务、BS_DEFPUSHBUTTON 回车默认、WS_GROUP 单选 | **实机已验证（v1.5.9，2026-09-13）** | prlctl `send-key-event` 通道实测：Ctrl+B/R/P 切 tab、Ctrl+O 读取镜像、回车关弹窗、Tab 焦点移动、方向键切单选组（PE tab RAM disk/硬盘启动联动隐藏目录行）、F5 刷新日志 `GUI action completed: refresh environment; eligible_volumes=3`；宿主导入键盘不受 VM 内合成事件限制 |
+| PE 恢复环境一键安装（v1.5.x 回归） | `install-pe-entry` RAM disk / 硬盘启动双模式 | **实机已验证（v1.5.8 回归）** | v1.4.0 双模式安装收口后在 v1.5.x 未重构该链路；PE 恢复 tab 三按钮（重启进入 PE / 返回 Windows / 创建快捷方式）不受本轮改动影响 |
 
 ## 当前强制实机顺序
 

@@ -744,7 +744,9 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                     Err(error) => {
                         let _ = append_log(
                             &log,
-                            &format!("image-directory log unavailable ({error}); keeping workspace log"),
+                            &format!(
+                                "image-directory log unavailable ({error}); keeping workspace log"
+                            ),
                         );
                     }
                 }
@@ -1601,10 +1603,7 @@ fn recover_windows(
             let backup_started = Utc::now();
             append_log(
                 log,
-                &format!(
-                    "Backup capture started at {}",
-                    backup_started.to_rfc3339()
-                ),
+                &format!("Backup capture started at {}", backup_started.to_rfc3339()),
             )?;
             let existing = destination_path.exists();
             if existing && !destination_path.is_file() {
@@ -1829,9 +1828,7 @@ fn recover_windows(
                     write_json_atomic(index_metadata_path(&destination_path, keep)?, &current)?;
                     append_log(
                         log,
-                        &format!(
-                            "Kept latest {keep} WIM indexes; removed {remove_count} older"
-                        ),
+                        &format!("Kept latest {keep} WIM indexes; removed {remove_count} older"),
                     )?;
                     true
                 } else {
@@ -1848,9 +1845,7 @@ fn recover_windows(
                 let final_hash = backuprestore_core::sha256_file(&destination_path)?;
                 let final_size = fs::metadata(&destination_path)?.len();
                 for new_idx in 1..=task.keep_indexes.unwrap_or(1).max(1) {
-                    if let Ok(mut sidecar) =
-                        read_index_metadata(&destination_path, new_idx)
-                    {
+                    if let Ok(mut sidecar) = read_index_metadata(&destination_path, new_idx) {
                         sidecar.image_sha256 = final_hash.clone();
                         sidecar.image_size = final_size;
                         write_json_atomic(
