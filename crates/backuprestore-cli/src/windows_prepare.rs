@@ -106,6 +106,8 @@ pub(crate) struct PrepareOptions {
     compress: Option<String>,
     /// 由自动重定位（还原目标 == 程序所在卷）启动的副本，跳过重定位检查。
     relocated: bool,
+    /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
+    force_restore_hash: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,6 +371,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut no_reboot = false;
     let mut compress = None;
     let mut relocated = false;
+    let mut force_restore_hash = false;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
         let value = |name: &str, args: &mut std::vec::IntoIter<String>| {
@@ -436,6 +439,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                 compress = Some(level);
             }
             "--relocated" => relocated = true,
+            "--force-restore-hash" => force_restore_hash = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
         }
     }
@@ -467,8 +471,9 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         }
     }
     if let Some(keep) = keep_indexes {
+        // 0 = 全部保留（不清理），与 GUI 留空语义一致。
         if keep == 0 {
-            return Err(err("--keep-indexes must be greater than zero (0 请省略)"));
+            keep_indexes = None;
         }
     }
     if operation != Operation::Probe && image_path.is_none() {
@@ -498,6 +503,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         image_name,
         keep_indexes,
         relocated,
+        force_restore_hash,
     })
 }
 
@@ -1099,11 +1105,13 @@ fn validate_operation_inputs(
             // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 哈希；
             // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
             // 哈希校验与目标大小预检——DISM /Get-WimInfo 已确认 WIM 可读。
+            // 哈希不匹配时默认拒绝，但用户已确认（--force-restore-hash）
+            // 可以继续还原（档案可能被移动/镜像被修改，风险由用户承担）。
             let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
             if let Some(metadata) = &metadata {
                 let expected = &metadata.image_sha256;
                 let actual = sha256_file(path)?;
-                if !actual.eq_ignore_ascii_case(expected) {
+                if !actual.eq_ignore_ascii_case(expected) && !options.force_restore_hash {
                     return Err(err("restore image hash does not match metadata"));
                 }
             }

@@ -413,3 +413,36 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 **已知限制（未覆盖）**：
 - GUI 在线备份（execute_online）的 append/keep 路径代码已写但 **Session 0 无界面无法实测**（旧 VM GUI 自动化已弃用）；CLI 侧 main.rs 同逻辑已全链实测。execute_online 追加无 candidate/CheckIntegrity（简化路径），后续如需严格防掉电需对齐 CLI 的 candidate 策略。
 - 还原「metadata 校验依赖 sidecar」：prepare 还原对缺失 sidecar 的第三方/PE WIM 跳过哈希校验（既有行为），keep 清理后 sidecar 已同步最终哈希。
+
+### L.8 GUI 在线备份 exit=87 修复 + 档案降级 + keep=0 语义（2026-09-13 20:43-20:55）
+**用户反馈**：打开程序点备份后弹窗 `[ONLINE backup] exit=87 (no output captured)`。
+
+**原因（已定位）**：`execute_online`（GUI 在线备份路径）把 DISM 命令拼成字符串交给 cmd 执行；索引名默认是 `2026-09-13 20:43` 这种**带空格**的时间，`/Name:2026-09-13 20:43` 没加引号 → cmd 把参数拆成 `/Name:2026-09-13` 和 `20:43` 两个 → DISM 报 87（ERROR_INVALID_PARAMETER 参数错误）。CLI 路径（main.rs）用参数数组不经过字符串拼接所以没事。
+
+**修复**：`execute_online` 的 Capture/Append/Apply/Delete 命令中 `/ImageFile:"…"`、`/Name:"…"` 全部加引号。**实机验证**：在 VM 手动执行与修复后完全相同的命令 `dism.exe /Append-Image /ImageFile:"…" /CaptureDir:T:\ /Name:"2026-09-13 20:51 引号测试"` → EXIT=0 成功（修复前同命令不带引号必 87）。CLI 侧用空格+中文索引名 `2026-09-13 20:50 测试空格` 完整备份成功，wim-info 显示 Name 正确。
+
+**档案（.metadata.json）降级为「提示+确认」，不再是硬性拦截**：
+- 用户理由：档案文件可能被弄丢，不应因此无法还原。
+- CLI：新增 `--force-restore-hash`；`validate_operation_inputs` 中哈希不匹配时默认拒绝，但带该参数则放行（日志/提示由 GUI 负责）。
+- GUI（create_task 还原分支）：还原前检查 `.index-N.metadata.json`——
+  - 档案缺失 → 弹窗「未在此镜像旁找到备份档案文件（可能被移动或删除）。跳过完整性校验直接还原，可能还原到错误或损坏的镜像。是否仍要继续还原？」；
+  - 档案存在但哈希不匹配 → 弹窗「备份档案与镜像不匹配（镜像可能被修改或损坏）。是否仍要还原？」；
+  - 点「是」→ 传 `--force-restore-hash` 继续；点「否」→ 取消任务。
+  - 在线还原（数据卷）本就不校验哈希，弹窗仅作警告，确认后照常执行。
+- **实机验证**：`--force-restore-hash` 参数被 prepare 正常接受（metadata 匹配时无副作用）。
+
+**保留最近 N 个：留空或 0 = 全部保留（不清理）**：
+- CLI：`--keep-indexes 0` 不再报错（旧代码报「must be greater than zero」），解析为 None（不清理）——**实机验证** prepare 成功。
+- GUI：文本框留空/0/非数字 → 解析为 None → 不清理（已有逻辑，与 CLI 对齐）。
+- keep>0 才清理，且至少保留 1 个（keep.max(1)）。
+
+**GUI 手工检查清单（照着点，供后续人工/可操作桌面环境验收）**：
+1. 打开 BackupRestore（Win11 桌面）→ 应无任何启动弹窗（本次 87 弹窗只在点击备份后出现，不是每次打开）。
+2. 备份 tab：源卷选 T:（测试数据卷）→ 镜像路径填 `C:\Users\Public\br-test\gui-check.wim` → 压缩率 fast → 索引名默认应显示当前时间（可改）→ 保留最近 N 个留空 → 创建任务 → 状态区显示「已启动在线备份」，完成弹窗应显示 `exit=0`（不再是 87）。
+3. 同一镜像再点一次备份（wim 已存在）→ 应追加成功（弹窗 exit=0），用「读取镜像」应看到 2 个索引且 Name 分别为两次输入。
+4. 保留最近 N 个填 2 → 再备份一次 → 完成后「读取镜像」应只剩最近 2 个索引（最旧被自动删除）。
+5. 还原 tab：镜像路径指向上面 wim → 读取镜像 → 下拉应列出全部索引（含 Name）→ 选第 2 个索引 → 目标卷选 T: → 创建任务 → 确认弹窗 → 还原成功后 T: 内容应为该索引对应内容。
+6. 档案缺失测试：把 `gui-check.wim` 复制成 `gui-check-nomd.wim`（旁边无档案文件）→ 还原 tab 选它 → 创建任务 → 应弹「备份档案缺失」→ 点「是」→ 应能继续还原成功。
+7. PE 恢复 tab：三个按钮（重启进入 PE / 返回 Windows / 创建快捷方式）功能不受本轮改动影响。
+
+**已知限制（沿用 L.7）**：GUI 在线备份/弹窗的完整人工点击路径无法由远程命令行实测（Session 0 无交互桌面），上述 1-7 需在 Win11 桌面人工过一遍；CLI 侧同等逻辑已全部实机验证。

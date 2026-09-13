@@ -4307,6 +4307,83 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
+    // ===== 还原前档案（.index-N.metadata.json）检查：缺失或哈希不匹配时
+    // 弹窗提示，用户确认后仍可还原（传 --force-restore-hash 跳过校验）=====
+    // 档案丢失不阻止还原：用户可能移动/删除了 wim 旁的档案文件。
+    let mut force_restore_hash = false;
+    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+        && PathBuf::from(&image_path).is_file()
+    {
+        let index_number = index.parse::<u32>().unwrap_or(1);
+        let metadata_check = crate::read_index_metadata(
+            Path::new(&image_path),
+            index_number,
+        );
+        let hash_ok = match &metadata_check {
+            Ok(metadata) => backuprestore_core::sha256_file(&image_path)
+                .map(|actual| {
+                    actual.eq_ignore_ascii_case(&metadata.image_sha256)
+                })
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        let (prompt, title) = if metadata_check.is_err() {
+            (
+                (
+                    if language == Language::English {
+                        "No backup metadata file was found next to this image (it may have been moved or deleted).\n\nSkipping the integrity check and continuing may restore a wrong or damaged image.\n\nContinue anyway?"
+                    } else {
+                        "未在此镜像旁找到备份档案文件（可能被移动或删除）。\n\n跳过完整性校验直接还原，可能还原到错误或损坏的镜像。\n\n是否仍要继续还原？"
+                    }
+                )
+                .to_string(),
+                (
+                    if language == Language::English {
+                        "Backup metadata missing"
+                    } else {
+                        "备份档案缺失"
+                    }
+                )
+                .to_string(),
+            )
+        } else if !hash_ok {
+            (
+                (
+                    if language == Language::English {
+                        "The backup metadata does not match this image file (the image may have been modified or damaged).\n\nContinue anyway?"
+                    } else {
+                        "备份档案与镜像不匹配（镜像可能被修改或损坏）。\n\n是否仍要还原？"
+                    }
+                )
+                .to_string(),
+                (
+                    if language == Language::English {
+                        "Image hash mismatch"
+                    } else {
+                        "镜像校验不匹配"
+                    }
+                )
+                .to_string(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+        if !prompt.is_empty()
+            && show_message(
+                state.root,
+                &prompt,
+                &title,
+                MB_YESNO | MB_ICONWARNING,
+            ) != IDYES
+        {
+            append_gui_log(
+                state,
+                &format!("restore cancelled: metadata check declined; operation={operation}"),
+            );
+            return;
+        }
+        force_restore_hash = metadata_check.is_err() || !hash_ok;
+    }
     // ===== 智能分流：备份/还原目标为「当前活动系统」→ 弹窗选 PE/RE/取消 =====
     // 判断用「当前活动系统」（%SystemDrive%），不是「任何含 Windows 的卷」：
     // 双系统时另一个 Windows 卷并未运行，可直接在线备份/还原。
@@ -4464,6 +4541,10 @@ unsafe fn create_task(state: &State) {
     }
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
         arguments.push("--allow-destructive".to_string());
+        // 档案缺失/哈希不匹配且用户已确认 → 跳过哈希校验。
+        if force_restore_hash {
+            arguments.push("--force-restore-hash".to_string());
+        }
     }
     if operation == "probe" {
         arguments.push("--no-reboot".to_string());
@@ -4695,20 +4776,23 @@ fn execute_online(params: &OnlineOpParams) -> String {
         } else {
             params.image_name.clone()
         };
+        // 索引名可能带空格（默认是"2026-09-13 20:43"这类时间），
+        // 命令是拼成字符串交给 cmd 执行的，/Name 必须加引号，
+        // 否则 DISM 把带空格的名称拆成两个参数报 87（参数错误）。
         if std::path::Path::new(&params.image_path).is_file() {
             format!(
-                "dism.exe /Append-Image /ImageFile:{} /CaptureDir:{}:\\ /Name:{}",
+                "dism.exe /Append-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\"",
                 params.image_path, params.source_drive, name
             )
         } else {
             format!(
-                "dism.exe /Capture-Image /ImageFile:{} /CaptureDir:{}:\\ /Name:{} /Compress:{}",
+                "dism.exe /Capture-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\" /Compress:{}",
                 params.image_path, params.source_drive, name, params.compress
             )
         }
     } else {
         format!(
-            "dism.exe /Apply-Image /ImageFile:{} /Index:{} /ApplyDir:{}:\\",
+            "dism.exe /Apply-Image /ImageFile:\"{}\" /Index:{} /ApplyDir:{}:\\",
             params.image_path, params.index, params.target_drive
         )
     };
@@ -4734,7 +4818,7 @@ fn execute_online(params: &OnlineOpParams) -> String {
             }
             let del_out = std::env::temp_dir().join("br-online-del.txt");
             let del = format!(
-                "dism.exe /English /Delete-Image /ImageFile:{} /Index:1",
+                "dism.exe /English /Delete-Image /ImageFile:\"{}\" /Index:1",
                 params.image_path
             );
             let del_code = run_cmd_to_file_timeout(&del, Some(&del_out), 120000);
