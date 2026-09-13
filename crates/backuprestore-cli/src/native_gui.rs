@@ -557,6 +557,8 @@ struct State {
 struct PeDesktopState {
     clock: Hwnd,
     fonts: [Handle; 3],
+    /// PE 恢复桌面按钮的气泡提示（tooltip）窗口句柄。
+    tooltip: Hwnd,
 }
 
 /// GUI diagnostics follow the executable, so moving the complete program
@@ -611,6 +613,17 @@ unsafe fn install_tooltips(state: &mut State) {
             GetDlgItem(state.root, ID_REFRESH_TASK as i32),
             "refresh_task",
         ),
+        (GetDlgItem(state.root, ID_BROWSE_IMAGE as i32), "browse"),
+        (GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32), "pe_dir_browse"),
+        (
+            GetDlgItem(state.root, ID_PE_REBOOT_MAIN as i32),
+            "pe_reboot_main",
+        ),
+        (GetDlgItem(state.root, ID_PE_SHORTCUT as i32), "pe_shortcut"),
+        (GetDlgItem(state.root, ID_PE_MODE_RAM as i32), "pe_mode_ram"),
+        (GetDlgItem(state.root, ID_PE_MODE_DISK as i32), "pe_mode_disk"),
+        (GetDlgItem(state.root, ID_PE_DIR_EDIT as i32), "pe_dir_edit"),
+        (GetDlgItem(state.root, ID_LANGUAGE as i32), "language"),
     ];
     for (control, key) in controls {
         let text = tooltip_text(language, key);
@@ -651,6 +664,30 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "read_image") => "只读解析 WIM 索引、哈希和元数据。",
         (Language::Chinese, "create_task") => "创建任务；还原操作会先显示确认对话框。",
         (Language::Chinese, "refresh_task") => "读取程序目录中的最近任务状态。",
+        (Language::Chinese, "browse") => {
+            "打开文件选择框，浏览并选择镜像文件（.wim）的保存或来源路径。"
+        }
+        (Language::Chinese, "pe_dir_browse") => {
+            "浏览并选择 PE 存放目录路径，PE 镜像（boot.wim）将复制到该目录。"
+        }
+        (Language::Chinese, "pe_reboot_main") => {
+            "部署完成后立即重启进入 PE 恢复环境，验证 PE 能否正常启动。注意：Parallels 等虚拟机的 bootsequence 可能不被固件消费，真实硬件路径有效。"
+        }
+        (Language::Chinese, "pe_shortcut") => {
+            "在桌面创建「打开 PE 恢复」快捷方式，方便以后手动进入 PE 恢复环境。"
+        }
+        (Language::Chinese, "pe_mode_ram") => {
+            "RAM disk 模式（适合临时验证）：PE 镜像临时复制到内存盘启动，不占用独立分区、不改变现有分区布局。"
+        }
+        (Language::Chinese, "pe_mode_disk") => {
+            "硬盘启动模式（更稳定）：把 PE 部署到独立分区并从该分区启动，适合长期保留；需要提供一个空闲分区。"
+        }
+        (Language::Chinese, "pe_dir_edit") => {
+            "PE 目录路径：PE 镜像（boot.wim）存放的文件夹；请输入完整路径（盘符可为任意合法目录，不限于 C）。RAM disk 模式下 WIM 会复制到此路径下。"
+        }
+        (Language::Chinese, "language") => {
+            "切换界面语言（中文 / English），切换后所有标签、按钮与说明文字随之更新。"
+        }
         (Language::English, "probe") => {
             "Inspect: validate task, WinRE and volume identities; no disk write or reboot."
         }
@@ -690,6 +727,30 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "refresh_task") => {
             "Read the latest task status from the program directory."
+        }
+        (Language::English, "browse") => {
+            "Open a file dialog to pick the .wim image file (save or source path)."
+        }
+        (Language::English, "pe_dir_browse") => {
+            "Browse for the PE storage folder; the PE image (boot.wim) will be copied there."
+        }
+        (Language::English, "pe_reboot_main") => {
+            "Reboot immediately into the PE environment after deploy to verify it boots. Note: bootsequence may not be consumed by Parallels firmware; the real-hardware path works."
+        }
+        (Language::English, "pe_shortcut") => {
+            "Create an 'Open PE Recovery' shortcut on the desktop for easy entry later."
+        }
+        (Language::English, "pe_mode_ram") => {
+            "RAM disk mode (good for quick testing): the PE image is loaded into a memory drive, no partition used, existing layout untouched."
+        }
+        (Language::English, "pe_mode_disk") => {
+            "Hard-disk mode (more stable): deploy PE to its own partition and boot from it; requires a spare partition."
+        }
+        (Language::English, "pe_dir_edit") => {
+            "PE folder path: where the PE image (boot.wim) is stored; enter a full path (any valid drive or folder, not only C). In RAM disk mode the WIM is copied here."
+        }
+        (Language::English, "language") => {
+            "Switch the UI language (Chinese / English); all labels, buttons and help text update immediately."
         }
         _ => "",
     }
@@ -752,20 +813,44 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "restore") => "单系统还原",
         (Language::Chinese, "secondary") => "新增第二系统",
         (Language::Chinese, "probe_hint") => {
-            "探测：只检查 Windows、恢复环境和卷身份；创建任务仅生成并校验任务文件及恢复环境载荷，不备份、不还原、不格式化、不重启。"
+            "「探测」是全程无破坏的安全检查模式，适合首次使用先验证环境：\n\n\
+             • 刷新并校验当前 Windows 系统、恢复环境（WinRE / PE 入口）以及各卷身份，身份按磁盘+分区 GUID 校验，不依赖盘符；\n\
+             • 点「创建任务」只会生成并校验任务文件与恢复环境载荷，验证环境搭建是否正确；\n\
+             • 全程不会备份、不会还原、不会格式化、不会改动引导项、不会重启。\n\n\
+             建议：第一次使用本程序先切换到「探测」运行一次，确认系统、WinRE、卷都识别正常，再使用其它功能。"
         }
         (Language::Chinese, "backup_hint") => {
-            "备份：准备完成后进入 Windows 恢复环境，使用 DISM 捕获指定源分区。"
+            "「备份」把选中的源分区制作成 WIM 镜像（使用 DISM 捕获）：\n\n\
+             • 源卷：要备份的分区，默认当前系统分区；镜像路径：用于保存 .wim 的绝对路径；\n\
+             • 压缩率：fast（推荐）速度快、体积适中；max 体积最小但明显更慢；none 不压缩最快但文件最大；\n\
+             • 可设置「索引名」与「保留最近 N 个」管理历史版本；镜像已存在时自动追加为新索引；\n\
+             • 流程：准备完成后自动进入恢复环境（PE / WinRE），离线捕获源卷，完成后自动返回 Windows。\n\n\
+             说明：系统分区必须在离线环境备份；数据卷可在当前系统在线直接备份。"
         }
         (Language::Chinese, "restore_hint") => {
-            "单系统还原：覆盖目标分区，把镜像系统作为唯一 Windows 系统启动。"
+            "「单系统还原」把镜像系统写回目标分区并重建引导：\n\n\
+             • 目标卷：将被格式化并写入镜像的分区；镜像与索引：要还原的 WIM 及其中索引；\n\
+             • 还原会覆盖目标卷上的全部数据，点击「创建任务」后还会再次弹确认框，请务必谨慎；\n\
+             • 流程：在离线环境格式化目标卷 → DISM 应用镜像 → BCDBoot 重建引导项，使镜像系统成为唯一 Windows 启动；\n\
+             • 适用场景：系统损坏、无法开机时需要把备份恢复回来。\n\n\
+             安全提示：还原前请确认目标分区选对、重要数据已备份，操作不可中途取消。"
         }
         (Language::Chinese, "secondary_hint") => {
-            "新增第二系统：保留当前 Windows，把镜像部署到另一个分区并新增启动项。"
+            "「新增第二系统」在保留当前 Windows 的前提下，把另一个镜像部署成可启动的第二系统：\n\n\
+             • 目标卷：另选一个空闲分区（不占用当前系统），镜像写入该分区；\n\
+             • 启动项名称：自定义新系统在 Windows 启动菜单中显示的名称，可用中文；\n\
+             • 流程：离线环境格式化目标分区 → DISM 应用镜像 → BCDBoot 添加启动项；\n\
+             • 效果：重启后开机菜单可自由选择进入任一系统，适合双系统共存场景。\n\n\
+             说明：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
         }
         (Language::Chinese, "pe") => "PE 恢复",
         (Language::Chinese, "pe_hint") => {
-            "安装 PE 恢复环境：把 PE 镜像（boot.wim）部署为目标卷上的恢复环境，并新增 BCD 启动项「Windows PE (BackupRestore)」；不修改当前 Windows 默认启动。"
+            "「PE 恢复」部署一个自包含的 PE 备份/恢复环境，作为开机可选启动项：\n\n\
+             • 启动方式：RAM disk（不占分区，镜像临时复制到内存盘启动）或硬盘启动（独立分区，更稳定）；\n\
+             • PE 目录路径 / 目标卷：指定放置 PE 镜像（boot.wim）的目录或分区；启动项名称可自定义；\n\
+             • 部署后新增 BCD 启动项「Windows PE (BackupRestore)」，不改变当前 Windows 默认启动；\n\
+             • 用途：当系统无法启动时，可进入 PE 离线备份、还原、安装第二系统、打开完整程序或返回 Windows；\n\
+             • 勾选「重启进入 PE」可验证 PE 能否正常启动；PE 使用程序自带的标准 PE 镜像（非 WinRE）。"
         }
         (Language::English, "operation") => "Operation",
         (Language::English, "source") => "Windows source",
@@ -790,20 +875,20 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "restore") => "Restore",
         (Language::English, "secondary") => "Second system",
         (Language::English, "probe_hint") => {
-            "probe is a non-destructive check: refresh the volumes, keep this mode, then create a task to validate task files and WinRE payloads. No backup, restore, format or reboot."
+            "Inspect is a completely non-destructive safety check; run it first to validate your environment.\n\n• Refreshes and verifies the current Windows, recovery environment (WinRE / PE entry) and every volume, identified by disk+partition GUID instead of drive letter;\n• 'Create task' only writes and validates the task files and WinRE payloads to confirm the setup;\n• It never backs up, restores, formats, touches boot entries, or reboots.\n\nTip: first-time users should switch to Inspect and run once to confirm Windows, WinRE and volumes are recognized before using other features."
         }
         (Language::English, "backup_hint") => {
-            "Back up the selected source partition; WinRE performs DISM Capture after preparation."
+            "Backup captures the selected source partition into a WIM image (via DISM).\n\n• Source volume: the partition to back up (defaults to the system partition); Image path: absolute path for the .wim;\n• Compression: fast (recommended) is fast with moderate size; max is smallest but notably slower; none is fastest but largest;\n• 'Image name' and 'Keep latest N' manage history; when the image already exists a new index is appended automatically;\n• Flow: after preparation it enters recovery (PE / WinRE), captures the source volume offline, then returns to Windows.\n\nNote: the system partition must be backed up offline; data volumes can be backed up online in the current system."
         }
         (Language::English, "restore_hint") => {
-            "Single-system restore: overwrite the target partition and make it the only Windows system."
+            "Restore writes an image system back to the target partition and rebuilds the boot loader.\n\n• Target volume: the partition to be formatted and written; Image & index: the WIM and its index to restore;\n• Restoring overwrites all data on the target; 'Create task' asks for confirmation again, so proceed with care;\n• Flow: format the target offline → DISM Apply → BCDBoot to rebuild boot entries, making the image the only Windows;\n• Use case: damaged system or failure to boot, recovering from a backup.\n\nSafety: confirm the target partition is correct and important data is backed up; the operation cannot be cancelled midway."
         }
         (Language::English, "secondary_hint") => {
-            "Second system: keep the current Windows, deploy the image to another partition and add a boot entry."
+            "Second system deploys another image as a bootable system while keeping the current Windows.\n\n• Target volume: pick a spare partition (not the current system) to write the image;\n• Boot name: customize the name shown in the boot menu; Chinese is supported;\n• Flow: format the target offline → DISM Apply → BCDBoot adds a boot entry;\n• Result: after reboot the boot menu lets you choose either system; ideal for dual-boot.\n\nNote: the target volume is overwritten; confirm it holds nothing you need to keep."
         }
         (Language::English, "pe") => "PE recovery",
         (Language::English, "pe_hint") => {
-            "Install PE recovery: deploy the PE image (boot.wim) to the target volume and add a BCD entry named \"Windows PE (BackupRestore)\". The current Windows default boot is untouched."
+            "Install PE recovery deploys a self-contained PE backup/restore environment as an optional boot entry.\n\n• Boot mode: RAM disk (no partition; image loaded into a memory drive) or hard-disk boot (own partition, more stable);\n• PE folder path / target volume: where the PE image (boot.wim) is placed; boot name is customizable;\n• Adds a BCD entry \"Windows PE (BackupRestore)\" without changing the current Windows default boot;\n• Purpose: when the system cannot boot, enter PE to back up, restore, install a second system, open the full program, or return to Windows;\n• Enable 'Reboot into PE' to verify it boots; PE uses the bundled standard PE image (not WinRE)."
         }
         _ => "",
     }
@@ -6620,9 +6705,57 @@ unsafe extern "system" fn window_proc_pe(
         SendMessageW(version, WM_SETFONT, bar_font as WParam, 1);
         SendMessageW(clock, WM_SETFONT, bar_font as WParam, 1);
 
+        // PE 桌面包卡按钮的气泡提示：鼠标悬停显示各按钮用途说明。
+        let tooltip = CreateWindowExW(
+            WS_EX_TOPMOST,
+            wide("tooltips_class32").as_ptr(),
+            null(),
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+        );
+        if !tooltip.is_null() {
+            for &(id, text) in &[
+                (
+                    ID_PE_BACKUP,
+                    "备份系统：把选中的源分区制作成 WIM 镜像（离线 DISM 捕获），完成后返回 Windows。",
+                ),
+                (
+                    ID_PE_RESTORE,
+                    "还原系统：格式化目标分区并把镜像写回、重建引导（危险操作，请先确认目标分区与重要数据）。",
+                ),
+                (
+                    ID_PE_SECONDARY,
+                    "安装第二系统：把镜像部署到另一个分区并新增启动项，保留现有 Windows。",
+                ),
+                (
+                    ID_PE_CMD,
+                    "命令提示符：打开 PE 环境里的 cmd，可手动执行维护命令。",
+                ),
+                (
+                    ID_PE_EXIT,
+                    "返回 Windows：恢复引导启动到当前 Windows 并自动重启。",
+                ),
+                (
+                    ID_PE_MAIN_GUI,
+                    "打开完整程序：启动完整的多页签界面（与 Windows 下相同），可执行更多操作。",
+                ),
+            ] {
+                let control = GetDlgItem(hwnd, id as i32);
+                add_tooltip(tooltip, hwnd, control, text);
+            }
+        }
+
         let state = Box::new(PeDesktopState {
             clock,
             fonts: [title_font, card_font, bar_font],
+            tooltip,
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         SetTimer(hwnd, PE_TIMER_ID, 1000, None);
@@ -6698,6 +6831,9 @@ unsafe extern "system" fn window_proc_pe(
         }
         if message == WM_DESTROY {
             KillTimer(hwnd, PE_TIMER_ID);
+            if !state.tooltip.is_null() {
+                DestroyWindow(state.tooltip);
+            }
             for font in state.fonts {
                 if !font.is_null() {
                     DeleteObject(font);

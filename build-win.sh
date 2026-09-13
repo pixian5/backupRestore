@@ -30,8 +30,8 @@ cp "$EXE" target/aarch64-pc-windows-msvc/release/BackupRestore.exe
 echo ">> 产物：$(ls -la target/aarch64-pc-windows-msvc/release/BackupRestore.exe | awk '{print $5}') 字节"
 
 if [ "$1" = "--deploy" ]; then
-  echo ">> 部署到 VM Win11-repair"
+  echo ">> 部署到 VM Windows 11"
   # 部署：主程序 + Recovery.exe（同一二进制，winpeshl 按此名启动）+ 启动包装器 + 启动配置
-  prlctl exec "Win11-repair" cmd /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe 2>nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul & copy /y \\\\Mac\\backupRestore\\windows\\RecoveryLauncher.cmd C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd >nul & copy /y \\\\Mac\\backupRestore\\windows\\winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpeshl.ini >nul & echo DEPLOYED"
+  prlctl exec "Windows 11" cmd /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe 2>nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul & copy /y \\\\Mac\\backupRestore\\windows\\RecoveryLauncher.cmd C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd >nul & copy /y \\\\Mac\\backupRestore\\windows\\winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpeshl.ini >nul & echo DEPLOYED"
 fi
 echo ">> 完成"

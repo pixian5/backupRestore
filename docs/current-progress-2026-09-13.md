@@ -1,7 +1,7 @@
 # BackupRestore 当前完整进度基线（2026-09-13）
 
 更新时间：2026-09-13 23:0x（CST）  
-源码版本：`v1.5.9`（Cargo.toml×2 + VERSION 已同步；用户要求「彻底修完、全部测试完之后再升版本」，下一版本号 `1.5.10`）  
+源码版本：`v1.5.10`（Cargo.toml×2 + VERSION 已同步；每轮修改 +0.0.1 满十进一，下一版本号 `1.5.11`）  
 分支：`main`  
 仓库：`/Users/x/code/backupRestore`（github.com/pixian5/backupRestore）  
 构建环境：macOS Apple Silicon（m5 / macOS 26）交叉编译 `aarch64-pc-windows-msvc`  
@@ -94,6 +94,18 @@
 | PE 备份 GUI 进度 | Recovery.exe 进度 GUI 化（不闪 cmd） | ⚠️ **需核实 recovery_progress.rs 是否已接入 PE 桌面备份** |
 
 ---
+
+## C.5 v1.5.10 本轮改动（说明文案 + 气泡提示）
+
+> 2026-09-14 凌晨。构建：`./build-win.sh`（`--deploy` 的 VM 名已由过时的 `Win11-repair` 修正为实际运行名 **`Windows 11`**）。
+
+1. **每个 tab 的说明文本框（`status`，即 `*_hint`）写得更详细**：`ui_text` 里 5 个 tab 的中/英文说明全部重写为多行分段介绍（探测/备份/单系统还原/新增第二系统/PE 恢复），`.status` 为 `ES_MULTILINE|ES_AUTOVSCROLL|WS_VSCROLL`，长文本自动滚动显示。
+2. **按钮等控件悬浮气泡（tooltip）补全 + 扩充**：
+   - `install_tooltips` 挂载数组新增 8 个此前无提示的控件：`浏览…`、`PE 目录路径浏览`、`重启进入 PE`、`创建快捷方式`、`RAM disk/硬盘启动` 单选、`PE 目录路径` 输入框、`语言` 下拉。
+   - `tooltip_text` 新增对应中/英文文案；整体向「对按钮/控件做介绍」靠拢。
+   - **PE 恢复桌面 6 个卡片按钮**（备份/还原/安装第二系统/命令提示符/返回 Windows/打开完整程序）新增 tooltip；`PeDesktopState` 新增 `tooltip` 字段，`WM_CREATE` 创建 tooltips_class32 窗口并挂 6 按钮，`WM_DESTROY` 释放。
+3. 版本同步 `1.5.9 → 1.5.10`（两处 Cargo.toml、`VERSION`、`Cargo.lock`、GUI 标题随 `PROGRAM_VERSION`、send-wm.ps1 标题匹配串）。
+4. 验证：交叉编译通过（仅既有无关 warning），产物 ~1.5MB；已部署到 VM（`Windows 11`）`C:\Users\Public\backupRestore-package\`，将 GUI 在后台会话启动 4 秒进程存活、无崩溃（`install_tooltips` 新增挂载 + 多行说明 `set_text` 均正常执行）。**悬浮提示视觉效果需 RDP 连入 VM 鼠标悬停核验**（prlctl 启动的 GUI 落在 Services 会话，`prlctl capture` 拍不到窗口，属文档第 12 条已知环境限制）。
 
 ## D. v1.4.0 → v1.5.8 关键演进（简表）
 

@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-09-13
-当前开发版本：`1.5.9`（Cargo.toml×2 与 VERSION 已同步；完整当前基线见 [current-progress-2026-09-13.md](current-progress-2026-09-13.md)）
+当前开发版本：`1.5.10`（Cargo.toml×2 与 VERSION 已同步；完整当前基线见 [current-progress-2026-09-13.md](current-progress-2026-09-13.md)）
 分支：`main`
 本地开发基线：以当前 `HEAD` 为准
 
