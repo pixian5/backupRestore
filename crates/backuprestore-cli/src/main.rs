@@ -624,7 +624,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task.status
         )));
     }
-    let log = store.log_path(&task_id)?;
+    // 主日志默认在任务目录；挂载镜像卷后（见下）切换到镜像同目录 Recovery.log，
+    // 方便用户在 WIM 旁直接查看。workspace_log 保留给 GUI 状态报告读取。
+    let workspace_log = store.log_path(&task_id)?;
+    let mut log = workspace_log.clone();
     let stage_before_failure = task.status;
     let mut efi_root = None;
     // WinRE cleanup is part of the recovery contract.  Defer the terminal
@@ -699,6 +702,41 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             }
             if let Some(image) = task.image.as_mut() {
                 image.volume.drive_letter = Some(image_letter);
+            }
+            // 日志放到镜像同目录（如 E:\Recovery.log），与 WIM 并排便于查看；
+            // 写失败则回退任务目录日志，不影响恢复流程。
+            // 备份任务用 destination 记录镜像，还原任务用 image。
+            let image_relative = match &task.destination {
+                Some(spec) => Some(spec.relative_path.clone()),
+                None => task.image.as_ref().map(|spec| spec.relative_path.clone()),
+            };
+            if let Some(relative) = image_relative {
+                let parent = Path::new(&relative.replace('\\', "/"))
+                    .parent()
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let candidate = if parent.is_empty() || parent == "/" {
+                    PathBuf::from(format!("{image_letter}:\\Recovery.log"))
+                } else {
+                    PathBuf::from(format!(
+                        "{image_letter}:\\{}\\Recovery.log",
+                        parent.trim_matches('/')
+                    ))
+                };
+                // 候选日志若是新文件，把任务目录已有的早期日志一并复制过去，
+                // 保证镜像旁的 Recovery.log 内容完整。
+                if !candidate.exists() && workspace_log.exists() {
+                    let _ = fs::copy(&workspace_log, &candidate);
+                }
+                match append_log(&candidate, "Recovery log continued in image directory") {
+                    Ok(_) => log = candidate,
+                    Err(error) => {
+                        let _ = append_log(
+                            &log,
+                            &format!("image-directory log unavailable ({error}); keeping workspace log"),
+                        );
+                    }
+                }
             }
             if let Some(destination) = task.destination.as_mut() {
                 destination.volume.drive_letter = Some(image_letter);
@@ -1543,6 +1581,15 @@ fn recover_windows(
                 }
                 stage => return Err(err(&format!("backup cannot resume from stage {stage:?}"))),
             }
+            // 备份耗时统计：记录开始时间，捕获完成后计算总耗时与平均速度。
+            let backup_started = Utc::now();
+            append_log(
+                log,
+                &format!(
+                    "Backup capture started at {}",
+                    backup_started.to_rfc3339()
+                ),
+            )?;
             let existing = destination_path.exists();
             if existing && !destination_path.is_file() {
                 return Err(err("backup image path exists but is not a regular file"));
@@ -1614,6 +1661,8 @@ fn recover_windows(
                 append_log(log, &format!("Appended backup as WIM index {index}"))?;
                 index
             } else {
+                // 压缩率：仅首次创建 WIM 时生效；追加备份沿用 WIM 已有压缩设置。
+                let compress_level = task.compress.as_deref().unwrap_or("fast");
                 run_logged(
                     "dism.exe",
                     &[
@@ -1621,7 +1670,7 @@ fn recover_windows(
                         &format!("/ImageFile:{}", partial.display()),
                         &format!("/CaptureDir:{}", source_path.display()),
                         "/Name:Windows Backup",
-                        "/Compress:max",
+                        &format!("/Compress:{compress_level}"),
                         "/CheckIntegrity",
                         &exclude_arg,
                     ],
@@ -1635,6 +1684,21 @@ fn recover_windows(
                 1
             };
             let image_size = fs::metadata(&destination_path)?.len();
+            // 备份耗时统计：总耗时与平均速度（字节/秒）。
+            let backup_finished = Utc::now();
+            let duration_secs = (backup_finished - backup_started).num_seconds().max(1) as u64;
+            let bytes_per_sec = image_size / duration_secs;
+            append_log(
+                log,
+                &format!(
+                    "Backup capture finished: started={} finished={} duration={}s speed={}/s image={} bytes",
+                    backup_started.to_rfc3339(),
+                    backup_finished.to_rfc3339(),
+                    duration_secs,
+                    bytes_per_sec,
+                    image_size,
+                ),
+            )?;
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
             let source_volume_serial = source.volume_serial.clone();
             let source_partition_size = source.partition_size;
@@ -1655,9 +1719,12 @@ fn recover_windows(
                 write_json_atomic(index_metadata_path(&destination_path, *index)?, metadata)?;
             }
             let metadata = BackupMetadata {
-                version: 2,
+                version: 3,
                 image_type: "wim".into(),
                 created: Utc::now(),
+                started: Some(backup_started),
+                duration_secs: Some(duration_secs),
+                bytes_per_sec: Some(bytes_per_sec),
                 computer: context_value("COMPUTERNAME", "WinRE"),
                 windows_edition: context_value("WINDOWS_EDITION", "unknown"),
                 architecture: context_value("WINDOWS_ARCHITECTURE", &native_windows_architecture()),

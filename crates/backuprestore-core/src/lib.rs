@@ -259,6 +259,15 @@ pub struct BackupMetadata {
     #[serde(rename = "type")]
     pub image_type: String,
     pub created: DateTime<Utc>,
+    /// 备份开始时间（WinRE 里开始 DISM 捕获的时刻），旧 v2 元数据无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<DateTime<Utc>>,
+    /// 备份总耗时（秒），旧 v2 元数据无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u64>,
+    /// 备份平均速度（字节/秒），旧 v2 元数据无此字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_per_sec: Option<u64>,
     pub computer: String,
     pub windows_edition: String,
     pub architecture: String,
@@ -297,6 +306,9 @@ pub struct Task {
     pub image: Option<ImageSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<DestinationSpec>,
+    /// WIM 压缩率（max/fast/none），仅备份首次创建时生效；追加备份沿用已有压缩。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetSpec>,
     pub boot_plan: BootPlan,
@@ -331,6 +343,7 @@ impl Task {
             workspace_volume: None,
             image: None,
             destination: None,
+            compress: None,
             target: None,
             boot_plan,
             created: Utc::now(),

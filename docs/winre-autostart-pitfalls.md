@@ -68,3 +68,26 @@ Move the entire BackupRestore folder to another volume and run it again.
 ## 8. 仍未修（已知缺口）
 
 - **Recovery.log / status.json 没更新**：WinRE 里 Recovery.exe 跑完 DISM 后，任务目录的 Recovery.log 仍空、status.json 停在 `boot-requested`。怀疑写日志的路径在 WinRE 盘符映射下不对（任务目录在 C:\Users\Public\...，WinRE 里 C: 映射可能不同）。**不影响备份/还原结果本身，但状态追踪是坏的，待修。**
+
+## v1.5.8 四功能验证补充坑（2026-09-13 实测）
+
+### 9. WinRE 状态会莫名回到 Disabled
+快照/还原流程后 `reagentc /info` 可能显示 Disabled（0.0.0.0）。prepare 前的校验 `reagentc /info` 输出必须含 `GLOBALROOT` 或 `Recovery\WindowsRE`，否则报 "Windows RE is disabled or unavailable"。修复：`reagentc /enable`（Winre.wim 一直在 R: 恢复分区 partition5，无需 copype 重建）。
+
+### 10. schtasks /run 重复触发一次性任务不可靠
+同一 BRPrepareX 任务第二次 `/run` 曾报 "invalid task"，但直接在 cmd 里手动跑 prepare 成功。批量验证时建议每次用新任务名，或直接 prlctl exec 手动跑（注意需管理员上下文时仍走 schtasks）。
+
+### 11. build-win.sh --deploy 占用文件静默失败
+BackupRestore.exe 运行中（GUI 开着）时部署 copy 报"另一个程序正在使用此文件"，但脚本仍打印 DEPLOYED。必须先 `taskkill /f /im BackupRestore.exe /im Recovery.exe` 再部署，部署后校验 exe 时间戳是否为当前构建时刻。
+
+### 12. 还原自动重定位（程序在目标盘）
+还原 prepare 检测到"程序所在分区 == 待还原分区"时，自动把 exe+Recovery.exe+RecoveryLauncher.cmd+winpeshl.ini+VCRUNTIME 复制到 `{镜像盘符}:\backupRestore-package`，SHA256 校验后以 CREATE_NO_WINDOW 从副本重启 prepare（追加 --relocated）。副本的 last-task.json/任务目录在镜像卷（如 E:\backupRestore-package\），GUI 状态读取需注意来源盘。实测：C 盘程序跑还原 → 自动重定位 → 还原成功，闭环通过。
+
+### 13. 日志切到镜像同目录要同时处理 destination 和 image
+备份任务镜像在 `task.destination`，还原任务在 `task.image`——只查 image 会导致备份时日志切换跳过（写回任务目录）。已修：两者都取 relative_path，写 `{镜像盘符}:\Recovery.log`（如 E:\Recovery.log），早期日志复制过去保证完整；写失败回退任务目录。E:\Recovery.log 是 append 累积多次任务，非覆盖。
+
+### 14. 耗时统计与压缩率实测（决定 fast 为默认）
+- max（1.wim，源 68.7GB，v2 无 duration，由 prepare 04:14→metadata 04:42 推断）≈ 26 分钟，输出 24.76GB
+- fast（fast.wim，源 65.5GB）duration=414s（6.9 分钟），输出 27.47GB
+- fast（fast2.wim，源约 68.7GB）duration=417s（7 分钟），输出 28.26GB
+结论：fast 体积仅比 max 大约 10%，耗时约 1/3.7——GUI 与命令行默认压缩率改为 fast。

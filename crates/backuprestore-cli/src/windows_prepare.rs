@@ -98,6 +98,10 @@ pub(crate) struct PrepareOptions {
     test_fault: Option<String>,
     allow_destructive: bool,
     no_reboot: bool,
+    /// WIM 压缩率：max/fast/none，仅备份首次创建时生效。
+    compress: Option<String>,
+    /// 由自动重定位（还原目标 == 程序所在卷）启动的副本，跳过重定位检查。
+    relocated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,11 +132,14 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
         Operation::RestoreExisting | Operation::CreateSecondary
     ) && options.target_drive == Some(workspace_drive)
     {
-        // A normal drive-root executable path and its selected target letter
-        // already identify the same mounted volume. Do this inexpensive check
-        // before opening a raw volume handle so users get the explicit move
-        // instruction without elevation, UAC, task creation or WinRE/BCD I/O.
-        return Err(restore_workspace_target_error(workspace_drive));
+        if options.relocated {
+            // 副本已运行在非还原目标卷，理论不会到达这里；防御性放行。
+            // （重定位目标=镜像所在卷，镜像卷必须≠还原目标卷）
+        } else {
+            // 程序在待还原分区上：自动把程序复制到镜像所在卷，再从副本重启
+            // prepare（带 --relocated），用户无需手工移动程序。
+            return relocate_to_image_volume(&options, &executable_dir);
+        }
     }
     let workspace = volume_identity(workspace_drive)?;
     let target = if matches!(
@@ -162,6 +169,81 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     prepare_task(&executable_dir, &workspace, target, options)
 }
 
+/// 还原目标分区 == 程序所在分区时，自动把程序运行时复制到镜像所在卷，
+/// 再从副本启动 prepare（带 --relocated），旧实例退出。用户无需手工移动。
+///
+/// 复制内容：主程序（BackupRestore.exe/当前 exe）+ Recovery.exe（同一二进制
+/// 的副本，winpeshl 按此名启动）+ RecoveryLauncher.cmd + winpeshl.ini +
+/// VCRUNTIME 运行库。目标目录固定为 `{镜像盘符}:\backupRestore-package`。
+#[cfg(windows)]
+fn relocate_to_image_volume(options: &PrepareOptions, executable_dir: &Path) -> Result<(), TaskError> {
+    use std::os::windows::process::CommandExt;
+    let image_path = options
+        .image_path
+        .as_ref()
+        .ok_or_else(|| err("relocation requires --image-path"))?;
+    let image_drive = drive_from_path(Path::new(image_path))?;
+    let target_drive = options
+        .target_drive
+        .ok_or_else(|| err("relocation requires --target-drive"))?;
+    if image_drive == target_drive {
+        return Err(err(
+            "cannot relocate: image volume must differ from the restore target",
+        ));
+    }
+    let current_exe = std::env::current_exe()?;
+    let dest_dir = PathBuf::from(format!("{image_drive}:\\backupRestore-package"));
+    fs::create_dir_all(&dest_dir)?;
+
+    // 主程序：以 BackupRestore.exe 为名复制；若当前 exe 名不同也原样复制。
+    let exe_name = current_exe
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "BackupRestore.exe".to_string());
+    let dest_exe = dest_dir.join(&exe_name);
+    fs::copy(&current_exe, &dest_exe)?;
+    let dest_recovery = dest_dir.join("Recovery.exe");
+    fs::copy(&current_exe, &dest_recovery)?;
+    // 启动包装器与配置：winpeshl.ini 指定 RecoveryLauncher.cmd 作为入口。
+    for name in ["RecoveryLauncher.cmd", "winpeshl.ini"] {
+        let source = executable_dir.join(name);
+        if source.is_file() {
+            fs::copy(&source, dest_dir.join(name))?;
+        }
+    }
+    for runtime in ["VCRUNTIME140.dll", "VCRUNTIME140_1.dll"] {
+        let source = executable_dir.join(runtime);
+        if source.is_file() {
+            fs::copy(&source, dest_dir.join(runtime))?;
+        }
+    }
+    // MD5 校验副本与源一致，防止复制中途损坏。
+    if backuprestore_core::sha256_file(&dest_exe)? != backuprestore_core::sha256_file(&current_exe)?
+    {
+        return Err(err("relocated executable hash mismatch; refusing to launch"));
+    }
+    // 从副本重启 prepare：原参数 + --relocated，隐藏窗口，继承管理员令牌。
+    let mut arguments: Vec<String> = std::env::args().skip(1).collect();
+    arguments.push("--relocated".to_string());
+    let mut command = std::process::Command::new(&dest_exe);
+    command.args(&arguments);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.spawn().map_err(|error| {
+        err(&format!(
+            "failed to start relocated prepare at {}: {error}",
+            dest_exe.display()
+        ))
+    })?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn relocate_to_image_volume(_options: &PrepareOptions, _executable_dir: &Path) -> Result<(), TaskError> {
+    Err(err("auto-relocation is only available on Windows"))
+}
+
+/// 兜底报错：workspace 卷与还原目标卷同分区但盘符不同（如挂载点场景），
+/// 无法自动重定位时给出明确提示。常规场景（盘符相同）已由自动重定位接管。
 fn restore_workspace_target_error(workspace_drive: char) -> TaskError {
     err(&format!(
         "Cannot start restore: the program directory is on {workspace_drive}:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
@@ -277,6 +359,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut test_fault = None;
     let mut allow_destructive = false;
     let mut no_reboot = false;
+    let mut compress = None;
+    let mut relocated = false;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
         let value = |name: &str, args: &mut std::vec::IntoIter<String>| {
@@ -328,6 +412,14 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             }
             "--allow-destructive" => allow_destructive = true,
             "--no-reboot" => no_reboot = true,
+            "--compress" => {
+                let level = value("--compress", &mut args)?;
+                if !matches!(level.as_str(), "max" | "fast" | "none") {
+                    return Err(err("--compress must be max, fast or none"));
+                }
+                compress = Some(level);
+            }
+            "--relocated" => relocated = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
         }
     }
@@ -373,6 +465,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         test_fault,
         allow_destructive,
         no_reboot,
+        compress,
+        relocated,
     })
 }
 
@@ -483,6 +577,7 @@ fn prepare_task(
     );
     task.source = Some(source.clone());
     task.workspace_volume = Some(workspace.clone());
+    task.compress = options.compress.clone();
     match options.operation {
         Operation::Backup => {
             task.destination = Some(DestinationSpec {
@@ -547,6 +642,15 @@ fn prepare_task(
         }
         return Err(error);
     }
+    // recoveryLog 指向镜像同目录（如 E:\Recovery.log），与 WIM 并排便于查看；
+    // GUI「刷新任务状态」据此显示。备份/还原都会把日志写到镜像同目录。
+    let recovery_log_path = match options.image_path.as_ref() {
+        Some(path) => Path::new(path)
+            .parent()
+            .map(|parent| parent.join("Recovery.log"))
+            .unwrap_or_else(|| PathBuf::from("Recovery.log")),
+        None => store.log_path(&task.task_id)?,
+    };
     write_json_atomic(
         executable_dir.join("last-task.json"),
         &json!({
@@ -554,7 +658,7 @@ fn prepare_task(
             "operation": task.operation,
             "taskRoot": task_dir,
             "statusJson": store.status_path(&task.task_id)?,
-            "recoveryLog": store.log_path(&task.task_id)?,
+            "recoveryLog": recovery_log_path,
             "prepareLog": prepare_log,
             "imagePath": image_path,
             "created": Utc::now(),

@@ -54,6 +54,8 @@ const CB_ADDSTRING: u32 = 0x0143;
 const CB_RESETCONTENT: u32 = 0x014b;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
+const CB_GETLBTEXTLEN: u32 = 0x0148;
+const CB_GETLBTEXT: u32 = 0x0149;
 const CB_SETDROPPEDWIDTH: u32 = 0x0160;
 const BM_SETCHECK: u32 = 0x00f1;
 const BST_UNCHECKED: usize = 0;
@@ -100,6 +102,7 @@ const ID_IMAGE: usize = 1203;
 const ID_TARGET: usize = 1204;
 const ID_INDEX: usize = 1206;
 const ID_MENU: usize = 1207;
+const ID_COMPRESS: usize = 1208;
 const ID_STATUS: usize = 1300;
 const ID_LANGUAGE_LABEL: usize = 2009;
 const ID_SOURCE_DETAILS: usize = 2012;
@@ -500,6 +503,7 @@ struct Controls {
     target: Hwnd,
     index: Hwnd,
     menu: Hwnd,
+    compress: Hwnd,
     source_details: Hwnd,
     target_details: Hwnd,
     status: Hwnd,
@@ -565,6 +569,7 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.image, "image"),
         (state.controls.index, "index"),
         (state.controls.menu, "menu"),
+        (state.controls.compress, "compress"),
         (GetDlgItem(state.root, ID_REFRESH as i32), "refresh"),
         (GetDlgItem(state.root, ID_READ_IMAGE as i32), "read_image"),
         (GetDlgItem(state.root, ID_CREATE_TASK as i32), "create_task"),
@@ -599,6 +604,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "index") => "选择 WIM 索引；下拉项显示索引及详细元数据。",
         (Language::Chinese, "menu") => "第二系统在 Windows 启动菜单中显示的名称。",
+        (Language::Chinese, "compress") => {
+            "备份镜像压缩率（仅首次创建 WIM 时生效）：\n• fast 快速（默认/推荐）：体积仅比 max 大约 10%，但耗时约 1/3.5，性价比最高\n• max 高压缩：WIM 最小，但备份明显更慢（压缩 CPU 开销大）\n• none 不压缩：WIM 最大（约等于源数据量），备份最快\n增量备份说明：镜像已存在时追加为新索引，压缩率沿用 WIM 首次创建时的设置；压缩率不影响能否增量备份。"
+        }
         (Language::Chinese, "refresh") => "刷新 Windows、WinRE 和可用卷信息。",
         (Language::Chinese, "read_image") => "只读解析 WIM 索引、哈希和元数据。",
         (Language::Chinese, "create_task") => "创建任务；还原操作会先显示确认对话框。",
@@ -624,6 +632,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "index") => "Select a WIM index; each item shows detailed metadata.",
         (Language::English, "menu") => "Name shown for the second system in the Windows boot menu.",
+        (Language::English, "compress") => {
+            "Backup WIM compression (applies only when the WIM is first created):\n• fast (default/recommended): only ~10% larger than max, but ~1/3.5 the time — best value\n• max high compression: smallest WIM, notably slower backup (CPU cost)\n• none uncompressed: largest WIM (~source size), fastest backup\nIncremental notes: appending to an existing WIM keeps the compression set at first creation; compression does not affect whether incremental backup is available."
+        }
         (Language::English, "refresh") => "Refresh Windows, WinRE and eligible volume information.",
         (Language::English, "read_image") => {
             "Read WIM indexes, hash and metadata without modifying the image."
@@ -678,6 +689,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "target") => "目标卷",
         (Language::Chinese, "index") => "WIM 索引",
         (Language::Chinese, "menu") => "第二系统名称",
+        (Language::Chinese, "compress") => "压缩率",
         (Language::Chinese, "language") => "语言",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
@@ -713,6 +725,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "target") => "Restore target",
         (Language::English, "index") => "WIM index",
         (Language::English, "menu") => "Secondary boot name",
+        (Language::English, "compress") => "Compression",
         (Language::English, "language") => "Language",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
@@ -882,6 +895,16 @@ unsafe fn combo_selection(hwnd: Hwnd) -> Option<usize> {
     }
 }
 
+unsafe fn combo_item_text(hwnd: Hwnd, position: usize) -> String {
+    let length = SendMessageW(hwnd, CB_GETLBTEXTLEN, position, 0);
+    if length <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0_u16; (length as usize) + 1];
+    SendMessageW(hwnd, CB_GETLBTEXT, position, buffer.as_mut_ptr() as isize);
+    String::from_utf16_lossy(&buffer[..length as usize])
+}
+
 unsafe fn selected_language(state: &State) -> Language {
     if combo_index(state.controls.language) == 1 {
         Language::English
@@ -975,6 +998,8 @@ unsafe fn set_operation_visibility(state: &State) {
         "restore-existing" | "create-secondary" | "install-pe-entry"
     );
     let show_index = matches!(operation, "restore-existing" | "create-secondary");
+    // WIM 压缩率（max/fast/none）只对备份首次创建有意义，仅「备份」tab 显示。
+    let show_compress = operation == "backup";
     // 「第二系统名称」输入框及其标签只在「新增第二系统」tab 显示；
     // 「PE 恢复」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
     // 其布局位置（field_x+500, secondary_y）会恰好覆盖右下角「创建快捷方式」按钮。
@@ -994,6 +1019,8 @@ unsafe fn set_operation_visibility(state: &State) {
     set_child_visible(2007, show_index);
     set_visible(state.controls.menu, show_menu);
     set_child_visible(2008, show_menu);
+    set_visible(state.controls.compress, show_compress);
+    set_child_visible(2014, show_compress);
 
     set_visible(state.controls.target, show_target);
     set_visible(state.controls.target_details, show_target);
@@ -1065,6 +1092,9 @@ unsafe fn layout_operation(state: &State) {
     let image_y = status_y + 84;
     let secondary_y = image_y + 34;
     let buttons_y = if index_visible {
+        secondary_y + 40
+    } else if selected_operation(state) == "backup" {
+        // 备份时 secondary_y 行独占「压缩率」下拉，按钮行下移避免遮挡。
         secondary_y + 40
     } else if image_visible {
         image_y + 40
@@ -1304,6 +1334,22 @@ unsafe fn layout_operation(state: &State) {
         secondary_y,
         (field_width - 500).max(300),
         24,
+    );
+    // 「备份」tab 的压缩率下拉：WIM 索引/第二系统名称行（secondary_y）在
+    // 备份模式下控件均隐藏，压缩率独占该行：标签在左侧，下拉框在右侧。
+    reposition(
+        GetDlgItem(state.root, 2014),
+        20,
+        secondary_y + 2,
+        150,
+        24,
+    );
+    reposition(
+        state.controls.compress,
+        field_x,
+        secondary_y,
+        280,
+        220,
     );
 
     reposition(
@@ -1917,6 +1963,7 @@ unsafe fn apply_language(state: &mut State) {
         (2005, "target"),
         (2007, "index"),
         (2008, "menu"),
+        (2014, "compress"),
         (ID_LANGUAGE_LABEL, "language"),
     ] {
         set_child_text(state.root, id, ui_text(language, key));
@@ -3959,6 +4006,13 @@ unsafe fn create_task(state: &State) {
             index,
         ]);
     }
+    if operation == "backup" {
+        // 压缩率下拉：值即 max/fast/none（DISM 术语，语言无关）。
+        let compress = combo_selection(state.controls.compress)
+            .map(|position| combo_item_text(state.controls.compress, position))
+            .unwrap_or_else(|| "fast".to_string());
+        arguments.extend(["--compress".to_string(), compress]);
+    }
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
         arguments.push("--allow-destructive".to_string());
     }
@@ -4168,6 +4222,17 @@ unsafe extern "system" fn window_proc(
                 24,
                 ID_MENU,
             ),
+            compress: create_control(
+                hwnd,
+                "COMBOBOX",
+                "",
+                CBS_DROPDOWNLIST | WS_TABSTOP,
+                480,
+                585,
+                260,
+                220,
+                ID_COMPRESS,
+            ),
             source_details: create_control(
                 hwnd,
                 "EDIT",
@@ -4206,12 +4271,19 @@ unsafe extern "system" fn window_proc(
         add_combo_item(controls.language, "English");
         SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
         SendMessageW(controls.operation_tabs[0], BM_SETCHECK, BST_CHECKED, 0);
+        // 压缩率下拉：max/fast/none 是 DISM 术语，各语言通用；默认 fast
+        // （实测 fast 体积仅比 max 大约 10%，耗时约 1/3.7，性价比更高）。
+        for level in ["max", "fast", "none"] {
+            add_combo_item(controls.compress, level);
+        }
+        SendMessageW(controls.compress, CB_SETCURSEL, 1, 0);
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
         create_control(hwnd, "STATIC", "源卷", 0, 20, 222, 150, 26, 2003);
         create_control(hwnd, "STATIC", "目标卷", 0, 20, 332, 150, 26, 2005);
         create_control(hwnd, "STATIC", "镜像绝对路径", 0, 20, 550, 130, 22, 2004);
         create_control(hwnd, "STATIC", "WIM 索引", 0, 20, 590, 130, 22, 2007);
         create_control(hwnd, "STATIC", "第二系统名称", 0, 490, 590, 100, 22, 2008);
+        create_control(hwnd, "STATIC", "压缩率", 0, 20, 585, 150, 24, 2014);
         create_control(
             hwnd,
             "STATIC",
