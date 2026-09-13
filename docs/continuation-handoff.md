@@ -6,7 +6,7 @@
 
 ## 1. 用户目标与已经确认的沟通决策
 
-用户要求开发一个 Windows 10/11 的系统备份与还原工具：在正常 Windows 中选择备份或还原，程序准备任务并进入系统自带 WinRE，WinRE 自动启动 Recovery.exe，使用 DISM 捕获/应用 WIM，使用 BCDBoot 修复启动项，恢复原始 WinRE 后自动重启。V1 支持 UEFI/GPT、NTFS、WIM、普通单系统还原，以及用户主动选择的第二系统模式；不做自研 PE、分区重构、网络备份、增量镜像或 Legacy BIOS。
+用户要求开发一个 Windows 10/11 的系统备份与还原工具：在正常 Windows 中选择备份或还原，程序准备任务并进入系统自带 WinRE，WinRE 自动启动 Recovery.exe，使用 DISM 捕获/应用 WIM，使用 BCDBoot 修复启动项，恢复原始 WinRE 后自动重启。V1 支持 UEFI/GPT、NTFS、WIM、普通单系统还原、用户主动选择的第二系统模式，并已实现**自定义 PE 作为第二启动系统（RAM disk / 硬盘启动两种模式）**；不包含分区重构、网络备份、增量镜像或 Legacy BIOS。
 
 用户特别要求：
 
@@ -32,12 +32,12 @@
 
 ## 2. 当前仓库与版本
 
-本轮最新事实基线见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。下面的历史说明用于保留交接背景；涉及 v1.3.3 的阶段续跑结论以该基线为准。
+本轮最新事实基线见 [current-progress-2026-09-13.md](current-progress-2026-09-13.md)（v1.5.8，当前权威基线）。下面的历史说明用于保留交接背景；涉及 v1.3.3 的阶段续跑结论以 [current-progress-2026-09-09.md](current-progress-2026-09-09.md) 为准。
 
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本为 `1.3.3`。根目录 `VERSION`、两个 Cargo manifest 和 `Cargo.lock` 必须同步；`windows/build-windows.ps1` 已强制检查。Windows 包的目录、`build-manifest.json` 和 GUI 标题必须一致，不能复用旧版本截图。阶段断电续跑和最新版 GUI 的未完成项见 [current-progress-2026-09-09.md](current-progress-2026-09-09.md)。
+- 当前开发版本为 `1.5.8`（**未升级**——用户要求彻底测完、全部测试通过后再升，满十进一；下一版本 `1.5.9`）。根目录 `VERSION`、两个 Cargo manifest 和 `Cargo.lock` 必须同步；Windows 包的目录、`build-manifest.json` 和 GUI 标题必须一致，不能复用旧版本截图。最新状态与待办见 [current-progress-2026-09-13.md](current-progress-2026-09-13.md)。
 - 最近 ARM64 实机结果：Rust prepare/Recovery 已完成自动 probe、非 C Capture 和多索引 Index 2 Apply；工作目录/目标同卷会在任何 BCD/WinRE 写入前被 Rust 拒绝，WinRE hash 保持不变。独立 EFI 首启动仍返回 Recovery `0xc0430001`，该功能仅开发测试。继续验证时仍禁止把 `C:` 作为备份源或还原目标，但可以读取其启动配置和 WinRE。v1.0.5 新增 DISM 文本回退的多索引详细字段解析，需在本轮 ARM64 包中复核。
 - v1.0.8 已从共享桌面源码重建 ARM64 包；提升权限 CLI 实读 `V:\multi-index-same-source-v1.0.5.wim` 返回索引 1/2。GUI 双索引下拉仍必须在客体中用真实输入完成截图后才能标记实机已验证，不能把 CLI 输出或旧截图当作本轮证据。
 - `v0.7.8` 二次 EFI 诊断仍返回 `0xc0430001`：E: BCD 已由管理员 `bcdboot U:\Windows /s E: /f UEFI /v` 重建，默认 loader 的 `device/osdevice` 均为 U:，但 hdd2 首启动仍失败。不要再把旧 BCD 残留当作已证实根因；下一轮应在隔离快照验证跨磁盘 UEFI/Secure Boot/分区关联，完成后恢复 `hdd0` 首启动并保持最新 GUI 前台。
