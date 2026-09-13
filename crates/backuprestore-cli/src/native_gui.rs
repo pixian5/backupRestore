@@ -5307,7 +5307,9 @@ unsafe fn pe_dialog(
             *out = None;
         }
         let width = 440;
-        let height = if show_name { 300 } else { 288 };
+        // 对话框总高需预留 WS_CAPTION 标题栏（约 28-30px），否则底部
+        // 「执行/取消」按钮会超出客户区被裁剪，PE 内显示不完整。
+        let height = if show_name { 324 } else { 312 };
         let x = ((GetSystemMetrics(SM_CXSCREEN) - width) / 2).max(0);
         let y = ((GetSystemMetrics(SM_CYSCREEN) - height) / 2).max(0);
         let wtitle = wide(title);

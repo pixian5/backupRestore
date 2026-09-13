@@ -204,7 +204,9 @@ fn relocate_to_image_volume(options: &PrepareOptions, executable_dir: &Path) -> 
     fs::copy(&current_exe, &dest_exe)?;
     let dest_recovery = dest_dir.join("Recovery.exe");
     fs::copy(&current_exe, &dest_recovery)?;
-    // 启动包装器与配置：winpeshl.ini 指定 RecoveryLauncher.cmd 作为入口。
+    // 启动配置与 fallback 包装器：winpeshl.ini 直接启动 Recovery.exe
+    // recover-env（GUI 进度窗口，无 cmd 黑窗）；RecoveryLauncher.cmd 仅在
+    // Recovery.exe 缺失且 OPERATION=probe 时走 Recovery.cmd 兼容分支。
     for name in ["RecoveryLauncher.cmd", "winpeshl.ini"] {
         let source = executable_dir.join(name);
         if source.is_file() {
@@ -715,9 +717,9 @@ fn prepare_payload(
     fs::copy(&registered_wim, original.join("Winre.wim"))?;
     let original_hash = sha256_file(original.join("Winre.wim"))?;
 
-    // 必须存在的运行时载荷：启动配置、恢复程序、启动包装器
-    // RecoveryLauncher.cmd 读 RecoveryTask.env 后调用 Recovery.exe recover-env，
-    // 是 winpeshl.ini 指定的入口，缺失会导致 WinRE 启动后无程序可跑、超时回 Windows。
+    // 必须存在的运行时载荷：启动配置、恢复程序、启动包装器（fallback）
+    // winpeshl.ini 已改为直接启动 Recovery.exe recover-env（无 cmd 黑窗）；
+    // RecoveryLauncher.cmd 保留为探针/兼容分支（Recovery.exe 缺席时 probe 走 Recovery.cmd）。
     for name in ["winpeshl.ini", "Recovery.exe", "RecoveryLauncher.cmd"] {
         let source = executable_dir.join(name);
         if !source.is_file() {
@@ -1061,15 +1063,25 @@ fn validate_operation_inputs(
                     &format!("/Index:{}", options.wim_index),
                 ],
             )?;
-            let metadata = crate::read_index_metadata(Path::new(path), options.wim_index)?;
-            let expected = &metadata.image_sha256;
-            let actual = sha256_file(path)?;
-            if !actual.eq_ignore_ascii_case(expected) {
-                return Err(err("restore image hash does not match metadata"));
+            // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 哈希；
+            // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
+            // 哈希校验与目标大小预检——DISM /Get-WimInfo 已确认 WIM 可读。
+            let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
+            if let Some(metadata) = &metadata {
+                let expected = &metadata.image_sha256;
+                let actual = sha256_file(path)?;
+                if !actual.eq_ignore_ascii_case(expected) {
+                    return Err(err("restore image hash does not match metadata"));
+                }
             }
             let minimum = metadata
-                .required_target_size()
-                .max(metadata.source.partition_size);
+                .as_ref()
+                .map(|metadata| {
+                    metadata
+                        .required_target_size()
+                        .max(metadata.source.partition_size)
+                })
+                .unwrap_or(0);
             if target.partition_size < minimum {
                 return Err(err("restore target is too small"));
             }

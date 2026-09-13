@@ -37,6 +37,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 mod native_gui;
 #[cfg(windows)]
+mod recovery_progress;
+#[cfg(windows)]
 mod windows_prepare;
 
 fn usage() -> ! {
@@ -608,10 +610,15 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // available.  Switch to the task directory immediately after mounting;
     // all task/recovery logs that survive WinRE are stored there.
     let mut early_log = PathBuf::from(r"X:\BackupRestore-Recovery-early.log");
+    // WinRE 恢复进度窗口：GUI 显示阶段文本/DISM 进度/日志尾部，
+    // 替代无提示的 cmd 黑窗。窗口线程独立读日志，不侵入恢复主流程。
+    let progress = recovery_progress::spawn(early_log.clone());
     let task_letter = mount_env_volume(&values, "WORKSPACE", 'T', &early_log, false)?;
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
+    // 早期日志切到任务目录后，进度窗口跟随新日志。
+    *progress.log_path.lock().unwrap() = early_log.clone();
     // Mount Recovery before loading/validating the task so the emergency
     // guard always uses the Recovery volume letter, never the workspace
     // letter. The old ordering could attempt restoration under T:\Recovery.
@@ -729,7 +736,11 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                     let _ = fs::copy(&workspace_log, &candidate);
                 }
                 match append_log(&candidate, "Recovery log continued in image directory") {
-                    Ok(_) => log = candidate,
+                    Ok(_) => {
+                        log = candidate;
+                        // 主日志切到镜像同目录（如 E:\Recovery.log）后，进度窗口跟随。
+                        *progress.log_path.lock().unwrap() = log.clone();
+                    }
                     Err(error) => {
                         let _ = append_log(
                             &log,
@@ -1520,23 +1531,22 @@ fn recover_windows(
             task.operation,
             Operation::RestoreExisting | Operation::CreateSecondary
         ) {
-            let metadata = read_index_metadata(path, image.index).map_err(|error| {
-                err(&format!(
-                    "backup metadata is required and must be valid: {error}"
-                ))
-            })?;
-            if !metadata.image_sha256.eq_ignore_ascii_case(&image.sha256) {
-                return Err(err("image hash does not match backup metadata"));
-            }
-            let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;
-            let required = metadata
-                .required_target_size()
-                .max(metadata.source.partition_size);
-            if required == 0 || target.volume.partition_size < required {
-                return Err(err(&format!(
-                    "target partition is too small: {} < {}",
-                    target.volume.partition_size, required
-                )));
+            // 配套备份 metadata 存在时校验 WIM 哈希与目标分区大小；缺失时
+            // 视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过该校验。
+            if let Ok(metadata) = read_index_metadata(path, image.index) {
+                if !metadata.image_sha256.eq_ignore_ascii_case(&image.sha256) {
+                    return Err(err("image hash does not match backup metadata"));
+                }
+                let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;
+                let required = metadata
+                    .required_target_size()
+                    .max(metadata.source.partition_size);
+                if required == 0 || target.volume.partition_size < required {
+                    return Err(err(&format!(
+                        "target partition is too small: {} < {}",
+                        target.volume.partition_size, required
+                    )));
+                }
             }
         }
         run_logged(

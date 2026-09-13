@@ -382,3 +382,54 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
      绑定错误桌面，找不到窗口；窗口确认在屏后仍失败时，重建任务或换名重试。
   6. Get-Process 的 MainWindowHandle 在跨会话视角可能为 0，不能作为窗口存在
      依据；以 EnumWindows（同桌面）为准。
+
+## 硬盘版 PE（分区启动）实机验证坑（v1.5.8，2026-09-13）
+
+### 1. 标准 PE 可以分区启动，WinRE.wim 不行
+- 程序自带 PE（BackupRestorePE.iso 的 sources\boot.wim，367MB）**可以**：DISM
+  /Apply-Image 到分区（如 F:）+ bcdboot 分区\Windows /s S: /f UEFI + winpe=Yes，
+  Boot Manager 手动选 PE 即可进入 PE 会话。
+- **WinRE.wim 不能**用「apply 到分区 + bcdboot partition=」方式启动（报错/回退）；
+  ramdisk 方式（WIM+boot.sdi）配置正确也可能直接崩 VM。用户明确：**一律用程序
+  自带 PE 镜像，不是 WinRE 镜像**。
+- bcdboot 输出 "Setting {default} to {new}" 是 BFSVC 内部别名，实际创建的 loader
+  条目是另一个 GUID（以 bcdedit /enum all /v 为准）；/addlast 在 /s 指定卷时被
+  忽略，必须手工 bcdedit 恢复 default={current} 与 displayorder（Win11 第一）。
+
+### 2. 标准 PE 无中文字体 → PE 桌面中文乱码
+- 标准 WinPE 不含 simsun 等中文字体，Recovery.exe 的 PE 恢复桌面按钮/标题全部
+  显示 □□□。
+- **修复**：把 Win11 的 C:\Windows\Fonts\simsun.ttc 复制到 PE 分区
+  Windows\Fonts\simsun.ttc，PE 桌面中文立即正常（GDI 按字体名找到文件即可用）。
+
+### 3. PE 内的 Recovery.exe 必须是最新版
+- ISO 打包时注入 PE WIM 的 Recovery.exe 是构建当时的版本；若之后新增了
+  `--pe-desktop` 等分支，旧版收到该参数会输出 usage 并 exit 2 → PE 桌面不出现、
+  cmd 一闪 → PE 重启回引导菜单。
+- **修复**：部署时同步 `copy 最新 Recovery.exe → PE 分区\Windows\System32\`。
+
+### 4. PE 桌面对话框高度必须预留标题栏
+- window_proc_pe_dialog 控件用客户区坐标（按钮 y=236+32），但 CreateWindowExW
+  的 height 是**含 WS_CAPTION 标题栏的总高**（约 28-30px）——height=288 时按钮
+  底部超出客户区被裁剪，界面显示不完整。
+- **修复**：height 288→312（有菜单名 300→324），按钮完整可见（v1.5.8）。
+
+### 5. pe-exit-guid.txt 必须写 Win11 真实 GUID
+- ESP 根目录 S:\pe-exit-guid.txt 是「返回 Windows」按钮（exit_pe_to_windows）
+  读取的 Win11 条目 GUID（PE 内 {current} 解析成 PE 条目，不能用）。
+- 若写入错误/不存在的 GUID，bcdedit /set {bootmgr} default {错误GUID} 会把
+  default 设为无效条目（bootmgr 重启回退到 displayorder 第一个，但 BCD 状态脏）。
+- **修复**：确保部署时写入 `bcdedit /enum {current} /v` 的真实 GUID（本次修正为
+  {a8bafbae-af1a-11f1-a77c-9813bbfbbd66}）。
+
+### 6. bootsequence 在此 Parallels VM 不可靠
+- 同一条 bootsequence {PE} 有时被 bootmgr 消费（自动进 PE），有时不消费
+  （直接进 Win11，bootsequence 残留）。**验证进 PE 以 Boot Manager 菜单手动选
+  PE 为准**；bootsequence 只作"有机会自动进"的尽力而为。
+
+### 7. PE（X: RAM 盘）无法 prlctl exec
+- Parallels Tools 不在 PE 里，PE 会话中 prlctl exec 报 "Unable to open new
+  session"。PE 内自动化靠：
+  - ESP 上写 S:\pe-click.txt（内容 backup / restore / secondary / exit），
+    PE 桌面启动时自动投递对应按钮点击（用完改名为 .done）；
+  - 需要回 Win11 时 prlctl stop --kill + start（强制）。

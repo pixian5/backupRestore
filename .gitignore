@@ -75,3 +75,9 @@ run_prepare_*.cmd
 run_restore_*.cmd
 build_winre_*.cmd
 copy_to_e_*.cmd
+/*.bat
+/*.ps1
+/*.txt
+pe-assets/
+pe-debug-winpeshl.ini
+pe-debug.cmd
