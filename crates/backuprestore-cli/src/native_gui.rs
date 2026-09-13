@@ -3642,7 +3642,10 @@ unsafe fn install_pe_harddisk(state: &State) {
         .to_string();
     let _ = std::fs::write(&script_file, &script);
     let format_code = run_cmd_to_file_timeout(
-        &format!("cmd /c diskpart /s {script_file} > NUL 2>&1"),
+        // script_file 是程序所在目录下的临时脚本，程序装在含空格目录
+        // （如 C:\Users\张三\My Apps\）时路径必须加引号，否则 cmd 会把
+        // 路径拆成两个参数导致 diskpart 找不到脚本（与 exit=87 同类问题）。
+        &format!("cmd /c diskpart /s \"{script_file}\" > NUL 2>&1"),
         None,
         300000,
     );

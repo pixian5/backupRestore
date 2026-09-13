@@ -446,3 +446,22 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 7. PE 恢复 tab：三个按钮（重启进入 PE / 返回 Windows / 创建快捷方式）功能不受本轮改动影响。
 
 **已知限制（沿用 L.7）**：GUI 在线备份/弹窗的完整人工点击路径无法由远程命令行实测（Session 0 无交互桌面），上述 1-7 需在 Win11 桌面人工过一遍；CLI 侧同等逻辑已全部实机验证。
+
+### L.9 全量审计「拼字符串执行命令」类隐患（2026-09-13 21:05）
+起因：L.8 修复了 execute_online 的 `/Name` 带空格未加引号（exit=87）。用户要求排查是否还有其他同类问题。逐点审计了全部命令执行入口：
+
+**结论：同类问题仅 1 处，已修复**：
+- `native_gui.rs` PE 硬盘安装的格式化步骤：`cmd /c diskpart /s {script_file}` —— script_file 是程序所在目录下的临时脚本，若程序装在含空格目录（如 `C:\Users\张三\My Apps\`）会被 cmd 拆参。已改为 `diskpart /s "{script_file}"`。
+
+**确认安全（无需改）**：
+1. `main.rs` 全部 `run_logged`（dism/bcdboot/bcdedit/diskpart/wpeutil/bcdedit import）：Rust `Command::new().args()` 参数数组，Windows 下自动正确加引号，不经过 cmd 解析。
+2. `execute_online`（L.8 已修）：ImageFile/Name 全部加引号。
+3. 创建快捷方式：`powershell -File "{ps1}"` 已加引号。
+4. PE 安装 bcdedit：`/create /d "{entry_name}"` 已加引号；其余 set 命令只含 GUID（`{...}` 无空格）或盘符（单字符）。
+5. PE 硬盘安装 Apply：`/ImageFile:"{image_path}"` 已加引号。
+6. bootsequence：`bcdedit /set {bootmgr} bootsequence {{{guid}}}` —— GUID 无空格。
+7. PE 重启/返回 Windows：wpeutil reboot、shutdown、mountvol 均为固定字符串。
+8. `run_cmd_to_file_timeout` 的日志重定向 `> "{out}"` 已加引号。
+9. GUI prepare 提权（ShellExecuteW runas）：参数经 `quote_argument`（含空白或 `"` 时加引号）。
+
+**经验沉淀（防再犯）**：本项目有两条命令执行通道——`run_logged`（参数数组，安全）与 `run_cmd_to_file*`（`cmd.exe /c` 整串，**凡是用户输入/路径/名称必须自己加引号**）。以后新增命令一律优先用参数数组；必须拼字符串时，对每个动态值做「可能含空格吗？」检查并加 `"`。
