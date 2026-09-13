@@ -75,6 +75,8 @@ const MB_ICONQUESTION: u32 = 0x00000020;
 const IDYES: i32 = 6;
 const IDOK: i32 = 1;
 const WM_APP_TEST_INSTALL: u32 = 0x8001;
+/// 在线备份/还原后台线程完成通知（结果在 ONLINE_RESULT 全局读）。
+const WM_APP_ONLINE_DONE: u32 = 0x8002;
 /// 测试钩子：自动安装时跳过确认框（验收/自动化测试用）。
 static TEST_AUTO_CONFIRM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -131,11 +133,14 @@ const ID_PE_RESTORE: usize = 1402;
 const ID_PE_SECONDARY: usize = 1403;
 const ID_PE_CMD: usize = 1404;
 const ID_PE_EXIT: usize = 1405;
-const ID_PE_REBOOT: usize = 1406;
+const ID_PE_MAIN_GUI: usize = 1406;
+// 「重启」已合并进「返回 Windows」（返回 = 修复 BCD + 重启回 Windows），
+// 原 ID_PE_REBOOT=1406 改为「打开完整程序」按钮。
 const ID_PE_TITLE: usize = 1407;
 const ID_PE_VERSION: usize = 1408;
 const ID_PE_CLOCK: usize = 1409;
-// 主窗口「PE 恢复」tab 的"重启进入 PE"按钮（与 PE 桌面的 ID_PE_REBOOT 区分）
+// 主窗口「PE 恢复」tab 的"重启进入 PE"按钮（PE 桌面无独立重启按钮，
+// 「重启」已合并进「返回 Windows」）
 const ID_PE_REBOOT_MAIN: usize = 1410;
 // 主窗口「PE 恢复」tab 的"创建桌面快捷方式"按钮
 const ID_PE_SHORTCUT: usize = 1411;
@@ -272,6 +277,8 @@ unsafe extern "system" {
         callback: Option<unsafe extern "system" fn(Hwnd, LParam) -> i32>,
         l_param: LParam,
     ) -> i32;
+    fn EnableWindow(window: Hwnd, enable: i32) -> i32;
+    fn SetForegroundWindow(window: Hwnd) -> i32;
     fn RegisterClassExW(class: *const WndClassExW) -> u16;
     fn CreateWindowExW(
         ex_style: u32,
@@ -2040,6 +2047,193 @@ unsafe fn show_message(hwnd: Hwnd, text: &str, caption: &str, flags: u32) -> i32
     let text = wide(text);
     let caption = wide(caption);
     MessageBoxW(hwnd, text.as_ptr(), caption.as_ptr(), flags)
+}
+
+// ===================== 系统分区处理方式选择（3 按钮模态） =====================
+// 智能分流：备份/还原目标为「当前活动系统」时，不能在线执行，弹窗让用户选
+// 进入 PE / 进入 Windows RE / 取消。自绘模态对话框（不依赖 comctl32 v6
+// TaskDialog），返回 1=进入 PE、2=进入 Windows RE、0=取消。
+const ID_CHOICE_BODY: usize = 2000;
+const ID_CHOICE_PE: usize = 2001;
+const ID_CHOICE_RE: usize = 2002;
+const ID_CHOICE_CANCEL: usize = 2003;
+/// 对话框文案语言：0=中文 1=English（模态期间单实例，用静态即可）。
+static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+unsafe extern "system" fn window_proc_system_choice(
+    hwnd: Hwnd,
+    message: u32,
+    w_param: WParam,
+    l_param: LParam,
+) -> LResult {
+    if message == WM_CREATE {
+        let english = CHOICE_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+        let font = GetStockObject(DEFAULT_GUI_FONT) as Handle;
+        let body = create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "The target volume is the currently running system. Backing up or restoring the system partition must run offline in PE or Windows RE. Choose how to proceed:"
+            } else {
+                "目标分区是当前正在运行的系统。系统分区的备份与还原必须在 PE 或 Windows RE 中离线执行。请选择处理方式："
+            },
+            0,
+            30,
+            24,
+            400,
+            78,
+            ID_CHOICE_BODY,
+        );
+        let btn_pe = create_control(
+            hwnd,
+            "BUTTON",
+            if english {
+                "Enter PE (recommended)"
+            } else {
+                "进入 PE（推荐）"
+            },
+            WS_TABSTOP,
+            30,
+            112,
+            400,
+            42,
+            ID_CHOICE_PE,
+        );
+        let btn_re = create_control(
+            hwnd,
+            "BUTTON",
+            if english {
+                "Enter Windows RE"
+            } else {
+                "进入 Windows RE"
+            },
+            WS_TABSTOP,
+            30,
+            162,
+            400,
+            42,
+            ID_CHOICE_RE,
+        );
+        let btn_cancel = create_control(
+            hwnd,
+            "BUTTON",
+            if english { "Cancel" } else { "取消" },
+            WS_TABSTOP,
+            30,
+            212,
+            400,
+            42,
+            ID_CHOICE_CANCEL,
+        );
+        SendMessageW(body, WM_SETFONT, font as WParam, 1);
+        SendMessageW(btn_pe, WM_SETFONT, font as WParam, 1);
+        SendMessageW(btn_re, WM_SETFONT, font as WParam, 1);
+        SendMessageW(btn_cancel, WM_SETFONT, font as WParam, 1);
+        return 0;
+    }
+    if message == WM_COMMAND {
+        let control_id = w_param & 0xffff;
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
+        if !state_ptr.is_null() {
+            let result = match control_id {
+                ID_CHOICE_PE => 1,
+                ID_CHOICE_RE => 2,
+                ID_CHOICE_CANCEL => 0,
+                _ => -1,
+            };
+            if result >= 0 {
+                *state_ptr = result;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+        }
+    }
+    if message == WM_DESTROY {
+        PostQuitMessage(0);
+        return 0;
+    }
+    DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+/// 模态询问「进入 PE / 进入 RE / 取消」（3 按钮）。返回 1=PE 2=RE 0=取消。
+unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
+    let instance = GetModuleHandleW(null());
+    let class_name = wide("BackupRestoreSystemDriveChoice");
+    let class = WndClassExW {
+        cb_size: size_of::<WndClassExW>() as u32,
+        style: 0,
+        wnd_proc: Some(window_proc_system_choice),
+        cb_cls_extra: 0,
+        cb_wnd_extra: 0,
+        h_instance: instance,
+        h_icon: null_mut(),
+        h_cursor: null_mut(),
+        h_brush: null_mut(),
+        menu_name: null(),
+        class_name: class_name.as_ptr(),
+        h_icon_sm: null_mut(),
+    };
+    if RegisterClassExW(&class) == 0 && GetLastError() != 1410 {
+        // ERROR_CLASS_ALREADY_EXISTS=1410：类已注册，继续使用
+        return 0;
+    }
+    CHOICE_LANGUAGE.store(
+        if language == Language::English { 1 } else { 0 },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let caption = wide(if language == Language::English {
+        "Recovery environment required"
+    } else {
+        "需要进入恢复环境处理"
+    });
+    // 屏幕居中（宽 460 高 268）
+    let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
+    let dialog = CreateWindowExW(
+        0,
+        class_name.as_ptr(),
+        caption.as_ptr(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        (screen_w - 460) / 2,
+        (screen_h - 268) / 2,
+        460,
+        268,
+        hwnd,
+        null_mut(),
+        instance,
+        null_mut(),
+    );
+    if dialog.is_null() {
+        return 0;
+    }
+    let result_box = Box::new(0i32);
+    SetWindowLongPtrW(dialog, GWLP_USERDATA, Box::into_raw(result_box) as isize);
+    // 模态：禁用主窗口，进入对话框消息循环
+    EnableWindow(hwnd, 0);
+    ShowWindow(dialog, SW_SHOW);
+    let mut message = Msg {
+        hwnd: null_mut(),
+        message: 0,
+        w_param: 0,
+        l_param: 0,
+        time: 0,
+        point: Point { x: 0, y: 0 },
+    };
+    while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    let ptr = GetWindowLongPtrW(dialog, GWLP_USERDATA) as *mut i32;
+    let result = if ptr.is_null() { 0 } else { *ptr };
+    if !ptr.is_null() {
+        drop(Box::from_raw(ptr));
+    }
+    SetWindowLongPtrW(dialog, GWLP_USERDATA, 0);
+    // 恢复主窗口
+    EnableWindow(hwnd, 1);
+    SetForegroundWindow(hwnd);
+    result
 }
 
 unsafe fn is_elevated() -> bool {
@@ -3985,6 +4179,75 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
+    // ===== 智能分流：备份/还原目标为「当前活动系统」→ 弹窗选 PE/RE/取消 =====
+    // 判断用「当前活动系统」（%SystemDrive%），不是「任何含 Windows 的卷」：
+    // 双系统时另一个 Windows 卷并未运行，可直接在线备份/还原。
+    let compress = if operation == "backup" {
+        combo_selection(state.controls.compress)
+            .map(|position| combo_item_text(state.controls.compress, position))
+            .unwrap_or_else(|| "fast".to_string())
+    } else {
+        String::new()
+    };
+    if matches!(operation.as_str(), "backup" | "restore-existing") {
+        let system_upper = std::env::var("SystemDrive")
+            .unwrap_or_else(|_| "C:".to_string())
+            .trim_end_matches('\\')
+            .trim_end_matches(':')
+            .to_ascii_uppercase();
+        let target_upper = target_drive.trim_end_matches(':').to_ascii_uppercase();
+        if target_upper == system_upper {
+            // 当前活动系统：必须离线处理，弹窗让用户选 PE / RE / 取消
+            let choice = ask_system_drive_handler(state.root, language);
+            match choice {
+                1 => {
+                    append_gui_log(
+                        state,
+                        "system drive operation: user chose PE (schedule PE task)",
+                    );
+                    schedule_pe_task(
+                        state,
+                        &operation,
+                        &source_drive,
+                        &target_drive,
+                        &image_path,
+                        &index,
+                        &compress,
+                    );
+                    return;
+                }
+                2 => {
+                    // 进入 Windows RE：继续走现有 prepare → WinRE 任务链
+                    append_gui_log(
+                        state,
+                        "system drive operation: user chose Windows RE (prepare chain)",
+                    );
+                }
+                _ => {
+                    append_gui_log(state, "system drive operation cancelled by user");
+                    return;
+                }
+            }
+        } else {
+            // 非当前活动系统（数据盘 / 未运行的第二系统）：在线直接执行，不重启
+            append_gui_log(
+                state,
+                &format!(
+                    "online operation: target={target_upper} system={system_upper}"
+                ),
+            );
+            run_online_operation(
+                state,
+                &operation,
+                &source_drive,
+                &target_drive,
+                &image_path,
+                &index,
+                &compress,
+            );
+            return;
+        }
+    }
     let executable =
         std::env::current_exe().unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
     let mut arguments = vec![
@@ -4007,10 +4270,7 @@ unsafe fn create_task(state: &State) {
         ]);
     }
     if operation == "backup" {
-        // 压缩率下拉：值即 max/fast/none（DISM 术语，语言无关）。
-        let compress = combo_selection(state.controls.compress)
-            .map(|position| combo_item_text(state.controls.compress, position))
-            .unwrap_or_else(|| "fast".to_string());
+        // 压缩率下拉：值即 max/fast/none（DISM 术语，语言无关，已在上方分流处解析）。
         arguments.extend(["--compress".to_string(), compress]);
     }
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
@@ -4080,6 +4340,211 @@ unsafe fn create_task(state: &State) {
             },
         );
     }
+}
+
+// ===================== 智能分流：进入 PE / 在线直接执行 =====================
+
+/// 智能分流「进入 PE」：把备份/还原动作写入 ESP 的 S:\pe-task.txt，设置
+/// bootsequence 指向已安装 PE，自动重启。PE 启动后按配置自动执行备份/还原，
+/// 结尾 `reboot` 使 PE 执行完自动重启回 Windows，全程无需用户操作。
+unsafe fn schedule_pe_task(
+    state: &State,
+    operation: &str,
+    source_drive: &str,
+    target_drive: &str,
+    image_path: &str,
+    _index: &str,
+    _compress: &str,
+) {
+    let language = selected_language(state);
+    let guid_file = state.executable_dir.join("pe-entry-guid.txt");
+    let guid = std::fs::read_to_string(&guid_file)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let Some(guid) = guid else {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                "No PE entry installed yet. Open the PE Recovery tab, install the PE first, then retry."
+            } else {
+                "尚未安装 PE 恢复环境。请先在「PE 恢复」页完成 PE 安装，再重试。"
+            },
+            if language == Language::English {
+                "PE entry missing"
+            } else {
+                "未安装 PE 恢复环境"
+            },
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return;
+    };
+    // PE 任务解析按空白分词：路径含空格会拆坏，先拦截提示
+    if image_path.contains(' ') {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                "The PE task channel does not support spaces in the WIM path yet. Move the image to a path without spaces and retry."
+            } else {
+                "PE 自动执行通道暂不支持带空格的镜像路径。请把 WIM 放到无空格路径后重试。"
+            },
+            if language == Language::English {
+                "Path not supported"
+            } else {
+                "路径暂不支持"
+            },
+            MB_OK | MB_ICONWARNING,
+        );
+        return;
+    }
+    let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
+    append_gui_log(state, &format!("schedule_pe_task: mountvol S: code={mount_code}"));
+    let task = if operation == "backup" {
+        format!("backup {source_drive} \"{image_path}\"\nreboot\n")
+    } else {
+        format!("restore \"{image_path}\" {target_drive}\nreboot\n")
+    };
+    let write_ok = std::fs::write("S:\\pe-task.txt", &task).is_ok();
+    append_gui_log(
+        state,
+        &format!("schedule_pe_task: write pe-task.txt ok={write_ok} task={task}"),
+    );
+    let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
+    append_gui_log(state, &format!("schedule_pe_task: {command}"));
+    let code = run_cmd_to_file(&command, None);
+    append_gui_log(state, &format!("schedule_pe_task: bcdedit exit code={code}"));
+    if code == 0 && write_ok {
+        append_gui_log(state, "schedule_pe_task: bootsequence set, auto reboot now");
+        if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
+            let fallback = run_cmd_to_file("shutdown.exe /r /t 0 /f", None);
+            append_gui_log(
+                state,
+                &format!("schedule_pe_task: shutdown.exe fallback code={fallback}"),
+            );
+            if fallback != 0 {
+                show_message(
+                    state.root,
+                    &if language == Language::English {
+                        "PE task configured and boot sequence set, but auto-reboot failed. Please restart manually."
+                    } else {
+                        "已写入 PE 任务配置并设置一次性启动项，但自动重启失败，请手动重启进入 PE。"
+                    },
+                    if language == Language::English {
+                        "Auto-reboot failed"
+                    } else {
+                        "自动重启失败"
+                    },
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
+    } else {
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!(
+                    "Failed to configure PE task (bcdedit code {code}, config write {write_ok}). Run as administrator."
+                )
+            } else {
+                format!(
+                    "配置失败（bcdedit 退出码 {code}，配置写入 {write_ok}）。请确认以管理员身份运行。"
+                )
+            },
+            if language == Language::English {
+                "Failed"
+            } else {
+                "设置失败"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+/// 在线备份/还原的后台参数（线程内只读，避免跨线程借用 State）。
+struct OnlineOpParams {
+    operation: String,
+    source_drive: String,
+    target_drive: String,
+    image_path: String,
+    index: String,
+    compress: String,
+}
+
+/// 在线执行结果（后台线程写完，主窗口 WM_APP_ONLINE_DONE 读取显示）。
+static ONLINE_RESULT: std::sync::Mutex<Option<String>> =
+    std::sync::Mutex::new(None);
+
+/// 后台执行 DISM 在线备份/还原（数据盘/非活动系统），完成后回主窗口消息。
+/// 备份：dism /Capture-Image（存在则追加索引）；还原：dism /Apply-Image。
+fn execute_online(params: &OnlineOpParams) -> String {
+    let out = std::env::temp_dir().join("br-online-op.txt");
+    let command = if params.operation == "backup" {
+        format!(
+            "dism.exe /Capture-Image /ImageFile:{} /CaptureDir:{}:\\ /Name:Online /Compress:{}",
+            params.image_path, params.source_drive, params.compress
+        )
+    } else {
+        format!(
+            "dism.exe /Apply-Image /ImageFile:{} /Index:{} /ApplyDir:{}:\\",
+            params.image_path, params.index, params.target_drive
+        )
+    };
+    let code = run_cmd_to_file_timeout(&command, Some(&out), 600000);
+    let mut summary = format!(
+        "[ONLINE {}] exit={}\n",
+        params.operation, code
+    );
+    if let Ok(text) = std::fs::read_to_string(&out) {
+        summary.push_str(&text);
+    } else {
+        summary.push_str("(no output captured)\n");
+    }
+    summary
+}
+
+/// 启动在线备份/还原后台线程（非当前活动系统的卷可直接在线处理）。
+unsafe fn run_online_operation(
+    state: &State,
+    operation: &str,
+    source_drive: &str,
+    target_drive: &str,
+    image_path: &str,
+    index: &str,
+    compress: &str,
+) {
+    let language = selected_language(state);
+    let params = OnlineOpParams {
+        operation: operation.to_string(),
+        source_drive: source_drive.to_string(),
+        target_drive: target_drive.to_string(),
+        image_path: image_path.to_string(),
+        index: index.to_string(),
+        compress: compress.to_string(),
+    };
+    let root = state.root as usize;
+    // 清掉上次结果，避免读到旧内容
+    *ONLINE_RESULT.lock().unwrap() = None;
+    std::thread::spawn(move || {
+        let result = execute_online(&params);
+        *ONLINE_RESULT.lock().unwrap() = Some(result);
+        unsafe {
+            PostMessageW(root as Hwnd, WM_APP_ONLINE_DONE, 0, 0);
+        }
+    });
+    set_text(
+        state.controls.status,
+        &if language == Language::English {
+            "Online backup/restore started in the background. A result dialog will appear when it finishes."
+        } else {
+            "已启动在线备份/还原（后台执行），完成后会弹出结果。"
+        },
+    );
+    append_gui_log(
+        state,
+        &format!(
+            "online operation started: op={operation} source={source_drive} target={target_drive}"
+        ),
+    );
 }
 
 unsafe extern "system" fn window_proc(
@@ -4505,6 +4970,48 @@ unsafe extern "system" fn window_proc(
         if message == WM_APP_TEST_INSTALL {
             append_gui_log(state, "test hook: install triggered");
             create_task(state);
+            return 0;
+        }
+        if message == WM_APP_ONLINE_DONE {
+            // 在线备份/还原后台线程完成：读取结果并弹窗展示
+            let result = ONLINE_RESULT.lock().unwrap().take().unwrap_or_default();
+            let language = selected_language(state);
+            let success = result.contains("exit=0")
+                || result.contains("The operation completed successfully");
+            let (text, caption, flags) = if success {
+                (
+                    if language == Language::English {
+                        format!("Online backup/restore completed successfully.\n\n{result}")
+                    } else {
+                        format!("在线备份/还原执行成功。\n\n{result}")
+                    },
+                    if language == Language::English {
+                        "Completed"
+                    } else {
+                        "执行成功"
+                    },
+                    MB_OK | MB_ICONINFORMATION,
+                )
+            } else {
+                (
+                    if language == Language::English {
+                        format!("Online backup/restore finished with errors.\n\n{result}")
+                    } else {
+                        format!("在线备份/还原执行结束，但可能存在问题。\n\n{result}")
+                    },
+                    if language == Language::English {
+                        "Finished with errors"
+                    } else {
+                        "执行结束（可能存在问题）"
+                    },
+                    MB_OK | MB_ICONWARNING,
+                )
+            };
+            append_gui_log(
+                state,
+                &format!("online operation finished: success={success}"),
+            );
+            show_message(state.root, &text, &caption, flags);
             return 0;
         }
         if message == WM_SIZE {
@@ -5654,7 +6161,8 @@ unsafe extern "system" fn window_proc_pe(
             (ID_PE_SECONDARY, "安装第二系统", 2, 0),
             (ID_PE_CMD, "命令提示符", 0, 1),
             (ID_PE_EXIT, "返回 Windows", 1, 1),
-            (ID_PE_REBOOT, "重启", 2, 1),
+            // 「重启」已合并进「返回 Windows」，此位改为打开完整主程序 GUI
+            (ID_PE_MAIN_GUI, "打开完整程序", 2, 1),
         ];
         let mut card_controls = Vec::with_capacity(6);
         for (id, text, column, row) in cards {
@@ -5746,19 +6254,23 @@ unsafe extern "system" fn window_proc_pe(
                     ShellExecuteW(hwnd, null(), cmd.as_ptr(), null(), null(), SW_SHOW);
                     return 0;
                 }
-                ID_PE_REBOOT => {
-                    if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
-                        let wpe = wide("wpeutil.exe");
-                        let argument = wide("reboot");
-                        ShellExecuteW(
-                            hwnd,
-                            null(),
-                            wpe.as_ptr(),
-                            argument.as_ptr(),
-                            null(),
-                            SW_SHOW,
-                        );
-                    }
+                ID_PE_MAIN_GUI => {
+                    // 打开完整主程序 GUI（多 tab 界面，与 Windows 下相同）。
+                    // 注意：当前 exe 名为 Recovery.exe，不满足 main.rs
+                    // should_launch_gui 的 "BackupRestore" 检查，无参数启动
+                    // 不会进 GUI；必须带 --tab 1（备份页）直接进入。
+                    let executable = std::env::current_exe()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("X:\\Windows\\System32\\Recovery.exe"));
+                    let exe_wide = wide(&executable.to_string_lossy());
+                    let argument = wide("--tab 1");
+                    ShellExecuteW(
+                        hwnd,
+                        null(),
+                        exe_wide.as_ptr(),
+                        argument.as_ptr(),
+                        null(),
+                        SW_SHOW,
+                    );
                     return 0;
                 }
                 _ => {}
@@ -5875,6 +6387,7 @@ fn read_pe_click_config() -> Option<(&'static str, Vec<String>)> {
         "restore" => "restore",
         "secondary" => "secondary",
         "exit" => "exit",
+        "main" => "main",
         _ => return None,
     };
     Some((action, params))
@@ -6465,6 +6978,7 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             Some(("restore", _)) => Some(ID_PE_RESTORE),
             Some(("secondary", _)) => Some(ID_PE_SECONDARY),
             Some(("exit", _)) => Some(ID_PE_EXIT),
+            Some(("main", _)) => Some(ID_PE_MAIN_GUI),
             _ => None,
         };
         if let Some(btn_id) = auto_click_id {

@@ -433,3 +433,34 @@ GUI 启动时若存在 `C:\br-test.json`，自动设置 PE 恢复参数并可选
   - ESP 上写 S:\pe-click.txt（内容 backup / restore / secondary / exit），
     PE 桌面启动时自动投递对应按钮点击（用完改名为 .done）；
   - 需要回 Win11 时 prlctl stop --kill + start（强制）。
+
+## 完整 GUI 进 PE + 智能分流（v1.5.8，2026-09-13）
+
+### 1. 完整多 tab GUI 可以在 WinPE 里直接运行
+- `Recovery.exe --tab 1` 在 PE 里能正常启动完整主 GUI（多 tab、语言下拉、磁盘枚举
+  全可用），已验证截图。因此「打开完整程序」按钮成立：PE 桌面保留 6 按钮（把
+  「重启」合并进「返回 Windows」后，空位改为「打开完整程序」）。
+- **坑**：`main.rs should_launch_gui()` 检查 exe 文件名 == "BackupRestore"，
+  PE 里文件名是 Recovery.exe，**无参数启动不会进 GUI**（走 CLI 分支）。必须带
+  `--tab N` 或 `--open-image` 参数直接进 GUI。
+
+### 2. 智能分流：判断「当前活动系统」用 %SystemDrive%
+- 备份/还原 tab 点「创建任务」时：目标卷 == %SystemDrive%（当前正在运行的
+  系统）→ 弹窗 3 按钮（进入 PE / 进入 Windows RE / 取消）。
+- **不是**用「是否含 Windows 的卷」判断——双系统时另一个 Windows 卷并未运行，
+  可以直接在线备份/还原（DISM 捕获离线卷没问题）。
+- 弹窗 3 按钮用**自绘模态对话框**（不依赖 comctl32 v6 TaskDialog——项目无
+  manifest，TaskDialogIndirect 可能不可用）。
+
+### 3. 在线直接执行（数据盘）
+- 非当前活动系统卷 → 后台线程跑 `dism /Capture-Image`（备份）或
+  `/Apply-Image`（还原），完成 PostMessage WM_APP_ONLINE_DONE，主窗口弹结果。
+- **坑**：std::thread::spawn 闭包里不能直接 move Hwnd（裸指针 *mut c_void 不
+  Send）——先 `let root = state.root as usize;`，线程里再 `as Hwnd`。
+
+### 4. pe-task / pe-click 通道
+- `S:\pe-click.txt` 新增动作 `main`（自动点「打开完整程序」验收通道）。
+- `S:\pe-task.txt` 按空白分词：**WIM 路径含空格会被拆坏**，写任务前必须拦截提示
+  （智能分流 schedule_pe_task 已做）。
+- ESP 程序正常文件：pe-drive.txt、pe-bootsequence-clean.log、pe-exit-guid.txt
+  （部署 GUID）、pe-entry-guid.txt（PE 条目 GUID，Windows 侧部署目录）。
