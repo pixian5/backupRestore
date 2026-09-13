@@ -191,6 +191,9 @@ pub struct ImageSpec {
     pub sha256: String,
     pub size_bytes: u64,
     pub index: u32,
+    /// WIM 索引名（DISM /Name），备份时写入索引；用户可在 GUI 修改。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,6 +312,12 @@ pub struct Task {
     /// WIM 压缩率（max/fast/none），仅备份首次创建时生效；追加备份沿用已有压缩。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress: Option<String>,
+    /// 保留最近 N 个 WIM 索引：备份追加成功后删除更旧索引（0/None=不清理）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_indexes: Option<u32>,
+    /// 备份索引名（DISM /Name；None 时使用默认 "Windows Backup"）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetSpec>,
     pub boot_plan: BootPlan,
@@ -344,6 +353,8 @@ impl Task {
             image: None,
             destination: None,
             compress: None,
+            keep_indexes: None,
+            image_name: None,
             target: None,
             boot_plan,
             created: Utc::now(),

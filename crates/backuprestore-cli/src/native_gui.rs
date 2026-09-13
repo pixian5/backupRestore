@@ -105,6 +105,8 @@ const ID_TARGET: usize = 1204;
 const ID_INDEX: usize = 1206;
 const ID_MENU: usize = 1207;
 const ID_COMPRESS: usize = 1208;
+const ID_INDEX_NAME_EDIT: usize = 1209;
+const ID_KEEP_EDIT: usize = 1210;
 const ID_STATUS: usize = 1300;
 const ID_LANGUAGE_LABEL: usize = 2009;
 const ID_SOURCE_DETAILS: usize = 2012;
@@ -511,6 +513,10 @@ struct Controls {
     index: Hwnd,
     menu: Hwnd,
     compress: Hwnd,
+    /// 备份索引名输入框（默认程序启动时间，可修改）。
+    index_name: Hwnd,
+    /// 保留最近 N 个索引输入框（0=不清理）。
+    keep: Hwnd,
     source_details: Hwnd,
     target_details: Hwnd,
     status: Hwnd,
@@ -579,6 +585,8 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.index, "index"),
         (state.controls.menu, "menu"),
         (state.controls.compress, "compress"),
+        (state.controls.index_name, "index_name"),
+        (state.controls.keep, "keep"),
         (GetDlgItem(state.root, ID_REFRESH as i32), "refresh"),
         (GetDlgItem(state.root, ID_READ_IMAGE as i32), "read_image"),
         (GetDlgItem(state.root, ID_CREATE_TASK as i32), "create_task"),
@@ -616,6 +624,12 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "compress") => {
             "备份镜像压缩率（仅首次创建 WIM 时生效）：\n• fast 快速（默认/推荐）：体积仅比 max 大约 10%，但耗时约 1/3.5，性价比最高\n• max 高压缩：WIM 最小，但备份明显更慢（压缩 CPU 开销大）\n• none 不压缩：WIM 最大（约等于源数据量），备份最快\n增量备份说明：镜像已存在时追加为新索引，压缩率沿用 WIM 首次创建时的设置；压缩率不影响能否增量备份。"
         }
+        (Language::Chinese, "index_name") => {
+            "备份索引名（写入 WIM 的 Name 字段）。默认是程序启动时间，可修改；追加备份时用于区分历史版本。"
+        }
+        (Language::Chinese, "keep") => {
+            "保留最近 N 个索引：备份追加成功后自动删除更旧的索引（0=不清理）。删除不可恢复，请谨慎设置。"
+        }
         (Language::Chinese, "refresh") => "刷新 Windows、WinRE 和可用卷信息。",
         (Language::Chinese, "read_image") => "只读解析 WIM 索引、哈希和元数据。",
         (Language::Chinese, "create_task") => "创建任务；还原操作会先显示确认对话框。",
@@ -643,6 +657,12 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::English, "menu") => "Name shown for the second system in the Windows boot menu.",
         (Language::English, "compress") => {
             "Backup WIM compression (applies only when the WIM is first created):\n• fast (default/recommended): only ~10% larger than max, but ~1/3.5 the time — best value\n• max high compression: smallest WIM, notably slower backup (CPU cost)\n• none uncompressed: largest WIM (~source size), fastest backup\nIncremental notes: appending to an existing WIM keeps the compression set at first creation; compression does not affect whether incremental backup is available."
+        }
+        (Language::English, "index_name") => {
+            "Backup image name (written to the WIM Name field). Defaults to program start time; editable. Appended backups use it to distinguish history."
+        }
+        (Language::English, "keep") => {
+            "Keep latest N indexes: after a successful append, older indexes are deleted (0 = keep all). Deletion is irreversible; set with care."
         }
         (Language::English, "refresh") => "Refresh Windows, WinRE and eligible volume information.",
         (Language::English, "read_image") => {
@@ -699,6 +719,8 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "index") => "WIM 索引",
         (Language::Chinese, "menu") => "第二系统名称",
         (Language::Chinese, "compress") => "压缩率",
+        (Language::Chinese, "index_name") => "索引名",
+        (Language::Chinese, "keep") => "保留最近 N 个",
         (Language::Chinese, "language") => "语言",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
@@ -735,6 +757,8 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "index") => "WIM index",
         (Language::English, "menu") => "Secondary boot name",
         (Language::English, "compress") => "Compression",
+        (Language::English, "index_name") => "Image name",
+        (Language::English, "keep") => "Keep latest N",
         (Language::English, "language") => "Language",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
@@ -1030,6 +1054,11 @@ unsafe fn set_operation_visibility(state: &State) {
     set_child_visible(2008, show_menu);
     set_visible(state.controls.compress, show_compress);
     set_child_visible(2014, show_compress);
+    // 备份索引名与保留最近 N 个：仅「备份」tab 显示（压缩率行下方新行）。
+    set_visible(state.controls.index_name, show_compress);
+    set_visible(state.controls.keep, show_compress);
+    set_child_visible(2015, show_compress);
+    set_child_visible(2016, show_compress);
 
     set_visible(state.controls.target, show_target);
     set_visible(state.controls.target_details, show_target);
@@ -1103,8 +1132,9 @@ unsafe fn layout_operation(state: &State) {
     let buttons_y = if index_visible {
         secondary_y + 40
     } else if selected_operation(state) == "backup" {
-        // 备份时 secondary_y 行独占「压缩率」下拉，按钮行下移避免遮挡。
-        secondary_y + 40
+        // 备份时 secondary_y 行独占「压缩率」下拉，下一行是「索引名 + 保留最近 N 个」，
+        // 按钮行再下移 30px 避免遮挡。
+        secondary_y + 40 + 30
     } else if image_visible {
         image_y + 40
     } else {
@@ -1382,6 +1412,30 @@ unsafe fn layout_operation(state: &State) {
         field_x + 500 - 110,
         secondary_y + 2,
         100,
+        24,
+    );
+    // 备份 tab 第二行：索引名（左）+ 保留最近 N 个（右），位于压缩率行下方。
+    let index_name_y = secondary_y + 32;
+    reposition(GetDlgItem(state.root, 2015), 20, index_name_y, 130, 24);
+    reposition(
+        state.controls.index_name,
+        field_x,
+        index_name_y - 2,
+        280,
+        24,
+    );
+    reposition(
+        GetDlgItem(state.root, 2016),
+        field_x + 320,
+        index_name_y,
+        100,
+        24,
+    );
+    reposition(
+        state.controls.keep,
+        field_x + 430,
+        index_name_y - 2,
+        80,
         24,
     );
     for (id, x) in [
@@ -2003,6 +2057,8 @@ unsafe fn apply_language(state: &mut State) {
         (2007, "index"),
         (2008, "menu"),
         (2014, "compress"),
+        (2015, "index_name"),
+        (2016, "keep"),
         (ID_LANGUAGE_LABEL, "language"),
     ] {
         set_child_text(state.root, id, ui_text(language, key));
@@ -4264,6 +4320,21 @@ unsafe fn create_task(state: &State) {
     } else {
         String::new()
     };
+    // 备份索引名（默认程序启动时间，用户可改）与保留最近 N 个索引（0=不清理）。
+    let image_name = if operation == "backup" {
+        get_text(state.controls.index_name).trim().to_string()
+    } else {
+        String::new()
+    };
+    let keep_indexes = if operation == "backup" {
+        get_text(state.controls.keep)
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)
+    } else {
+        None
+    };
     if matches!(operation.as_str(), "backup" | "restore-existing") {
         let system_upper = std::env::var("SystemDrive")
             .unwrap_or_else(|_| "C:".to_string())
@@ -4355,6 +4426,8 @@ unsafe fn create_task(state: &State) {
                 &image_path,
                 &index,
                 &compress,
+                &image_name,
+                keep_indexes,
             );
             return;
         }
@@ -4383,6 +4456,11 @@ unsafe fn create_task(state: &State) {
     if operation == "backup" {
         // 压缩率下拉：值即 max/fast/none（DISM 术语，语言无关，已在上方分流处解析）。
         arguments.extend(["--compress".to_string(), compress]);
+        // 备份索引名（用户输入，默认程序启动时间）与保留最近 N 个索引。
+        arguments.extend(["--image-name".to_string(), image_name]);
+        if let Some(keep) = keep_indexes {
+            arguments.extend(["--keep-indexes".to_string(), keep.to_string()]);
+        }
     }
     if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
         arguments.push("--allow-destructive".to_string());
@@ -4598,6 +4676,8 @@ struct OnlineOpParams {
     image_path: String,
     index: String,
     compress: String,
+    image_name: String,
+    keep_indexes: Option<u32>,
 }
 
 /// 在线执行结果（后台线程写完，主窗口 WM_APP_ONLINE_DONE 读取显示）。
@@ -4605,14 +4685,27 @@ static ONLINE_RESULT: std::sync::Mutex<Option<String>> =
     std::sync::Mutex::new(None);
 
 /// 后台执行 DISM 在线备份/还原（数据盘/非活动系统），完成后回主窗口消息。
-/// 备份：dism /Capture-Image（存在则追加索引）；还原：dism /Apply-Image。
+/// 备份：镜像不存在 → /Capture-Image；存在 → /Append-Image 追加新索引；
+/// 成功后按保留策略删除最旧索引。还原：dism /Apply-Image。
 fn execute_online(params: &OnlineOpParams) -> String {
     let out = std::env::temp_dir().join("br-online-op.txt");
     let command = if params.operation == "backup" {
-        format!(
-            "dism.exe /Capture-Image /ImageFile:{} /CaptureDir:{}:\\ /Name:Online /Compress:{}",
-            params.image_path, params.source_drive, params.compress
-        )
+        let name = if params.image_name.is_empty() {
+            "Windows Backup".to_string()
+        } else {
+            params.image_name.clone()
+        };
+        if std::path::Path::new(&params.image_path).is_file() {
+            format!(
+                "dism.exe /Append-Image /ImageFile:{} /CaptureDir:{}:\\ /Name:{}",
+                params.image_path, params.source_drive, name
+            )
+        } else {
+            format!(
+                "dism.exe /Capture-Image /ImageFile:{} /CaptureDir:{}:\\ /Name:{} /Compress:{}",
+                params.image_path, params.source_drive, name, params.compress
+            )
+        }
     } else {
         format!(
             "dism.exe /Apply-Image /ImageFile:{} /Index:{} /ApplyDir:{}:\\",
@@ -4620,14 +4713,42 @@ fn execute_online(params: &OnlineOpParams) -> String {
         )
     };
     let code = run_cmd_to_file_timeout(&command, Some(&out), 600000);
-    let mut summary = format!(
-        "[ONLINE {}] exit={}\n",
-        params.operation, code
-    );
+    let mut summary = format!("[ONLINE {}] exit={}\n", params.operation, code);
     if let Ok(text) = std::fs::read_to_string(&out) {
         summary.push_str(&text);
     } else {
         summary.push_str("(no output captured)\n");
+    }
+    // 保留最近 N 个索引：备份追加成功后连续删除最旧索引（Index 1）直至剩余 N 个。
+    if code == 0 && params.operation == "backup" && params.keep_indexes.is_some() {
+        let keep = params.keep_indexes.unwrap_or(0).max(1);
+        let mut removed = 0_u32;
+        for _ in 0..64 {
+            let count = rust_cli_output(&["wim-info", &params.image_path])
+                .ok()
+                .and_then(|output| parse_wim_images(&output).ok())
+                .map(|images| images.len())
+                .unwrap_or(0);
+            if count <= keep as usize {
+                break;
+            }
+            let del_out = std::env::temp_dir().join("br-online-del.txt");
+            let del = format!(
+                "dism.exe /English /Delete-Image /ImageFile:{} /Index:1",
+                params.image_path
+            );
+            let del_code = run_cmd_to_file_timeout(&del, Some(&del_out), 120000);
+            if del_code != 0 {
+                summary.push_str(&format!(
+                    "[keep] deleting oldest index failed: exit={del_code}\n"
+                ));
+                break;
+            }
+            removed += 1;
+        }
+        if removed > 0 {
+            summary.push_str(&format!("[keep] removed {removed} older index(es), kept latest {keep}\n"));
+        }
     }
     summary
 }
@@ -4641,6 +4762,8 @@ unsafe fn run_online_operation(
     image_path: &str,
     index: &str,
     compress: &str,
+    image_name: &str,
+    keep_indexes: Option<u32>,
 ) {
     let language = selected_language(state);
     let params = OnlineOpParams {
@@ -4650,6 +4773,8 @@ unsafe fn run_online_operation(
         image_path: image_path.to_string(),
         index: index.to_string(),
         compress: compress.to_string(),
+        image_name: image_name.to_string(),
+        keep_indexes,
     };
     let root = state.root as usize;
     // 清掉上次结果，避免读到旧内容
@@ -4828,6 +4953,28 @@ unsafe extern "system" fn window_proc(
                 220,
                 ID_COMPRESS,
             ),
+            index_name: create_control(
+                hwnd,
+                "EDIT",
+                "",
+                WS_BORDER | WS_TABSTOP,
+                480,
+                585,
+                260,
+                24,
+                ID_INDEX_NAME_EDIT,
+            ),
+            keep: create_control(
+                hwnd,
+                "EDIT",
+                "",
+                WS_BORDER | WS_TABSTOP,
+                480,
+                585,
+                80,
+                24,
+                ID_KEEP_EDIT,
+            ),
             source_details: create_control(
                 hwnd,
                 "EDIT",
@@ -4873,6 +5020,23 @@ unsafe extern "system" fn window_proc(
             add_combo_item(controls.compress, label);
         }
         SendMessageW(controls.compress, CB_SETCURSEL, 1, 0);
+        // 备份索引名默认值 = 程序启动时间（本地），用户可修改。
+        let mut now = SystemTime {
+            year: 0,
+            month: 0,
+            day_of_week: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            milliseconds: 0,
+        };
+        GetLocalTime(&mut now);
+        let default_index_name = format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            now.year, now.month, now.day, now.hour, now.minute
+        );
+        set_text(controls.index_name, &default_index_name);
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
         create_control(hwnd, "STATIC", "源卷", 0, 20, 222, 150, 26, 2003);
         create_control(hwnd, "STATIC", "目标卷", 0, 20, 332, 150, 26, 2005);
@@ -4880,6 +5044,28 @@ unsafe extern "system" fn window_proc(
         create_control(hwnd, "STATIC", "WIM 索引", 0, 20, 590, 130, 22, 2007);
         create_control(hwnd, "STATIC", "第二系统名称", 0, 490, 590, 100, 22, 2008);
         create_control(hwnd, "STATIC", "压缩率", 0, 20, 585, 150, 24, 2014);
+        create_control(
+            hwnd,
+            "STATIC",
+            ui_text(Language::Chinese, "index_name"),
+            0,
+            20,
+            585,
+            130,
+            24,
+            2015,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            ui_text(Language::Chinese, "keep"),
+            0,
+            560,
+            585,
+            110,
+            24,
+            2016,
+        );
         create_control(
             hwnd,
             "STATIC",

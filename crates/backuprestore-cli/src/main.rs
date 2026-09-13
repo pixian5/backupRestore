@@ -1575,6 +1575,12 @@ fn recover_windows(
             let source_path = resolve_volume_root(&source)?;
             let destination_path =
                 resolve_volume_path(&destination.volume, &destination.relative_path)?;
+            // 备份索引名：任务自定义（GUI 默认程序启动时间）或默认名。
+            let image_name = task
+                .image_name
+                .clone()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "Windows Backup".to_string());
             let partial = PathBuf::from(format!("{}.partial", destination_path.display()));
             if let Some(parent) = partial.parent() {
                 fs::create_dir_all(parent)?;
@@ -1614,7 +1620,11 @@ fn recover_windows(
             };
             let mut previous_metadata = BTreeMap::new();
             for index in &previous_indexes {
-                previous_metadata.insert(*index, read_index_metadata(&destination_path, *index)?);
+                // 部分历史 WIM（如旧版在线备份产物）没有 sidecar 元数据，
+                // 缺失时跳过即可；追加不需要旧索引的元数据。
+                if let Ok(metadata) = read_index_metadata(&destination_path, *index) {
+                    previous_metadata.insert(*index, metadata);
+                }
             }
             let legacy_path = legacy_metadata_path(&destination_path)?;
             let legacy_metadata: Option<BackupMetadata> = legacy_path
@@ -1650,7 +1660,7 @@ fn recover_windows(
                     "/Append-Image",
                     &format!("/ImageFile:{}", candidate.display()),
                     &format!("/CaptureDir:{}", source_path.display()),
-                    "/Name:Windows Backup",
+                    &format!("/Name:{image_name}"),
                     "/CheckIntegrity",
                     &exclude_arg,
                 ];
@@ -1679,7 +1689,7 @@ fn recover_windows(
                         "/Capture-Image",
                         &format!("/ImageFile:{}", partial.display()),
                         &format!("/CaptureDir:{}", source_path.display()),
-                        "/Name:Windows Backup",
+                        &format!("/Name:{image_name}"),
                         &format!("/Compress:{compress_level}"),
                         "/CheckIntegrity",
                         &exclude_arg,
@@ -1772,12 +1782,87 @@ fn recover_windows(
                     .get(&1)
                     .cloned()
                     .unwrap_or_else(|| metadata.clone());
-                write_json_atomic(legacy_path, &legacy)?;
+                write_json_atomic(&legacy_path, &legacy)?;
             }
             append_log(
                 log,
                 &format!("Backup metadata written for WIM index {new_index}"),
             )?;
+            // 保留最近 N 个索引：从最旧（Index 1）连续删除直至剩余 N 个。
+            // DISM 删除后剩余索引编号会重排（原 k+1..=total → 新 1..=N），
+            // 因此把所有 sidecar 先删除、再按新编号从 previous_metadata 重写。
+            let keep_cleaned = if let Some(keep) = task.keep_indexes {
+                let keep = keep.max(1);
+                if new_index > keep {
+                    let remove_count = new_index - keep;
+                    for _ in 0..remove_count {
+                        run_logged(
+                            "dism.exe",
+                            &[
+                                "/English",
+                                "/Delete-Image",
+                                &format!("/ImageFile:{}", destination_path.display()),
+                                "/Index:1",
+                            ],
+                            log,
+                        )?;
+                    }
+                    for old_idx in 1..=new_index {
+                        let _ = fs::remove_file(index_metadata_path(&destination_path, old_idx)?);
+                    }
+                    for new_idx in 1..=keep {
+                        let old_idx = new_idx + remove_count;
+                        if let Some(existing) = previous_metadata.get(&old_idx) {
+                            let mut updated = existing.clone();
+                            updated.wim_index = new_idx;
+                            updated.image_sha256 = image_sha256.clone();
+                            updated.image_size = image_size;
+                            write_json_atomic(
+                                index_metadata_path(&destination_path, new_idx)?,
+                                &updated,
+                            )?;
+                        }
+                    }
+                    // 新追加的索引在清理后编号为 keep，重写其 sidecar。
+                    let mut current = metadata.clone();
+                    current.wim_index = keep;
+                    write_json_atomic(index_metadata_path(&destination_path, keep)?, &current)?;
+                    append_log(
+                        log,
+                        &format!(
+                            "Kept latest {keep} WIM indexes; removed {remove_count} older"
+                        ),
+                    )?;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if keep_cleaned {
+                // 清理后最旧索引变为新编号 1，同步更新旧版兼容 sidecar。
+                // keep 删除索引后 WIM 文件本身已变化，需重新计算哈希，
+                // 并把剩余所有 sidecar 的 sha256/大小同步为最终形态，
+                // 否则后续 prepare 还原校验会报 hash mismatch。
+                let final_hash = backuprestore_core::sha256_file(&destination_path)?;
+                let final_size = fs::metadata(&destination_path)?.len();
+                for new_idx in 1..=task.keep_indexes.unwrap_or(1).max(1) {
+                    if let Ok(mut sidecar) =
+                        read_index_metadata(&destination_path, new_idx)
+                    {
+                        sidecar.image_sha256 = final_hash.clone();
+                        sidecar.image_size = final_size;
+                        write_json_atomic(
+                            index_metadata_path(&destination_path, new_idx)?,
+                            &sidecar,
+                        )?;
+                    }
+                }
+                let first =
+                    read_index_metadata(&destination_path, 1).unwrap_or_else(|_| metadata.clone());
+                write_json_atomic(legacy_path, &first)?;
+            }
             if finalize_success {
                 store.write_transition(task, Stage::Success)?;
             }

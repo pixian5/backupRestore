@@ -93,6 +93,10 @@ pub(crate) struct PrepareOptions {
     target_drive: Option<char>,
     image_path: Option<String>,
     wim_index: u32,
+    /// WIM 索引名（备份时 DISM /Name；默认 "Windows Backup"）。
+    image_name: Option<String>,
+    /// 保留最近 N 个 WIM 索引（备份追加成功后清理更旧索引；None=不清理）。
+    keep_indexes: Option<u32>,
     boot_menu_name: String,
     efi_drive: Option<char>,
     test_fault: Option<String>,
@@ -356,6 +360,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut target_drive = None;
     let mut image_path = None;
     let mut wim_index = 1_u32;
+    let mut image_name = None;
+    let mut keep_indexes = None;
     let mut boot_menu_name = String::from("Windows Backup");
     let mut efi_drive = None;
     let mut test_fault = None;
@@ -390,6 +396,14 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                 wim_index = value("--wim-index", &mut args)?
                     .parse()
                     .map_err(|_| err("--wim-index must be a positive integer"))?;
+            }
+            "--image-name" => image_name = Some(value("--image-name", &mut args)?),
+            "--keep-indexes" => {
+                keep_indexes = Some(
+                    value("--keep-indexes", &mut args)?
+                        .parse()
+                        .map_err(|_| err("--keep-indexes must be a non-negative integer"))?,
+                );
             }
             "--boot-menu-name" => boot_menu_name = value("--boot-menu-name", &mut args)?,
             "--test-efi-drive" => {
@@ -444,6 +458,19 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     {
         return Err(err("--boot-menu-name is invalid"));
     }
+    if let Some(name) = &image_name {
+        if name.trim().is_empty()
+            || name.chars().count() > 256
+            || name.chars().any(char::is_control)
+        {
+            return Err(err("--image-name is invalid"));
+        }
+    }
+    if let Some(keep) = keep_indexes {
+        if keep == 0 {
+            return Err(err("--keep-indexes must be greater than zero (0 请省略)"));
+        }
+    }
     if operation != Operation::Probe && image_path.is_none() {
         return Err(err("--image-path is required for backup and restore"));
     }
@@ -468,6 +495,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         allow_destructive,
         no_reboot,
         compress,
+        image_name,
+        keep_indexes,
         relocated,
     })
 }
@@ -587,6 +616,9 @@ fn prepare_task(
                 absolute_path: image_path.clone(),
                 relative_path: image_relative.clone(),
             });
+            // 备份索引名与保留最近 N 个索引：写入任务供恢复执行时使用。
+            task.image_name = options.image_name.clone();
+            task.keep_indexes = options.keep_indexes;
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let path = image_path.as_ref().expect("restore image path validated");
@@ -597,6 +629,7 @@ fn prepare_task(
                 sha256: sha256_file(path)?,
                 size_bytes: fs::metadata(path)?.len(),
                 index: options.wim_index,
+                name: None,
             });
             task.target = Some(TargetSpec {
                 volume: target.clone(),

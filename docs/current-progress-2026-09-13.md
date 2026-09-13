@@ -387,3 +387,29 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 3. `prepare` 的 find_system_efi 会跳过**已挂载**的盘符（S: 被手动挂载时全部扫描失败 → `system GPT EFI partition was not found`）——先 `mountvol S: /D` 再 prepare。
 4. 任务一旦 Failed 即终端，重跑同一任务报 `task is failed`——须重新 prepare 新建任务。
 5. 备份目标 wim 已存在时 CLI recover 捕获报 `os error 2`（文件冲突）；GUI 在线备份（首次创建 wim）已验证成功。增量/覆盖策略后续需明确（如 /Append 或提示先删除）。
+
+### L.7 WIM 追加索引 + 索引名 + 保留最近 N 个（GUI/CLI 全链路实机验证，2026-09-13 19:27-19:40）
+**需求**（用户确认方案）：备份时 wim 已存在 → 自动 `/Append-Image` 追加新索引；GUI 备份 tab 增加「索引名」输入框（默认程序启动时间，可改）与「保留最近 N 个」清理选项；还原 tab 下拉列出 wim 全部索引（已有 wim-info，确认覆盖）。
+
+**代码改动（已提交）**：
+1. `backuprestore-core/src/lib.rs`：`ImageSpec.name: Option<String>`；`Task.keep_indexes/image_name`（camelCase，serde default skip）。
+2. `windows_prepare.rs`：`PrepareOptions.image_name/keep_indexes` + `--image-name`/`--keep-indexes` 解析（keep=0 报错）；备份任务写入字段；restore 构造 ImageSpec 补 `name: None`。
+3. `main.rs` 备份执行：首次 `/Capture-Image /Name:{image_name}`；追加走 `candidate 复制 → /Append-Image /Name → /CheckIntegrity → 校验索引数 +1 → rename` 防掉电；keep 清理循环 `/Delete-Image /Index:1` 删最旧；sidecar 重编号重写。
+4. `native_gui.rs`：控件 `ID_INDEX_NAME_EDIT=1209`/`ID_KEEP_EDIT=1210`；WM_CREATE 默认索引名 = GetLocalTime `2026-09-13 19:20` 格式；标签 2015/2016（ui_text 中英 + apply_language 更新）；可见性仅 backup tab；布局压缩率行下方新行（索引名左 280px + keep 右 80px，buttons_y 下移 30px）；create_task 备份分流传 `--image-name`/`--keep-indexes`；`run_online_operation` 加 image_name/keep_indexes 参数；`execute_online` 在线备份：wim 存在 → `/Append-Image`，否则 `/Capture-Image /Compress`；keep 用 `wim-info` 数索引 + 循环删 Index 1。
+
+**实机验证结果（旧 VM，T: 5GB 数据卷，test2-backup.wim）**：
+- ✅ 首次备份：`--image-name "2026-09-13 19:40"` → 索引 1（Name 正确写入）。
+- ✅ 二次追加：`--image-name "2026-09-13 19:41" --keep-indexes 2` → 索引 2（Append 成功，keep 未触发）。
+- ✅ 三次追加：`--image-name "2026-09-13 19:42" --keep-indexes 2` → 追加索引 3 → **自动删除最旧（19:40）**，wim-info 剩 2 索引（19:41、19:42）——keep 清理实锤。
+- ✅ keep 后还原校验：**修复 hash mismatch**（见踩坑 1），`prepare restore-existing --wim-index 2` 校验通过 → recover → 格式化 T: + Apply 100% → unique 标记文件被清除、wim 内容完整恢复。
+- ✅ 还原 tab 下拉：wim-info 实时读全部索引（Name 显示），GUI 无需依赖 sidecar。
+
+**新踩坑（重要）**：
+1. **keep 删除后 WIM 哈希变化导致还原校验失败**：keep 清理先删索引再重写 sidecar，但 sidecar 的 `image_sha256` 用的是清理前的哈希 → 后续 prepare 还原报 `restore image hash does not match metadata`。修复：keep_cleaned 分支末尾重新 `sha256_file(destination)` 并同步所有剩余 sidecar（含 legacy）。
+2. **追加路径 previous_metadata 容错**：历史 WIM（旧版在线备份产物）无 `.index-N.metadata.json` sidecar → `read_index_metadata` 报 os error 2 中断备份。修复：previous_metadata 循环改为 `if let Ok` 跳过缺失。
+3. **Task::new 补字段**：新增 Task 字段后构造器必须同步初始化（E0063），rust 编译期已拦。
+4. **prepare 还原仍需 `--source-drive`**：`restore-existing` 校验要求 source-drive（即使数据卷还原 source=target=T），缺失报 `--source-drive is required`。
+
+**已知限制（未覆盖）**：
+- GUI 在线备份（execute_online）的 append/keep 路径代码已写但 **Session 0 无界面无法实测**（旧 VM GUI 自动化已弃用）；CLI 侧 main.rs 同逻辑已全链实测。execute_online 追加无 candidate/CheckIntegrity（简化路径），后续如需严格防掉电需对齐 CLI 的 candidate 策略。
+- 还原「metadata 校验依赖 sidecar」：prepare 还原对缺失 sidecar 的第三方/PE WIM 跳过哈希校验（既有行为），keep 清理后 sidecar 已同步最终哈希。
