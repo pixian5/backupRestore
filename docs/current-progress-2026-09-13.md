@@ -521,7 +521,14 @@ prlctl exec "Windows 11" cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -
 prlctl capture "Windows 11" --file /tmp/vm-shot.png
 ```
 
-#### 七、待办
-- PE tab「RAM disk/硬盘启动」单选组方向键逐键实测（低优先级，机制已验证）。
+#### 七、补充收口验证（22:00-22:20，v1.5.8→v1.5.9）
+1. **PE tab「RAM disk/硬盘启动」单选组方向键实测通过**：新增 `tools/win-clicker/diag2.ps1`（GetGUIThreadInfo 跨线程查前台线程焦点控件 ID+类名，run-in-session 在 Session 1 跑、结果写文件）。Tab 序列：…→1410 重启进入PE→1411 创建快捷方式→**1412 RAM disk**→**1413 硬盘启动**→1415 目录Edit→1418 浏览→1417 名称Edit。焦点停在 1412 后按 ↓：焦点→1413，PE 目录行隐藏（截图 diff 370-1652x,890-1026y）；按 ↑：回 1412，目录行恢复。**方向键在单选组内切换 + 硬盘启动模式隐藏目录行的联动全部正确**。
+2. **F5 刷新实测通过**（两条修复）：
+   - **GetKeyState → GetAsyncKeyState**：prlctl 注入 Ctrl+字母（Ctrl+P 等）偶发不生效——GetKeyState 读消息队列状态有延迟，GetAsyncKeyState 读即时物理状态，实测修复后 Ctrl+P 稳定生效。
+   - **F5 被 IsDialogMessage 消费**：消息循环里 IsDialogMessage 会吞掉 F5（窗口过程收不到 WM_KEYDOWN），改为在 IsDialogMessage **之前**拦截 `WM_KEYDOWN && wParam==VK_F5(116)` → PostMessageW(WM_COMMAND, ID_REFRESH)。同时确认**必须 GUI 在前台**才有反应（曾误注入到开始菜单/Parallels 代理窗口 prl_cc_fgproxy——用 `activate.ps1 -Title BackupRestore` 拉回前台）。
+   - **F 键键码坑**：Parallels `-k` 键码对 F 键映射错误（-k 71/76/116、-s 63 在 GUI 前台下逐一实测，只有 **-s 63（PS/2 set1 F5 scancode）** 触发刷新日志 `GUI action completed: refresh environment; eligible_volumes=3`）。vmkey.sh 已改：F1-F12 用 scancode（f1=59…f10=68, f11=87, f12=88），其余键仍用 -k 键码。
+3. **版本号升至 v1.5.9**（两处 Cargo.toml），GUI 标题截图确认，Ctrl+P/F5 回归通过。
+4. **前台上台工具**：`run-in-session.ps1 … activate.ps1 -Title BackupRestore` 可把后台 GUI 拉回前台（SetForegroundWindow 类 AppActivate）。
+
+#### 八、待办（剩余）
 - GUI 检查清单 7 步（L.8）可用 prlctl 键盘通道替代人工逐步验收（文本输入仍受限于 VM 内 Text 注入不可用——可改用剪贴板粘贴或 prlctl 单键逐字，或接受 VM 内 keybd_event 对 ASCII 单键有效）。
-- 版本号：本轮验证未 100% 收口（PE 单选组/F5 像素级确认），按用户「修完再升」规则暂保持 v1.5.8，下轮收口后升 1.5.9。

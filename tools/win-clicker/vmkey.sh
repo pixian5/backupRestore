@@ -14,9 +14,9 @@ keycode() {
     p) echo 33;; enter) echo 36;; a) echo 38;; s) echo 39;; d) echo 40;; f) echo 41;;
     g) echo 42;; h) echo 43;; j) echo 44;; k) echo 45;; l) echo 46;;
     z) echo 52;; x) echo 53;; c) echo 54;; v) echo 55;; b) echo 56;; n) echo 57;; m) echo 58;;
-    space) echo 65;; f1) echo 67;; f2) echo 68;; f3) echo 69;; f4) echo 70;; f5) echo 71;;
-    f6) echo 72;; f7) echo 73;; f8) echo 74;; f9) echo 75;; f10) echo 76;;
-    f11) echo 95;; f12) echo 96;; home) echo 97;; up) echo 98;; pgup) echo 99;;
+    space) echo 65;; f1) echo 59;; f2) echo 60;; f3) echo 61;; f4) echo 62;; f5) echo 63;;
+    f6) echo 64;; f7) echo 65;; f8) echo 66;; f9) echo 67;; f10) echo 68;;
+    f11) echo 87;; f12) echo 88;; home) echo 97;; up) echo 98;; pgup) echo 99;;
     left) echo 100;; right) echo 102;; end) echo 103;; down) echo 104;; pgdn) echo 105;;
     insert) echo 106;; delete) echo 107;; ctrl) echo 37;; alt) echo 64;; shift) echo 50;; win) echo 115;;
     *) echo "";;
@@ -24,6 +24,10 @@ keycode() {
 }
 press() { prlctl send-key-event "$VM" -k "$1" -e press; }
 release() { prlctl send-key-event "$VM" -k "$1" -e release; }
+# F 键必须用 scancode 通道：Parallels 的 -k 键码对 F 键映射错误（实测 -k 71/76/116 都不触发 F5），
+# -s 63（PS/2 set1 F5）实测有效。
+press_sc() { prlctl send-key-event "$VM" -s "$1" -e press; }
+release_sc() { prlctl send-key-event "$VM" -s "$1" -e release; }
 # 解析组合：ctrl+p / alt+f4 / ctrl+shift+p
 IFS='+' read -ra PARTS <<< "$1"
 MAIN="${PARTS[${#PARTS[@]}-1]}"
@@ -36,7 +40,13 @@ for ((i=0; i<${#PARTS[@]}-1; i++)); do
   MODS+=("$MC")
 done
 for m in "${MODS[@]}"; do press "$m"; sleep 0.12; done
-press "$MAINC"; sleep 0.15
-release "$MAINC"; sleep 0.12
+if [ "$MAINC" -ge 59 ] && [ "$MAINC" -le 88 ]; then
+  # F 键：scancode 通道（见 press_sc 注释）
+  press_sc "$MAINC"; sleep 0.15
+  release_sc "$MAINC"; sleep 0.12
+else
+  press "$MAINC"; sleep 0.15
+  release "$MAINC"; sleep 0.12
+fi
 for ((i=${#MODS[@]}-1; i>=0; i--)); do release "${MODS[$i]}"; sleep 0.1; done
 echo "sent: $1"

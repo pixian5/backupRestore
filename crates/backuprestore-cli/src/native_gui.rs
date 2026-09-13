@@ -335,6 +335,9 @@ unsafe extern "system" {
     // 单选按钮、回车触发默认按钮、Esc 关闭、Alt+助记键。
     fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
     fn GetKeyState(key: i32) -> i16;
+    // 即时物理键盘状态：prlctl 宿主导入的修饰键（如 Ctrl）在消息队列里可能有
+    // 时序延迟，GetKeyState 偶发读不到；GetAsyncKeyState 反映当前真实状态，更可靠。
+    fn GetAsyncKeyState(key: i32) -> i16;
 }
 
 #[link(name = "gdi32")]
@@ -5461,7 +5464,7 @@ unsafe extern "system" fn window_proc(
             // Ctrl+O 读取镜像 / F5 刷新环境 / Ctrl+Enter 创建任务。
             // Tab、方向键、回车（无 Ctrl）由 IsDialogMessage 处理，这里只接组合键。
             let key = w_param as u32;
-            let ctrl_down = ((GetKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
+            let ctrl_down = ((GetAsyncKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
             let shortcut = match (ctrl_down, key) {
                 (true, VK_B) => Some(ID_OPERATION_BACKUP),
                 (true, VK_R) => Some(ID_OPERATION_RESTORE),
@@ -7555,6 +7558,16 @@ pub fn run() -> Result<(), super::TaskError> {
             }
             // 主界面键盘导航：Tab 遍历控件、回车触发默认按钮（创建任务）、
             // 方向键切换操作模式单选、Ctrl+组合快捷键在 WM_KEYDOWN 处理。
+            // F5 刷新：IsDialogMessage 会消费 F5（对话框键盘处理吞掉该键），
+            // 导致窗口过程收不到 WM_KEYDOWN，故必须在它之前拦截。
+            if message.message == WM_KEYDOWN && ((message.w_param & 0xFFFF) as u32) == 116 {
+                let ctrl_down =
+                    ((GetAsyncKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
+                if !ctrl_down {
+                    PostMessageW(window, WM_COMMAND as u32, ID_REFRESH as usize, 0);
+                    continue;
+                }
+            }
             if IsDialogMessageW(window, &message) == 0 {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
