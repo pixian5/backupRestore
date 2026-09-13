@@ -63,6 +63,18 @@ const BST_CHECKED: usize = 1;
 const CBN_SELCHANGE: usize = 1;
 const WM_SETFONT: u32 = 0x0030;
 const WM_SIZE: u32 = 0x0005;
+const WM_KEYDOWN: u32 = 0x0100;
+// 虚拟键码（用于快捷键）：Ctrl+B/R/P/O、F5、回车、Esc。
+const VK_RETURN: u32 = 0x0D;
+const VK_ESCAPE: u32 = 0x1B;
+const VK_CONTROL: u32 = 0x11;
+const VK_B: u32 = 0x42;
+const VK_R: u32 = 0x52;
+const VK_P: u32 = 0x50;
+const VK_O: u32 = 0x4F;
+const VK_F5: u32 = 0x74;
+// 默认按钮样式：无焦点时按回车也会触发该按钮。
+const BS_DEFPUSHBUTTON: u32 = 0x00000001;
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
 const SW_MAXIMIZE: i32 = 3;
@@ -319,6 +331,10 @@ unsafe extern "system" {
     fn TranslateMessage(message: *const Msg) -> i32;
     fn PeekMessageW(message: *mut Msg, hwnd: Hwnd, min: u32, max: u32, remove: u32) -> i32;
     fn IsWindow(hwnd: Hwnd) -> i32;
+    // 对话框式键盘导航：让普通窗口也能用 Tab 遍历焦点、方向键切换
+    // 单选按钮、回车触发默认按钮、Esc 关闭、Alt+助记键。
+    fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
+    fn GetKeyState(key: i32) -> i16;
 }
 
 #[link(name = "gdi32")]
@@ -2181,7 +2197,7 @@ unsafe extern "system" fn window_proc_system_choice(
             } else {
                 "进入 PE（推荐）"
             },
-            WS_TABSTOP,
+            WS_TABSTOP | BS_DEFPUSHBUTTON,
             30,
             112,
             400,
@@ -2219,6 +2235,15 @@ unsafe extern "system" fn window_proc_system_choice(
         SendMessageW(btn_re, WM_SETFONT, font as WParam, 1);
         SendMessageW(btn_cancel, WM_SETFONT, font as WParam, 1);
         return 0;
+    }
+    if message == WM_KEYDOWN && w_param as u32 == VK_ESCAPE {
+        // Esc = 取消（与点「取消」按钮相同）。
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
+        if !state_ptr.is_null() {
+            *state_ptr = 0;
+            DestroyWindow(hwnd);
+            return 0;
+        }
     }
     if message == WM_COMMAND {
         let control_id = w_param & 0xffff;
@@ -2310,8 +2335,11 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
         point: Point { x: 0, y: 0 },
     };
     while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+        // 对话框式键盘导航（Tab 遍历 / 回车默认按钮 / Esc / 方向键切换单选）。
+        if IsDialogMessageW(dialog, &message) == 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
     }
     let ptr = GetWindowLongPtrW(dialog, GWLP_USERDATA) as *mut i32;
     let result = if ptr.is_null() { 0 } else { *ptr };
@@ -4922,7 +4950,9 @@ unsafe extern "system" fn window_proc(
                     hwnd,
                     "BUTTON",
                     "",
-                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 5
+                    // 个之间切换，不会跳到下方 PE 启动方式那一组。
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP,
                     180,
                     60,
                     95,
@@ -5201,7 +5231,8 @@ unsafe extern "system" fn window_proc(
             hwnd,
             "BUTTON",
             "创建任务",
-            WS_TABSTOP,
+            // 默认按钮：无焦点时按回车也触发「创建任务」（最常用操作）。
+            WS_TABSTOP | BS_DEFPUSHBUTTON,
             280,
             630,
             120,
@@ -5365,8 +5396,14 @@ unsafe extern "system" fn window_proc(
                 }
             }
         }
-        // 测试钩子：C:\br-test.json 存在时自动设置参数并可选自动安装
-        test_hook_auto_install(&mut *state_ptr);
+        // 测试钩子：仅在显式 --test-hook 参数下读取 C:\br-test.json（正常启动不读，
+        // 避免残留 JSON 导致程序一启动就自动执行备份/还原并弹窗）
+        {
+            let args: Vec<String> = std::env::args().collect();
+            if args.iter().any(|a| a == "--test-hook") {
+                test_hook_auto_install(&mut *state_ptr);
+            }
+        }
         return 0;
     }
     let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -5418,6 +5455,27 @@ unsafe extern "system" fn window_proc(
             );
             show_message(state.root, &text, &caption, flags);
             return 0;
+        }
+        if message == WM_KEYDOWN {
+            // 快捷键：Ctrl+B 备份 / Ctrl+R 还原 / Ctrl+P PE 恢复 /
+            // Ctrl+O 读取镜像 / F5 刷新环境 / Ctrl+Enter 创建任务。
+            // Tab、方向键、回车（无 Ctrl）由 IsDialogMessage 处理，这里只接组合键。
+            let key = w_param as u32;
+            let ctrl_down = ((GetKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
+            let shortcut = match (ctrl_down, key) {
+                (true, VK_B) => Some(ID_OPERATION_BACKUP),
+                (true, VK_R) => Some(ID_OPERATION_RESTORE),
+                (true, VK_P) => Some(ID_OPERATION_PE),
+                (true, VK_O) => Some(ID_READ_IMAGE),
+                (false, VK_F5) => Some(ID_REFRESH),
+                (true, VK_RETURN) => Some(ID_CREATE_TASK),
+                _ => None,
+            };
+            if let Some(control_id) = shortcut {
+                // 与真实鼠标点击走完全相同的 WM_COMMAND 路径。
+                PostMessageW(hwnd, WM_COMMAND, control_id as WParam, 0);
+                return 0;
+            }
         }
         if message == WM_SIZE {
             layout_operation(state);
@@ -7404,8 +7462,11 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             if result <= 0 {
                 break;
             }
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+            // PE 桌面按钮同样支持 Tab 遍历 / 回车触发 / 方向键。
+            if IsDialogMessageW(window, &message) == 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
         }
         let exit_tab = match PE_EXIT_TAB.load(std::sync::atomic::Ordering::SeqCst) {
             1 => Some(1),
@@ -7492,8 +7553,12 @@ pub fn run() -> Result<(), super::TaskError> {
             if result <= 0 {
                 break;
             }
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+            // 主界面键盘导航：Tab 遍历控件、回车触发默认按钮（创建任务）、
+            // 方向键切换操作模式单选、Ctrl+组合快捷键在 WM_KEYDOWN 处理。
+            if IsDialogMessageW(window, &message) == 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
         }
         Ok(())
     }

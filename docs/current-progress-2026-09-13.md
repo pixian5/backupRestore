@@ -465,3 +465,63 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 9. GUI prepare 提权（ShellExecuteW runas）：参数经 `quote_argument`（含空白或 `"` 时加引号）。
 
 **经验沉淀（防再犯）**：本项目有两条命令执行通道——`run_logged`（参数数组，安全）与 `run_cmd_to_file*`（`cmd.exe /c` 整串，**凡是用户输入/路径/名称必须自己加引号**）。以后新增命令一律优先用参数数组；必须拼字符串时，对每个动态值做「可能含空格吗？」检查并加 `"`。
+
+### L.10 键盘导航改造 + VM 内注入器 + prlctl 宿主导入通道（2026-09-13 21:00-22:00）
+背景：用户点名两条主线——①在 VM 内部通过 prlctl exec 运行小工具（类 pyautogui）配合 prlctl capture 截图实现「看画面→算坐标→注入点击/键盘」闭环；②改造 BackupRestore GUI 使其能完全用 Tab/方向键/回车/快捷键操作（键盘导航）。目标：绕开「macOS 宿主合成鼠标事件不被 Parallels 转发给 Guest（CGEvent/SmartMouse）」这一核心限制。
+
+#### 一、重大发现：prlctl send-key-event 宿主导入键盘通道完全可用
+- **命令**：`prlctl send-key-event "Windows 11" -k <十进制键码> -e press|release`（键码表见 Parallels 官方「List of Parallels Keyboard Key Codes」，-k 用**十进制**，0x 前缀会被拒）。
+- **实测**：`-k 115`（Left Win）press+release → 开始菜单弹出（2048×1472 区域像素变化）——宿主导入键盘 100% 生效，走 Parallels 官方输入管道，**不依赖 macOS CGEvent、不依赖 VM 内进程**。
+- **组合键**：依次 press 修饰键 → press 主键 → release 主键 → release 修饰键（如 Ctrl=37, P=33：37p,33p,33r,37r）。
+- **作用**：这是本轮最可靠的自动化输入通道。VM 内 keybd_event 单键可注入但**组合键/快捷键不可靠**（见踩坑 6），prlctl 通道对 GUI 快捷键（Ctrl+B/R/P）、关模态弹窗（Enter）、Tab、方向键全部实测有效。
+- **已封装**：`tools/win-clicker/vmkey.sh <组合>`，如 `./vmkey.sh ctrl+p`、`./vmkey.sh tab`、`./vmkey.sh f5`（键名→键码映射内置：a-z=38/39/40/41/42/43/44/45/46/52/53/54/55/56/57/58/24-33（QWERTY 行序，不是字母序！），0-9=10-19，esc=9 enter=36 tab=23 space=65 backspace=22，方向键 up=98 down=104 left=100 right=102，f1-f12=67-76/95-96，home=97 end=103 pgup=99 pgdn=105 insert=106 delete=107，win=115 menu=117，ctrl=37 alt=64 shift=50）。
+
+#### 二、GUI 键盘导航改造（native_gui.rs，v1.5.8 已编译部署）
+- 三个消息循环（系统选择对话框 L≈2328、PE 桌面 L≈7418、主窗口 L≈7506）全部改为 `if IsDialogMessageW(hwnd,&msg)==0 { Translate; Dispatch }` → Tab 遍历焦点、方向键切换单选、回车默认按钮、Esc 可用。
+- 主 window_proc 增 WM_KEYDOWN 分支：Ctrl+B→备份 tab、Ctrl+R→还原 tab、Ctrl+P→PE 恢复 tab、Ctrl+O→读取镜像、F5→刷新环境、Ctrl+Enter→创建任务，走 `PostMessageW(WM_COMMAND)`（与真实点击同路径）。
+- 「进入 PE/RE」对话框："进入 PE"加 BS_DEFPUSHBUTTON（回车默认），Esc=取消；主界面"创建任务"加 BS_DEFPUSHBUTTON；操作模式组首个单选加 WS_GROUP（方向键只在组内切换）。
+- 注意：Ctrl 检测用 `(GetKeyState(VK_CONTROL as i32) as u16) & 0x8000 != 0`（直接 & 0x8000 会因 i16 溢出编译错）。
+
+#### 三、VM 内注入器（clicker.ps1 + run-in-session.ps1）
+- `tools/win-clicker/clicker.ps1`：PowerShell Add-Type 编译 C#，user32 的 SetCursorPos+mouse_event/SendInput（点击）、keybd_event（按键）、SendInput UNICODE（文本）、Chord（组合键，逗号分隔如 ctrl,p）。日志追加写 `C:\Users\Public\backupRestore-package\clicker-log.txt`。
+- `tools/win-clicker/run-in-session.ps1`：SYSTEM 上下文用 WTSQueryUserToken(SessionId) → DuplicateTokenEx → CreateEnvironmentBlock → CreateProcessAsUser 在交互会话启动命令，输出 pid/alive/exited_early/create_failed 诊断。
+- `tools/win-clicker/activate.ps1`：AppActivate 激活指定标题窗口（辅助）。
+- `tools/win-clicker/diag-fg.ps1`：查前台窗口句柄/标题/类名/焦点控件（诊断用）。
+
+#### 四、实机验证结果（prlctl 通道，全部截图核验）
+1. ✅ Ctrl+B → 备份 tab（界面内容整体切换）
+2. ✅ Ctrl+R → 单系统还原 tab
+3. ✅ Ctrl+P → PE 恢复 tab（显示 RAM disk/硬盘启动/PE 启动项名等）
+4. ✅ Ctrl+O → 读取镜像（镜像路径为空时正确弹「参数校验失败：镜像绝对路径无效」——功能正常非 bug）
+5. ✅ 回车 → 关闭模态 MessageBox 弹窗（参数校验失败弹窗 Enter 即关）
+6. ✅ Tab × N → 焦点在控件间移动（逐次截图 diff 区域变化）
+7. ✅ 方向键 ↓ → 操作模式单选组切换（探测→备份→单系统还原，tab 跟着变）
+8. ⚠️ F5 → 截图无变化（刷新环境执行后界面相同，无法从像素确认；无报错）
+9. ⚠️ PE tab「RAM disk/硬盘启动」单选组：机制与操作模式组一致（同为 BS_AUTORADIOBUTTON+WS_GROUP+IsDialogMessage），未单独逐键实测（焦点 Tab 路径难精确停在组内），推断有效，后续可补测。
+
+#### 五、踩坑记录（全部解决）
+1. **prlctl exec 默认跑在 Session 0（无交互桌面）**：schtasks 在该环境创建任务报中文乱码/「元素找不到」→ 弃用，改 WTS API 直启（run-in-session.ps1）。
+2. **PowerShell 5.1 按 GBK 读 UTF-8 文件**：C# here-string 里**任何中文注释都会吞行**导致 Add-Type 编译失败（报「The name 'xxx' does not exist」/类成员错误）→ **clicker.ps1 的 C# 段必须纯英文注释**（本地已用脚本校验 C# 段非 ASCII 字符数为 0）。
+3. **CreateEnvironmentBlock 缺失 → 子进程 0xC0000142（DLL init failed）**；加上后还需 `CREATE_UNICODE_ENVIRONMENT=0x00000400`，否则 create_failed=87。
+4. **显式 si.lpDesktop="winsta0\default" → 0xC0000142**；改为 lpDesktop=null（token 决定默认桌面）→ 进程 alive=1、窗口出现在可见桌面。
+5. **CREATE_NEW_CONSOLE → 隐藏控制台窗口抢焦点**，-Text 输入落到控制台 → 改 CREATE_NO_WINDOW=0x08000000（无窗口不抢焦点）。
+6. **VM 内 keybd_event 的局限**：单键注入（如 A 键到有焦点的记事本）成功；但 **Win 键/Ctrl+P 组合对 GUI 无效**（合成事件不进入 Parallels 输入管道或焦点不在目标窗口）——**全部改用 prlctl send-key-event 宿主导入**。
+7. **mouse_event / SendInput 鼠标点击在 Parallels VM 内确认不可用**：点击「显示桌面」按钮（任务栏最右）多次无反应（SetCursorPos 可能动了光标但点击事件未被桌面消费）。人手鼠标有效是因为走 IOHID 源头专线，程序合成鼠标事件走应用层分发，不进入 Parallels 订阅管道。**结论：鼠标注入不可用，键盘注入（prlctl 通道）可靠，GUI 必须能纯键盘操作——键盘导航改造正是为此。**
+8. **Chord 解析 bug**：`Convert.ToByte("p", 16)` 抛异常（字母不是十六进制）→ 字母映射 VK（a→0x41 即 ASCII 大写，注意键盘物理行序：Q=24 W=25 E=26 R=27 T=28 Y=29 U=30 I=31 O=32 P=33）。
+9. **测试残留 C:\br-test.json 导致程序一启动就自动执行在线备份并弹「执行成功」**（test_hook_auto_install 读它）→ 已把测试钩子改为**仅在显式 `--test-hook` 参数下启用**（正常启动不读 JSON），该残留不再影响。注：删除该文件被系统安全策略拦截（不可逆操作），改代码门控绕开，文件仍在但已无害。
+
+#### 六、工具用法速查
+```bash
+# 宿主导入键盘（推荐，最可靠）
+./tools/win-clicker/vmkey.sh ctrl+p      # 组合键
+./tools/win-clicker/vmkey.sh tab|enter|esc|win|f5|down|up  # 单键
+# VM 内注入（辅助，Session 1）
+prlctl exec "Windows 11" cmd /c "powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\Public\backupRestore-package\run-in-session.ps1 -SessionId 1 -Command \"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\Users\Public\backupRestore-package\clicker.ps1 -Key 0x41\""
+# 截图
+prlctl capture "Windows 11" --file /tmp/vm-shot.png
+```
+
+#### 七、待办
+- PE tab「RAM disk/硬盘启动」单选组方向键逐键实测（低优先级，机制已验证）。
+- GUI 检查清单 7 步（L.8）可用 prlctl 键盘通道替代人工逐步验收（文本输入仍受限于 VM 内 Text 注入不可用——可改用剪贴板粘贴或 prlctl 单键逐字，或接受 VM 内 keybd_event 对 ASCII 单键有效）。
+- 版本号：本轮验证未 100% 收口（PE 单选组/F5 像素级确认），按用户「修完再升」规则暂保持 v1.5.8，下轮收口后升 1.5.9。
