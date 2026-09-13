@@ -36,7 +36,7 @@
 
 ### B.1 虚拟机
 - VM 名称：`Win11-repair`（Parallels，Apple Silicon，UEFI/GPT）
-- RDP：Windows App / 微软远程桌面，用户 `x`，密码 `1`（已设自动登录）；分辨率建议 1280×720（**Windows App 每次打开默认缩放到 200% 是已知现象，改缩放即可**）
+- RDP：Windows App / 微软远程桌面，用户 `x`，密码 `1`（已设自动登录）；分辨率建议 1280×720（**缩放 200% 的根因是 Windows 系统内「自定义缩放」而非 Windows App 客户端——已于 2026-09-12 通过 RDP 关闭并重登修复；2026-09-13 实测确认当前无缩放、桌面图标/任务栏比例正常**）
 - GUI 自动化：**用 RDP（Windows App）连进 VM 后台操作，别把窗口放 macOS 前台影响用户**；prlctl exec 可执行命令（PE 内不可 exec）
 
 ### B.2 磁盘与分区（实测）
@@ -145,6 +145,26 @@
 4. ESP 残留清理：删除 pe-addsec-*.txt、pe-gui-backup/restore.txt 等测试残留；**保留程序正常文件**（pe-drive.txt、pe-bootsequence-clean.log、pe-exit-guid.txt、pe-entry-guid.txt）。
 5. git 提交：`71c172f`（PE 桌面 + 返回 Windows 自动验证）、`3afa83c`（合并重启 + 打开完整程序 + 智能分流，565 insertions）。
 
+### E.7 智能分流 RE 路收口（16:00-16:12，用户反馈"点 RE 无反应"后的修复）
+**问题**：点「进入 Windows RE」→ 弹窗关闭但无任何后续（无任务、无提示）→ 用户强烈反馈"没有任何反应，只是弹窗关了"。
+
+**根因（两层）**：
+1. **RDP 坐标点击偏差**：cu 点击弹窗 RE 按钮（OCR y≈565-595）多次未命中（实际落取消/间隙）→ 触发的是 choice=0（取消）→ 静默 return。**取消按钮（y≈635-665）反而能点中**（偏差向下时落到取消上）。这不是产品 bug，是测试环境输入坑。
+2. **产品 UX 缺陷**：即使真触发 choice=2，旧代码只是静默 `ShellExecuteW runas` 启动 prepare；若 prepare 启动失败，错误只写状态栏——而**状态栏控件（y=440 高 90）被备份 tab 的镜像路径/压缩率控件覆盖**（布局重叠），用户完全看不到 → 表现为"无反应"。
+
+**修复（native_gui.rs）**：
+1. **choice=2 增加确认框**（`show_message` MB_YESNO）：明确告知"将创建备份任务并以管理员权限准备，准备完成后系统会重启进入 Windows RE 执行备份"，确认后才走 prepare → 不再静默。
+2. **ShellExecute runas 失败时弹窗报错**（MB_OK | MB_ICONERROR，显示 ShellExecute 错误码），不再只写被覆盖的状态栏。
+3. **test hook 新增 `system_drive_choice`（0=取消 1=PE 2=RE）**：`br-test.json` 配置后点「创建任务」直接采用该选择（跳过弹窗+确认框），绕开 RDP 点不到弹窗按钮的测试坑；`State` 新增 `test_drive_choice: Option<i32>`。
+
+**实机验证结果（hook system_drive_choice=2）**：
+- ✅ 点「创建任务」→ 直接走 RE 路由 → 状态栏显示"已启动管理员准备脚本"（ShellExecute 成功，>32）
+- ✅ prepare 创建任务 `12f95494`（backup、imagePath=E:\1.wim、stage=boot-requested）
+- ✅ prepare.log：`reagentc.exe /boottore` 操作成功 → `shutdown.exe /r /t 0` 自动重启
+- ⚠️ **Parallels 重启后未进 WinRE**（回 Win11）：`reagentc /boottore` 的一次性启动在 Parallels UEFI 固件下不生效（与 bootsequence 同类虚拟机固件坑）。**真实硬件上 reagentc /boottore 是标准路径，应有效**；Parallels 环境需用「手动重启后 WinRE 菜单选一次」或 PE 路替代。**此坑写入 backuprestore-pe.md**。
+
+**结论**：智能分流「进入 Windows RE」路的产品逻辑（确认框 → prepare → 任务创建 → WinRE 设置 → 自动重启）已完整验证；「进入 PE」路（choice=1 → schedule_pe_task）入口代码与历史实机一致、hook 已支持，实机验证待安排（会重启进 PE 执行备份，需小分区/接受慢备份）；「在线执行」（数据盘）仍缺可测试数据盘（当前 E 是备份卷、F 是硬盘版 PE）。
+
 ---
 
 ## F. 智能分流规格（完整，供验证/继续开发）
@@ -163,8 +183,8 @@
 ```
 
 **待实机验证**：
-1. Windows GUI 里选 C: 点备份 → 弹窗 3 按钮是否出现、三路行为是否正确。
-2. 数据盘（E: 等）在线备份/还原 → 后台执行 + 结果框。
+1. Windows GUI 里选 C: 点备份 → 弹窗 3 按钮出现 ✅（多轮截图确认）；**三路**：取消 ✅、RE ✅（E.7，hook 验证 prepare 全链）、PE ⏳（hook choice=1 待测，会重启进 PE 备份）。
+2. 数据盘（E: 等）在线备份/还原 → 后台执行 + 结果框 ⏳（缺可测试数据盘）。
 3. PE 侧：pe-task 写 backup/restore + reboot 全链路（此前 pe-task 只实测过部分动作）。
 
 ---
@@ -184,10 +204,13 @@
 9. **pe-task 按空白分词**：WIM 路径含空格会拆坏 → 写任务前拦截。
 10. **自绘模态对话框**（不用 TaskDialogIndirect——无 manifest，comctl32 v6 不可用）。
 11. **VM 无法启动 / 文件丢失**：VM 在 `/Users/x/Parallels/`（200+GB——含快照）；曾因移走 .pvm 无法启动，已从 `~/.Trash/` 移回。**操作 VM 文件前先确认路径，别乱动**。
-12. **Windows App 缩放 200%**：每次打开默认 2 倍缩放，调成 100% 后再用；RDP 分辨率 1280×720 合适。
+12. **缩放 200% 根因 = Windows 系统自定义缩放**（不是 Windows App 客户端）——已通过 RDP 关闭并重登修复；**任何 GUI 自动化前先截图核实当前缩放**，勿拿过期结论断言。RDP 分辨率 1280×720 合适。
 13. **GUI 多 tab 切换叠加/遮挡**（v1.5.2 曾严重）：改 UI 后必须多切几次 tab 回归（根因曾与控件创建/定位逻辑有关，v1.5.2 已修）。
 14. **满十进一版本号**：1.3.9→1.4.0、1.4.9→1.5.0 进位；**彻底测完再升**，不要先设计版本号再改代码。
 15. **备份/还原测试纪律**：不备份还原 C 盘、不用 VHD、用真实磁盘小分区（F: 10G 或 E:）。
+16. **状态栏控件被 tab 控件覆盖**：`status`（y=440 高 90）与备份 tab 的镜像路径（425-455）/压缩率（465-495）控件重叠 → 状态栏文字用户看不到。**凡是错误/状态提示不能只写状态栏**，关键路径必须弹窗（已为 RE prepare 失败/成功加弹窗）；后续布局修复时把 status 移到不会被覆盖的位置。
+17. **RDP（cu）坐标点击弹窗按钮偏差大**：主界面大按钮（创建任务 y≈525）能点中，但自绘弹窗小按钮（RE y≈565-595）多次点不中（实际落取消/间隙）。**弹窗按钮验证用 test hook `system_drive_choice` 绕开**；Tab/Enter/Space 键盘在 RDP 内不映射到按钮（勿再浪费时间重试）。
+18. **reagentc /boottore 在 Parallels UEFI 下无效**：prepare 链执行成功（reagentc 报"操作成功"）但重启后不进入 WinRE（回 Win11）——Parallels 固件不消费一次性 WinRE 启动（与 bootsequence 同类坑）。**真实硬件应有效**；Parallels 环境验证 WinRE 链只能看到「prepare→任务创建→重启」，进 WinRE 执行需手动重启后选 WinRE 菜单。
 
 ---
 
@@ -196,7 +219,7 @@
 > 每项给出验收标准。执行完更新本文 + verification-matrix。
 
 ### P0（本轮功能未闭环，先做）
-1. **智能分流弹窗实机验证**（Windows GUI：选 C: 备份 → 弹窗 3 按钮 → 点进入 PE → 自动重启 → PE 自动执行 → 回 Windows；再测数据盘在线执行）。验收：截图 + 结果文件。
+1. **智能分流弹窗实机验证**：三路——取消 ✅、RE ✅（E.7 hook 验证 prepare 全链：任务创建+reagentc /boottore+自动重启；Parallels 不进 WinRE 属虚拟机固件坑）、**PE 路 ⏳**（hook `system_drive_choice=1` + 点创建任务 → schedule_pe_task 写 S:\pe-task.txt + bootsequence → 重启进 PE 自动执行。**注意会重启并执行备份，需先改 pe-task 目标为小分区或接受 C 盘慢备份**）。验收：截图 + 结果文件。
 2. **在线备份/还原实机验证**（选 E: 或其它非系统盘——注意 F: 当前是 PE，不能当数据盘用；备份一个小分区 → 还原 → 校验）。验收：DISM 退出码 0 + 数据一致。
 
 ### P1（用户明确提过的功能）
@@ -292,3 +315,37 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 | [verification-matrix.md](verification-matrix.md) | 验收矩阵（**状态待同步，见 H9**） |
 | [testing-plan.md](testing-plan.md) | 测试计划（同上） |
 | [development-execution-protocol.md](development-execution-protocol.md) | 开发执行协议 |
+
+---
+
+## L. 补充事件（2026-09-13 15:0x 会话中断前记录——接手 AI 必读）
+
+### L.1 本轮实机验证的 GUI 注入通道结论（用户反复追问后核实）
+- **Windows App 缩放**：200% 缩放的根因是 **Windows 系统内「自定义缩放」**（非 Windows App 客户端），已于 2026-09-12 通过 RDP 关闭并重登修复。**2026-09-13 实测确认当前无缩放**（桌面图标/任务栏比例正常）——本文 B.1 / G12 已同步修正。
+- **GUI 自动化通道图谱**（历史+本轮实测，勿再踩）：
+  - ✅ **RDP（Windows App）+ cu 键盘**：可用（9-12 曾全程用它完成 RAM 安装验收）。注意 **RDP 内 macOS 修饰键不映射成 Windows 修饰键**（如 cmd+R 不触发 Win+R），要用「鼠标点击 + 普通字母键」或「资源管理器类型搜索跳转」。
+  - ✅ **cu 鼠标（RDP 会话窗口内）**：RDP HID 转发可用（缩放正常后坐标基本准），但点击有 ~20-30/1000 的系统性偏差（需按截图 OCR 微调，或改用键盘导航）。
+  - ✅ **prlctl exec / send-key-event --scancode（Windows 运行态）**：可用。
+  - ❌ **cu 点击 Parallels 窗口（com.parallels.desktop.console）**：合成鼠标不进入 guest（CGEvent 不转发）——死路。
+  - ❌ **prlctl 在 bootmgr/PE 内注入**：无效；**prlctl 无鼠标注入接口**。
+  - ❌ **prlctl exec 启动 GUI**：落 Session 0 不可见。
+
+### L.2 ⚠️ macOS 侧「background shell task limit reached」大坑（本次卡死根因）
+- **现象**：Bash / mac_computer_use_tool / computer_use_tool **全部**报 "background shell task limit reached"，无法执行任何命令。
+- **根因**：agent 会话的后台 shell 池有上限（约 4-5 个槽）。以下操作会占槽且**不自动释放**：
+  1. `run_in_background=true` 的 **prlctl stop/start/restart VM** 长命令（sleep 90-260s 循环）——**用完后必须 TaskStop（有 backgroundTaskId 可停）**；
+  2. **mac_computer_use_tool 调用中 Python 抛异常崩溃**（如 app not found / 无效坐标）——**崩溃 runner 占槽且无暴露 id，只能等超时或重启客户端**。
+- **处理**：先 Grep 轨迹 `run_in_background` / TaskOutput 的 task_id 逐个 TaskStop；若仍有 cu 崩溃残留 → **重启豆包客户端**（无需重启 Mac）。
+- **经验**：每次 `run_in_background` 长任务后立即 TaskStop；cu 调用前先确认目标 app 存在，避免 Python 崩溃。
+
+### L.3 智能分流核心代码审查结论（2026-09-13，代码已含在 1,455,616B 产物中）
+- `create_task`：备份→用 `source_drive`（被捕获卷）、还原→用 `target_drive`（被覆盖卷）与 `%SystemDrive%` 比较（正确，非「含 Windows 的卷」）。
+- 相等 → `ask_system_drive_handler`（自绘模态 3 按钮：1=PE、2=RE、其他=取消）→ PE 走 `schedule_pe_task`（mountvol S: → 写 pe-task.txt → bootsequence={PE GUID} → ExitWindowsEx 重启，fallback shutdown.exe）；WIM 路径含空格先拦截。
+- 不等 → `run_online_operation`（后台线程 DISM + PostMessage WM_APP_ONLINE_DONE(0x8002) + ONLINE_RESULT 全局读结果框，不重启）。
+- 压缩率：下拉显示说明文案（`compress_level_labels` 按语言返回 LZX/XPRESS/不压缩 3 项），`create_task` 按索引 0/1/2 映射回 max/fast/none（默认 fast）。
+- **待实机验证**：弹窗三路 + 数据盘在线执行（见 H-P0）。
+
+### L.4 中断前现场
+- VM `Win11-repair` 已由用户手动重启（running）；RDP（Windows App）已断开需重连。
+- GUI 未运行（tasklist 无 BackupRestore）。
+- 下一步（重启豆包后）：重连 RDP → 启动 BackupRestore.exe → 备份 tab 选 C: 创建任务截图弹窗（点取消）→ 选 E: 创建任务验证在线执行 → 收口 H-P0。

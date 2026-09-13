@@ -524,6 +524,8 @@ struct State {
     wim_images: Vec<WimImageInfo>,
     drives: Vec<DriveInfo>,
     operation_index: usize,
+    /// 测试钩子：智能分流时直接用该选择（0=取消 1=PE 2=RE），跳过弹窗。
+    test_drive_choice: Option<i32>,
 }
 
 /// State for the PE recovery-desktop window. The operation the technician
@@ -1953,6 +1955,24 @@ unsafe fn set_wim_items(state: &State) {
     SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
 }
 
+/// 压缩率下拉显示文本（按语言；用户指定 verbatim）。
+/// 索引 0/1/2 固定对应 DISM 术语 max/fast/none（取值映射见 create_task）。
+fn compress_level_labels(language: Language) -> [&'static str; 3] {
+    if language == Language::Chinese {
+        [
+            "LZX（文件最小，耗时特别长，CPU占用特别多）",
+            "XPRESS（推荐！文件稍大，非常快，CPU占用低）",
+            "不压缩（最快，文件最大，几乎不耗CPU）",
+        ]
+    } else {
+        [
+            "LZX (smallest file, very slow, highest CPU)",
+            "XPRESS (recommended! slightly larger, very fast, low CPU)",
+            "No compression (fastest, largest file, almost no CPU)",
+        ]
+    }
+}
+
 unsafe fn apply_language(state: &mut State) {
     let language = selected_language(state);
     set_operation_tabs(state, language);
@@ -1963,6 +1983,18 @@ unsafe fn apply_language(state: &mut State) {
     ];
     set_drive_items(state, desired);
     set_wim_items(state);
+    // 压缩率下拉随语言重填（reset + 重填 + 保持原选择，无选择时默认 fast）
+    let compress_position = combo_selection(state.controls.compress);
+    reset_combo(state.controls.compress);
+    for label in compress_level_labels(language) {
+        add_combo_item(state.controls.compress, label);
+    }
+    SendMessageW(
+        state.controls.compress,
+        CB_SETCURSEL,
+        compress_position.unwrap_or(1),
+        0,
+    );
     for (id, key) in [
         (2001, "operation"),
         (2003, "source"),
@@ -2187,7 +2219,8 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
     } else {
         "需要进入恢复环境处理"
     });
-    // 屏幕居中（宽 460 高 268）
+    // 屏幕居中（宽 460 高 320）：正文+3 按钮需要客户区约 254 高，
+    // 总高 268 时客户区（≈238，扣标题栏）会把取消按钮裁掉，必须 ≥320。
     let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
     let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
     let dialog = CreateWindowExW(
@@ -2196,9 +2229,9 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
         caption.as_ptr(),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (screen_w - 460) / 2,
-        (screen_h - 268) / 2,
+        (screen_h - 320) / 2,
         460,
-        268,
+        320,
         hwnd,
         null_mut(),
         instance,
@@ -2844,8 +2877,18 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         }
     };
     append_gui_log(state, "test hook: config loaded");
-    // 1. 操作模式 → PE 恢复
-    select_operation(state, 4);
+    // 1. 操作模式：默认 PE 恢复；支持 "tab":"backup"（备份）/"restore"/"secondary" 等
+    let tab = json
+        .get("tab")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pe");
+    let op_index = match tab {
+        "backup" => 1,
+        "restore" => 2,
+        "secondary" => 3,
+        _ => 4,
+    };
+    select_operation(state, op_index);
     // 2. 启动方式：ram / disk
     let mode_ram = json
         .get("mode")
@@ -2869,7 +2912,19 @@ unsafe fn test_hook_auto_install(state: &mut State) {
     set_operation_visibility(state);
     layout_operation(state);
     set_volume_labels(state);
-    // 3. 目标卷（按盘符在 drives 列表定位）
+    // 3. 源卷（备份 tab 用 controls.source；PE 分支沿用 target_volume）
+    if let Some(vol) = json.get("source_volume").and_then(|v| v.as_str()) {
+        if let Some(pos) = state
+            .drives
+            .iter()
+            .position(|d| d.letter.eq_ignore_ascii_case(vol))
+        {
+            SendMessageW(state.controls.source, CB_SETCURSEL, pos, 0);
+            append_gui_log(state, &format!("test hook: source={vol} pos={pos}"));
+        } else {
+            append_gui_log(state, &format!("test hook: source vol {vol} not found"));
+        }
+    }
     if let Some(vol) = json.get("target_volume").and_then(|v| v.as_str()) {
         if let Some(pos) = state
             .drives
@@ -2889,11 +2944,28 @@ unsafe fn test_hook_auto_install(state: &mut State) {
     if let Some(name) = json.get("pe_name").and_then(|v| v.as_str()) {
         set_text(GetDlgItem(state.root, ID_PE_NAME_EDIT as i32), name);
     }
-    if let Some(img) = json.get("pe_image").and_then(|v| v.as_str()) {
+    let image_value = json
+        .get("image")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.get("pe_image").and_then(|v| v.as_str()));
+    if let Some(img) = image_value {
         set_text(state.controls.image, img);
     }
     append_gui_log(state, "test hook: fields set");
-    // 5. 自动安装：跳过确认框，窗口显示后延迟触发
+    // 5. 智能分流选择（0=取消 1=PE 2=RE）：设置后点「创建任务」时直接采用，
+    //    跳过弹窗与确认框，便于在无法精确点击弹窗按钮的自动化环境里验证路由。
+    state.test_drive_choice = json
+        .get("system_drive_choice")
+        .and_then(|v| v.as_i64())
+        .filter(|v| *v >= 0 && *v <= 2)
+        .map(|v| v as i32);
+    if let Some(choice) = state.test_drive_choice {
+        append_gui_log(
+            state,
+            &format!("test hook: system_drive_choice={choice}"),
+        );
+    }
+    // 6. 自动安装：跳过确认框，窗口显示后延迟触发
     if json
         .get("auto_install")
         .and_then(|v| v.as_bool())
@@ -4183,9 +4255,12 @@ unsafe fn create_task(state: &State) {
     // 判断用「当前活动系统」（%SystemDrive%），不是「任何含 Windows 的卷」：
     // 双系统时另一个 Windows 卷并未运行，可直接在线备份/还原。
     let compress = if operation == "backup" {
-        combo_selection(state.controls.compress)
-            .map(|position| combo_item_text(state.controls.compress, position))
-            .unwrap_or_else(|| "fast".to_string())
+        // 下拉显示说明文本（LZX/XPRESS/不压缩），取值按索引映射回 DISM 术语
+        match combo_selection(state.controls.compress) {
+            Some(0) => "max".to_string(),
+            Some(2) => "none".to_string(),
+            _ => "fast".to_string(),
+        }
     } else {
         String::new()
     };
@@ -4195,10 +4270,21 @@ unsafe fn create_task(state: &State) {
             .trim_end_matches('\\')
             .trim_end_matches(':')
             .to_ascii_uppercase();
-        let target_upper = target_drive.trim_end_matches(':').to_ascii_uppercase();
-        if target_upper == system_upper {
-            // 当前活动系统：必须离线处理，弹窗让用户选 PE / RE / 取消
-            let choice = ask_system_drive_handler(state.root, language);
+        // 待处理分区：备份=被捕获的源卷（镜像保存卷只是存放位置，不影响是否离线）；
+        // 还原=被覆盖的目标卷。
+        let affected = if operation == "backup" {
+            &source_drive
+        } else {
+            &target_drive
+        };
+        let affected_upper = affected.trim_end_matches(':').to_ascii_uppercase();
+        if affected_upper == system_upper {
+            // 当前活动系统：必须离线处理，弹窗让用户选 PE / RE / 取消。
+            // 测试钩子配置了 system_drive_choice 时直接采用（跳过弹窗）。
+            let choice = match state.test_drive_choice {
+                Some(c) => c,
+                None => ask_system_drive_handler(state.root, language),
+            };
             match choice {
                 1 => {
                     append_gui_log(
@@ -4217,7 +4303,32 @@ unsafe fn create_task(state: &State) {
                     return;
                 }
                 2 => {
-                    // 进入 Windows RE：继续走现有 prepare → WinRE 任务链
+                    // 进入 Windows RE：先弹确认框（明确告知后续动作），
+                    // 确认后再走管理员 prepare → WinRE 任务链，避免"只关弹窗无反应"。
+                    // 测试钩子指定了 choice 时跳过确认框（自动化环境无法精确点击）。
+                    if state.test_drive_choice.is_none() {
+                        let confirm = show_message(
+                            state.root,
+                            &if language == Language::English {
+                                "A backup task will be created and prepared with administrator rights, then the system will restart into Windows RE to run it. Continue?"
+                            } else {
+                                "将创建备份任务并以管理员权限准备，准备完成后系统会重启进入 Windows RE 执行备份。是否继续？"
+                            },
+                            if language == Language::English {
+                                "Enter Windows RE"
+                            } else {
+                                "进入 Windows RE"
+                            },
+                            MB_YESNO | MB_ICONQUESTION,
+                        );
+                        if confirm != IDYES {
+                            append_gui_log(
+                                state,
+                                "system drive operation: Windows RE confirm declined",
+                            );
+                            return;
+                        }
+                    }
                     append_gui_log(
                         state,
                         "system drive operation: user chose Windows RE (prepare chain)",
@@ -4233,7 +4344,7 @@ unsafe fn create_task(state: &State) {
             append_gui_log(
                 state,
                 &format!(
-                    "online operation: target={target_upper} system={system_upper}"
+                    "online operation: affected={affected_upper} system={system_upper}"
                 ),
             );
             run_online_operation(
@@ -4311,6 +4422,25 @@ unsafe fn create_task(state: &State) {
             } else {
                 format!("无法启动管理员准备脚本，ShellExecute 错误码：{result}")
             },
+        );
+        // 状态栏可能被 tab 控件覆盖不可见，必须用弹窗给出明确反馈。
+        show_message(
+            state.root,
+            &if language == Language::English {
+                format!(
+                    "Could not start the elevated preparation script (ShellExecute code {result}). No task, WinRE or reboot was requested."
+                )
+            } else {
+                format!(
+                    "无法启动管理员准备脚本（ShellExecute 错误码 {result}）。未创建任务、未修改 WinRE、未请求重启。"
+                )
+            },
+            if language == Language::English {
+                "Preparation launch failed"
+            } else {
+                "准备启动失败"
+            },
+            MB_OK | MB_ICONERROR,
         );
     } else {
         append_gui_log(
@@ -4736,10 +4866,11 @@ unsafe extern "system" fn window_proc(
         add_combo_item(controls.language, "English");
         SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
         SendMessageW(controls.operation_tabs[0], BM_SETCHECK, BST_CHECKED, 0);
-        // 压缩率下拉：max/fast/none 是 DISM 术语，各语言通用；默认 fast
-        // （实测 fast 体积仅比 max 大约 10%，耗时约 1/3.7，性价比更高）。
-        for level in ["max", "fast", "none"] {
-            add_combo_item(controls.compress, level);
+        // 压缩率下拉：显示按语言给出的说明文本（中文 verbatim 见
+        // compress_level_labels），初始语言为中文；索引 0/1/2 ↔ max/fast/none，
+        // 默认 fast（索引 1）。
+        for label in compress_level_labels(Language::Chinese) {
+            add_combo_item(controls.compress, label);
         }
         SendMessageW(controls.compress, CB_SETCURSEL, 1, 0);
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
@@ -4912,6 +5043,7 @@ unsafe extern "system" fn window_proc(
             wim_images: Vec::new(),
             drives,
             operation_index: 0,
+            test_drive_choice: None,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
