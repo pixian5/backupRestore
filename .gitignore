@@ -69,3 +69,9 @@ detach.txt
 mkvhd.txt
 dp.txt
 attach-vhd.txt
+
+# 临时验证脚本
+run_prepare_*.cmd
+run_restore_*.cmd
+build_winre_*.cmd
+copy_to_e_*.cmd
