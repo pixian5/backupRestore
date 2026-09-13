@@ -105,7 +105,7 @@
    - `tooltip_text` 新增对应中/英文文案；整体向「对按钮/控件做介绍」靠拢。
    - **PE 恢复桌面 6 个卡片按钮**（备份/还原/安装第二系统/命令提示符/返回 Windows/打开完整程序）新增 tooltip；`PeDesktopState` 新增 `tooltip` 字段，`WM_CREATE` 创建 tooltips_class32 窗口并挂 6 按钮，`WM_DESTROY` 释放。
 3. 版本同步 `1.5.9 → 1.5.10`（两处 Cargo.toml、`VERSION`、`Cargo.lock`、GUI 标题随 `PROGRAM_VERSION`、send-wm.ps1 标题匹配串）。
-4. 验证：交叉编译通过（仅既有无关 warning），产物 ~1.5MB；已部署到 VM（`Windows 11`）`C:\Users\Public\backupRestore-package\`，将 GUI 在后台会话启动 4 秒进程存活、无崩溃（`install_tooltips` 新增挂载 + 多行说明 `set_text` 均正常执行）。**悬浮提示视觉效果需 RDP 连入 VM 鼠标悬停核验**（prlctl 启动的 GUI 落在 Services 会话，`prlctl capture` 拍不到窗口，属文档第 12 条已知环境限制）。
+4. 验证：交叉编译通过（仅既有无关 warning），产物 ~1.5MB；已部署到 VM（`Windows 11`）`C:\Users\Public\backupRestore-package\`，将 GUI 在后台会话启动 4 秒进程存活、无崩溃（`install_tooltips` 新增挂载 + 多行说明 `set_text` 均正常执行）。**⚠️ 悬浮气泡 tooltip 实机核验（2026-09-14 凌晨，RDP=Windows App 连入后用户鼠标悬停确认）：「无气泡」——tooltip_cls32 悬浮提示在实机上未弹出，判定为未生效/未达预期。拟定待办 P2-13。用户已指示“先不处理气泡问题”，本轮不改代码，仅记录。** （此前 prlctl 启动的 GUI 落在 Services 会话、`prlctl capture` 拍不到窗口的结论不变；本问题通过 RDP 交互会话悬停核实。）
 
 ## D. v1.4.0 → v1.5.8 关键演进（简表）
 
@@ -252,6 +252,7 @@
 10. **版本号升级**：全部测试通过后 v1.5.8 → v1.5.9（+0.0.1 满十进一；VERSION、Cargo.toml×2、Cargo.lock、GUI 标题同步；Windows 包目录/build-manifest 一致）。
 11. **docs 范围描述修正**：删除「明确不做自研 PE」表述（已自定义 PE 完成）——continuation-handoff.md / project-status.md 里仍有此表述，需改为「已支持自定义 PE（RAM disk/硬盘启动）」。
 12. **PE 桌面返回 Windows 新布局回归**：合并后 6 按钮整体再跑一遍（点返回 Windows → 回 Win11 默认）。
+13. **悬浮气泡 tooltip 未生效（2026-09-14 实机确认，用户暂缓）**：`install_tooltips` 用标准 `tooltips_class32` + `TTS_ALWAYSTIP|TTS_NOPREFIX` + `TTF_IDISHWND|TTF_SUBCLASS` + 启动时 `InitCommonControlsEx(ICC_WIN95_CLASSES)`、`WM_CREATE`/`apply_language` 均调用，代码逻辑正确；但 RDP 会话鼠标悬停各控件（含 8 个新增 + 6 个 PE 按钮 + 页签）均不弹气泡。待办：下次排查 TTF_SUBCLASS 在模态对话框/裸 Win32 窗口上的消息路由，或改用 TTM_RELAY/自绘、或控件 WM_MOUSEMOVE 提示。**用户已指示“先不处理气泡问题”，先仅记录，勿主动改代码。**
 
 ---
 
