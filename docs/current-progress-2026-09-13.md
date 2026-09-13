@@ -349,3 +349,18 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 - VM `Win11-repair` 已由用户手动重启（running）；RDP（Windows App）已断开需重连。
 - GUI 未运行（tasklist 无 BackupRestore）。
 - 下一步（重启豆包后）：重连 RDP → 启动 BackupRestore.exe → 备份 tab 选 C: 创建任务截图弹窗（点取消）→ 选 E: 创建任务验证在线执行 → 收口 H-P0。
+
+### L.5 智能分流 RE 路「固件层修复」穷尽结论（2026-09-13 17:00-17:10）
+**用户选项 1（硬修新 VM 固件恢复条目）已穷尽，确认是 Parallels 固件限制，修复不可行。**
+
+尝试与结论：
+1. **R: 恢复分区重建 EFI 链（成功但无效）**：R:\EFI\Microsoft\Boot\bootmgfw.efi（自 S: 复制 3,119,968B）+ R: BCD（{bootmgr} default=WinRE osloader {e6aed4d4-…} + ramdiskoptions {055a1b87-…}）。构建脚本 `build-winre-bcd.cmd`（必须 CRLF）→ `\\Mac\backupRestore` 共享 → VM 内执行。坑：`bcdedit /createstore` 后 store 为空，`{ramdiskoptions}` 保留名不能直接 create（"不支持该参数"），须 `/create /d "..." /device` 捕获新 GUID；`{bootmgr}` 保留名可以 create。
+2. **固件恢复条目 {e6aed4ce-…} 被系统固定在 S:**：`bcdedit /set device partition=R:` 报成功但 enum 仍 S:——固件条目由 Parallels NVRAM 控制，BCD 层无法改写。
+3. **{fwbootmgr}.bootsequence 指向 WinRE BCD 条目被拒**：displayorder 拒绝 osloader 条目（/addfirst 报成功但 displayorder 不变）→ bootsequence={e6aed4d4-…} 报"找不到元素"。固件 displayorder 只接受固件应用条目（101fffff）。
+4. **NVRAM 移植被拒（关键）**：关 VM → 备份 NVRAM.dat/NVRAM.tnvs → 复制旧 VM（Windows 11.pvm）NVRAM → 启动报 "Failed to start the VM: Operation canceled"（UUID 绑定，Parallels 拒绝）→ 恢复备份后 VM 正常。备份文件：NVRAM.dat.bak-winre-fix-170704。
+
+**最终结论**：Parallels 新 VM（Win11-repair）固件环境：
+- 注册的恢复固件条目 {e6aed4ce-…} 指向普通 bootmgr（进 Win11 而非 WinRE）；
+- 固件不支持一次性启动（BootNext/bootsequence 消费后无法启动非默认条目，reagentc /boottore 必然假成功）；
+- NVRAM 无法从旧 VM 移植（UUID 绑定）。
+→ **WinRE 自动进入在本 VM 不可修复**。智能分流 RE 路实机闭环需：旧 VM（Windows 11.pvm，固件完整）验证 或 真实硬件/VirtualBox/QEMU 验证。PE 路不受影响（Boot Manager 菜单选择，不依赖固件一次性启动）。
