@@ -16,7 +16,7 @@ public class WM2 {
     [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
 }
 "@
-foreach ($title in @("BackupRestore - Rust GUI v1.5.10", "BackupRestore - Rust GUI")) {
+foreach ($title in @("BackupRestore - Rust GUI v1.5.11", "BackupRestore - Rust GUI")) {
     $h = [WM2]::FindWindowW([NullString]::Value, $title)
     if ($h -ne [IntPtr]::Zero) {
         $sb = New-Object System.Text.StringBuilder 256

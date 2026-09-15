@@ -101,6 +101,18 @@ fn main() {
         return;
     }
     #[cfg(windows)]
+    if arguments.iter().any(|argument| argument == "--test-hook") {
+        // 测试钩子：打开 GUI 并读取 C:\br-test.json 自动填充字段 / 自动路由。
+        // 必须作为 GUI 启动选项处理，否则首参是 --test-hook 时会落入 CLI
+        // dispatch 打 usage 并以退出码 2 结束。native_gui 的 WM_CREATE 会从
+        // 命令行参数自行识别 --test-hook 与 --tab。
+        if let Err(error) = launch_gui() {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    #[cfg(windows)]
     if arguments
         .first()
         .is_some_and(|argument| argument == "--pe-desktop")
@@ -601,19 +613,58 @@ fn recover_env(_path: String) -> Result<(), TaskError> {
 fn recover_env(path: String) -> Result<(), TaskError> {
     use backuprestore_core::{validate_payload_files, validate_task_id};
 
-    let values = read_env_file(&path)?;
+    // === 持久早期日志 ===
+    // 写在系统卷 C: 与 C:\WinRE-PoC（WinRE 中即真实系统分区），跨重启仍可回读，
+    // 用于在无交互的 WinRE 引导里定位 Recovery.exe 是否启动、卡在哪一步。
+    let persistent_logs = [
+        PathBuf::from(r"C:\BackupRestore-Recovery-early.log"),
+        PathBuf::from(r"C:\WinRE-PoC\BackupRestore-Recovery-early.log"),
+    ];
+    let meta_log = |line: &str| {
+        use std::io::Write;
+        for p in &persistent_logs {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    };
+    meta_log(&format!("=== recover-env START path='{path}' ==="));
+
+    let values = match read_env_file(&path) {
+        Ok(v) => v,
+        Err(e) => {
+            meta_log(&format!("read_env_file FAILED: {e}"));
+            return Err(e);
+        }
+    };
     let task_id = env_required(&values, "TASK_ID")?;
     validate_task_id(&task_id)?;
     let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
     let store_rel = split_workspace_root_rel(&workspace_root_rel, &task_id)?;
+    meta_log(&format!("TASK_ID={task_id} workspace_root_rel={workspace_root_rel}"));
     // Until the workspace volume is mounted only an ephemeral WinRE path is
     // available.  Switch to the task directory immediately after mounting;
     // all task/recovery logs that survive WinRE are stored there.
     let mut early_log = PathBuf::from(r"X:\BackupRestore-Recovery-early.log");
-    // WinRE 恢复进度窗口：GUI 显示阶段文本/DISM 进度/日志尾部，
-    // 替代无提示的 cmd 黑窗。窗口线程独立读日志，不侵入恢复主流程。
+    // WinRE 恢复进度窗口（失败静默降级，非关键）：GUI 显示阶段/DISM 进度/日志尾部。
     let progress = recovery_progress::spawn(early_log.clone());
-    let task_letter = mount_env_volume(&values, "WORKSPACE", 'T', &early_log, false)?;
+    let task_letter = match mount_env_volume(&values, "WORKSPACE", 'T', &early_log, false) {
+        Ok(letter) => {
+            meta_log(&format!("mount WORKSPACE OK -> {letter}:"));
+            letter
+        }
+        Err(e) => {
+            meta_log(&format!("mount WORKSPACE FAILED: {e}"));
+            return Err(e);
+        }
+    };
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
@@ -624,7 +675,9 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // letter. The old ordering could attempt restoration under T:\Recovery.
     let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log, false)?;
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, recovery_letter);
+    meta_log(&format!("mount RECOVERY OK (r={recovery_letter}) guard ready"));
     let mut task = store.load(&task_id)?;
+    meta_log(&format!("task loaded status={:?} operation={:?}", task.status, task.operation));
     if matches!(task.status, Stage::Success | Stage::Failed) {
         return Err(err(&format!(
             "task is already terminal at stage {:?}; refusing to run it again",
@@ -805,6 +858,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 task_id, task.operation
             ),
         )?;
+        meta_log(&format!("reaching recover_windows (operation={:?})", task.operation));
         recover_windows(
             &store,
             &mut task,
@@ -833,6 +887,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         (Ok(()), Ok(())) => {
             store.write_transition(&mut task, Stage::Success)?;
             append_log(&log, "WinRE cleanup completed; task marked successful")?;
+            meta_log("FINAL: success, wpeutil reboot");
             cleanup_guard.disarm();
             run_logged("wpeutil.exe", &["reboot"], &log)?;
             Ok(())
@@ -864,6 +919,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             } else {
                 cleanup_guard.disarm();
             }
+            meta_log(&format!("FINAL: FAILED recovery_error={recovery_error}"));
             Err(recovery_error)
         }
     }

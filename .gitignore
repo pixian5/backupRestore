@@ -4,6 +4,8 @@
 .idea/
 .vscode/
 .venv/
+.arts/
+.trae/
 target/
 artifacts/
 dist/
@@ -78,6 +80,14 @@ copy_to_e_*.cmd
 /*.bat
 /*.ps1
 /*.txt
+/*.xml
+/*.out
+/*.env
+/_*.cmd
+/_task.json
+# 一次性 WinRE/BCD 诊断脚本（方法已沉淀到 docs），不入库
+tools/win-clicker/_*.ps1
+tools/win-clicker/_*.b64
 pe-assets/
 pe-debug-winpeshl.ini
 pe-debug.cmd
