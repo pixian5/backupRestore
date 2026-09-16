@@ -23,7 +23,7 @@
 - `dism.exe`、DISM API/Provider 树（Capture/Apply 所需）
 - `bcdboot.exe`
 - `BackupRestore.exe`、`Recovery.exe`、MSVC runtime
-- `winpeshl.ini`（直接启动 `Recovery.exe recover-env`）
+- `winpeshl.ini`（由 `winpe-winpeshl.ini` 生成，直接启动 `Recovery.exe --pe-desktop`）
 
 构建脚本随后以只读方式重新挂载成品 WIM，核验启动入口、DISM、BCDBoot、磁盘/NTFS/NVMe/USB 驱动文件均存在。
 

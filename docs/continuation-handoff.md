@@ -51,9 +51,10 @@
 ```text
 crates/backuprestore-core/src/lib.rs       纯 Rust 任务模型、身份、安全校验、状态机、TaskStore
 crates/backuprestore-cli/src/main.rs       BackupRestore.exe GUI/Recovery.exe CLI 入口
-crates/backuprestore-cli/src/native_gui.rs Rust Win32 GUI：窗口、字段、确认、状态和管理员脚本启动
+crates/backuprestore-cli/src/native_gui.rs Rust Win32 GUI：窗口、字段、确认、状态和管理员 Rust 任务启动
 crates/backuprestore-cli/src/windows_prepare.rs Rust 正常 Windows 任务准备、卷/WIM/环境查询
-windows/winpeshl.ini                       WinRE [LaunchApps] 自动启动入口
+windows/winre-winpeshl.ini                 WinRE [LaunchApps] 自动启动入口（任务专用）
+windows/winpe-winpeshl.ini                 自定义 PE 桌面入口（与 WinRE 隔离）
 windows/build-windows.ps1                  x64/ARM64 分离打包，不自动下载工具链
 docs/implementation-notes.md               当前实现、验证证据和未验证边界
 docs/windows-build.md                      Windows ARM64/x64 构建说明

@@ -54,8 +54,6 @@ const CB_ADDSTRING: u32 = 0x0143;
 const CB_RESETCONTENT: u32 = 0x014b;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
-const CB_GETLBTEXTLEN: u32 = 0x0148;
-const CB_GETLBTEXT: u32 = 0x0149;
 const CB_SETDROPPEDWIDTH: u32 = 0x0160;
 const BM_SETCHECK: u32 = 0x00f1;
 const BST_UNCHECKED: usize = 0;
@@ -186,9 +184,9 @@ const PE_BACKGROUND: u32 = 0x00553a2b; // RGB(43, 58, 85), deep blue-grey.
 const PE_TITLE_TEXT: u32 = 0x00e8e8ea; // near-white.
 
 #[repr(C)]
-struct Point {
-    x: i32,
-    y: i32,
+pub(crate) struct Point {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
 }
 
 #[repr(C)]
@@ -258,13 +256,13 @@ struct InitCommonControlsEx {
 }
 
 #[repr(C)]
-struct Msg {
-    hwnd: Hwnd,
-    message: u32,
-    w_param: WParam,
-    l_param: LParam,
-    time: u32,
-    point: Point,
+pub(crate) struct Msg {
+    pub(crate) hwnd: Hwnd,
+    pub(crate) message: u32,
+    pub(crate) w_param: WParam,
+    pub(crate) l_param: LParam,
+    pub(crate) time: u32,
+    pub(crate) point: Point,
 }
 
 #[repr(C)]
@@ -332,7 +330,6 @@ unsafe extern "system" {
     // 对话框式键盘导航：让普通窗口也能用 Tab 遍历焦点、方向键切换
     // 单选按钮、回车触发默认按钮、Esc 关闭、Alt+助记键。
     fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
-    fn GetKeyState(key: i32) -> i16;
     // 即时物理键盘状态：prlctl 宿主导入的修饰键（如 Ctrl）在消息队列里可能有
     // 时序延迟，GetKeyState 偶发读不到；GetAsyncKeyState 反映当前真实状态，更可靠。
     fn GetAsyncKeyState(key: i32) -> i16;
@@ -384,6 +381,8 @@ struct BrowseInfoW {
 
 const BIF_RETURNONLYFSDIRS: u32 = 0x00000001;
 const BIF_NEWDIALOGSTYLE: u32 = 0x00000040;
+const CSIDL_DESKTOPDIRECTORY: i32 = 0x0010;
+const SHGFP_TYPE_CURRENT: u32 = 0;
 
 #[link(name = "shell32")]
 unsafe extern "system" {
@@ -397,6 +396,7 @@ unsafe extern "system" {
     ) -> isize;
     fn SHBrowseForFolderW(info: *const BrowseInfoW) -> *mut c_void;
     fn SHGetPathFromIDListW(pidl: *const c_void, path: *mut u16) -> i32;
+    fn SHGetFolderPathW(hwnd: Hwnd, csidl: i32, token: Handle, flags: u32, path: *mut u16) -> i32;
 }
 
 #[link(name = "ole32")]
@@ -614,14 +614,20 @@ unsafe fn install_tooltips(state: &mut State) {
             "refresh_task",
         ),
         (GetDlgItem(state.root, ID_BROWSE_IMAGE as i32), "browse"),
-        (GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32), "pe_dir_browse"),
+        (
+            GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32),
+            "pe_dir_browse",
+        ),
         (
             GetDlgItem(state.root, ID_PE_REBOOT_MAIN as i32),
             "pe_reboot_main",
         ),
         (GetDlgItem(state.root, ID_PE_SHORTCUT as i32), "pe_shortcut"),
         (GetDlgItem(state.root, ID_PE_MODE_RAM as i32), "pe_mode_ram"),
-        (GetDlgItem(state.root, ID_PE_MODE_DISK as i32), "pe_mode_disk"),
+        (
+            GetDlgItem(state.root, ID_PE_MODE_DISK as i32),
+            "pe_mode_disk",
+        ),
         (GetDlgItem(state.root, ID_PE_DIR_EDIT as i32), "pe_dir_edit"),
         (GetDlgItem(state.root, ID_LANGUAGE as i32), "language"),
     ];
@@ -898,6 +904,8 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+// Win32 control creation mirrors CreateWindowExW's explicit rectangle and id.
+#[allow(clippy::too_many_arguments)]
 unsafe fn create_control(
     parent: Hwnd,
     class: &str,
@@ -1028,16 +1036,6 @@ unsafe fn combo_selection(hwnd: Hwnd) -> Option<usize> {
     } else {
         Some(index as usize)
     }
-}
-
-unsafe fn combo_item_text(hwnd: Hwnd, position: usize) -> String {
-    let length = SendMessageW(hwnd, CB_GETLBTEXTLEN, position, 0);
-    if length <= 0 {
-        return String::new();
-    }
-    let mut buffer = vec![0_u16; (length as usize) + 1];
-    SendMessageW(hwnd, CB_GETLBTEXT, position, buffer.as_mut_ptr() as isize);
-    String::from_utf16_lossy(&buffer[..length as usize])
 }
 
 unsafe fn selected_language(state: &State) -> Language {
@@ -2911,7 +2909,7 @@ unsafe fn browse_pe_dir(state: &State) {
     } else {
         "选择 PE 目录"
     });
-    let mut info = BrowseInfoW {
+    let info = BrowseInfoW {
         hwnd_owner: state.root,
         pidl_root: null(),
         display_name: display_name.as_mut_ptr(),
@@ -3254,7 +3252,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
         );
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "The target volume must differ from the volume that runs this program."
             } else {
                 "目标卷不能与运行本程序的卷相同。"
@@ -3358,10 +3356,10 @@ unsafe fn install_pe_ramdisk(state: &State) {
                 break;
             }
         }
-        if let Some(src) = sdi_source {
-            if let Err(error) = std::fs::copy(&src, &sdi_dest) {
-                append_gui_log(state, &format!("PE install failed: copy boot.sdi: {error}"));
-            }
+        if let Some(src) = sdi_source
+            && let Err(error) = std::fs::copy(&src, &sdi_dest)
+        {
+            append_gui_log(state, &format!("PE install failed: copy boot.sdi: {error}"));
         }
         if !sdi_dest.is_file() {
             append_gui_log(
@@ -3433,7 +3431,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
             None => {
                 show_message(
                     state.root,
-                    &if language == Language::English {
+                    if language == Language::English {
                         "Could not read the created PE boot entry GUID."
                     } else {
                         "无法读取新建的 PE 启动项 GUID。"
@@ -3557,7 +3555,7 @@ unsafe fn install_pe_harddisk(state: &State) {
             append_gui_log(state, "GUI action blocked: no target partition selected");
             show_message(
                 state.root,
-                &if language == Language::English {
+                if language == Language::English {
                     "Select the target partition for the PE install."
                 } else {
                     "请先选择 PE 安装的目标分区。"
@@ -3596,7 +3594,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         );
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "The target partition cannot be the system drive, the ESP or the volume that runs this program."
             } else {
                 "目标分区不能是系统盘、ESP 或运行本程序的卷。"
@@ -3617,7 +3615,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         );
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "The target partition contains a Windows installation. Choose an empty or dedicated partition."
             } else {
                 "目标分区包含 Windows 系统，请选择空分区或专用分区。"
@@ -3809,7 +3807,7 @@ unsafe fn install_pe_harddisk(state: &State) {
             None => {
                 show_message(
                     state.root,
-                    &if language == Language::English {
+                    if language == Language::English {
                         "Could not read the created PE boot entry GUID."
                     } else {
                         "无法读取新建的 PE 启动项 GUID。"
@@ -3913,7 +3911,9 @@ fn extract_bcd_guid(path: &str) -> Option<String> {
                 &bytes[..]
             };
             let units: Vec<u16> = body
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
                 .collect();
             String::from_utf16_lossy(&units)
@@ -3925,53 +3925,89 @@ fn extract_bcd_guid(path: &str) -> Option<String> {
     Some(text[start + 1..end].to_string())
 }
 
-/// 「创建快捷方式」：在用户桌面创建指向 BackupRestore.exe 本身的快捷方式
-/// 「BackupRestore.lnk」（无参数，双击直接打开主 GUI），方便日常启动程序。
+/// Get the current user's shell desktop, including known-folder redirection.
+unsafe fn current_desktop_dir() -> Option<PathBuf> {
+    let mut path = [0_u16; 260];
+    if SHGetFolderPathW(
+        null_mut(),
+        CSIDL_DESKTOPDIRECTORY,
+        null_mut(),
+        SHGFP_TYPE_CURRENT,
+        path.as_mut_ptr(),
+    ) != 0
+    {
+        return None;
+    }
+    let length = path.iter().position(|value| *value == 0)?;
+    (length > 0).then(|| PathBuf::from(String::from_utf16_lossy(&path[..length])))
+}
+
+/// Windows opens file URLs from a .url shell shortcut without a script host.
+fn file_url(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let mut encoded = String::new();
+    for byte in normalized.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b'~' | b'/' | b':')
+        {
+            encoded.push(*byte as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    format!("file:///{encoded}")
+}
+
+/// 「创建快捷方式」：在用户桌面创建指向 BackupRestore.exe 本身的 Windows
+/// Internet shortcut（.url）。它由 Shell 直接解析，不依赖 PowerShell、WScript 或
+/// 控制台窗口；双击会打开主 GUI。
 unsafe fn pe_create_shortcut(state: &State) {
     let language = selected_language(state);
     let executable =
         std::env::current_exe().unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
-    let executable_path = executable.to_string_lossy().to_string();
-    let ps1 = state.executable_dir.join("_create-pe-shortcut.ps1");
-    // Parallels 场景：用户实际桌面是 Mac 桌面映射 C:\Mac\Home\Desktop
-    // （Known Folder 已重定向，Windows 物理桌面不显示）。候选路径全部
-    // 创建、去重：Known Folder 桌面 + Mac 桌面映射 + 当前用户物理桌面。
-    let script = format!(
-        "$paths = @()\n\
-         $d1 = [Environment]::GetFolderPath('Desktop')\n\
-         $d2 = 'C:\\Mac\\Home\\Desktop'\n\
-         $d3 = Join-Path $env:USERPROFILE 'Desktop'\n\
-         foreach ($p in @($d1, $d2, $d3)) {{ if ($p -and (Test-Path $p) -and ($paths -notcontains $p)) {{ $paths += $p }} }}\n\
-         foreach ($p in $paths) {{\n\
-         \x20 $s = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $p 'BackupRestore.lnk'))\n\
-         \x20 $s.TargetPath = '{executable_path}'\n\
-         \x20 $s.IconLocation = '{executable_path},0'\n\
-         \x20 $s.Save()\n\
-         }}\n\
-         'TARGETS=' + ($paths -join ';')\n"
-    );
-    // PowerShell 5.1 按 ANSI 读无 BOM 的 ps1，中文路径会乱码，加 UTF-8 BOM。
-    let mut bytes = vec![0xEF, 0xBB, 0xBF];
-    bytes.extend_from_slice(script.as_bytes());
-    let _ = std::fs::write(&ps1, bytes);
-    let command = format!(
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
-        ps1.to_string_lossy()
-    );
-    append_gui_log(state, &format!("PE create shortcut: {command}"));
-    let out_file = state.executable_dir.join("_create-pe-shortcut.out");
-    let code = run_cmd_to_file(&command, Some(&out_file));
-    if let Ok(text) = std::fs::read_to_string(&out_file) {
-        append_gui_log(
-            state,
-            &format!("PE create shortcut output: {}", text.trim()),
-        );
+    let mut directories = Vec::new();
+    if let Some(desktop) = current_desktop_dir() {
+        directories.push(desktop);
     }
-    append_gui_log(state, &format!("PE create shortcut: exit code={code}"));
-    if code == 0 {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        directories.push(PathBuf::from(profile).join("Desktop"));
+    }
+    // Parallels can redirect the user desktop to the shared macOS desktop.
+    directories.push(PathBuf::from(r"C:\Mac\Home\Desktop"));
+    directories.retain(|directory| directory.is_dir());
+    directories.sort();
+    directories.dedup();
+
+    let contents = format!(
+        "[InternetShortcut]\r\nURL={}\r\nIconFile={}\r\nIconIndex=0\r\n",
+        file_url(&executable),
+        executable.display(),
+    );
+    let mut created = Vec::new();
+    let mut failures = Vec::new();
+    for directory in directories {
+        let shortcut = directory.join("BackupRestore.url");
+        match fs::write(&shortcut, &contents) {
+            Ok(()) => created.push(shortcut),
+            Err(error) => failures.push(format!("{}: {error}", shortcut.display())),
+        }
+    }
+    append_gui_log(
+        state,
+        &format!(
+            "PE create shortcut: created=[{}] failures=[{}]",
+            created
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+            failures.join("; ")
+        ),
+    );
+    if !created.is_empty() {
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "Desktop shortcut \"BackupRestore\" created. Double-click it to open the program."
             } else {
                 "已创建桌面快捷方式「BackupRestore」。双击即可打开程序。"
@@ -3987,9 +4023,10 @@ unsafe fn pe_create_shortcut(state: &State) {
         show_message(
             state.root,
             &if language == Language::English {
-                format!("Failed to create the shortcut (exit code {code}).")
+                "Failed to create a desktop shortcut. No desktop directory was writable."
+                    .to_string()
             } else {
-                format!("创建快捷方式失败（退出码 {code}）。")
+                "创建桌面快捷方式失败：没有可写入的桌面目录。".to_string()
             },
             if language == Language::English {
                 "Failed"
@@ -4016,7 +4053,7 @@ unsafe fn pe_reboot_to_pe(state: &State) {
     let Some(guid) = guid else {
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "No PE entry installed yet. Open the PE Recovery tab, choose a target volume and a PE WIM, then click Create Task first."
             } else {
                 "尚未安装 PE 恢复环境。请先在「PE 恢复」页选择目标卷和 PE 镜像，点击「创建任务」完成安装。"
@@ -4064,13 +4101,9 @@ unsafe fn pe_reboot_to_pe(state: &State) {
                 show_message(
                     state.root,
                     &if language == Language::English {
-                        format!(
-                            "PE task configured and boot sequence set, but auto-reboot failed (ExitWindowsEx and shutdown.exe both failed). Please restart manually."
-                        )
+                        "PE task configured and boot sequence set, but auto-reboot failed (ExitWindowsEx and shutdown.exe both failed). Please restart manually.".to_string()
                     } else {
-                        format!(
-                            "已写入 PE 任务配置并设置一次性启动项，但自动重启失败（ExitWindowsEx 与 shutdown.exe 均失败），请手动重启进入 PE。"
-                        )
+                        "已写入 PE 任务配置并设置一次性启动项，但自动重启失败（ExitWindowsEx 与 shutdown.exe 均失败），请手动重启进入 PE。".to_string()
                     },
                     if language == Language::English {
                         "Auto-reboot failed"
@@ -4519,7 +4552,7 @@ unsafe fn create_task(state: &State) {
                     if state.test_drive_choice.is_none() {
                         let confirm = show_message(
                             state.root,
-                            &if language == Language::English {
+                            if language == Language::English {
                                 "A backup task will be created and prepared with administrator rights, then the system will restart into Windows RE to run it. Continue?"
                             } else {
                                 "将创建备份任务并以管理员权限准备，准备完成后系统会重启进入 Windows RE 执行备份。是否继续？"
@@ -4714,7 +4747,7 @@ unsafe fn schedule_pe_task(
     let Some(guid) = guid else {
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "No PE entry installed yet. Open the PE Recovery tab, install the PE first, then retry."
             } else {
                 "尚未安装 PE 恢复环境。请先在「PE 恢复」页完成 PE 安装，再重试。"
@@ -4732,7 +4765,7 @@ unsafe fn schedule_pe_task(
     if image_path.contains(' ') {
         show_message(
             state.root,
-            &if language == Language::English {
+            if language == Language::English {
                 "The PE task channel does not support spaces in the WIM path yet. Move the image to a path without spaces and retry."
             } else {
                 "PE 自动执行通道暂不支持带空格的镜像路径。请把 WIM 放到无空格路径后重试。"
@@ -4779,7 +4812,7 @@ unsafe fn schedule_pe_task(
             if fallback != 0 {
                 show_message(
                     state.root,
-                    &if language == Language::English {
+                    if language == Language::English {
                         "PE task configured and boot sequence set, but auto-reboot failed. Please restart manually."
                     } else {
                         "已写入 PE 任务配置并设置一次性启动项，但自动重启失败，请手动重启进入 PE。"
@@ -4905,6 +4938,9 @@ fn execute_online(params: &OnlineOpParams) -> String {
 }
 
 /// 启动在线备份/还原后台线程（非当前活动系统的卷可直接在线处理）。
+// The caller owns each UI field separately; collapsing them would obscure
+// which potentially destructive input is copied into the background task.
+#[allow(clippy::too_many_arguments)]
 unsafe fn run_online_operation(
     state: &State,
     operation: &str,
@@ -4939,7 +4975,7 @@ unsafe fn run_online_operation(
     });
     set_text(
         state.controls.status,
-        &if language == Language::English {
+        if language == Language::English {
             "Online backup/restore started in the background. A result dialog will appear when it finishes."
         } else {
             "已启动在线备份/还原（后台执行），完成后会弹出结果。"
@@ -5402,34 +5438,31 @@ unsafe extern "system" fn window_proc(
             &format!(
                 "PE controls: ram_radio_checked={} dir_edit_visible={}",
                 IsDlgButtonChecked(hwnd, ID_PE_MODE_RAM as i32) != 0,
-                GetDlgItem(hwnd, ID_PE_DIR_EDIT as i32) != null_mut(),
+                !GetDlgItem(hwnd, ID_PE_DIR_EDIT as i32).is_null(),
             ),
         );
-        if let Ok(image) = std::env::var("BACKUPRESTORE_OPEN_IMAGE") {
-            if !image.trim().is_empty() {
-                select_operation(&mut *state_ptr, 2);
-                set_text((*state_ptr).controls.image, &image);
-                read_image(&mut *state_ptr);
-            }
+        if let Ok(image) = std::env::var("BACKUPRESTORE_OPEN_IMAGE")
+            && !image.trim().is_empty()
+        {
+            select_operation(&mut *state_ptr, 2);
+            set_text((*state_ptr).controls.image, &image);
+            read_image(&mut *state_ptr);
         }
-        if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB") {
-            if let Ok(index) = tab.parse::<usize>() {
-                if (1..=4).contains(&index) {
-                    select_operation(&mut *state_ptr, index);
-                }
-            }
+        if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB")
+            && let Ok(index) = tab.parse::<usize>()
+            && (1..=4).contains(&index)
+        {
+            select_operation(&mut *state_ptr, index);
         }
         // 命令行参数 --tab N（UAC 提升后命令行参数保留，比环境变量可靠）
         {
             let args: Vec<String> = std::env::args().collect();
-            if let Some(pos) = args.iter().position(|a| a == "--tab") {
-                if let Some(value) = args.get(pos + 1) {
-                    if let Ok(index) = value.parse::<usize>() {
-                        if (1..=4).contains(&index) {
-                            select_operation(&mut *state_ptr, index);
-                        }
-                    }
-                }
+            if let Some(pos) = args.iter().position(|a| a == "--tab")
+                && let Some(value) = args.get(pos + 1)
+                && let Ok(index) = value.parse::<usize>()
+                && (1..=4).contains(&index)
+            {
+                select_operation(&mut *state_ptr, index);
             }
         }
         // 测试钩子：仅在显式 --test-hook 参数下读取 C:\br-test.json（正常启动不读，
@@ -5489,7 +5522,7 @@ unsafe extern "system" fn window_proc(
                 state,
                 &format!("online operation finished: success={success}"),
             );
-            show_message(state.root, &text, &caption, flags);
+            show_message(state.root, &text, caption, flags);
             return 0;
         }
         if message == WM_KEYDOWN {
@@ -6354,22 +6387,22 @@ unsafe fn pe_dialog(
 unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
     // 自动点击模式（S:\pe-click.txt）：跳过对话框，用配置参数直接执行，
     // 完成后恢复 BCD 并自动重启回 Windows（等效鼠标点击整条链路）。
-    if let Some(params) = pe_click_params("backup") {
-        if params.len() >= 2 {
-            let mut result = String::new();
-            let mut reboot = false;
-            let mut src = params[0].trim_end_matches(':').to_string();
-            // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
-            if src == "AUTO" {
-                execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
-                src = resolve_drive("AUTO");
-            }
-            let wim = resolve_pe_wim_path(&params[1], &src);
-            execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
-            let _ = std::fs::write("S:\\pe-gui-backup.txt", &result);
-            exit_pe_to_windows(hwnd);
-            return;
+    if let Some(params) = pe_click_params("backup")
+        && params.len() >= 2
+    {
+        let mut result = String::new();
+        let mut reboot = false;
+        let mut src = params[0].trim_end_matches(':').to_string();
+        // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
+        if src == "AUTO" {
+            execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
+            src = resolve_drive("AUTO");
         }
+        let wim = resolve_pe_wim_path(&params[1], &src);
+        execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
+        let _ = std::fs::write("S:\\pe-gui-backup.txt", &result);
+        exit_pe_to_windows(hwnd);
+        return;
     }
     // 1. 定位系统卷（默认源卷）
     let mut result = String::new();
@@ -6428,28 +6461,28 @@ unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
 /// PE 桌面「还原系统」：格式化目标卷 + Apply WIM + BCDBoot（目标为系统卷时）。
 unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
     // 自动点击模式：跳过对话框与二次确认，直接格式化+还原+修复引导。
-    if let Some(params) = pe_click_params("restore") {
-        if params.len() >= 2 {
-            let mut result = String::new();
-            let mut reboot = false;
-            let mut target = params[1].trim_end_matches(':').to_string();
-            // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
-            if target == "AUTO" {
-                execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
-                target = resolve_drive("AUTO");
-            }
-            let wim = resolve_pe_wim_path(&params[0], &target);
-            execute_pe_task_line(
-                &format!("format {target} --allow-system"),
-                &mut result,
-                &mut reboot,
-            );
-            execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
-            execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
-            let _ = std::fs::write("S:\\pe-gui-restore.txt", &result);
-            exit_pe_to_windows(hwnd);
-            return;
+    if let Some(params) = pe_click_params("restore")
+        && params.len() >= 2
+    {
+        let mut result = String::new();
+        let mut reboot = false;
+        let mut target = params[1].trim_end_matches(':').to_string();
+        // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
+        if target == "AUTO" {
+            execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
+            target = resolve_drive("AUTO");
         }
+        let wim = resolve_pe_wim_path(&params[0], &target);
+        execute_pe_task_line(
+            &format!("format {target} --allow-system"),
+            &mut result,
+            &mut reboot,
+        );
+        execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
+        execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
+        let _ = std::fs::write("S:\\pe-gui-restore.txt", &result);
+        exit_pe_to_windows(hwnd);
+        return;
     }
     let mut result = String::new();
     let mut reboot = false;
@@ -6522,33 +6555,33 @@ unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
 /// PE 桌面「安装第二系统」：Apply WIM 到目标卷 + BCD 追加启动项。
 unsafe fn pe_secondary_from_desktop(hwnd: Hwnd) {
     // 自动点击模式：跳过对话框与确认，直接格式化+还原+追加启动项。
-    if let Some(params) = pe_click_params("secondary") {
-        if params.len() >= 2 {
-            let mut result = String::new();
-            let mut reboot = false;
-            let mut target = params[1].trim_end_matches(':').to_string();
-            // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
-            if target == "AUTO" {
-                execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
-                target = resolve_drive("AUTO");
-            }
-            let wim = resolve_pe_wim_path(&params[0], &target);
-            let menu = if params.len() >= 3 {
-                params[2].clone()
-            } else {
-                "Windows 备份".to_string()
-            };
-            execute_pe_task_line(&format!("format {target}"), &mut result, &mut reboot);
-            execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
-            execute_pe_task_line(
-                &format!("add-secondary-entry {target} {menu}"),
-                &mut result,
-                &mut reboot,
-            );
-            let _ = std::fs::write("S:\\pe-gui-secondary.txt", &result);
-            exit_pe_to_windows(hwnd);
-            return;
+    if let Some(params) = pe_click_params("secondary")
+        && params.len() >= 2
+    {
+        let mut result = String::new();
+        let mut reboot = false;
+        let mut target = params[1].trim_end_matches(':').to_string();
+        // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
+        if target == "AUTO" {
+            execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
+            target = resolve_drive("AUTO");
         }
+        let wim = resolve_pe_wim_path(&params[0], &target);
+        let menu = if params.len() >= 3 {
+            params[2].clone()
+        } else {
+            "Windows 备份".to_string()
+        };
+        execute_pe_task_line(&format!("format {target}"), &mut result, &mut reboot);
+        execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
+        execute_pe_task_line(
+            &format!("add-secondary-entry {target} {menu}"),
+            &mut result,
+            &mut reboot,
+        );
+        let _ = std::fs::write("S:\\pe-gui-secondary.txt", &result);
+        exit_pe_to_windows(hwnd);
+        return;
     }
     let out = pe_dialog(
         hwnd,
@@ -7015,12 +7048,12 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             let mut real_vhd = vhd.to_string();
-            if let Ok(text) = std::fs::read_to_string(find_out) {
-                if let Some(line) = text.lines().next() {
-                    let drv = line.trim().trim_end_matches(':');
-                    if drv.len() == 1 && drv.as_bytes()[0].is_ascii_alphabetic() {
-                        real_vhd = format!("{drv}:\\{file}");
-                    }
+            if let Ok(text) = std::fs::read_to_string(find_out)
+                && let Some(line) = text.lines().next()
+            {
+                let drv = line.trim().trim_end_matches(':');
+                if drv.len() == 1 && drv.as_bytes()[0].is_ascii_alphabetic() {
+                    real_vhd = format!("{drv}:\\{file}");
                 }
             }
             result.push_str(&format!("attach-vhd: file={vhd}, resolved={real_vhd}\n"));
@@ -7074,10 +7107,9 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             let config_path = std::env::temp_dir().join("BackupRestore-exclusions.ini");
             let source_root = format!("{d}:\\");
             if let Ok(text) = backuprestore_core::build_capture_exclusions(Path::new(&source_root))
+                && std::fs::write(&config_path, text).is_ok()
             {
-                if std::fs::write(&config_path, text).is_ok() {
-                    exclude_arg = format!(" /ConfigFile:{}", config_path.display());
-                }
+                exclude_arg = format!(" /ConfigFile:{}", config_path.display());
             }
             // PE 的 dism 对长参数敏感，用最小参数集（Name 值不能含连字符）
             run_cmd_to_file_timeout(
@@ -7323,13 +7355,11 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                             if let Some(rest) = t
                                 .strip_prefix("标识符")
                                 .or_else(|| t.strip_prefix("identifier"))
+                                && let Some(s) = rest.find('{')
+                                && let Some(e) = rest[s + 1..].find('}')
                             {
-                                if let Some(s) = rest.find('{') {
-                                    if let Some(e) = rest[s + 1..].find('}') {
-                                        cur_guid = rest[s..s + 1 + e + 1].to_string();
-                                        continue;
-                                    }
-                                }
+                                cur_guid = rest[s..s + 1 + e + 1].to_string();
+                                continue;
                             }
                             if cur_guid.is_empty() {
                                 continue;
@@ -7389,10 +7419,10 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             if let Ok(text) = std::fs::read_to_string("S:\\pe-addsec-create.txt") {
                 result.push_str(&format!("[ADD_SECONDARY_CREATE]\n{text}\n"));
                 // 提取 {guid}（bcdedit 输出 "The entry {xxxx-...} was successfully created."）
-                if let Some(start) = text.find('{') {
-                    if let Some(end) = text[start + 1..].find('}') {
-                        guid = text[start..start + 1 + end + 1].to_string();
-                    }
+                if let Some(start) = text.find('{')
+                    && let Some(end) = text[start + 1..].find('}')
+                {
+                    guid = text[start..start + 1 + end + 1].to_string();
                 }
             }
             if guid.is_empty() {
@@ -7651,7 +7681,7 @@ pub fn run() -> Result<(), super::TaskError> {
             if message.message == WM_KEYDOWN && ((message.w_param & 0xFFFF) as u32) == 116 {
                 let ctrl_down = ((GetAsyncKeyState(VK_CONTROL as i32) as u16) & 0x8000) != 0;
                 if !ctrl_down {
-                    PostMessageW(window, WM_COMMAND as u32, ID_REFRESH as usize, 0);
+                    PostMessageW(window, WM_COMMAND, ID_REFRESH, 0);
                     continue;
                 }
             }

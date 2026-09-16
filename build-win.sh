@@ -31,7 +31,8 @@ echo ">> 产物：$(ls -la target/aarch64-pc-windows-msvc/release/BackupRestore.
 
 if [ "$1" = "--deploy" ]; then
   echo ">> 部署到 VM Windows 11"
-  # 部署：主程序 + Recovery.exe（同一二进制，winpeshl 按此名启动）+ 启动包装器 + 启动配置
-  prlctl exec "Windows 11" cmd /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe 2>nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul & copy /y \\\\Mac\\backupRestore\\windows\\RecoveryLauncher.cmd C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd >nul & copy /y \\\\Mac\\backupRestore\\windows\\winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpeshl.ini >nul & echo DEPLOYED"
+  # Do not print DEPLOYED unless every file reached the guest. The executable
+  # is always copied as both Rust entry points; the templates remain distinct.
+  prlctl exec "Windows 11" cmd /d /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe >nul 2>nul & taskkill /f /im Recovery.exe >nul 2>nul & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul && copy /y \\\\Mac\\backupRestore\\windows\\winre-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winre-winpeshl.ini >nul && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini >nul && echo DEPLOYED"
 fi
 echo ">> 完成"

@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::native_gui::Msg;
+
 type Hwnd = *mut c_void;
 type WParam = usize;
 type LParam = isize;
@@ -66,17 +68,6 @@ struct WndClassExW {
     menu_name: *const u16,
     class_name: *const u16,
     icon_sm: Hwnd,
-}
-
-#[repr(C)]
-struct Msg {
-    hwnd: Hwnd,
-    message: u32,
-    w_param: WParam,
-    l_param: LParam,
-    time: u32,
-    pt_x: i32,
-    pt_y: i32,
 }
 
 #[link(name = "user32")]
@@ -155,10 +146,10 @@ fn parse_percent(line: &str) -> Option<u32> {
             .chars()
             .filter(|c| c.is_ascii_digit() || *c == '.')
             .collect();
-        if let Ok(value) = digits.parse::<f32>() {
-            if (0.0..=100.0).contains(&value) {
-                return Some(value as u32);
-            }
+        if let Ok(value) = digits.parse::<f32>()
+            && (0.0..=100.0).contains(&value)
+        {
+            return Some(value as u32);
         }
     }
     None
@@ -189,10 +180,10 @@ fn classify(line: &str) -> (Option<String>, Option<u32>, Option<String>) {
         stage = Some("正在准备恢复环境…".to_string());
     }
     let percent = parse_percent(line);
-    let detail = if line.trim().is_empty() {
-        None
-    } else if (line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%') {
-        None // 纯进度行不占详情
+    let detail = if line.trim().is_empty()
+        || ((line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%'))
+    {
+        None // 空行和纯进度行不占详情
     } else {
         Some(line.trim_end().to_string())
     };
@@ -234,7 +225,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let mut details: Vec<String> = Vec::new();
     // DISM 进度条用 \r 原地刷新（重定向到文件时不带 \n），先把整段按
     // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
-    for line in buffer.split(|c| c == '\n' || c == '\r') {
+    for line in buffer.split(['\n', '\r']) {
         let (stage, percent, detail) = classify(line);
         if let Some(value) = stage {
             latest_stage = Some(value);
@@ -370,11 +361,11 @@ pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
 
 /// 请求关闭进度窗口（主线程操作执行完毕后调用，避免窗口残留在前台）。
 pub fn request_close(shared: &ProgressShared) {
-    if let Some(hwnd) = *shared.hwnd.lock().unwrap() {
-        if hwnd != 0 {
-            unsafe {
-                PostMessageW(hwnd as Hwnd, WM_CLOSE, 0, 0);
-            }
+    if let Some(hwnd) = *shared.hwnd.lock().unwrap()
+        && hwnd != 0
+    {
+        unsafe {
+            PostMessageW(hwnd as Hwnd, WM_CLOSE, 0, 0);
         }
     }
 }
@@ -395,12 +386,12 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
         class_name: class_name.as_ptr(),
         icon_sm: null_mut(),
     };
-    let mut icc = InitCommonControlsEx {
+    let icc = InitCommonControlsEx {
         size: std::mem::size_of::<InitCommonControlsEx>() as u32,
         flags: ICC_PROGRESS_CLASS,
     };
     unsafe {
-        InitCommonControlsEx(&mut icc);
+        InitCommonControlsEx(&icc);
         if RegisterClassExW(&class) == 0 {
             return; // 类已注册或失败：进度窗口非关键，静默降级
         }

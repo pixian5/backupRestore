@@ -1,5 +1,9 @@
 # BackupRestore 当前完整进度基线
 
+> **历史快照（v1.3.3），不能作为当前执行说明。** 当前版本和入口合同见
+> [current-status-2026-09-16.md](current-status-2026-09-16.md)。仓库中已不再存在
+> `windows/winpeshl.ini`；正常 WinRE 与自定义 PE 分别使用独立模板。
+
 更新时间：2026-09-09  
 源码版本：`1.3.3`  
 分支：`main`  
@@ -36,7 +40,8 @@ Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`
 | `crates/backuprestore-cli/src/main.rs` | 两个 Rust EXE 的入口、WinRE 恢复、阶段续跑、BCD 菜单与回滚 |
 | `crates/backuprestore-cli/src/native_gui.rs` | Rust Win32 GUI、标签、盘符/WIM 控件、提示、绝对路径、UAC |
 | `crates/backuprestore-cli/src/windows_prepare.rs` | 正常 Windows 卷枚举、WinRE/EFI/BCD 准备、WIM 信息、任务写入 |
-| `windows/winpeshl.ini` | WinRE 中直接启动 Rust `Recovery.exe` |
+| `windows/winre-winpeshl.ini` | WinRE 中直接启动 Rust `Recovery.exe recover-env` |
+| `windows/winpe-winpeshl.ini` | 自定义 PE 中直接启动 Rust `Recovery.exe --pe-desktop` |
 | `windows/build-windows.ps1` | ARM64/x64 架构隔离构建和 manifest，不自动下载工具链 |
 | `docs/*.md` | 设计、协议、验证矩阵、失败根因和交接记录 |
 

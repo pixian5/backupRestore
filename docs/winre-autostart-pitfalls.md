@@ -80,8 +80,15 @@ Move the entire BackupRestore folder to another volume and run it again.
 ### 11. build-win.sh --deploy 占用文件静默失败
 BackupRestore.exe 运行中（GUI 开着）时部署 copy 报"另一个程序正在使用此文件"，但脚本仍打印 DEPLOYED。必须先 `taskkill /f /im BackupRestore.exe /im Recovery.exe` 再部署，部署后校验 exe 时间戳是否为当前构建时刻。
 
-### 12. 还原自动重定位（程序在目标盘）
-还原 prepare 检测到"程序所在分区 == 待还原分区"时，自动把 exe+Recovery.exe+RecoveryLauncher.cmd+winpeshl.ini+VCRUNTIME 复制到 `{镜像盘符}:\backupRestore-package`，SHA256 校验后以 CREATE_NO_WINDOW 从副本重启 prepare（追加 --relocated）。副本的 last-task.json/任务目录在镜像卷（如 E:\backupRestore-package\），GUI 状态读取需注意来源盘。实测：C 盘程序跑还原 → 自动重定位 → 还原成功，闭环通过。
+### 12. 程序目录位于还原目标盘（当前硬性规则）
+早期版本曾自动把运行目录复制到镜像卷并通过 `--relocated` 继续。这会在用户没有
+明确移动程序目录的情况下创建第二份运行时和任务状态，违反“程序目录即工作目录”的
+设计，已移除。
+
+当前 `prepare` 在任何卷身份查询、UAC、任务创建、WinRE/BCD 修改或重启请求之前，若
+检测到程序目录所在分区等于单系统还原或新增第二系统的目标分区，立即返回错误。GUI
+只显示“确定”提示；用户必须手动移动整个 `BackupRestore` 文件夹到非目标分区后重试。
+备份不覆盖源卷，因此程序与备份源同卷仍允许。
 
 ### 13. 日志切到镜像同目录要同时处理 destination 和 image
 备份任务镜像在 `task.destination`，还原任务在 `task.image`——只查 image 会导致备份时日志切换跳过（写回任务目录）。已修：两者都取 relative_path，写 `{镜像盘符}:\Recovery.log`（如 E:\Recovery.log），早期日志复制过去保证完整；写失败回退任务目录。E:\Recovery.log 是 append 累积多次任务，非覆盖。
@@ -91,3 +98,15 @@ BackupRestore.exe 运行中（GUI 开着）时部署 copy 报"另一个程序正
 - fast（fast.wim，源 65.5GB）duration=414s（6.9 分钟），输出 27.47GB
 - fast（fast2.wim，源约 68.7GB）duration=417s（7 分钟），输出 28.26GB
 结论：fast 体积仅比 max 大约 10%，耗时约 1/3.7——GUI 与命令行默认压缩率改为 fast。
+
+### 15. WinRE 与 PE 不能共用 `winpeshl.ini`（v1.6.0 修复）
+
+`v1.3.3` 曾把正常 WinRE 的入口改成 PE 桌面 `BackupRestore.exe --pe-desktop`，但
+WinRE 注入只复制 `Recovery.exe`；`v1.5.12` 又把入口改为诊断批处理
+`winpeshl-boot.cmd`，同样没有把它注入 WIM。两次都会让 DISM 注入表面成功、但
+WinRE 中找不到实际入口。
+
+现在产品包分为 `winre-winpeshl.ini`（只允许 `Recovery.exe recover-env`）和
+`winpe-winpeshl.ini`（只允许 `Recovery.exe --pe-desktop`）。Rust 以单一清单完成
+包预检、任务暂存、WIM 注入和注入后哈希核对；缺任一必需文件即失败且不提交 WIM。
+产品 WinRE 不再携带 `.cmd` 启动器。

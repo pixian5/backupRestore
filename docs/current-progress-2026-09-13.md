@@ -1,5 +1,10 @@
 # BackupRestore 当前完整进度基线（2026-09-13）
 
+> **历史快照，不是当前执行合同。** 本文记录的版本是 `v1.5.10`。自 `v1.6.0` 起，当前
+> 入口、工作目录和验证边界以 [current-status-2026-09-16.md](current-status-2026-09-16.md)
+> 为准：产品 WinRE 只允许 `Recovery.exe recover-env`，自定义 PE 只允许
+> `Recovery.exe --pe-desktop`；二者不共享仓库模板，也不使用 `RecoveryLauncher.cmd`。
+
 更新时间：2026-09-13 23:0x（CST）  
 源码版本：`v1.5.10`（Cargo.toml×2 + VERSION 已同步；每轮修改 +0.0.1 满十进一，下一版本号 `1.5.11`）  
 分支：`main`  
@@ -70,7 +75,8 @@
 | `pe-bootsequence-clean.log` | bootsequence 自清日志 | 程序写入 |
 
 ### B.5 程序部署位置
-- **Windows 侧**：`C:\Users\Public\backupRestore-package\` → `BackupRestore.exe`、`Recovery.exe`、`RecoveryLauncher.cmd`、`winpeshl.ini`
+- **Windows 侧（历史部署包）**：该快照记录了旧 `RecoveryLauncher.cmd` 和共享模板；
+  当前包仅含 `BackupRestore.exe`、`Recovery.exe`、`winre-winpeshl.ini`、`winpe-winpeshl.ini`
 - **PE 分区（F:）**：`F:\Windows\System32\Recovery.exe`（**每次新构建必须同步更新此文件**，旧版无 `--pe-desktop` 参数会输出 usage exit 2）
 - **PE 中文字体**：`simsun.ttc` 已复制到 `F:\Windows\Fonts\`（PE 原版无中文字体，否则中文全变方块）
 

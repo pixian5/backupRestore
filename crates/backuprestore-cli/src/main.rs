@@ -40,6 +40,8 @@ mod native_gui;
 mod recovery_progress;
 #[cfg(windows)]
 mod windows_prepare;
+#[cfg(any(windows, test))]
+mod winre_payload;
 
 fn usage() -> ! {
     eprintln!(
@@ -648,7 +650,9 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     validate_task_id(&task_id)?;
     let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
     let store_rel = split_workspace_root_rel(&workspace_root_rel, &task_id)?;
-    meta_log(&format!("TASK_ID={task_id} workspace_root_rel={workspace_root_rel}"));
+    meta_log(&format!(
+        "TASK_ID={task_id} workspace_root_rel={workspace_root_rel}"
+    ));
     // Until the workspace volume is mounted only an ephemeral WinRE path is
     // available.  Switch to the task directory immediately after mounting;
     // all task/recovery logs that survive WinRE are stored there.
@@ -675,9 +679,14 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // letter. The old ordering could attempt restoration under T:\Recovery.
     let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log, false)?;
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, recovery_letter);
-    meta_log(&format!("mount RECOVERY OK (r={recovery_letter}) guard ready"));
+    meta_log(&format!(
+        "mount RECOVERY OK (r={recovery_letter}) guard ready"
+    ));
     let mut task = store.load(&task_id)?;
-    meta_log(&format!("task loaded status={:?} operation={:?}", task.status, task.operation));
+    meta_log(&format!(
+        "task loaded status={:?} operation={:?}",
+        task.status, task.operation
+    ));
     if matches!(task.status, Stage::Success | Stage::Failed) {
         return Err(err(&format!(
             "task is already terminal at stage {:?}; refusing to run it again",
@@ -858,7 +867,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 task_id, task.operation
             ),
         )?;
-        meta_log(&format!("reaching recover_windows (operation={:?})", task.operation));
+        meta_log(&format!(
+            "reaching recover_windows (operation={:?})",
+            task.operation
+        ));
         recover_windows(
             &store,
             &mut task,
@@ -873,10 +885,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task.status == Stage::BootRepaired || stage_before_failure == Stage::BootRepaired;
         let _ = store.write_failure(&mut task, 1, error.to_string());
         append_log(&log, &format!("Recovery failed: {error}"))?;
-        if should_rollback_bcd {
-            if let Err(rollback) = restore_bcd_snapshot(&task_dir, efi_root.as_deref(), &log) {
-                append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
-            }
+        if should_rollback_bcd
+            && let Err(rollback) = restore_bcd_snapshot(&task_dir, efi_root.as_deref(), &log)
+        {
+            append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
         }
     }
     let cleanup = restore_original_winre(&values, &task_dir, &log, recovery_letter);
@@ -1226,21 +1238,20 @@ fn mount_env_volume(
         .arg("/L")
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
-    if existing.status.success() {
-        if let Some(actual) = String::from_utf8_lossy(&existing.stdout)
+    if existing.status.success()
+        && let Some(actual) = String::from_utf8_lossy(&existing.stdout)
             .lines()
             .map(str::trim)
             .find(|line| !line.is_empty())
-        {
-            if actual.eq_ignore_ascii_case(&expected) {
-                verify_mounted_volume(letter, &expected)?;
-                verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
-                return Ok(letter);
-            }
-            return Err(err(&format!(
-                "volume {letter}: is already mounted to {actual}, refusing to replace it"
-            )));
+    {
+        if actual.eq_ignore_ascii_case(&expected) {
+            verify_mounted_volume(letter, &expected)?;
+            verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
+            return Ok(letter);
         }
+        return Err(err(&format!(
+            "volume {letter}: is already mounted to {actual}, refusing to replace it"
+        )));
     }
     let direct_status = Command::new("mountvol.exe")
         .args([format!("{letter}:"), expected.clone()])
@@ -1371,15 +1382,14 @@ fn verify_live_volume_identity(
             )));
         }
     }
-    if !allow_reformatted_serial {
-        if let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL"))
-            && !live.volume_serial.is_empty()
-            && !live.volume_serial.eq_ignore_ascii_case(&expected)
-        {
-            return Err(err(&format!(
-                "{prefix} volume serial differs after mounting"
-            )));
-        }
+    if !allow_reformatted_serial
+        && let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL"))
+        && !live.volume_serial.is_empty()
+        && !live.volume_serial.eq_ignore_ascii_case(&expected)
+    {
+        return Err(err(&format!(
+            "{prefix} volume serial differs after mounting"
+        )));
     }
     Ok(())
 }
@@ -2244,7 +2254,7 @@ fn wim_indexes(path: &Path, log: &Path) -> Result<Vec<u32>, TaskError> {
         .collect::<Vec<_>>();
     indexes.sort_unstable();
     indexes.dedup();
-    if indexes.is_empty() || indexes.iter().any(|index| *index == 0) {
+    if indexes.is_empty() || indexes.contains(&0) {
         return Err(err("DISM returned invalid WIM indexes"));
     }
     Ok(indexes)

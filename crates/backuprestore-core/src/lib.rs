@@ -1238,10 +1238,10 @@ fn read_subdirs(root: &Path) -> Vec<String> {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(name.to_owned());
-            }
+        if file_type.is_dir()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            names.push(name.to_owned());
         }
     }
     names
@@ -1735,7 +1735,7 @@ mod tests {
             let normalized = entry.replace('/', "\\");
             let parts: Vec<&str> = normalized.split('\\').collect();
             let (first, _) = parts.split_first().unwrap();
-            if *first == "" {
+            if first.is_empty() {
                 // 根路径锚定写法（\x\y）：除最后一段外其余段不得含 *
                 if let Some((head, tail)) = parts.split_first() {
                     assert!(!head.contains('*'), "根锚定路径的首段不应含通配符: {entry}");

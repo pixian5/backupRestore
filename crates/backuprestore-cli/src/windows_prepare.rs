@@ -24,7 +24,7 @@ use std::ptr::null_mut;
 use std::thread;
 use std::time::Duration;
 
-use crate::{append_log, capture_logged, err, run_logged};
+use crate::{append_log, capture_logged, err, run_logged, winre_payload};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -104,8 +104,6 @@ pub(crate) struct PrepareOptions {
     no_reboot: bool,
     /// WIM 压缩率：max/fast/none，仅备份首次创建时生效。
     compress: Option<String>,
-    /// 由自动重定位（还原目标 == 程序所在卷）启动的副本，跳过重定位检查。
-    relocated: bool,
     /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
     force_restore_hash: bool,
 }
@@ -138,14 +136,10 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
         Operation::RestoreExisting | Operation::CreateSecondary
     ) && options.target_drive == Some(workspace_drive)
     {
-        if options.relocated {
-            // 副本已运行在非还原目标卷，理论不会到达这里；防御性放行。
-            // （重定位目标=镜像所在卷，镜像卷必须≠还原目标卷）
-        } else {
-            // 程序在待还原分区上：自动把程序复制到镜像所在卷，再从副本重启
-            // prepare（带 --relocated），用户无需手工移动程序。
-            return relocate_to_image_volume(&options, &executable_dir);
-        }
+        // This must happen before the identity probe, UAC, task creation, or
+        // any WinRE/BCD work. The application never copies itself or picks a
+        // substitute volume on the user's behalf.
+        return Err(restore_workspace_target_error(workspace_drive));
     }
     let workspace = volume_identity(workspace_drive)?;
     let target = if matches!(
@@ -175,91 +169,9 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     prepare_task(&executable_dir, &workspace, target, options)
 }
 
-/// 还原目标分区 == 程序所在分区时，自动把程序运行时复制到镜像所在卷，
-/// 再从副本启动 prepare（带 --relocated），旧实例退出。用户无需手工移动。
-///
-/// 复制内容：主程序（BackupRestore.exe/当前 exe）+ Recovery.exe（同一二进制
-/// 的副本，winpeshl 按此名启动）+ RecoveryLauncher.cmd + winpeshl.ini +
-/// VCRUNTIME 运行库。目标目录固定为 `{镜像盘符}:\backupRestore-package`。
-#[cfg(windows)]
-fn relocate_to_image_volume(
-    options: &PrepareOptions,
-    executable_dir: &Path,
-) -> Result<(), TaskError> {
-    use std::os::windows::process::CommandExt;
-    let image_path = options
-        .image_path
-        .as_ref()
-        .ok_or_else(|| err("relocation requires --image-path"))?;
-    let image_drive = drive_from_path(Path::new(image_path))?;
-    let target_drive = options
-        .target_drive
-        .ok_or_else(|| err("relocation requires --target-drive"))?;
-    if image_drive == target_drive {
-        return Err(err(
-            "cannot relocate: image volume must differ from the restore target",
-        ));
-    }
-    let current_exe = std::env::current_exe()?;
-    let dest_dir = PathBuf::from(format!("{image_drive}:\\backupRestore-package"));
-    fs::create_dir_all(&dest_dir)?;
-
-    // 主程序：以 BackupRestore.exe 为名复制；若当前 exe 名不同也原样复制。
-    let exe_name = current_exe
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "BackupRestore.exe".to_string());
-    let dest_exe = dest_dir.join(&exe_name);
-    fs::copy(&current_exe, &dest_exe)?;
-    let dest_recovery = dest_dir.join("Recovery.exe");
-    fs::copy(&current_exe, &dest_recovery)?;
-    // 启动配置与 fallback 包装器：winpeshl.ini 直接启动 Recovery.exe
-    // recover-env（GUI 进度窗口，无 cmd 黑窗）；RecoveryLauncher.cmd 仅在
-    // Recovery.exe 缺失且 OPERATION=probe 时走 Recovery.cmd 兼容分支。
-    for name in ["RecoveryLauncher.cmd", "winpeshl.ini"] {
-        let source = executable_dir.join(name);
-        if source.is_file() {
-            fs::copy(&source, dest_dir.join(name))?;
-        }
-    }
-    for runtime in ["VCRUNTIME140.dll", "VCRUNTIME140_1.dll"] {
-        let source = executable_dir.join(runtime);
-        if source.is_file() {
-            fs::copy(&source, dest_dir.join(runtime))?;
-        }
-    }
-    // MD5 校验副本与源一致，防止复制中途损坏。
-    if backuprestore_core::sha256_file(&dest_exe)? != backuprestore_core::sha256_file(&current_exe)?
-    {
-        return Err(err(
-            "relocated executable hash mismatch; refusing to launch",
-        ));
-    }
-    // 从副本重启 prepare：原参数 + --relocated，隐藏窗口，继承管理员令牌。
-    let mut arguments: Vec<String> = std::env::args().skip(1).collect();
-    arguments.push("--relocated".to_string());
-    let mut command = std::process::Command::new(&dest_exe);
-    command.args(&arguments);
-    command.creation_flags(CREATE_NO_WINDOW);
-    command.spawn().map_err(|error| {
-        err(&format!(
-            "failed to start relocated prepare at {}: {error}",
-            dest_exe.display()
-        ))
-    })?;
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn relocate_to_image_volume(
-    _options: &PrepareOptions,
-    _executable_dir: &Path,
-) -> Result<(), TaskError> {
-    Err(err("auto-relocation is only available on Windows"))
-}
-
-/// 兜底报错：workspace 卷与还原目标卷同分区但盘符不同（如挂载点场景），
-/// 无法自动重定位时给出明确提示。常规场景（盘符相同）已由自动重定位接管。
+/// Program and restore target must remain on different partitions. This is
+/// deliberately a local refusal: moving the entire program directory is the
+/// only supported resolution, never an automatic copy or volume selection.
 fn restore_workspace_target_error(workspace_drive: char) -> TaskError {
     err(&format!(
         "Cannot start restore: the program directory is on {workspace_drive}:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
@@ -378,7 +290,6 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut allow_destructive = false;
     let mut no_reboot = false;
     let mut compress = None;
-    let mut relocated = false;
     let mut force_restore_hash = false;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
@@ -446,7 +357,6 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                 }
                 compress = Some(level);
             }
-            "--relocated" => relocated = true,
             "--force-restore-hash" => force_restore_hash = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
         }
@@ -470,13 +380,12 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     {
         return Err(err("--boot-menu-name is invalid"));
     }
-    if let Some(name) = &image_name {
-        if name.trim().is_empty()
+    if let Some(name) = &image_name
+        && (name.trim().is_empty()
             || name.chars().count() > 256
-            || name.chars().any(char::is_control)
-        {
-            return Err(err("--image-name is invalid"));
-        }
+            || name.chars().any(char::is_control))
+    {
+        return Err(err("--image-name is invalid"));
     }
     if let Some(keep) = keep_indexes {
         // 0 = 全部保留（不清理），与 GUI 留空语义一致。
@@ -510,7 +419,6 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         compress,
         image_name,
         keep_indexes,
-        relocated,
         force_restore_hash,
     })
 }
@@ -718,6 +626,10 @@ fn prepare_task(
     Ok(())
 }
 
+// These values have different ownership and rollback roles. Keeping the
+// parameters explicit makes preparation ordering and cleanup dependencies
+// auditable at the call site.
+#[allow(clippy::too_many_arguments)]
 fn prepare_payload(
     executable_dir: &Path,
     store: &TaskStore,
@@ -741,7 +653,7 @@ fn prepare_payload(
     append_log(log, "Rust preparation started")?;
 
     fs::copy(bootstrap_bcd, task_dir.join("bcd-before-export"))?;
-    let raw_bcd_hash = snapshot_raw_bcd(&efi, &task_dir, log)?;
+    let raw_bcd_hash = snapshot_raw_bcd(efi, &task_dir, log)?;
     // `bcdedit /export` is a logical export. Importing it may rewrite the
     // binary hive, so new tasks retain a byte-for-byte EFI store snapshot for
     // rollback while old tasks can still use the exported fallback.
@@ -764,25 +676,7 @@ fn prepare_payload(
     fs::copy(&registered_wim, original.join("Winre.wim"))?;
     let original_hash = sha256_file(original.join("Winre.wim"))?;
 
-    // 必须存在的运行时载荷：启动配置、恢复程序、启动包装器（fallback）
-    // winpeshl.ini 已改为直接启动 Recovery.exe recover-env（无 cmd 黑窗）；
-    // RecoveryLauncher.cmd 保留为探针/兼容分支（Recovery.exe 缺席时 probe 走 Recovery.cmd）。
-    for name in ["winpeshl.ini", "Recovery.exe", "RecoveryLauncher.cmd"] {
-        let source = executable_dir.join(name);
-        if !source.is_file() {
-            return Err(err(&format!(
-                "required runtime payload is missing: {}",
-                source.display()
-            )));
-        }
-        fs::copy(source, payload.join(name))?;
-    }
-    for runtime in ["VCRUNTIME140.dll", "VCRUNTIME140_1.dll"] {
-        let source = executable_dir.join(runtime);
-        if source.is_file() {
-            fs::copy(source, payload.join(runtime))?;
-        }
-    }
+    winre_payload::stage_static_payload(executable_dir, &payload)?;
 
     let env_path = payload.join("RecoveryTask.env");
     write_recovery_env(&env_path, executable_dir, task, recovery, efi, options)?;
@@ -808,7 +702,7 @@ fn prepare_payload(
         ],
         log,
     )?;
-    let result = inject_winre_payload(&mount, &payload);
+    let result = winre_payload::inject_winre_payload(&mount, &payload);
     if let Err(error) = result {
         let _ = run_logged(
             "dism.exe",
@@ -877,12 +771,12 @@ fn prepare_payload(
     }
     if let Err(error) = store.write_transition(task, backuprestore_core::Stage::BootRequested) {
         let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, &efi, log);
+        let _ = rollback_boot_request(&task_dir, efi, log);
         return Err(error);
     }
     if let Err(error) = write_status_env(&task_dir, task, "boot-requested") {
         let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, &efi, log);
+        let _ = rollback_boot_request(&task_dir, efi, log);
         return Err(error);
     }
     if options.test_fault.as_deref() == Some("power-loss-window") {
@@ -894,7 +788,7 @@ fn prepare_payload(
     }
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
         let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, &efi, log);
+        let _ = rollback_boot_request(&task_dir, efi, log);
         return Err(error);
     }
     Ok(())
@@ -1020,36 +914,6 @@ fn rollback_boot_request(
         log,
         "Restored logical BCD snapshot after preparation failure",
     )?;
-    Ok(())
-}
-
-fn inject_winre_payload(mount: &Path, payload: &Path) -> Result<(), TaskError> {
-    let system32 = mount.join(r"Windows\System32");
-    if !system32.is_dir() {
-        return Err(err("mounted WinRE has no Windows\\System32"));
-    }
-    for name in [
-        "RecoveryTask.env",
-        "task.json",
-        "winpeshl.ini",
-        "Recovery.exe",
-        "RecoveryLauncher.cmd",
-        "VCRUNTIME140.dll",
-        "VCRUNTIME140_1.dll",
-    ] {
-        let source = if name == "RecoveryTask.env" {
-            payload.join(name)
-        } else {
-            payload.join(name)
-        };
-        if source.is_file() {
-            let target = system32.join(name);
-            if target.exists() {
-                fs::remove_file(&target)?;
-            }
-            fs::copy(source, target)?;
-        }
-    }
     Ok(())
 }
 
@@ -2165,7 +2029,9 @@ Installation Type : Client
 
 #[cfg(test)]
 mod prepare_safety_tests {
-    use super::{restore_reserved_target_error, restore_workspace_target_error};
+    use super::{
+        parse_prepare_options, restore_reserved_target_error, restore_workspace_target_error,
+    };
 
     #[test]
     fn same_drive_restore_is_rejected_before_privileged_identity_queries() {
@@ -2180,6 +2046,16 @@ mod prepare_safety_tests {
         assert_eq!(
             restore_reserved_target_error().to_string(),
             "invalid task: EFI/MSR/Recovery partitions cannot be restore targets"
+        );
+    }
+
+    #[test]
+    fn rejects_removed_auto_relocation_switch() {
+        let error = parse_prepare_options(vec!["--relocated".into()]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown prepare option: --relocated")
         );
     }
 }

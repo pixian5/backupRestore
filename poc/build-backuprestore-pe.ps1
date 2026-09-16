@@ -72,14 +72,22 @@ try {
     Invoke-Dism @('/Mount-Image', "/ImageFile:$baseCopy", '/Index:1', "/MountDir:$mount")
     $mountActive = $true
     $system32 = Join-Path $mount 'Windows\System32'
-    $payloadFiles = @(
-        'BackupRestore.exe', 'Recovery.exe', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll',
-        'winpeshl.ini'
-    )
-    foreach ($name in $payloadFiles) {
-        $source = Join-Path $Package $name
+    $payloadFiles = [ordered]@{
+        'BackupRestore.exe' = 'BackupRestore.exe'
+        'Recovery.exe' = 'Recovery.exe'
+        'VCRUNTIME140.dll' = 'VCRUNTIME140.dll'
+        'VCRUNTIME140_1.dll' = 'VCRUNTIME140_1.dll'
+        'winpe-winpeshl.ini' = 'winpeshl.ini'
+    }
+    foreach ($sourceName in $payloadFiles.Keys) {
+        $source = Join-Path $Package $sourceName
         if (-not (Test-Path $source)) { throw "Package payload is missing: $source" }
-        Copy-Item -LiteralPath $source -Destination (Join-Path $system32 $name) -Force
+        Copy-Item -LiteralPath $source -Destination (Join-Path $system32 $payloadFiles[$sourceName]) -Force
+    }
+    $expectedPeShell = "[LaunchApps]`n%SYSTEMROOT%\System32\Recovery.exe,--pe-desktop"
+    $actualPeShell = ((Get-Content -LiteralPath (Join-Path $system32 'winpeshl.ini') -Raw) -replace "`r`n", "`n").Trim()
+    if ($actualPeShell -ne $expectedPeShell) {
+        throw 'WinPE shell template does not directly launch Recovery.exe --pe-desktop.'
     }
 
     # Chinese font support: the ADK base winpe.wim ships no CJK glyphs, so
@@ -111,7 +119,7 @@ try {
         'Windows RE base: ADK arm64 winpe.wim',
         'DISM: Capture-Image and Apply-Image',
         'BCDBoot: bcdboot.exe',
-        'Entry point: Windows\System32\winpeshl.ini -> Recovery.exe recover-env'
+        'Entry point: Windows\System32\winpeshl.ini -> Recovery.exe --pe-desktop'
     ) -Encoding UTF8
 
     Invoke-Dism @('/Unmount-Image', "/MountDir:$mount", '/Commit', '/CheckIntegrity')
@@ -132,6 +140,10 @@ try {
         if (-not (Test-Path (Join-Path $verifyMount $relative))) {
             throw "WIM verification missing: $relative"
         }
+    }
+    $mountedPeShell = ((Get-Content -LiteralPath (Join-Path $verifyMount 'Windows\System32\winpeshl.ini') -Raw) -replace "`r`n", "`n").Trim()
+    if ($mountedPeShell -ne $expectedPeShell) {
+        throw 'Committed WinPE WIM contains the wrong shell entry point.'
     }
     Invoke-Dism @('/Unmount-Image', "/MountDir:$verifyMount", '/Discard')
     Remove-Item -LiteralPath $verifyMount -Recurse -Force -ErrorAction SilentlyContinue

@@ -11,6 +11,25 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $version = (Get-Content (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
 
+function Assert-WinreShellTemplate {
+    $template = Join-Path $PSScriptRoot 'winre-winpeshl.ini'
+    $expected = "[LaunchApps]`n%SYSTEMROOT%\System32\Recovery.exe,recover-env %SYSTEMROOT%\System32\RecoveryTask.env"
+    if (-not (Test-Path -LiteralPath $template)) { throw "WinRE shell template is missing: $template" }
+    $actual = ((Get-Content -LiteralPath $template -Raw) -replace "`r`n", "`n").Trim()
+    if ($actual -ne $expected) {
+        throw 'WinRE shell template must directly launch Recovery.exe recover-env.'
+    }
+    $peTemplate = Join-Path $PSScriptRoot 'winpe-winpeshl.ini'
+    $peExpected = "[LaunchApps]`n%SYSTEMROOT%\System32\Recovery.exe,--pe-desktop"
+    if (-not (Test-Path -LiteralPath $peTemplate)) { throw "WinPE shell template is missing: $peTemplate" }
+    $peActual = ((Get-Content -LiteralPath $peTemplate -Raw) -replace "`r`n", "`n").Trim()
+    if ($peActual -ne $peExpected) {
+        throw 'WinPE shell template must launch Recovery.exe --pe-desktop.'
+    }
+}
+
+Assert-WinreShellTemplate
+
 function Get-PackageVersion([string]$manifest) {
     $match = Select-String -LiteralPath $manifest -Pattern '^version\s*=\s*"([^"]+)"\s*$' |
         Select-Object -First 1
@@ -134,7 +153,8 @@ foreach ($arch in $architectures) {
         Copy-Item $runtimePath (Join-Path $package $runtime)
     }
     foreach ($file in @(
-        'winpeshl.ini',
+        'winre-winpeshl.ini',
+        'winpe-winpeshl.ini',
         '..\VERSION'
     )) {
         $source = Join-Path $PSScriptRoot $file
@@ -150,6 +170,8 @@ foreach ($arch in $architectures) {
         binarySha256 = $binaryHash
         frontend = 'BackupRestore.exe'
         recovery = 'Recovery.exe'
+        winreShellTemplate = 'winre-winpeshl.ini'
+        winpeShellTemplate = 'winpe-winpeshl.ini'
         runtime = "Windows 10/11 $($arch.ToUpperInvariant()) development package"
         note = 'Architecture-specific Windows development package; x64 and ARM64 are separate binaries.'
     }

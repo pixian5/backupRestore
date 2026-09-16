@@ -1,5 +1,10 @@
 # C: 系统卷「真实备份+还原」验收 — 2026-09-15 阶段总结
 
+> **历史受阻记录，不是当前启动协议。** 当时描述的 `RecoveryLauncher.cmd` 入口已移除。
+> 当前产品 WinRE 使用 `winre-winpeshl.ini -> Recovery.exe recover-env`；自定义 PE 使用
+> `winpe-winpeshl.ini -> Recovery.exe --pe-desktop`。见
+> [current-status-2026-09-16.md](current-status-2026-09-16.md)。
+
 ## 目标
 在测试 VM 对真实 C:（当前运行系统卷）做一次带防假标记的离线备份 + 篡改 + 还原，规避"假还原/空跑"。
 
