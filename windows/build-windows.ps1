@@ -11,7 +11,9 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $version = (Get-Content (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION is empty.' }
 
-function Assert-WinreShellTemplate {
+function Assert-ShellContracts {
+    # The WinRE contract is embedded in Recovery.exe at compile time. Keep the
+    # repository copy only as a source/audit fixture; it is not a runtime file.
     $template = Join-Path $PSScriptRoot 'winre-winpeshl.ini'
     $expected = "[LaunchApps]`n%SYSTEMROOT%\System32\Recovery.exe,recover-env %SYSTEMROOT%\System32\RecoveryTask.env"
     if (-not (Test-Path -LiteralPath $template)) { throw "WinRE shell template is missing: $template" }
@@ -28,7 +30,7 @@ function Assert-WinreShellTemplate {
     }
 }
 
-Assert-WinreShellTemplate
+Assert-ShellContracts
 
 function Get-PackageVersion([string]$manifest) {
     $match = Select-String -LiteralPath $manifest -Pattern '^version\s*=\s*"([^"]+)"\s*$' |
@@ -153,7 +155,6 @@ foreach ($arch in $architectures) {
         Copy-Item $runtimePath (Join-Path $package $runtime)
     }
     foreach ($file in @(
-        'winre-winpeshl.ini',
         'winpe-winpeshl.ini',
         '..\VERSION'
     )) {
@@ -170,7 +171,7 @@ foreach ($arch in $architectures) {
         binarySha256 = $binaryHash
         frontend = 'BackupRestore.exe'
         recovery = 'Recovery.exe'
-        winreShellTemplate = 'winre-winpeshl.ini'
+        winreShell = 'embedded in Recovery.exe; generated as task payload winpeshl.ini'
         winpeShellTemplate = 'winpe-winpeshl.ini'
         runtime = "Windows 10/11 $($arch.ToUpperInvariant()) development package"
         note = 'Architecture-specific Windows development package; x64 and ARM64 are separate binaries.'

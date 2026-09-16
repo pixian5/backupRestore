@@ -8,30 +8,11 @@ use backuprestore_core::{TaskError, sha256_file, verify_sha256};
 use std::fs;
 use std::path::Path;
 
-const WINRE_SHELL_TEMPLATE: &str = "winre-winpeshl.ini";
 const WINRE_SHELL_PAYLOAD_NAME: &str = "winpeshl.ini";
 const EXPECTED_WINRE_SHELL: &str = concat!(
     "[LaunchApps]\n",
     "%SYSTEMROOT%\\System32\\Recovery.exe,recover-env %SYSTEMROOT%\\System32\\RecoveryTask.env\n"
 );
-
-#[derive(Clone, Copy)]
-struct StaticPayloadFile {
-    package_name: &'static str,
-    payload_name: &'static str,
-}
-
-// This is the only mapping from packaged WinRE files to their System32 names.
-const WINRE_STATIC_PAYLOAD_FILES: &[StaticPayloadFile] = &[
-    StaticPayloadFile {
-        package_name: WINRE_SHELL_TEMPLATE,
-        payload_name: WINRE_SHELL_PAYLOAD_NAME,
-    },
-    StaticPayloadFile {
-        package_name: "Recovery.exe",
-        payload_name: "Recovery.exe",
-    },
-];
 
 const WINRE_GENERATED_PAYLOAD_FILES: &[&str] = &["RecoveryTask.env", "task.json"];
 const OPTIONAL_RUNTIME_FILES: &[&str] = &["VCRUNTIME140.dll", "VCRUNTIME140_1.dll"];
@@ -53,17 +34,16 @@ fn normalize_text(text: &str) -> String {
 }
 
 fn required_payload_names() -> impl Iterator<Item = &'static str> {
-    WINRE_STATIC_PAYLOAD_FILES
-        .iter()
-        .map(|file| file.payload_name)
+    [WINRE_SHELL_PAYLOAD_NAME, "Recovery.exe"]
+        .into_iter()
         .chain(WINRE_GENERATED_PAYLOAD_FILES.iter().copied())
 }
 
-fn validate_winre_shell_template(path: &Path) -> Result<(), TaskError> {
+fn validate_winre_shell(path: &Path) -> Result<(), TaskError> {
     let contents = fs::read_to_string(path)?;
     if normalize_text(&contents) != normalize_text(EXPECTED_WINRE_SHELL) {
         return Err(err(format!(
-            "WinRE shell template must directly launch Recovery.exe recover-env: {}",
+            "WinRE shell must directly launch Recovery.exe recover-env: {}",
             path.display()
         )));
     }
@@ -85,17 +65,15 @@ fn copy_required(source: &Path, destination: &Path, role: &str) -> Result<(), Ta
 
 /// Validate and stage all static files from the package into a task payload.
 pub fn stage_static_payload(executable_dir: &Path, payload: &Path) -> Result<(), TaskError> {
-    for file in WINRE_STATIC_PAYLOAD_FILES {
-        let source = executable_dir.join(file.package_name);
-        if file.package_name == WINRE_SHELL_TEMPLATE {
-            validate_winre_shell_template(&source)?;
-        }
-        copy_required(
-            &source,
-            &payload.join(file.payload_name),
-            "WinRE package payload",
-        )?;
-    }
+    // Keep the boot contract inside the Rust binary. A deployment must not
+    // fail because an optional source-tree template was omitted from a VM.
+    fs::write(payload.join(WINRE_SHELL_PAYLOAD_NAME), EXPECTED_WINRE_SHELL)?;
+    validate_winre_shell(&payload.join(WINRE_SHELL_PAYLOAD_NAME))?;
+    copy_required(
+        &executable_dir.join("Recovery.exe"),
+        &payload.join("Recovery.exe"),
+        "WinRE package payload",
+    )?;
     for name in OPTIONAL_RUNTIME_FILES {
         let source = executable_dir.join(name);
         if source.is_file() {
@@ -107,7 +85,7 @@ pub fn stage_static_payload(executable_dir: &Path, payload: &Path) -> Result<(),
 
 fn verify_payload_contract(payload: &Path) -> Result<(), TaskError> {
     let shell = payload.join(WINRE_SHELL_PAYLOAD_NAME);
-    validate_winre_shell_template(&shell)?;
+    validate_winre_shell(&shell)?;
     for name in required_payload_names() {
         let path = payload.join(name);
         if !path.is_file() {
@@ -186,7 +164,6 @@ mod tests {
         let payload = root.join("payload");
         fs::create_dir_all(&package).unwrap();
         fs::create_dir_all(&payload).unwrap();
-        fs::write(package.join("winre-winpeshl.ini"), EXPECTED_WINRE_SHELL).unwrap();
         fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
 
         stage_static_payload(&package, &payload).unwrap();
@@ -211,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_pe_desktop_shell_for_a_winre_task() {
+    fn ignores_external_shell_files_and_generates_the_winre_contract() {
         let root = temp_dir("bad-template");
         let package = root.join("package");
         let payload = root.join("payload");
@@ -223,12 +200,10 @@ mod tests {
         )
         .unwrap();
         fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
-
-        let error = stage_static_payload(&package, &payload).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("directly launch Recovery.exe recover-env")
+        stage_static_payload(&package, &payload).unwrap();
+        assert_eq!(
+            fs::read_to_string(payload.join("winpeshl.ini")).unwrap(),
+            EXPECTED_WINRE_SHELL
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -242,7 +217,6 @@ mod tests {
         fs::create_dir_all(&package).unwrap();
         fs::create_dir_all(&payload).unwrap();
         fs::create_dir_all(mount.join("Windows").join("System32")).unwrap();
-        fs::write(package.join("winre-winpeshl.ini"), EXPECTED_WINRE_SHELL).unwrap();
         fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
         stage_static_payload(&package, &payload).unwrap();
         fs::write(payload.join("RecoveryTask.env"), b"TASK_ID=test").unwrap();

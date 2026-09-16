@@ -31,8 +31,23 @@ echo ">> 产物：$(ls -la target/aarch64-pc-windows-msvc/release/BackupRestore.
 
 if [ "$1" = "--deploy" ]; then
   echo ">> 部署到 VM Windows 11"
-  # Do not print DEPLOYED unless every file reached the guest. The executable
-  # is always copied as both Rust entry points; the templates remain distinct.
-  prlctl exec "Windows 11" cmd /d /c "chcp 65001 >nul & taskkill /f /im BackupRestore.exe >nul 2>nul & taskkill /f /im Recovery.exe >nul 2>nul & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul && copy /y \\\\Mac\\backupRestore\\windows\\winre-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winre-winpeshl.ini >nul && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini >nul && echo DEPLOYED"
+  # Parallels mounts X: only in the interactive Windows session. Use the
+  # elevated channel for process cleanup and the interactive channel for the
+  # actual shared-folder copy. Never accept a stale executable as success.
+  prlctl exec "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe >nul 2>nul & taskkill /f /im Recovery.exe >nul 2>nul & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd 2>nul & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini 2>nul & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd 2>nul"
+  DEPLOY_OUTPUT=$(prlctl exec "Windows 11" --current-user cmd /d /c "copy /y X:\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul && copy /y X:\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul && copy /y X:\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini >nul && echo DEPLOYED")
+  if ! echo "$DEPLOY_OUTPUT" | grep -q '^DEPLOYED'; then
+    echo "部署失败：客体未返回 DEPLOYED 成功标记" >&2
+    echo "$DEPLOY_OUTPUT" >&2
+    exit 1
+  fi
+  HOST_SHA=$(shasum -a 256 target/aarch64-pc-windows-msvc/release/BackupRestore.exe | awk '{print $1}')
+  GUEST_SHA=$(prlctl exec "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe').Hash.ToLowerInvariant()" | tr -d '\r')
+  RECOVERY_SHA=$(prlctl exec "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\Recovery.exe').Hash.ToLowerInvariant()" | tr -d '\r')
+  if [ "$GUEST_SHA" != "$HOST_SHA" ] || [ "$RECOVERY_SHA" != "$HOST_SHA" ]; then
+    echo "部署失败：客体可执行文件 SHA-256 与本机构建不一致" >&2
+    exit 1
+  fi
+  echo ">> DEPLOYED SHA256=$HOST_SHA"
 fi
 echo ">> 完成"
