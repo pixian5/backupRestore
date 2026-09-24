@@ -73,6 +73,10 @@ dp.txt
 attach-vhd.txt
 
 # 临时验证脚本
+# 根目录历史上堆积了大量一次性探测脚本（cpwin*.ps1、findpe*.ps1、diskpart_*.txt 等），
+# 因此根级这些扩展名默认不入库。有长期价值的根级脚本必须在文件末尾的
+# 「保留」段显式反否定，否则新增文件会被静默忽略——这一点曾让已入库的
+# click-pe-disk.ps1 / compare-pq.ps1 只因早于规则加入才幸存。
 run_prepare_*.cmd
 run_restore_*.cmd
 build_winre_*.cmd
@@ -91,3 +95,16 @@ tools/win-clicker/_*.b64
 pe-assets/
 pe-debug-winpeshl.ini
 pe-debug.cmd
+
+# 保留：已入库的根级脚本与配置（必须放在宽通配之后，git 取最后匹配）
+!/build-winre-bcd.cmd
+!/click-pe-disk.ps1
+!/compare-pq.ps1
+!/br-test.json
+!/teamai.yaml
+!/build-win.sh
+!/VERSION
+
+# 归档的一次性根目录产物（2026-09-24 清理，内容保留在本机，不入库）
+.archive/
+.workbuddy/

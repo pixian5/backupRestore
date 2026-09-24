@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: 格式 / 测试 / Clippy / 运行时边界审计
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/audit-runtime-boundaries.sh 用 rg 做源码边界扫描，runner 默认没有
+      - name: 安装 ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # edition 2024 + let-chains + slice::as_chunks 需要较新 stable
+      - name: 安装 Rust 工具链
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          # Windows-only 模块（native_gui / windows_prepare / recovery_progress）
+          # 只有在交叉目标下才参与编译，见下方 windows-arm64 步骤
+          rustup target add aarch64-pc-windows-msvc
+          rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 审计脚本内部全部使用 --offline，必须先把依赖取到本地
+      - name: 预取依赖
+        run: cargo fetch --locked
+
+      - name: 运行时边界审计（含 fmt --check、test、clippy -D warnings）
+        run: bash scripts/audit-runtime-boundaries.sh
+
+      # 宿主测试跑不到 #[cfg(windows)] 模块；clippy/check 不链接，
+      # 因此无需 Windows SDK import library 即可在 Linux 上完成类型检查。
+      - name: Windows ARM64 严格 Clippy（类型检查 Windows-only 模块）
+        run: cargo clippy --workspace --all-targets --offline --target aarch64-pc-windows-msvc -- -D warnings
+
+      # VERSION、两个 Cargo manifest 与 Cargo.lock 必须同步，这是反复出过问题的地方
+      - name: 版本一致性检查
+        run: |
+          set -eu
+          VERSION=$(tr -d ' \n\r' < VERSION)
+          echo "VERSION=$VERSION"
+          fail=0
+          for manifest in crates/backuprestore-core/Cargo.toml crates/backuprestore-cli/Cargo.toml; do
+            got=$(grep -m1 '^version' "$manifest" | sed 's/.*"\(.*\)".*/\1/')
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=$manifest::版本 $got 与 VERSION $VERSION 不一致"
+              fail=1
+            fi
+          done
+          for crate in backuprestore-core backuprestore-cli; do
+            if ! grep -A1 "^name = \"$crate\"\$" Cargo.lock | grep -q "^version = \"$VERSION\"\$"; then
+              echo "::error file=Cargo.lock::$crate 在 Cargo.lock 中的版本与 VERSION $VERSION 不一致"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "版本一致：$VERSION"
+          exit "$fail"

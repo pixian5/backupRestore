@@ -122,7 +122,7 @@
 门控，macOS 上 `cargo test` 触及不到——历史上昂贵的回归正出自这里（DISM 索引名
 带空格的 `exit=87`、bcdedit 的 GBK/UTF-16 输出、把「盘符空闲」和「查询没应答」混为一谈）。
 新增 `crates/backuprestore-cli/src/text_parsing.rs`（494 行，**不带** `#[cfg(windows)]`），
-把 11 个纯函数集中到跨平台模块并补 14 个测试：卷挂载三态分类、DISM WIM 元数据三种
+把 10 个纯函数集中到跨平台模块并补 13 个测试：卷挂载三态分类、DISM WIM 元数据三种
 JSON 形状、字节格式化、命令行参数加引号、bcdedit UTF-8/UTF-16（有无 BOM）解码、
 GUID 提取、DISM 百分比解析、日志行到进度阶段的映射。
 `native_gui.rs` 与 `recovery_progress.rs` 改为复用该模块，删除各自的重复实现。
