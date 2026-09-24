@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
 
+use crate::text_parsing::{
+    WimImageInfo, decode_bcdedit_bytes, first_braced_guid, format_bytes, json_text,
+    parse_wim_images, quote_argument,
+};
 use backuprestore_core::PROGRAM_VERSION;
 
 type Handle = *mut c_void;
@@ -760,18 +764,6 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         _ => "",
     }
-}
-
-#[derive(Clone, Debug)]
-struct WimImageInfo {
-    index: u32,
-    name: String,
-    description: String,
-    version: String,
-    architecture: String,
-    edition: String,
-    installation_type: String,
-    size_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -1854,19 +1846,6 @@ unsafe fn selected_wim_index(state: &State) -> Option<u32> {
         .filter(|value| *value > 0)
 }
 
-fn json_text(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(|item| {
-            item.as_str()
-                .map(ToOwned::to_owned)
-                .or_else(|| item.as_u64().map(|number| number.to_string()))
-                .or_else(|| item.as_i64().map(|number| number.to_string()))
-                .or_else(|| item.as_bool().map(|flag| flag.to_string()))
-        })
-        .unwrap_or_default()
-}
-
 fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> {
     let value: serde_json::Value = serde_json::from_str(output)
         .map_err(|error| format!("volume metadata JSON parse failed: {error}"))?;
@@ -1908,49 +1887,6 @@ fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> {
     Ok(drives)
 }
 
-fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String> {
-    let value: serde_json::Value = serde_json::from_str(output)
-        .map_err(|error| format!("WIM metadata JSON parse failed: {error}"))?;
-    let items = wim_image_items(&value)?;
-    let mut images = Vec::with_capacity(items.len());
-    for item in items {
-        let index = json_text(&item, "ImageIndex")
-            .parse::<u32>()
-            .map_err(|_| "WIM metadata contains an invalid image index".to_string())?;
-        if index == 0 {
-            return Err("WIM metadata contains image index 0".to_string());
-        }
-        let size_bytes = json_text(&item, "ImageSize").parse::<u64>().ok();
-        images.push(WimImageInfo {
-            index,
-            name: json_text(&item, "ImageName"),
-            description: json_text(&item, "ImageDescription"),
-            version: json_text(&item, "ImageVersion"),
-            architecture: json_text(&item, "Architecture"),
-            edition: json_text(&item, "EditionId"),
-            installation_type: json_text(&item, "InstallationType"),
-            size_bytes,
-        });
-    }
-    if images.is_empty() {
-        return Err("WIM contains no selectable image indexes".to_string());
-    }
-    Ok(images)
-}
-
-fn wim_image_items(value: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
-    if let Some(items) = value.as_array() {
-        return Ok(items.clone());
-    }
-    if value.get("ImageIndex").is_some() || value.get("imageIndex").is_some() {
-        return Ok(vec![value.clone()]);
-    }
-    if let Some(images) = value.get("images") {
-        return wim_image_items(images);
-    }
-    Err("WIM metadata did not return an image object, array or images wrapper".to_string())
-}
-
 fn report_images_value(report: &serde_json::Value) -> serde_json::Value {
     report
         .get("images")
@@ -1963,24 +1899,6 @@ fn report_images_value(report: &serde_json::Value) -> serde_json::Value {
             }
         })
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
-}
-
-fn format_bytes(size: Option<u64>) -> String {
-    let Some(size) = size else {
-        return "?".to_string();
-    };
-    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
-    let mut value = size as f64;
-    let mut unit = 0usize;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{size} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
 }
 
 fn wim_display(image: &WimImageInfo, language: Language) -> String {
@@ -2171,14 +2089,6 @@ unsafe fn apply_language(state: &mut State) {
     layout_operation(state);
     set_operation_guidance(state);
     install_tooltips(state);
-}
-
-fn quote_argument(value: &str) -> String {
-    if value.is_empty() || value.chars().any(|c| c.is_whitespace() || c == '"') {
-        format!("\"{}\"", value.replace('"', "\\\""))
-    } else {
-        value.to_string()
-    }
 }
 
 fn rust_cli_output(arguments: &[&str]) -> Result<String, String> {
@@ -3897,32 +3807,11 @@ unsafe fn install_pe_harddisk(state: &State) {
 
 /// Parse the first `{xxxxxxxx-....}` GUID from a bcdedit output file and
 /// return it WITHOUT the surrounding braces (callers wrap with `{}` as
-/// needed). bcdedit writes GBK/UTF-16LE output on Chinese/Japanese systems,
-/// so detect the interleaved-NUL pattern (or a BOM) and decode before
-/// scanning.
+/// needed). Decoding and scanning live in `text_parsing` so both are covered
+/// by the offline test suite.
 fn extract_bcd_guid(path: &str) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
-    let nul_count = bytes.iter().filter(|&&b| b == 0).count();
-    let text =
-        if bytes.starts_with(&[0xFF, 0xFE]) || (bytes.len() >= 2 && nul_count > bytes.len() / 4) {
-            let body = if bytes.starts_with(&[0xFF, 0xFE]) {
-                &bytes[2..]
-            } else {
-                &bytes[..]
-            };
-            let units: Vec<u16> = body
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect();
-            String::from_utf16_lossy(&units)
-        } else {
-            String::from_utf8_lossy(&bytes).to_string()
-        };
-    let start = text.find('{')?;
-    let end = text[start..].find('}')? + start;
-    Some(text[start + 1..end].to_string())
+    first_braced_guid(&decode_bcdedit_bytes(&bytes))
 }
 
 /// Get the current user's shell desktop, including known-folder redirection.
@@ -7691,31 +7580,5 @@ pub fn run() -> Result<(), super::TaskError> {
             }
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod json_text_tests {
-    use super::json_text;
-    use serde_json::json;
-
-    #[test]
-    fn json_text_reads_boolean_values() {
-        let value = json!({
-            "hasWindowsInstallation": true,
-            "name": "C",
-            "count": 7,
-        });
-        assert_eq!(json_text(&value, "hasWindowsInstallation"), "true");
-        assert_eq!(json_text(&value, "name"), "C");
-        assert_eq!(json_text(&value, "count"), "7");
-        assert_eq!(json_text(&value, "missing"), "");
-        assert_eq!(
-            json_text(
-                &json!({"hasWindowsInstallation": false}),
-                "hasWindowsInstallation"
-            ),
-            "false"
-        );
     }
 }

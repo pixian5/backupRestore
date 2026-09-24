@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::native_gui::Msg;
+use crate::text_parsing::classify_log_line;
 
 type Hwnd = *mut c_void;
 type WParam = usize;
@@ -127,69 +128,6 @@ const ICC_PROGRESS_CLASS: u32 = 0x0000_0020;
 
 const IDC_ARROW: *const u16 = 32512u16 as *const u16;
 
-/// 解析 DISM 进度行里的百分比，如 `[stdout] [=  45.6% =]` → Some(45)。
-/// 规则：找到 `%` 后向前找最近的 `[`，中间只保留数字与小数点。
-fn parse_percent(line: &str) -> Option<u32> {
-    let bytes = line.as_bytes();
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte != b'%' {
-            continue;
-        }
-        let mut start = 0;
-        for back in (0..index).rev() {
-            if bytes[back] == b'[' {
-                start = back + 1;
-                break;
-            }
-        }
-        let digits: String = line[start..index]
-            .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
-        if let Ok(value) = digits.parse::<f32>()
-            && (0.0..=100.0).contains(&value)
-        {
-            return Some(value as u32);
-        }
-    }
-    None
-}
-
-/// 根据日志行判定阶段文本、进度百分比与详情。
-fn classify(line: &str) -> (Option<String>, Option<u32>, Option<String>) {
-    let mut stage = None;
-    if line.contains("running dism.exe") {
-        if line.contains("/Capture-Image") {
-            stage = Some("正在备份系统分区…".to_string());
-        } else if line.contains("/Apply-Image") {
-            stage = Some("正在还原系统分区…".to_string());
-        }
-    } else if line.contains("Operating on the") || line.contains("Scanning") {
-        stage = Some("正在扫描系统分区…".to_string());
-    } else if line.contains("Saving image") {
-        stage = Some("正在备份系统分区…".to_string());
-    } else if line.contains("Applying image") {
-        stage = Some("正在还原系统分区…".to_string());
-    } else if line.contains("Backup capture finished") {
-        stage = Some("备份完成，正在校验镜像…".to_string());
-    } else if line.contains("The operation completed successfully")
-        || line.contains("Recovery completed")
-    {
-        stage = Some("操作完成".to_string());
-    } else if line.contains("Recovery.exe started") || line.contains("started from env") {
-        stage = Some("正在准备恢复环境…".to_string());
-    }
-    let percent = parse_percent(line);
-    let detail = if line.trim().is_empty()
-        || ((line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%'))
-    {
-        None // 空行和纯进度行不占详情
-    } else {
-        Some(line.trim_end().to_string())
-    };
-    (stage, percent, detail)
-}
-
 /// 读取日志增量新行并分类更新窗口控件。返回（阶段、百分比、详情）。
 fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let path = shared.log_path.lock().unwrap().clone();
@@ -226,7 +164,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     // DISM 进度条用 \r 原地刷新（重定向到文件时不带 \n），先把整段按
     // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
     for line in buffer.split(['\n', '\r']) {
-        let (stage, percent, detail) = classify(line);
+        let (stage, percent, detail) = classify_log_line(line);
         if let Some(value) = stage {
             latest_stage = Some(value);
         }

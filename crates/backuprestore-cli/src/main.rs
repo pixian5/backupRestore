@@ -7,6 +7,8 @@
 //! WinRE's `winpeshl.ini` without depending on a desktop runtime.
 
 #[cfg(windows)]
+use crate::text_parsing::{VolumeMountQuery, classify_mountvol_output};
+#[cfg(windows)]
 use backuprestore_core::{BootMode, Operation, PayloadManifest, verify_image_file};
 use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
 use chrono::Utc;
@@ -38,6 +40,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 mod native_gui;
 #[cfg(windows)]
 mod recovery_progress;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod text_parsing;
 #[cfg(windows)]
 mod windows_prepare;
 #[cfg(any(windows, test))]
@@ -277,12 +281,50 @@ fn launch_gui() -> Result<(), TaskError> {
     native_gui::run()
 }
 
-/// Resume a task that reached `boot-requested` but lost power before Windows
-/// actually entered WinRE. The task was already explicitly authorized by the
-/// user; on the next normal launch we revalidate its durable records and ask
-/// Windows RE for the one-time boot again. We deliberately require exactly
-/// one valid pending task and never guess when records are malformed or
-/// ambiguous.
+/// Claim the single automatic retry allowed for a pending stage. A distinct
+/// marker per durable stage permits resuming after later progress, while a
+/// failed WinRE handoff cannot reboot Windows forever at the same stage.
+#[cfg(any(windows, test))]
+fn claim_boot_resume_attempt(task_dir: &Path, stage: Stage) -> Result<bool, TaskError> {
+    let marker = task_dir.join(format!("boot-resume-{stage:?}.attempted"));
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file
+                .write_all(b"automatic WinRE resume claimed\n")
+                .and_then(|()| file.sync_all())
+            {
+                drop(file);
+                let _ = fs::remove_file(marker);
+                return Err(error.into());
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(windows)]
+fn release_boot_resume_attempt(task_dir: &Path, stage: Stage) -> Result<(), TaskError> {
+    let marker = task_dir.join(format!("boot-resume-{stage:?}.attempted"));
+    match fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Resume a task that reached a durable non-terminal stage but returned to
+/// normal Windows before making further progress. The task was already
+/// explicitly authorized by the user; on the next normal launch we revalidate
+/// its durable records and request one automatic WinRE retry for that stage.
+/// A persistent per-stage marker prevents a failed handoff from creating an
+/// infinite reboot loop. We require exactly one valid pending task and never
+/// guess when records are malformed or ambiguous.
 #[cfg(windows)]
 pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
     let executable = env::current_exe()?;
@@ -337,6 +379,16 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
     }
 
     let (task, task_dir) = pending.pop().expect("pending length checked above");
+    if !claim_boot_resume_attempt(&task_dir, task.status)? {
+        append_log(
+            &task_dir.join("prepare.log"),
+            &format!(
+                "Automatic WinRE resume suppressed: stage {:?} already had its one retry; manual inspection is required",
+                task.status
+            ),
+        )?;
+        return Ok(false);
+    }
     for required in [
         task_dir.join("payload").join("Recovery.exe"),
         task_dir.join("payload").join("RecoveryTask.env"),
@@ -353,6 +405,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
                     required.display()
                 ),
             )?;
+            release_boot_resume_attempt(&task_dir, task.status)?;
             return Ok(false);
         }
     }
@@ -377,6 +430,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
             &log,
             &format!("Pending boot recovery failed: reagentc exited {reagentc}"),
         )?;
+        release_boot_resume_attempt(&task_dir, task.status)?;
         return Err(err("unable to re-request Windows RE for pending task"));
     }
     append_log(
@@ -395,6 +449,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
             &log,
             &format!("Pending boot recovery failed: shutdown exited {shutdown}"),
         )?;
+        release_boot_resume_attempt(&task_dir, task.status)?;
         return Err(err("unable to restart into Windows RE for pending task"));
     }
     append_log(
@@ -1219,54 +1274,91 @@ fn mount_env_volume(
     let disk = env_u32(values, &format!("{prefix}_DISK_NUMBER"))?;
     let partition = env_u32(values, &format!("{prefix}_PARTITION_NUMBER"))?;
     let expected = env_required(values, &format!("{prefix}_VOLUME_GUID"))?;
-    if let Some(existing) = find_mounted_volume(&expected) {
-        append_log(
-            log,
-            &format!("{prefix} volume already mounted at {existing}:; reusing it"),
-        )?;
-        verify_mounted_volume(existing, &expected)?;
-        verify_live_volume_identity(existing, values, prefix, allow_reformatted_serial)?;
-        return Ok(existing);
-    }
+    let mount_started = Instant::now();
+    append_log(
+        log,
+        &format!(
+            "mount {prefix} start: expected_guid={expected} requested_letter={letter}: disk={disk} partition={partition}"
+        ),
+    )?;
     // X: is the writable WinRE RAM disk. C: may be the offline Windows
     // volume (or unavailable), so never use it for the assignment script.
     let script = PathBuf::from(format!(
         r"X:\Windows\Temp\BackupRestore-assign-{letter}.txt"
     ));
-    let existing = Command::new("mountvol")
-        .arg(format!("{letter}:"))
-        .arg("/L")
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()?;
-    if existing.status.success()
-        && let Some(actual) = String::from_utf8_lossy(&existing.stdout)
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-    {
-        if actual.eq_ignore_ascii_case(&expected) {
-            verify_mounted_volume(letter, &expected)?;
+    match query_mounted_volume(letter, log)? {
+        VolumeMountQuery::Mounted(actual) => {
+            if !actual.eq_ignore_ascii_case(&expected) {
+                return Err(err(&format!(
+                    "volume {letter}: is already mounted to {actual}, refusing to replace it"
+                )));
+            }
+            verify_mounted_volume(letter, &expected, log)?;
             verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
+            append_log(
+                log,
+                &format!(
+                    "mount {prefix} complete via requested letter in {}ms",
+                    mount_started.elapsed().as_millis()
+                ),
+            )?;
             return Ok(letter);
         }
-        return Err(err(&format!(
-            "volume {letter}: is already mounted to {actual}, refusing to replace it"
-        )));
+        // An unproven letter must not be assigned over: doing so can tear
+        // down another role's mount, and it bypasses the refusal above.
+        VolumeMountQuery::Unknown => {
+            return Err(err(&format!(
+                "volume {letter}: mount state could not be determined, refusing to assign it"
+            )));
+        }
+        VolumeMountQuery::Unmounted => {}
     }
+    append_log(
+        log,
+        &format!("mount {prefix}: assigning {letter}: with mountvol.exe"),
+    )?;
+    let direct_started = Instant::now();
     let direct_status = Command::new("mountvol.exe")
         .args([format!("{letter}:"), expected.clone()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
-        .status()?;
+        .spawn()
+        .and_then(|mut child| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = child.try_wait()? {
+                    break Ok(status);
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "mountvol timed out while assigning volume",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        })?;
     append_log(
         log,
-        &format!("mountvol.exe direct assignment for {letter}: exited with {direct_status}"),
+        &format!(
+            "mountvol.exe direct assignment for {letter}: exited with {direct_status} after {}ms",
+            direct_started.elapsed().as_millis()
+        ),
     )?;
     if direct_status.success() {
-        verify_mounted_volume(letter, &expected)?;
+        verify_mounted_volume(letter, &expected, log)?;
         verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
+        append_log(
+            log,
+            &format!(
+                "mount {prefix} complete via mountvol in {}ms",
+                mount_started.elapsed().as_millis()
+            ),
+        )?;
         return Ok(letter);
     }
     let body =
@@ -1283,6 +1375,7 @@ fn mount_env_volume(
         .append(true)
         .open(&diskpart_log)?;
     let stderr = stdout.try_clone()?;
+    let diskpart_started = Instant::now();
     let mut child = Command::new("diskpart.exe")
         .args(["/s", script_arg.as_str()])
         .stdin(Stdio::null())
@@ -1299,6 +1392,13 @@ fn mount_env_volume(
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_file(&script);
+            append_log(
+                log,
+                &format!(
+                    "diskpart.exe timed out after {}ms",
+                    diskpart_started.elapsed().as_millis()
+                ),
+            )?;
             return Err(err(
                 "diskpart timed out while assigning the recovery volume",
             ));
@@ -1313,8 +1413,15 @@ fn mount_env_volume(
         ),
     )?;
     let _ = fs::remove_file(&script);
-    verify_mounted_volume(letter, &expected)?;
+    verify_mounted_volume(letter, &expected, log)?;
     verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
+    append_log(
+        log,
+        &format!(
+            "mount {prefix} complete via diskpart in {}ms",
+            mount_started.elapsed().as_millis()
+        ),
+    )?;
     Ok(letter)
 }
 
@@ -1328,7 +1435,10 @@ fn verify_live_volume_identity(
     // A volume GUID alone is insufficient: it can survive reformatting or a
     // stale mount assignment. Re-read the live GPT/device identity after
     // mounting and compare every immutable field recorded at preparation.
-    let live = crate::windows_prepare::volume_identity(letter)?;
+    let live = crate::windows_prepare::volume_identity_with_known_guid(
+        letter,
+        env_required(values, &format!("{prefix}_VOLUME_GUID"))?,
+    )?;
     for (suffix, actual, label) in [
         ("VOLUME_GUID", live.volume_guid.as_str(), "volume GUID"),
         ("DISK_GUID", live.disk_guid.as_str(), "disk GUID"),
@@ -1394,51 +1504,74 @@ fn verify_live_volume_identity(
     Ok(())
 }
 
+/// Ask `mountvol` what is mounted at `letter:`.
+///
+/// A timeout returns `Unknown`, never `Unmounted`. WinRE is exactly where
+/// this query has been observed to hang, and answering "nothing is mounted"
+/// on a hang let the caller assign a letter whose real state was unknown.
 #[cfg(windows)]
-fn find_mounted_volume(expected: &str) -> Option<char> {
-    for letter in 'C'..='Z' {
-        let Ok(output) = Command::new("mountvol.exe")
-            .args([format!("{letter}:"), "/L".to_string()])
-            .stdin(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-        else {
-            continue;
-        };
-        if output.status.success()
-            && String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .any(|line| !line.is_empty() && line.eq_ignore_ascii_case(expected))
-        {
-            return Some(letter);
+fn query_mounted_volume(letter: char, log: &Path) -> Result<VolumeMountQuery, TaskError> {
+    let started = Instant::now();
+    let mut child = Command::new("mountvol.exe")
+        .args([format!("{letter}:"), "/L".to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let mut output = String::new();
+            if let Some(mut stdout) = child.stdout.take() {
+                stdout.read_to_string(&mut output)?;
+            }
+            let query = classify_mountvol_output(status.success(), &output);
+            append_log(
+                log,
+                &format!(
+                    "mountvol query {letter}: exited {status} after {}ms -> {query:?}",
+                    started.elapsed().as_millis()
+                ),
+            )?;
+            return Ok(query);
         }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            append_log(
+                log,
+                &format!(
+                    "mountvol query {letter}: timed out after 5000ms; mount state is unproven"
+                ),
+            )?;
+            return Ok(VolumeMountQuery::Unknown);
+        }
+        thread::sleep(Duration::from_millis(100));
     }
-    None
 }
 
 #[cfg(windows)]
-fn verify_mounted_volume(letter: char, expected: &str) -> Result<(), TaskError> {
+fn verify_mounted_volume(letter: char, expected: &str, log: &Path) -> Result<(), TaskError> {
     let root = PathBuf::from(format!("{letter}:\\"));
     if !root.is_dir() {
         return Err(err(&format!(
             "volume {letter}: is not accessible after assignment"
         )));
     }
-    let output = Command::new("mountvol.exe")
-        .arg(format!("{letter}:"))
-        .arg("/L")
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()?;
-    if !output.status.success() {
-        return Err(err(&format!("mountvol failed while verifying {letter}:")));
-    }
-    let output_text = String::from_utf8_lossy(&output.stdout);
-    let actual = output_text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| err(&format!("volume {letter}: has no mountvol identity")))?;
+    let actual = match query_mounted_volume(letter, log)? {
+        VolumeMountQuery::Mounted(actual) => actual,
+        VolumeMountQuery::Unmounted => {
+            return Err(err(&format!(
+                "volume {letter}: has no mounted volume identity"
+            )));
+        }
+        VolumeMountQuery::Unknown => {
+            return Err(err(&format!(
+                "volume {letter}: mount identity query did not answer, cannot confirm it"
+            )));
+        }
+    };
     if !actual.eq_ignore_ascii_case(expected) {
         return Err(err(&format!(
             "volume identity mismatch for {letter}: expected {expected}, got {actual}"
@@ -2684,10 +2817,27 @@ fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        bcd_identifier_from_line, diskpart_format_script, parse_boot_manager_state,
-        parse_recover_options, split_workspace_root_rel, stage_resumable_after_interruption,
+        bcd_identifier_from_line, claim_boot_resume_attempt, diskpart_format_script,
+        parse_boot_manager_state, parse_recover_options, split_workspace_root_rel,
+        stage_resumable_after_interruption,
     };
     use backuprestore_core::Stage;
+
+    #[test]
+    fn automatic_boot_resume_is_limited_to_once_per_durable_stage() {
+        let root = std::env::temp_dir().join(format!(
+            "backuprestore-resume-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(claim_boot_resume_attempt(&root, Stage::BootRequested).unwrap());
+        assert!(!claim_boot_resume_attempt(&root, Stage::BootRequested).unwrap());
+        assert!(claim_boot_resume_attempt(&root, Stage::RecoveryStarted).unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn recover_options_accept_explicit_efi_root() {

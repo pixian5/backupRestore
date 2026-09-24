@@ -44,6 +44,11 @@ unsafe extern "system" {
         file_system_name_buffer: *mut u16,
         file_system_name_size: u32,
     ) -> i32;
+    fn GetVolumeNameForVolumeMountPointW(
+        volume_mount_point: *const u16,
+        volume_name: *mut u16,
+        buffer_length: u32,
+    ) -> i32;
     fn CreateFileW(
         file_name: *const u16,
         desired_access: u32,
@@ -1367,12 +1372,22 @@ fn capture(program: &str, args: &[&str]) -> Result<String, TaskError> {
 }
 
 pub(crate) fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError> {
-    let volume_guid = capture("mountvol.exe", &[&format!("{letter}:"), "/L"])?
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| err("mountvol returned no volume identity"))?
-        .to_string();
+    // Keep the Win32 error code: "no volume mounted here" and "the volume API
+    // failed" need different answers from whoever reads the log, and WinRE is
+    // where that distinction has cost the most time.
+    let volume_guid = match mounted_volume_guid(letter) {
+        Ok(Some(volume_guid)) => volume_guid,
+        Ok(None) => {
+            return Err(err(&format!(
+                "volume {letter}: has no mounted volume identity"
+            )));
+        }
+        Err(code) => {
+            return Err(err(&format!(
+                "volume {letter}: volume identity query failed with Win32 error {code}"
+            )));
+        }
+    };
     let (filesystem, volume_serial) = volume_information(letter)?;
     // Do not parse DiskPart's localized output here.  The volume handle gives
     // us the physical disk number, while PARTITION_INFORMATION_EX contains
@@ -1392,6 +1407,54 @@ pub(crate) fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError>
         volume_serial,
         drive_letter: Some(letter),
     })
+}
+
+pub(crate) fn volume_identity_with_known_guid(
+    letter: char,
+    volume_guid: String,
+) -> Result<VolumeIdentity, TaskError> {
+    let (filesystem, volume_serial) = volume_information(letter)?;
+    let disk_number = storage_device_number(letter)?;
+    let physical = physical_volume_identity(letter, disk_number)?;
+    Ok(VolumeIdentity {
+        disk_guid: physical.disk_guid,
+        partition_guid: physical.partition_guid,
+        volume_guid,
+        partition_type_guid: physical.partition_type_guid,
+        disk_number: Some(disk_number),
+        partition_number: Some(physical.partition_number),
+        partition_offset: physical.partition_offset,
+        partition_size: physical.partition_size,
+        filesystem,
+        volume_serial,
+        drive_letter: Some(letter),
+    })
+}
+
+/// Look up the volume GUID path mounted at `letter:`.
+///
+/// `Ok(None)` means the letter is genuinely unassigned; `Err(code)` carries
+/// the Win32 error so callers can log it rather than reporting every failure
+/// as "no volume".
+pub(crate) fn mounted_volume_guid(letter: char) -> Result<Option<String>, u32> {
+    let root = wide_null(&format!(r"{}:\", letter));
+    let mut volume = [0_u16; 128];
+    let success = unsafe {
+        GetVolumeNameForVolumeMountPointW(root.as_ptr(), volume.as_mut_ptr(), volume.len() as u32)
+    };
+    if success == 0 {
+        let error = unsafe { GetLastError() };
+        // ERROR_PATH_NOT_FOUND/ERROR_FILE_NOT_FOUND are normal for an
+        // unassigned letter; preserve other errors for WinRE diagnostics.
+        if error == 3 || error == 2 {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let Some(length) = volume.iter().position(|value| *value == 0) else {
+        return Err(122);
+    };
+    Ok(Some(String::from_utf16_lossy(&volume[..length])))
 }
 
 fn volume_free_bytes(letter: char) -> Result<u64, TaskError> {
