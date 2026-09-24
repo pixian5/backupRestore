@@ -85,6 +85,28 @@
   `Windows -> WinRE -> Recovery.exe` 和 C:→E: 备份；不得把历史循环修复等同于首次 WinRE
   启动故障已解决。
 
+## 2026-09-24 当前 Parallels VM 无法复现 WinRE 启动
+
+- 在当前 Parallels Windows 11 ARM64 VM（Desktop 27.0.2）上重跑真实自动 probe
+  （`prepare --operation probe --source-drive C --target-drive C`，不带 `--no-reboot`）：
+  任务 `cc49cdf4-2ea3-43ca-8a44-5ac7e2cc5e14` 创建成功并推进到 `boot-requested`
+  （`reagentc /boottore` 与 `shutdown /r` 均执行），但 Guest 重启后**始终回到正常
+  Windows**，`status.json` 停在 `boot-requested`、无 `Recovery.log`。
+- 进一步验证：把 BCD 持久 `default` 与 `bootsequence` 都显式指向已重注册到
+  `partition6`(Y:) 的 WinRE 项 `{9221dcc8-b818-11f1-8895-f11d6fe804c6}` 并重启，VM 仍
+  回 Windows，任务仍未推进。确认 **Parallels 固件既不消费一次性 `bootsequence`
+  （`reagentc /boottore`），也不认持久 `default` 指向 WinRE 项**——与 2026-09-17 那次
+  成功进入 WinRE 的 probe 环境已不可复现（疑似 Parallels 版本 / VM 注册状态漂移）。
+- 结论：v1.6.6 的 **prepare 链路**（任务创建 / BCD 快照 / payload 注入 / boottore /
+  状态推进）已在当前 VM 实机验证；**WinRE 执行层**（`Recovery.exe` 实机运行、原始 WinRE
+  恢复、`wpeutil reboot` 返回 Windows）**在当前 VM 无法验证**，属硬 VM 限制，非代码缺陷，
+  须真实硬件回归。注意 `recover-env` 收尾只做 `restore_original_winre` + `wpeutil reboot`
+  （`main.rs:949-959`），不重置 BCD 默认项，故强制持久 `default` 进 WinRE 会导致 VM 卡
+  WinRE / 循环，不可取。
+- 实验后已恢复干净态：BCD `default` 改回 Windows 11、清除 `bootsequence`、displayorder
+  仅 Windows；WinRE 重注册(partition6/Y:)保留（reagentc /info: Enabled）；删除 3 个实验
+  任务目录与中转文件。
+
 ## 2026-09-24 缺陷修复与测试盲区收口
 
 本轮先做静态分析，再修复分析中确认的两处真实缺陷，并把历史回归高发的纯逻辑
