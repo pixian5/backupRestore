@@ -92,11 +92,11 @@
   任务 `cc49cdf4-2ea3-43ca-8a44-5ac7e2cc5e14` 创建成功并推进到 `boot-requested`
   （`reagentc /boottore` 与 `shutdown /r` 均执行），但 Guest 重启后**始终回到正常
   Windows**，`status.json` 停在 `boot-requested`、无 `Recovery.log`。
-- 进一步验证：把 BCD 持久 `default` 与 `bootsequence` 都显式指向已重注册到
-  `partition6`(Y:) 的 WinRE 项 `{9221dcc8-b818-11f1-8895-f11d6fe804c6}` 并重启，VM 仍
-  回 Windows，任务仍未推进。确认 **Parallels 固件既不消费一次性 `bootsequence`
-  （`reagentc /boottore`），也不认持久 `default` 指向 WinRE 项**——与 2026-09-17 那次
-  成功进入 WinRE 的 probe 环境已不可复现（疑似 Parallels 版本 / VM 注册状态漂移）。
+- ~~进一步验证：把 BCD 持久 `default` 与 `bootsequence` 都显式指向 WinRE 项
+  `{9221dcc8-…}` 并重启，VM 仍回 Windows，故确认固件不消费启动项。~~
+  **此结论错误、已作废**：`{9221dcc8-…}` 是 `ramdiskoptions` 设备选项对象，**不是**
+  可启动 osloader 条目（可启动的是 `{9221dcc7-…}`），该实验设错了对象，不能作为依据。
+  详见下节更正。
 - 结论：v1.6.6 的 **prepare 链路**（任务创建 / BCD 快照 / payload 注入 / boottore /
   状态推进）已在当前 VM 实机验证；**WinRE 执行层**（`Recovery.exe` 实机运行、原始 WinRE
   恢复、`wpeutil reboot` 返回 Windows）**在当前 VM 无法验证**，属硬 VM 限制，非代码缺陷，
@@ -106,6 +106,49 @@
 - 实验后已恢复干净态：BCD `default` 改回 Windows 11、清除 `bootsequence`、displayorder
   仅 Windows；WinRE 重注册(partition6/Y:)保留（reagentc /info: Enabled）；删除 3 个实验
   任务目录与中转文件。
+
+## 2026-09-24 更正：本 VM 历史上多次进入过 WinRE，断裂点是 09-13 分区重排
+
+上一节「固件不消费启动项」的结论**错误**，来源有二：① 实验把 `default` 指向了
+`ramdiskoptions` 对象（非可启动条目）；② 直接沿用了 2026-09-13 L.5 在**另一台新 VM
+`Win11-repair`** 上得出的「固件不支持一次性启动」，把它错误推广到本机
+`Windows 11.pvm`。本机历史上**多次真实进入 WinRE**：
+
+| 日期 | 证据 |
+|---|---|
+| 2026-08-20/21 | `931686a`/`18e960a`/`f933b61`/`3e6a85c`/`15ccbef`/`2dc7641`：WinRE JSON 兼容、载荷收口、**probe 成功状态转换**、自动探测盘符复用、清理失败一致性，ARM64 实测构建 |
+| 2026-09-09 | `current-progress-2026-09-09.md` 验证矩阵：「WinRE 实机已验证 —— 真实重启进入 WinRE，DISM/格式化/BCDBoot/清理/返回 Windows 有持久证据」；v1.3.3 三故障（target-erased / image-applied / boot-repaired）各自完成真实 WinRE 断电→续跑→`success` |
+| 2026-09-13 白天 | `winre-autostart-pitfalls.md`（标题即「2026-09-13 实机验证」）第 2 节：「prepare 成功、`reagentc /boottore` 成功、**重启后 bootsequence 被消费（确实进过 WinRE）**」；当时 `Winre.wim` 在 `partition5`(R:)，`reagentc` 注册正确 |
+
+**断裂点 = 2026-09-13 18:30-19:05（L.6）**：在本机 `Windows 11.pvm` 上
+「diskpart 从 C: 收缩 5GB 建 T:」→ **分区号重排**，原 `partition5`(R:/WinRE) 被挤到
+`partition6`，`partition5` 变成 T: 数据盘，而 `reagentc` 仍记录 `harddisk0\partition5`
+→ 注册错位。对照当前布局完全吻合：`part5 = T: 5GB`、`part6 = Y: 840MB Recovery`。
+随后 2026-09-16 引导循环事故（`13d92e0`）把它放大：BCD 丢 Windows 条目、
+`{default}` 指向 WinRE ramdisk → 6 秒重启循环 → 用 ISO 的 WinPE + `bcdboot` 修复，
+修复后 WinRE 被注册到 C:（NTFS），于是写下「WinRE ramdisk 在 Parallels ARM 上不可行」
+——该结论把**注册错位**误判为**固件不支持**。
+
+### 本次实测（2026-09-24 22:2x，快照 `{da1896ed}`）
+
+1. 资产齐全性已排除：`Y:\Recovery\WindowsRE` 内 `boot.sdi`(3,170,304 B) 在位；
+   `ramdisksdidevice partition=Y:` + `ramdisksdipath \Recovery\WindowsRE\boot.sdi` 正确；
+   WinRE 条目 `{9221dcc7-…}` 含 `systemroot \windows` 与 `nx OptIn`（09-10 修
+   `0xc0000225` 时缺的正是这两个字段）。
+2. 补 `bcdedit /displayorder {9221dcc7-…} /addlast`、设 `timeout 30` 后跑真实 prepare
+   → 任务 `3ddb3003` 到 `boot-requested`；读 BCD 发现 **`{bootmgr}` 没有 `bootsequence`
+   值**——`reagentc /boottore` 是**假成功**，启动项根本没写进去。
+3. 手动 `bcdedit /set {bootmgr} bootsequence {9221dcc7-…}` 并重启：启动耗时约 5 分钟
+   （远超正常），且该条目随后从 `displayorder` 消失——**bootmgr 确实尝试了引导**；
+   但最终回落 Windows，任务仍 `boot-requested`、无 `Recovery.log`。
+
+→ 根因收窄到 **bootmgr 从 NTFS 卷加载 `ramdisk=[Y:]\Recovery\WindowsRE\Winre.wim`
+（808 MB）失败后回落**，与 `winre-bcd-loop-fix-2026-09-16.md` 第四节一致（同一 WIM 放
+UDF/ISO 介质可成功）。**可试方向**：把 Recovery 分区格式化为 FAT32 后重新注册 WinRE
+（当前 Y: 为 NTFS，仅剩 53 MB 可用）。WinRE 执行层最终仍须真实硬件回归。
+
+实验后 VM 已恢复干净态：清除 `bootsequence`、`timeout 0`、WinRE 仍 Enabled
+（partition6）；实验任务目录与临时文件已清空。
 
 ## 2026-09-24 缺陷修复与测试盲区收口
 
