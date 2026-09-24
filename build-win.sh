@@ -21,8 +21,13 @@ for d in /Users/x/win-sdk-arm64/um/arm64 /Users/x/win-sdk-arm64/ucrt/arm64 /User
 done
 
 echo ">> cargo build (aarch64-pc-windows-msvc)"
+# +crt-static：静态链接 C 运行库（VCRUNTIME140 + UCRT）。
+# 踩坑 25：动态链接时产物依赖 VCRUNTIME140.dll 与 api-ms-win-crt-*.dll，
+# 在精简版 Windows（tiny11）、WinRE/PE 里这些 DLL 不存在，程序连进程都起不来
+# （退出码 0xC0000135 / STATUS_DLL_NOT_FOUND）。静态链接后产物零外部 DLL 依赖，
+# WinRE payload 也不必再搬运 VCRUNTIME140.dll。
 CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER="$RLLD" \
-RUSTFLAGS="-C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/um/arm64 -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/ucrt/arm64 -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/vc/arm64" \
+RUSTFLAGS="-C target-feature=+crt-static -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/um/arm64 -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/ucrt/arm64 -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/vc/arm64" \
 cargo build --release --target aarch64-pc-windows-msvc -p backuprestore-cli
 
 EXE=target/aarch64-pc-windows-msvc/release/backuprestore-cli.exe

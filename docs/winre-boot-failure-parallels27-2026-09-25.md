@@ -4,6 +4,15 @@
 > 根因是 Parallels Desktop 27.x 的 EFI 固件在执行 ramdisk 引导（bootmgr 加载
 > Winre.wim / boot.wim）时崩溃并触发 VM 复位。降级或等待 Parallels 修复前，
 > 本 VM 上"自动重启进 WinRE/PE"链路无法闭环。
+>
+> **2026-09-25 02:00 独立复现**：全新 tiny11 ARM64 虚拟机（PD 27.0.2 全新安装，
+> 与旧 VM 毫无共享状态）上，`prepare --operation backup` 全链路成功（任务创建、
+> BCD 快照、WinRE WIM 挂载注入 payload、dism commit、`reagentc /boottore`、
+> 状态推进 boot-requested、`shutdown /r`），重启后 bootsequence 被消费但 WinRE
+> 仍未引导，13 秒直接回到 Windows 桌面，`status.json` 停在 boot-requested。
+> BCD（ramdisk=[HarddiskVolume4]\Recovery\WindowsRE\Winre.wim + ramdisksdipath）
+> 与 `reagentc /info`（Enabled, partition4）全部标准。**两台独立 VM 同签名，
+> 固件回归实锤。**
 
 ## 一、时间线与"某一次之后彻底坏了"
 
