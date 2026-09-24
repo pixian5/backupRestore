@@ -6,9 +6,12 @@
 > Winre.wim / boot.wim）时崩溃并触发 VM 复位。降级或等待 Parallels 修复前，
 > 本 VM 上"自动重启进 WinRE/PE"链路无法闭环。
 >
-> **置信度说明**：这是基于"两台独立 VM 同签名失败 + 全变量对照失败 + Parallels 日志复位记录"
-> 得出的高置信度推断，不是 100% 物理证明。唯一能坐实的 A/B 对照是**在 PD 26.x 上跑同一条链路**，
-> 该项尚未执行（需下载 ~600MB 旧版安装包）。
+> **置信度说明（2026-09-25 04:20 更新：已闭环证明）**：最初的"高置信度推断"已于
+> 09-25 04:20 通过 **PD 26.4.2 降级 A/B 对照实验闭环证明**——同一 VM、同一 Winre.wim
+> （从 ISO install.wim 重新提取）、同一 reagentc 标准注册、同一 bootsequence 触发，
+> 在 **26.4.2 上 WinRE 成功引导**（截图 `.test-artifacts/winre-boot-pd26-success-0420.png`，
+> 标准的「选择一个选项」菜单；无自发复位），而 27.x 上同链路是 6 秒复位循环。
+> **根因坐实：Parallels Desktop 27.x 固件回归，与 BackupRestore 无关。**
 >
 > **2026-09-25 02:00 独立复现**：全新 tiny11 ARM64 虚拟机（PD 27.0.2 全新安装，
 > 与旧 VM 毫无共享状态）上，`prepare --operation backup` 全链路成功（任务创建、
@@ -103,3 +106,29 @@ ls -ld "/Applications/Parallels Desktop.app"                                    
   （C:\Users\Public\backupRestore-package\esp-backup\）。
 - 快照链（可回退）：{d72c40ef} → {02c8b5db} → {7f4ff848}(bcdboot 前) →
   {320b2dcd}(覆盖 ESP 引导文件后)。
+
+## 六、闭环证明（2026-09-25 04:00-04:20，PD 26.4.2 A/B 对照）
+
+### 实验条件
+- Parallels Desktop 已降级到 **26.4.2 (57518)**（27.0.2 卸载后装回 26.4.2）。
+- 降级后 VM 卡在 UEFI 固件菜单（见 `pd26-downgrade-vm-recovery-2026-09-25.md`），
+  先删除 NVRAM.dat/tnvs 由 26.4.2 固件重建后正常进桌面。
+- WinRE 资产全部重建：Winre.wim(709,810,082B) + boot.sdi(3,170,304B) 从 Windows 11 ISO
+  的 install.wim index 1 用 wimlib-imagex 提取（宿主机），robocopy 进
+  C:\Recovery\WindowsRE；删除陈旧 ReAgent.xml 后 reagentc 注册成功（Enabled，
+  条目 {fa68c813-b854-11f1-88b9-da86a19ef236}）。
+- `reagentc /boottore` 后 **bcdedit /enum {bootmgr} /v 实际确认** bootsequence
+  已写入（不信任日志，见 09-24 假成功教训）。
+
+### 结果（04:18:34 重启）
+| 观察点 | PD 27.x（昨晚） | PD 26.4.2（本次） |
+|---|---|---|
+| 计划内复位后的自发 VM_RESET | ~6.4s 必现 | **无**（日志 04:18:50 只有一次计划内 RESET） |
+| bootsequence 消费后 | 回落 Windows | **进入 WinRE** |
+| WinRE 画面 | 从未出现 | 「选择一个选项」菜单（截图在案） |
+| 退出方式 | — | `prlctl send-key-event --scancode 28`（回车选高亮"继续"）→ 25s 后回桌面 Tools OK |
+
+### 结论
+**Parallels Desktop 27.x 固件 ramdisk 引导回归 = 唯一根因，闭环证明。**
+BackupRestore 的 prepare/WinRE 链路在 26.x 上完全正常。后续路径：
+留在 26.4.2 开发验证；或等 27.0.3+ 修复；真机部署不受影响。

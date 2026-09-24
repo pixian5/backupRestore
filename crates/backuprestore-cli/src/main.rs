@@ -1522,10 +1522,16 @@ fn query_mounted_volume(letter: char, log: &Path) -> Result<VolumeMountQuery, Ta
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(status) = child.try_wait()? {
-            let mut output = String::new();
+            // mountvol 在中文/非英文 WinRE 里会输出本地化（GBK 等非 UTF-8）文本。
+            // 这里必须用 lossy 解码：严格 read_to_string 会以
+            // "stream did not contain valid UTF-8" 整个失败，导致 WinRE 内
+            // 挂载卷全挂、任务闪退重启循环。GUID 行始终是 ASCII，lossy 解码
+            // 不影响 classify_mountvol_output 的判断。
+            let mut raw = Vec::new();
             if let Some(mut stdout) = child.stdout.take() {
-                stdout.read_to_string(&mut output)?;
+                stdout.read_to_end(&mut raw)?;
             }
+            let output = String::from_utf8_lossy(&raw).into_owned();
             let query = classify_mountvol_output(status.success(), &output);
             append_log(
                 log,

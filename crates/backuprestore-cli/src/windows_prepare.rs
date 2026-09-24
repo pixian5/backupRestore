@@ -85,6 +85,7 @@ const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002d_1080;
 
 const RESERVED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
+#[allow(dead_code)]
 const RECOVERY_TYPE: &str = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -1669,14 +1670,13 @@ fn recovery_identity() -> Result<VolumeIdentity, TaskError> {
         .and_then(|value| value.split('\\').next()?.parse().ok())
         .ok_or_else(|| err("WinRE partition identity is missing"))?;
     let identity = identity_from_diskpart(disk, partition, 'R')?;
-    if !identity
-        .partition_type_guid
-        .eq_ignore_ascii_case(RECOVERY_TYPE)
-    {
-        return Err(err(
-            "registered WinRE is not located on a GPT Recovery partition",
-        ));
-    }
+    // Windows 官方支持两种 WinRE 注册形态：GPT Recovery 分区（de94bba4-…）或
+    // OS 分区的 \Recovery\WindowsRE（reagentc /enable 在多数现代系统上会把
+    // WinRE 复制回 OS 分区，无法稳定留在 Recovery 分区）。两种形态的 BCD
+    // ramdisk 引导行为一致（已在 Parallels ARM64 实机验证可正常引导进 WinRE）。
+    // 这里不再强制要求 Recovery 分区类型：identity 仅用于“工作区/镜像卷不得
+    // 与恢复分区同卷”的安全检查，按 reagentc 报告的真实分区继续即可；
+    // 若 WinRE 文件缺失，后续 WIM 挂载/注入会自行报错。
     Ok(identity)
 }
 
