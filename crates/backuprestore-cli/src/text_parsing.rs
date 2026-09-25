@@ -10,6 +10,8 @@
 //! with "the query never answered". Keeping these functions here means every
 //! one of them is covered by the offline test suite on macOS.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 /// What a `mountvol <letter>: /L` query actually told us.
@@ -244,6 +246,41 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         Some(line.trim_end().to_string())
     };
     (stage, percent, detail)
+}
+
+/// Which volume GUID an earlier role already mounted, and at which letter.
+///
+/// diskpart's `assign letter=` MOVES a volume's drive letter instead of adding
+/// a second one, so mounting one volume twice under two roles silently tears
+/// the first role's mount down. That is not hypothetical: with WinRE
+/// registered on the OS partition, RECOVERY and SOURCE are the same volume,
+/// and assigning `S:` stole `R:`, leaving the cleanup unable to find
+/// `R:\Recovery\WindowsRE` and the payload-injected WinRE registered with no
+/// way back. Roles that share a volume must therefore share its letter.
+#[derive(Debug, Default)]
+pub(crate) struct MountedVolumes {
+    by_guid: BTreeMap<String, char>,
+}
+
+impl MountedVolumes {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// The letter an earlier role already mounted this volume at, if any.
+    /// Volume GUIDs are compared case-insensitively.
+    pub(crate) fn existing(&self, volume_guid: &str) -> Option<char> {
+        self.by_guid.get(&Self::key(volume_guid)).copied()
+    }
+
+    /// Record the letter a role just mounted this volume at.
+    pub(crate) fn record(&mut self, volume_guid: &str, letter: char) {
+        self.by_guid.insert(Self::key(volume_guid), letter);
+    }
+
+    fn key(volume_guid: &str) -> String {
+        volume_guid.to_ascii_uppercase()
+    }
 }
 
 #[cfg(test)]
@@ -490,5 +527,31 @@ mod tests {
             classify_log_line("plain message\r\n").2.as_deref(),
             Some("plain message")
         );
+    }
+
+    #[test]
+    fn shared_volumes_reuse_one_letter_across_roles() {
+        let mut mounts = MountedVolumes::new();
+        let guid = "\\\\?\\Volume{761230e8-107c-4396-8c37-82273720183d}\\";
+        assert_eq!(mounts.existing(guid), None);
+
+        mounts.record(guid, 'R');
+        // RECOVERY and SOURCE are the same volume when WinRE lives on the OS
+        // partition; SOURCE must reuse R: instead of assigning S: over it.
+        assert_eq!(mounts.existing(guid), Some('R'));
+
+        // A different volume is still unmounted and gets its own letter.
+        let other = "\\\\?\\Volume{93ec4ed8-db74-4ebb-8b73-cd771c07ac72}\\";
+        assert_eq!(mounts.existing(other), None);
+        mounts.record(other, 'S');
+        assert_eq!(mounts.existing(other), Some('S'));
+        assert_eq!(mounts.existing(guid), Some('R'));
+    }
+
+    #[test]
+    fn volume_guid_matching_ignores_case() {
+        let mut mounts = MountedVolumes::new();
+        mounts.record("\\\\?\\Volume{ABCD-1234}\\", 'T');
+        assert_eq!(mounts.existing("\\\\?\\volume{abcd-1234}\\"), Some('T'));
     }
 }

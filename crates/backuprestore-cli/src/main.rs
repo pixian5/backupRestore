@@ -7,7 +7,7 @@
 //! WinRE's `winpeshl.ini` without depending on a desktop runtime.
 
 #[cfg(windows)]
-use crate::text_parsing::{VolumeMountQuery, classify_mountvol_output};
+use crate::text_parsing::{MountedVolumes, VolumeMountQuery, classify_mountvol_output};
 #[cfg(windows)]
 use backuprestore_core::{BootMode, Operation, PayloadManifest, verify_image_file};
 use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
@@ -714,16 +714,21 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let mut early_log = PathBuf::from(r"X:\BackupRestore-Recovery-early.log");
     // WinRE 恢复进度窗口（失败静默降级，非关键）：GUI 显示阶段/DISM 进度/日志尾部。
     let progress = recovery_progress::spawn(early_log.clone());
-    let task_letter = match mount_env_volume(&values, "WORKSPACE", 'T', &early_log, false) {
-        Ok(letter) => {
-            meta_log(&format!("mount WORKSPACE OK -> {letter}:"));
-            letter
-        }
-        Err(e) => {
-            meta_log(&format!("mount WORKSPACE FAILED: {e}"));
-            return Err(e);
-        }
-    };
+    // One registry for every role mounted in this WinRE session, so two roles
+    // that resolve to the same volume share its letter instead of stealing it
+    // from each other.
+    let mut mounts = MountedVolumes::new();
+    let task_letter =
+        match mount_env_volume(&mut mounts, &values, "WORKSPACE", 'T', &early_log, false) {
+            Ok(letter) => {
+                meta_log(&format!("mount WORKSPACE OK -> {letter}:"));
+                letter
+            }
+            Err(e) => {
+                meta_log(&format!("mount WORKSPACE FAILED: {e}"));
+                return Err(e);
+            }
+        };
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
@@ -732,7 +737,8 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // Mount Recovery before loading/validating the task so the emergency
     // guard always uses the Recovery volume letter, never the workspace
     // letter. The old ordering could attempt restoration under T:\Recovery.
-    let recovery_letter = mount_env_volume(&values, "RECOVERY", 'R', &early_log, false)?;
+    let recovery_letter =
+        mount_env_volume(&mut mounts, &values, "RECOVERY", 'R', &early_log, false)?;
     let mut cleanup_guard = WinreRestoreGuard::new(&values, &task_dir, &early_log, recovery_letter);
     meta_log(&format!(
         "mount RECOVERY OK (r={recovery_letter}) guard ready"
@@ -819,8 +825,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         }
 
         let efi_letter = if task.operation != Operation::Probe {
-            let source_letter = mount_env_volume(&values, "SOURCE", 'S', &early_log, false)?;
-            let image_letter = mount_env_volume(&values, "IMAGE", 'I', &early_log, false)?;
+            let source_letter =
+                mount_env_volume(&mut mounts, &values, "SOURCE", 'S', &early_log, false)?;
+            let image_letter =
+                mount_env_volume(&mut mounts, &values, "IMAGE", 'I', &early_log, false)?;
             if let Some(source) = task.source.as_mut() {
                 source.drive_letter = Some(source_letter);
             }
@@ -873,6 +881,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             }
             if task.target.is_some() {
                 let target_letter = mount_env_volume(
+                    &mut mounts,
                     &values,
                     "TARGET",
                     'W',
@@ -884,7 +893,8 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 )?;
                 // WinRE may reuse E: for an image/data volume; keep EFI on a
                 // late temporary letter to avoid mount collisions.
-                let efi_letter = mount_env_volume(&values, "EFI", 'Z', &early_log, false)?;
+                let efi_letter =
+                    mount_env_volume(&mut mounts, &values, "EFI", 'Z', &early_log, false)?;
                 if let Some(target) = task.target.as_mut() {
                     target.volume.drive_letter = Some(target_letter);
                 }
@@ -901,8 +911,14 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 .as_ref()
                 .ok_or_else(|| err("probe task is missing workspace volume identity"))?;
             if !workspace_volume.same_partition(source) {
-                source.drive_letter =
-                    Some(mount_env_volume(&values, "SOURCE", 'S', &early_log, false)?);
+                source.drive_letter = Some(mount_env_volume(
+                    &mut mounts,
+                    &values,
+                    "SOURCE",
+                    'S',
+                    &early_log,
+                    false,
+                )?);
             } else {
                 source.drive_letter = Some(task_letter);
                 append_log(
@@ -1265,6 +1281,7 @@ fn verify_image_absolute_path(
 
 #[cfg(windows)]
 fn mount_env_volume(
+    mounts: &mut MountedVolumes,
     values: &BTreeMap<String, String>,
     prefix: &str,
     letter: char,
@@ -1281,6 +1298,29 @@ fn mount_env_volume(
             "mount {prefix} start: expected_guid={expected} requested_letter={letter}: disk={disk} partition={partition}"
         ),
     )?;
+    // An earlier role already mounted this very volume. diskpart's
+    // `assign letter=` MOVES a volume's letter instead of adding one, so
+    // assigning a second letter here would tear that role's mount down and
+    // leave its paths dangling. Share the letter, but still verify the volume
+    // against this role's own recorded identity.
+    if let Some(existing) = mounts.existing(&expected) {
+        append_log(
+            log,
+            &format!(
+                "mount {prefix}: volume already mounted at {existing}: by an earlier role, reusing that letter"
+            ),
+        )?;
+        verify_mounted_volume(existing, &expected, log)?;
+        verify_live_volume_identity(existing, values, prefix, allow_reformatted_serial)?;
+        append_log(
+            log,
+            &format!(
+                "mount {prefix} complete via shared letter in {}ms",
+                mount_started.elapsed().as_millis()
+            ),
+        )?;
+        return Ok(existing);
+    }
     // X: is the writable WinRE RAM disk. C: may be the offline Windows
     // volume (or unavailable), so never use it for the assignment script.
     let script = PathBuf::from(format!(
@@ -1302,6 +1342,7 @@ fn mount_env_volume(
                     mount_started.elapsed().as_millis()
                 ),
             )?;
+            mounts.record(&expected, letter);
             return Ok(letter);
         }
         // An unproven letter must not be assigned over: doing so can tear
@@ -1359,6 +1400,7 @@ fn mount_env_volume(
                 mount_started.elapsed().as_millis()
             ),
         )?;
+        mounts.record(&expected, letter);
         return Ok(letter);
     }
     let body =
@@ -1422,6 +1464,7 @@ fn mount_env_volume(
             mount_started.elapsed().as_millis()
         ),
     )?;
+    mounts.record(&expected, letter);
     Ok(letter)
 }
 

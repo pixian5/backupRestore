@@ -132,3 +132,30 @@ ls -ld "/Applications/Parallels Desktop.app"                                    
 **Parallels Desktop 27.x 固件 ramdisk 引导回归 = 唯一根因，闭环证明。**
 BackupRestore 的 prepare/WinRE 链路在 26.x 上完全正常。后续路径：
 留在 26.4.2 开发验证；或等 27.0.3+ 修复；真机部署不受影响。
+
+## 2026-09-25 PD 26.4.2 上的同卷挂载修复复验
+
+在已降级至 Parallels Desktop 26.4.2 的 Windows 11 ARM64 VM 上，对本轮
+`mount_env_volume` 修复执行了真实、非破坏性 `probe` 启动闭环。VM ID 为
+`{caee9cb3-bac7-41e2-85f2-32b3a7369114}`；操作前已创建并核验快照
+`{60871528-3efb-4ad5-b454-c00fd1e93ae5}`，启动事务前另建并核验
+`{c2860f73-0042-4969-a599-2659f51462e3}`。补丁 ARM64 程序部署在
+`E:\BR-Recheck-patched-20260925`，部署的 CLI/Recovery SHA-256 均为
+`ad647c428c9161585ffcb9f636d90062ba0a9aadf5792a1479bb63258f2cba94`。
+
+真实自动启动的 WinRE 日志显示：`RECOVERY` 角色把分区 4 挂载为 `R:`；`SOURCE`
+随后解析到同一卷 GUID，复用 `R:`，没有再把它改挂到 `S:`。Recovery 随后运行
+`probe`，没有发出磁盘操作，恢复注册的原始 `Winre.wim` 并按 manifest 中的
+`originalWinreSha256` 校验成功，任务状态到达 `success`/100%，再自动重启返回
+Windows。返回后的提权审计显示 `reagentc /info` 为 Enabled，注册位置仍为
+`harddisk0\partition4\Recovery\WindowsRE`；`bcdedit /enum {bootmgr}` 未显示残留的
+`bootsequence`。任务保存的 `bcd-before-raw` SHA-256 与任务 `previousBcdSha256`
+完全一致（`2613c32e…648c1f8d0`）。这验证的是保存副本与其 manifest 记录一致，
+不是声称运行中 BCD hive 的字节哈希与启动前完全相同。
+
+本次只验证 `probe` 和 WinRE 自动启动/清理路径，**没有验证 WIM Capture、Apply、真实
+备份或系统还原**。后续验收必须继续使用隔离目标卷及快照，并按
+`docs/verification-matrix.md` 分别记录这些操作；不得将 probe 成功扩大解释为产品级
+备份还原成功。证据保存在被忽略的
+`.test-artifacts/recheck-20260925/`（尤其 `post-boot-audit.txt`、
+`status-patched.txt`、`deploy-patched-e.txt`）。
