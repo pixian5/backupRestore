@@ -150,6 +150,9 @@ const ID_PE_EXIT: usize = 1405;
 const ID_PE_MAIN_GUI: usize = 1406;
 // 「重启」已合并进「返回 Windows」（返回 = 修复 BCD + 重启回 Windows），
 // 原 ID_PE_REBOOT=1406 改为「打开完整程序」按钮。
+// 「软硬件信息」按钮与其只读信息窗口的文本框
+const ID_PE_SYSINFO: usize = 1419;
+const ID_PE_SYSINFO_TEXT: usize = 1420;
 const ID_PE_TITLE: usize = 1407;
 const ID_PE_VERSION: usize = 1408;
 const ID_PE_CLOCK: usize = 1409;
@@ -179,6 +182,9 @@ const ID_PE_DLG_OK: usize = 1454;
 const ID_PE_DLG_CANCEL: usize = 1455;
 const WS_CAPTION: u32 = 0x00c00000;
 const WS_SYSMENU: u32 = 0x00080000;
+// 软硬件信息窗口：可调整大小的边框与横向滚动条（长行如 ipconfig 输出不折行）
+const WS_THICKFRAME: u32 = 0x00040000;
+const WS_HSCROLL: u32 = 0x00100000;
 const PM_REMOVE: u32 = 0x0001;
 const WM_QUIT: u32 = 0x0012;
 const ES_AUTOHSCROLL: u32 = 0x0080;
@@ -6272,6 +6278,259 @@ unsafe fn pe_dialog(
     }
 }
 
+/// Read one probe's output file back as text, tolerating the mixed encodings
+/// the console tools emit (`reg`/`diskpart` are OEM/ANSI, `bcdedit` is often
+/// UTF-16LE) and collapsing a failed probe to an empty string so the caller
+/// renders the visible "unavailable" note instead of raw garbage.
+fn sysinfo_probe(command: &str, out_dir: &std::path::Path, name: &str) -> String {
+    let out_file = out_dir.join(format!("sysinfo-{name}.txt"));
+    let _ = std::fs::remove_file(&out_file);
+    // Every probe is read-only. A non-zero exit is normal in WinRE (no
+    // BitLocker, no display driver, …) so the exit code is not treated as
+    // fatal; only genuinely empty output becomes "unavailable".
+    let code = run_cmd_to_file_timeout(command, Some(&out_file), 20000);
+    let bytes = match std::fs::read(&out_file) {
+        Ok(bytes) => bytes,
+        Err(_) => return String::new(),
+    };
+    let _ = std::fs::remove_file(&out_file);
+    if code == u32::MAX && bytes.is_empty() {
+        return String::new();
+    }
+    let text = decode_bcdedit_bytes(&bytes);
+    text.trim_end().to_string()
+}
+
+/// Collect every read-only source for the information window.
+fn collect_system_info_sources(
+    out_dir: &std::path::Path,
+) -> crate::text_parsing::SystemInfoSources {
+    let systeminfo = sysinfo_probe("systeminfo", out_dir, "systeminfo");
+    crate::text_parsing::SystemInfoSources {
+        hostname: sysinfo_probe("hostname", out_dir, "hostname"),
+        systeminfo: crate::text_parsing::systeminfo_cpu_memory(&systeminfo),
+        os_registry: sysinfo_probe(
+            r#"reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName /v DisplayVersion /v CurrentBuild /v UBR /v EditionID"#,
+            out_dir,
+            "os",
+        ),
+        bios_registry: sysinfo_probe(
+            r#"reg query "HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer /v SystemProductName /v BIOSVendor /v BIOSVersion /v BIOSReleaseDate"#,
+            out_dir,
+            "bios",
+        ),
+        disks: sysinfo_probe("echo list disk | diskpart", out_dir, "disks"),
+        volumes: sysinfo_probe("echo list volume | diskpart", out_dir, "volumes"),
+        display_devices: sysinfo_probe(
+            r#"pnputil /enum-devices /class Display /connected"#,
+            out_dir,
+            "display",
+        ),
+        resolution: sysinfo_screen_resolution(),
+        network: sysinfo_probe("ipconfig /all", out_dir, "network"),
+        recovery: sysinfo_probe("reagentc /info", out_dir, "reagentc"),
+        bitlocker: sysinfo_probe("manage-bde -status", out_dir, "bitlocker"),
+        secure_boot: sysinfo_probe(
+            r#"reg query "HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\State" /v UEFISecureBootEnabled"#,
+            out_dir,
+            "secureboot",
+        ),
+    }
+}
+
+/// Current desktop resolution straight from the Win32 metrics, so the report
+/// has a display figure even when no driver-level probe answers.
+fn sysinfo_screen_resolution() -> String {
+    unsafe {
+        let width = GetSystemMetrics(SM_CXSCREEN);
+        let height = GetSystemMetrics(SM_CYSCREEN);
+        if width <= 0 || height <= 0 {
+            return String::new();
+        }
+        format!("{width}x{height}")
+    }
+}
+
+/// `WinRE` when the running environment is the recovery environment, `WinPE`
+/// for a plain preinstallation image, otherwise the installed Windows.
+///
+/// The footer used to be hard-coded to `WinPE`, which mislabelled every run
+/// that arrived through `reagentc /boottore`. WinRE is the PE image plus
+/// `\Windows\System32\Recovery\ReAgent.xml` / `winre.jpg`-style recovery
+/// scaffolding, and its `SystemRoot` lives on the RAM disk (`X:`), so those
+/// two facts together separate the three cases without running a command.
+fn sysinfo_environment_label() -> &'static str {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| String::from(r"C:\Windows"));
+    let on_ramdisk = system_root
+        .get(..1)
+        .is_some_and(|drive| drive.eq_ignore_ascii_case("X"));
+    if !on_ramdisk {
+        return "Windows";
+    }
+    let recovery_markers = [
+        r"X:\Windows\System32\Recovery\ReAgent.xml",
+        r"X:\Windows\System32\winpeshl.ini",
+        r"X:\sources\recovery\RecEnv.exe",
+        r"X:\Windows\System32\RecEnv.exe",
+    ];
+    if recovery_markers
+        .iter()
+        .any(|marker| std::path::Path::new(marker).exists())
+    {
+        "WinRE"
+    } else {
+        "WinPE"
+    }
+}
+
+/// Show the read-only software/hardware information window.
+///
+/// Collection happens before the window is created so the text box is filled
+/// in one shot; every probe is independently optional.
+unsafe fn pe_system_info_from_desktop(parent: Hwnd) {
+    let out_dir = std::env::temp_dir();
+    let sources = collect_system_info_sources(&out_dir);
+    let collected_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let report = crate::text_parsing::format_system_info_report(
+        &sources,
+        sysinfo_environment_label(),
+        std::env::consts::ARCH,
+        &collected_at,
+    );
+    show_system_info_window(parent, &report);
+}
+
+/// Read-only information window: one multiline edit filling the client area,
+/// both scroll bars, parent disabled while it is up.
+unsafe fn show_system_info_window(parent: Hwnd, report: &str) {
+    let instance = GetModuleHandleW(null());
+    if instance.is_null() {
+        show_message(parent, report, "软硬件信息", MB_OK);
+        return;
+    }
+    let class_name = wide("BackupRestoreSysInfo");
+    let class = WndClassExW {
+        cb_size: size_of::<WndClassExW>() as u32,
+        style: 0,
+        wnd_proc: Some(system_info_window_proc),
+        cb_cls_extra: 0,
+        cb_wnd_extra: 0,
+        h_instance: instance,
+        h_icon: null_mut(),
+        h_cursor: null_mut(),
+        h_brush: CreateSolidBrush(PE_BACKGROUND),
+        menu_name: null(),
+        class_name: class_name.as_ptr(),
+        h_icon_sm: null_mut(),
+    };
+    // A second click re-registers the same class; that returns 0 and is not an
+    // error, so the result is deliberately not treated as fatal.
+    RegisterClassExW(&class);
+
+    let screen_width = GetSystemMetrics(SM_CXSCREEN).max(640);
+    let screen_height = GetSystemMetrics(SM_CYSCREEN).max(480);
+    let width = (screen_width * 3 / 4).clamp(560, 1100);
+    let height = (screen_height * 3 / 4).clamp(420, 820);
+    let title = wide("软硬件信息 - BackupRestore");
+    let window = CreateWindowExW(
+        0,
+        class_name.as_ptr(),
+        title.as_ptr(),
+        WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_VISIBLE,
+        (screen_width - width) / 2,
+        (screen_height - height) / 2,
+        width,
+        height,
+        parent,
+        null_mut(),
+        instance,
+        null_mut(),
+    );
+    if window.is_null() {
+        // Falling back to a message box keeps the button useful rather than
+        // doing nothing at all if the window cannot be created.
+        show_message(parent, report, "软硬件信息", MB_OK);
+        return;
+    }
+
+    let text_box = create_control(
+        window,
+        "EDIT",
+        report,
+        WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        8,
+        8,
+        width - 32,
+        height - 56,
+        ID_PE_SYSINFO_TEXT,
+    );
+    let font = CreateFontW(
+        -16,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        wide("Consolas").as_ptr(),
+    );
+    if !text_box.is_null() && !font.is_null() {
+        SendMessageW(text_box, WM_SETFONT, font as WParam, 1);
+    }
+    ShowWindow(window, SW_SHOW);
+
+    // Modal by hand: disable the desktop and pump messages until the window is
+    // gone. `IsWindow` is the loop condition because WM_DESTROY posts a quit
+    // message that GetMessageW reports as 0 only after the queue drains.
+    EnableWindow(parent, 0);
+    let mut message: Msg = std::mem::zeroed();
+    while IsWindow(window) != 0 && GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    EnableWindow(parent, 1);
+    SetForegroundWindow(parent);
+    if !font.is_null() {
+        DeleteObject(font);
+    }
+}
+
+unsafe extern "system" fn system_info_window_proc(
+    hwnd: Hwnd,
+    message: u32,
+    w_param: WParam,
+    l_param: LParam,
+) -> LResult {
+    match message {
+        WM_SIZE => {
+            // Keep the text box filling the client area so resizing the window
+            // actually gains reading space.
+            let edit = GetDlgItem(hwnd, ID_PE_SYSINFO_TEXT as i32);
+            if !edit.is_null() {
+                let width = (l_param & 0xffff) as i32;
+                let height = ((l_param >> 16) & 0xffff) as i32;
+                MoveWindow(edit, 8, 8, width - 16, height - 16, 1);
+            }
+            0
+        }
+        WM_CLOSE => {
+            DestroyWindow(hwnd);
+            0
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(hwnd, message, w_param, l_param),
+    }
+}
+
 /// PE 桌面「备份系统」：PE 内直接 dism 捕获，不再跳主 GUI。
 unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
     // 自动点击模式（S:\pe-click.txt）：跳过对话框，用配置参数直接执行，
@@ -6570,8 +6829,10 @@ unsafe extern "system" fn window_proc_pe(
         let gap = 36;
         let grid_width = card_width * 3 + gap * 2;
         let start_x = ((width - grid_width) / 2).max(0);
-        let start_y = ((height - (card_height * 2 + gap + 150)) / 2).max(16) + 24;
-        let cards: [(usize, &str, i32, i32); 6] = [
+        // 七个入口排成 3 列 3 行（末行只占 1 个），行高按 3 行计算才不会
+        // 让最后一行压到底栏上。
+        let start_y = ((height - (card_height * 3 + gap * 2 + 150)) / 2).max(16) + 24;
+        let cards: [(usize, &str, i32, i32); 7] = [
             (ID_PE_BACKUP, "备份系统", 0, 0),
             (ID_PE_RESTORE, "还原系统", 1, 0),
             (ID_PE_SECONDARY, "安装第二系统", 2, 0),
@@ -6579,8 +6840,9 @@ unsafe extern "system" fn window_proc_pe(
             (ID_PE_EXIT, "返回 Windows", 1, 1),
             // 「重启」已合并进「返回 Windows」，此位改为打开完整主程序 GUI
             (ID_PE_MAIN_GUI, "打开完整程序", 2, 1),
+            (ID_PE_SYSINFO, "软硬件信息", 0, 2),
         ];
-        let mut card_controls = Vec::with_capacity(6);
+        let mut card_controls = Vec::with_capacity(cards.len());
         for (id, text, column, row) in cards {
             let x = start_x + column * (card_width + gap);
             let y = start_y + row * (card_height + gap);
@@ -6600,7 +6862,12 @@ unsafe extern "system" fn window_proc_pe(
         let version = create_control(
             hwnd,
             "STATIC",
-            &format!("BackupRestore v{PROGRAM_VERSION}  |  WinPE"),
+            // 底栏原先固定写死 WinPE，经 reagentc /boottore 进入 WinRE 时标签不实；
+            // 改为实际探测到的环境。
+            &format!(
+                "BackupRestore v{PROGRAM_VERSION}  |  {}",
+                sysinfo_environment_label()
+            ),
             0,
             16,
             bar_y,
@@ -6668,6 +6935,10 @@ unsafe extern "system" fn window_proc_pe(
                     ID_PE_MAIN_GUI,
                     "打开完整程序：启动完整的多页签界面（与 Windows 下相同），可执行更多操作。",
                 ),
+                (
+                    ID_PE_SYSINFO,
+                    "软硬件信息：只读采集本机操作系统、CPU/内存、主板固件、显示、存储、网络与恢复安全状态，不修改任何配置。",
+                ),
             ] {
                 let control = GetDlgItem(hwnd, id as i32);
                 add_tooltip(tooltip, hwnd, control, text);
@@ -6711,6 +6982,11 @@ unsafe extern "system" fn window_proc_pe(
                     // this step a PE set as the default would loop back into
                     // PE forever.
                     exit_pe_to_windows(hwnd);
+                    return 0;
+                }
+                ID_PE_SYSINFO => {
+                    // 只读采集并展示软硬件信息，不修改系统、不启动任务。
+                    pe_system_info_from_desktop(hwnd);
                     return 0;
                 }
                 ID_PE_CMD => {

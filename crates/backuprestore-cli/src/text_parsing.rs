@@ -248,6 +248,45 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
     (stage, percent, detail)
 }
 
+/// Keep only the `systeminfo` lines that describe CPU and memory, so the
+/// report stays readable instead of dumping the whole hotfix list.
+pub(crate) fn systeminfo_cpu_memory(systeminfo: &str) -> String {
+    let wanted = [
+        "处理器",
+        "Processor",
+        "物理内存",
+        "Physical Memory",
+        "虚拟内存",
+        "Virtual Memory",
+        "系统类型",
+        "System Type",
+    ];
+    let mut kept: Vec<String> = Vec::new();
+    let mut in_processor_list = false;
+    for line in systeminfo.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        // `systeminfo` prints processors as an indented numbered sub-list
+        // under its own heading; keep those continuation lines too.
+        let starts_field = !line.starts_with(' ') && line.contains(':');
+        if starts_field {
+            in_processor_list = wanted
+                .iter()
+                .any(|needle| trimmed.starts_with(needle) || trimmed.contains(needle));
+            if in_processor_list {
+                kept.push(trimmed.to_string());
+            }
+            continue;
+        }
+        if in_processor_list {
+            kept.push(trimmed.to_string());
+        }
+    }
+    kept.join("\n")
+}
+
 /// Which volume GUID an earlier role already mounted, and at which letter.
 ///
 /// diskpart's `assign letter=` MOVES a volume's drive letter instead of adding
@@ -283,10 +322,162 @@ impl MountedVolumes {
     }
 }
 
+/// Raw, read-only command outputs used by the recovery desktop information window.
+#[derive(Debug, Default)]
+pub(crate) struct SystemInfoSources {
+    pub(crate) hostname: String,
+    pub(crate) systeminfo: String,
+    pub(crate) os_registry: String,
+    pub(crate) bios_registry: String,
+    pub(crate) disks: String,
+    pub(crate) volumes: String,
+    pub(crate) display_devices: String,
+    pub(crate) resolution: String,
+    pub(crate) network: String,
+    pub(crate) recovery: String,
+    pub(crate) bitlocker: String,
+    pub(crate) secure_boot: String,
+}
+
+const SYSTEM_INFO_UNAVAILABLE: &str = "未检测到/不可用";
+
+fn system_info_value(value: &str) -> &str {
+    if value.trim().is_empty() {
+        SYSTEM_INFO_UNAVAILABLE
+    } else {
+        value.trim()
+    }
+}
+
+/// Build one stable, scrollable report without making any optional probe a
+/// fatal error. WinRE may lack PowerShell, WMI, display drivers or BitLocker
+/// support, so every optional source falls back to a visible unavailable note.
+pub(crate) fn format_system_info_report(
+    sources: &SystemInfoSources,
+    environment: &str,
+    architecture: &str,
+    collected_at: &str,
+) -> String {
+    // The array mixes borrowed literals with owned `format!` results, so every
+    // entry is normalised to `String` at the point of construction.
+    [
+        "BackupRestore 软硬件信息".to_string(),
+        "========================".to_string(),
+        "说明：本窗口只读采集，不修改系统配置。".to_string(),
+        "".to_string(),
+        "【概览】".to_string(),
+        format!("计算机名：{}", system_info_value(&sources.hostname)),
+        format!("当前环境：{}", system_info_value(environment)),
+        format!("程序版本：v{}", env!("CARGO_PKG_VERSION")),
+        format!("采集时间：{}", system_info_value(collected_at)),
+        format!("架构：{}", system_info_value(architecture)),
+        "".to_string(),
+        "【操作系统】".to_string(),
+        system_info_value(&sources.os_registry).to_string(),
+        "".to_string(),
+        "【处理器与内存】".to_string(),
+        system_info_value(&sources.systeminfo).to_string(),
+        "".to_string(),
+        "【主板与固件】".to_string(),
+        system_info_value(&sources.bios_registry).to_string(),
+        "".to_string(),
+        "【显示设备】".to_string(),
+        format!("当前分辨率：{}", system_info_value(&sources.resolution)),
+        system_info_value(&sources.display_devices).to_string(),
+        "".to_string(),
+        "【存储】".to_string(),
+        "磁盘：".to_string(),
+        system_info_value(&sources.disks).to_string(),
+        "".to_string(),
+        "卷：".to_string(),
+        system_info_value(&sources.volumes).to_string(),
+        "".to_string(),
+        "【网络】".to_string(),
+        system_info_value(&sources.network).to_string(),
+        "".to_string(),
+        "【恢复与安全】".to_string(),
+        "Windows RE：".to_string(),
+        system_info_value(&sources.recovery).to_string(),
+        "".to_string(),
+        "BitLocker：".to_string(),
+        system_info_value(&sources.bitlocker).to_string(),
+        "".to_string(),
+        "Secure Boot：".to_string(),
+        system_info_value(&sources.secure_boot).to_string(),
+        "".to_string(),
+        "【按钮边界】".to_string(),
+        "“返回 Windows”只恢复/设置 BCD 默认项 {current}、清理一次性启动状态并重启；".to_string(),
+        "它不会还原原始 Winre.wim。恢复原始 WinRE 必须另行执行 WinRE 恢复流程。".to_string(),
+    ]
+    .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn system_info_report_has_stable_groups_and_safe_fallbacks() {
+        let report = format_system_info_report(
+            &SystemInfoSources::default(),
+            "Windows RE",
+            "ARM64",
+            "2026-09-25 12:00:00",
+        );
+        for heading in [
+            "【概览】",
+            "【操作系统】",
+            "【处理器与内存】",
+            "【主板与固件】",
+            "【显示设备】",
+            "【存储】",
+            "【网络】",
+            "【恢复与安全】",
+            "【按钮边界】",
+        ] {
+            assert!(report.contains(heading), "missing heading: {heading}");
+        }
+        assert!(report.contains("当前环境：Windows RE"));
+        assert!(report.contains("架构：ARM64"));
+        assert!(report.contains("未检测到/不可用"));
+        assert!(report.contains("不会还原原始 Winre.wim"));
+    }
+
+    #[test]
+    fn system_info_report_preserves_available_raw_outputs() {
+        let sources = SystemInfoSources {
+            hostname: "TEST-PC".to_string(),
+            systeminfo: "CPU: Test CPU".to_string(),
+            os_registry: "DisplayVersion=25H2".to_string(),
+            bios_registry: "SystemManufacturer=Contoso".to_string(),
+            disks: "Disk 0  Online".to_string(),
+            volumes: "Volume 1  C:  NTFS".to_string(),
+            display_devices: "GPU: Test GPU".to_string(),
+            resolution: "1920x1080".to_string(),
+            network: "IPv4: 192.0.2.10".to_string(),
+            recovery: "Windows RE enabled".to_string(),
+            bitlocker: "Protection On".to_string(),
+            secure_boot: "UEFISecureBootEnabled=1".to_string(),
+        };
+        let report = format_system_info_report(&sources, "Windows", "x86_64", "now");
+        for expected in [
+            "计算机名：TEST-PC",
+            "CPU: Test CPU",
+            "DisplayVersion=25H2",
+            "SystemManufacturer=Contoso",
+            "Disk 0  Online",
+            "Volume 1  C:  NTFS",
+            "GPU: Test GPU",
+            "当前分辨率：1920x1080",
+            "IPv4: 192.0.2.10",
+            "Windows RE enabled",
+            "Protection On",
+            "UEFISecureBootEnabled=1",
+        ] {
+            assert!(report.contains(expected), "missing output: {expected}");
+        }
+    }
 
     #[test]
     fn mountvol_query_keeps_timeout_distinct_from_unmounted() {
@@ -553,5 +744,47 @@ mod tests {
         let mut mounts = MountedVolumes::new();
         mounts.record("\\\\?\\Volume{ABCD-1234}\\", 'T');
         assert_eq!(mounts.existing("\\\\?\\volume{abcd-1234}\\"), Some('T'));
+    }
+
+    #[test]
+    fn systeminfo_keeps_cpu_and_memory_and_drops_the_hotfix_list() {
+        let raw = "\
+主机名:           TEST-PC
+OS 名称:          Microsoft Windows 11
+系统类型:         ARM64-based PC
+处理器:           安装了 1 个处理器。
+                  [01]: ARMv8 (64-bit) Family 8 Model 1
+物理内存总量:     16,384 MB
+可用的物理内存:   9,001 MB
+虚拟内存: 最大值: 20,480 MB
+修补程序: 安装了 3 个修补程序。
+                  [01]: KB5000001
+";
+        let kept = systeminfo_cpu_memory(raw);
+        assert!(kept.contains("处理器:"));
+        assert!(kept.contains("[01]: ARMv8 (64-bit) Family 8 Model 1"));
+        assert!(kept.contains("物理内存总量:"));
+        assert!(kept.contains("系统类型:"));
+        // The hotfix list and its continuation lines must not leak in.
+        assert!(!kept.contains("修补程序"));
+        assert!(!kept.contains("KB5000001"));
+        assert!(!kept.contains("OS 名称"));
+    }
+
+    #[test]
+    fn systeminfo_filter_survives_english_output_and_empty_input() {
+        let english = "\
+Host Name:                 TEST-PC
+Processor(s):              1 Processor(s) Installed.
+                           [01]: ARMv8
+Total Physical Memory:     16,384 MB
+Hotfix(s):                 1 Hotfix(s) Installed.
+";
+        let kept = systeminfo_cpu_memory(english);
+        assert!(kept.contains("Processor(s):"));
+        assert!(kept.contains("[01]: ARMv8"));
+        assert!(kept.contains("Total Physical Memory:"));
+        assert!(!kept.contains("Hotfix"));
+        assert_eq!(systeminfo_cpu_memory(""), "");
     }
 }
