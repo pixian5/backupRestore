@@ -127,6 +127,10 @@ const OFN_PATHMUSTEXIST: u32 = 0x00000800;
 const OFN_FILEMUSTEXIST: u32 = 0x00001000;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const DEFAULT_GUI_FONT: i32 = 17;
+// Edit control messages: EM_SETLIMITTEXT with a zero limit on a multiline EDIT
+// lifts the default 32,767 character cap, which silently truncated the tail of
+// the information report (the 按钮边界 section never reached the screen).
+const EM_SETLIMITTEXT: u32 = 0x00C5;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_ELEVATION_CLASS: u32 = 20;
 const TTM_ADDTOOLW: u32 = 0x0432;
@@ -331,6 +335,7 @@ unsafe extern "system" {
     fn SendMessageW(hwnd: Hwnd, message: u32, w_param: WParam, l_param: LParam) -> LResult;
     fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, value: isize) -> isize;
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
+    fn SetFocus(hwnd: Hwnd) -> Hwnd;
     fn ShowWindow(hwnd: Hwnd, command: i32) -> i32;
     fn MoveWindow(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
     fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
@@ -363,7 +368,20 @@ unsafe extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn CloseHandle(handle: Handle) -> i32;
     fn Sleep(milliseconds: u32);
+    // Console tools in WinRE write in the OEM code page (GBK on zh-CN images),
+    // so their captured bytes need a real code-page conversion instead of a
+    // UTF-8 guess. CP_OEMCP asks the system which page the console used.
+    fn MultiByteToWideChar(
+        code_page: u32,
+        flags: u32,
+        multi_byte: *const i8,
+        multi_byte_count: i32,
+        wide_char: *mut u16,
+        wide_char_count: i32,
+    ) -> i32;
 }
+
+const CP_OEMCP: u32 = 1;
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -965,11 +983,11 @@ unsafe fn add_tooltip(tooltip: Hwnd, parent: Hwnd, control: Hwnd, text: &str) {
 }
 
 unsafe fn set_text(hwnd: Hwnd, value: &str) {
-    // Win32 EDIT controls require CRLF for explicit line breaks. Keeping the
-    // conversion here makes guidance/details boxes render logical lines
-    // consistently instead of depending on automatic wrapping.
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    let value = wide(&normalized.replace('\n', "\r\n"));
+    // Win32 EDIT controls require CRLF for explicit line breaks; the
+    // normalization itself lives in `text_parsing` so it is covered by the
+    // offline tests. Keeping the conversion here makes guidance/details boxes
+    // render logical lines consistently instead of depending on wrapping.
+    let value = wide(&crate::text_parsing::normalize_edit_newlines(value));
     SetWindowTextW(hwnd, value.as_ptr());
     // 强制立即重绘（历史 bug 根因修复）：SetWindowTextW 只把控件区域标为
     // 异步失效，快速连续切换 tab 时 WM_PAINT 会被合并/延迟，旧文本会残留
@@ -5597,12 +5615,6 @@ unsafe fn update_pe_clock(state: &PeDesktopState) {
 /// launched through a temporary default does not trap the machine in PE. The
 /// EFI system partition is located by enumerating volumes, mounted to `S:`,
 /// and the BCD entry is rewritten with `bcdedit /store`.
-/// Append the UTF-16 encoding of `source` (without a trailing NUL) to a
-/// command-line buffer, so several `wide()` results can be joined safely.
-fn push_wide_into(target: &mut Vec<u16>, source: &str) {
-    target.extend(source.encode_utf16());
-}
-
 /// Reboot the PE session. `ExitWindowsEx` needs shutdown privileges that the
 /// PE shell may lack, so fall back to `wpeutil.exe reboot` (the PE-native
 /// restart tool) exactly like the restart card does.
@@ -5723,7 +5735,7 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
         diag.push("FindFirstVolumeW failed".to_string());
         let _ = write_pe_exit_log(&diag, None);
         show_diag_dialog(hwnd, &diag);
-        pe_reboot(hwnd);
+        PE_EXITING.store(false, std::sync::atomic::Ordering::SeqCst);
         return;
     }
     let mut found_bcd = false;
@@ -5778,13 +5790,8 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                     }
                 }
                 if let Some(letter) = mounted_letter {
-                    let mut bcd_path: Vec<u16> = Vec::new();
-                    bcd_path.push(letter);
-                    bcd_path.push(':' as u16);
-                    bcd_path.push('\\' as u16);
-                    push_wide_into(&mut bcd_path, "EFI\\Microsoft\\Boot\\BCD");
-                    bcd_path.push(0);
-                    if GetFileAttributesW(bcd_path.as_ptr()) != u32::MAX {
+                    let bcd_path = format!("{}:\\EFI\\Microsoft\\Boot\\BCD", letter as u8 as char);
+                    if GetFileAttributesW(wide(&bcd_path).as_ptr()) != u32::MAX {
                         diag.push("BCD file found".to_string());
                         esp_volume_path = Some(volume_path.clone());
                         // Read the Windows entry GUID written to the ESP at
@@ -5803,98 +5810,53 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                         if win_guid.is_none() {
                             diag.push("no pe-exit-guid.txt on ESP".to_string());
                         }
-                        let mut command_line: Vec<u16> = Vec::new();
-                        // Development: keep the console window visible, echo the
-                        // bcdedit exit codes on the same window and hold it open
-                        // with `pause` so the output can be inspected before
-                        // reboot. In auto-click mode the pause/echo are omitted
-                        // (no human to press a key) so the reboot happens right
-                        // after bcdedit finishes.
-                        push_wide_into(&mut command_line, "cmd.exe /c ");
-                        push_wide_into(&mut command_line, "bcdedit.exe /store ");
-                        command_line.extend_from_slice(&bcd_path[..bcd_path.len() - 1]);
-                        match &win_guid {
-                            Some(guid) => {
-                                push_wide_into(&mut command_line, " /set {bootmgr} default ");
-                                push_wide_into(&mut command_line, guid);
-                            }
-                            None => {
-                                push_wide_into(&mut command_line, " /enum");
-                            }
-                        }
-                        // 同时清除 bootsequence：若进 PE 用的是 bootsequence
-                        // 方式（PE RAM 盘无法回写消费），不清会导致每次重启
-                        // 都再进 PE（死循环）。无 bootsequence 时该命令报错
-                        // 无害（default 已设置）。
-                        push_wide_into(&mut command_line, " & bcdedit.exe /store ");
-                        command_line.extend_from_slice(&bcd_path[..bcd_path.len() - 1]);
-                        push_wide_into(&mut command_line, " /deletevalue {bootmgr} bootsequence");
-                        if !PE_AUTO_CLICK.load(std::sync::atomic::Ordering::SeqCst) {
-                            push_wide_into(
-                                &mut command_line,
-                                " & call echo EXIT_CODE=%errorlevel% & pause",
+                        if let Some(guid) = win_guid {
+                            // Split the operations so a harmless
+                            // `deletevalue ... Element not found` cannot hide a
+                            // failed default restore behind the final exit code.
+                            let set_command = format!(
+                                "bcdedit.exe /store \"{bcd_path}\" /set {{bootmgr}} default \"{guid}\""
                             );
-                        }
-                        command_line.push(0);
-                        let mut startup: StartupInfoW = std::mem::zeroed();
-                        startup.cb = size_of::<StartupInfoW>() as u32;
-                        let mut process: ProcessInformation = std::mem::zeroed();
-                        let created = CreateProcessW(
-                            null(),
-                            command_line.as_mut_ptr(),
-                            null_mut(),
-                            null_mut(),
-                            0,
-                            0, // visible console during development
-                            null_mut(),
-                            null_mut(),
-                            &mut startup,
-                            &mut process,
-                        );
-                        if created != 0 {
-                            // 60 s: enough for the developer to read the
-                            // paused bcdedit output and press a key.
-                            let wait = WaitForSingleObject(process.process, 60000);
-                            if wait == 0 {
-                                let mut code: u32 = 0;
-                                GetExitCodeProcess(process.process, &mut code);
-                                diag.push(format!("bcdedit exit code: {}", code));
-                                // deletevalue 无值可删时 bcdedit 也返回非 0
-                                // （"Element not found"），default 已设置则无碍。
-                                if code != 0 {
-                                    diag.push(format!("bcdedit reported failure (exit {})", code));
-                                }
-                            } else {
-                                // 超时 = cmd 还挂在 pause 等待人工按键（手动
-                                // 开发模式）；bcdedit 命令本身早已执行完。
-                                diag.push(
-                                    "bcdedit wait timed out (cmd paused, waiting for key)"
-                                        .to_string(),
-                                );
-                            }
-                            CloseHandle(process.thread);
-                            CloseHandle(process.process);
-                            found_bcd = true;
-                        } else {
+                            let set_code = run_cmd_to_file(&set_command, None);
+                            diag.push(format!("set default exit code: {set_code}"));
+
+                            // A stale bootsequence overrides default and would
+                            // boot PE forever. Missing is already success, so
+                            // verify the resulting enum instead of trusting the
+                            // delete command's localized error code.
+                            let delete_command = format!(
+                                "bcdedit.exe /store \"{bcd_path}\" /deletevalue {{bootmgr}} bootsequence"
+                            );
+                            let delete_code = run_cmd_to_file(&delete_command, None);
+                            diag.push(format!("delete bootsequence exit code: {delete_code}"));
+                            let enum_command =
+                                format!("bcdedit.exe /store \"{bcd_path}\" /enum {{bootmgr}}");
+                            let enum_file = std::env::temp_dir().join("backuprestore-exit-bcd.txt");
+                            let enum_code = run_cmd_to_file(&enum_command, Some(&enum_file));
+                            let enum_text = std::fs::read(&enum_file)
+                                .map(|bytes| decode_console_bytes(&bytes))
+                                .unwrap_or_default();
+                            let bootsequence_present =
+                                crate::text_parsing::bcd_output_has_bootsequence(&enum_text);
                             diag.push(format!(
-                                "CreateProcessW failed, last error: {}",
-                                GetLastError()
+                                "verify bootsequence: enum exit={enum_code}, present={bootsequence_present}"
                             ));
+                            if set_code == 0 && enum_code == 0 && !bootsequence_present {
+                                found_bcd = true;
+                            } else {
+                                diag.push("BCD restore verification failed".to_string());
+                            }
                         }
                     } else {
                         diag.push("BCD file NOT found at mount point".to_string());
                     }
                     // Write diagnostics while the ESP is still mounted (volume
                     // path also survives unmount, so this is belt and braces).
-                    diag.push("exit sequence done, rebooting".to_string());
+                    diag.push(format!("volume exit sequence done, success={found_bcd}"));
                     let write_failures = write_pe_exit_log(&diag, Some(&volume_path));
                     for f in &write_failures {
                         diag.push(f.clone());
                     }
-                    // Development: surface the whole diagnostic chain (volume
-                    // enum, mount, bcdedit exit code, log-write errors) before
-                    // rebooting, since PE log files are unreliable.
-                    show_diag_dialog(hwnd, &diag);
                     let mut unmount = [letter, ':' as u16, '\\' as u16, 0];
                     DeleteVolumeMountPointW(unmount.as_mut_ptr());
                     if found_bcd {
@@ -5913,7 +5875,16 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
     // Post-unmount best effort: volume path still works after unmount, plus
     // Q: and X: (PE RAM disk).
     let _ = write_pe_exit_log(&diag, esp_volume_path.as_deref());
-    pe_reboot(hwnd);
+    if found_bcd {
+        diag.push("exit sequence done, rebooting".to_string());
+        let _ = write_pe_exit_log(&diag, esp_volume_path.as_deref());
+        pe_reboot(hwnd);
+    } else {
+        diag.push("exit sequence failed, staying in PE".to_string());
+        let _ = write_pe_exit_log(&diag, esp_volume_path.as_deref());
+        show_diag_dialog(hwnd, &diag);
+        PE_EXITING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 /// PE 桌面"备份/还原/第二系统"对话框的全局状态。pe_dialog() 在创建窗口
 /// 前写入卷列表与默认值；对话框 WM_CREATE 读取建控件；OK 按钮把用户
@@ -6278,10 +6249,57 @@ unsafe fn pe_dialog(
     }
 }
 
+/// Convert captured console bytes through the OEM code page the child process
+/// actually wrote with. Only reached when the bytes are neither UTF-16 nor
+/// valid UTF-8, i.e. GBK/CP437 output from `diskpart`, `ipconfig`, `reg`,
+/// `manage-bde` or `systeminfo` on a localized WinRE image.
+fn sysinfo_oem_to_string(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    unsafe {
+        let count = MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr() as *const i8,
+            bytes.len() as i32,
+            null_mut(),
+            0,
+        );
+        if count <= 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; count as usize];
+        let written = MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr() as *const i8,
+            bytes.len() as i32,
+            buffer.as_mut_ptr(),
+            count,
+        );
+        if written <= 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buffer[..written as usize]))
+    }
+}
+
+/// Decode one probe's bytes: UTF-16LE, then strict UTF-8, then the console OEM
+/// code page. The final fallback keeps the old lossy behaviour so a probe never
+/// disappears just because the conversion failed.
+fn decode_console_bytes(bytes: &[u8]) -> String {
+    match crate::text_parsing::plan_console_bytes(bytes) {
+        crate::text_parsing::ConsoleBytes::Utf16 => decode_bcdedit_bytes(bytes),
+        crate::text_parsing::ConsoleBytes::Utf8(text) => text,
+        crate::text_parsing::ConsoleBytes::Oem => sysinfo_oem_to_string(bytes)
+            .unwrap_or_else(|| String::from_utf8_lossy(bytes).to_string()),
+    }
+}
+
 /// Read one probe's output file back as text, tolerating the mixed encodings
-/// the console tools emit (`reg`/`diskpart` are OEM/ANSI, `bcdedit` is often
-/// UTF-16LE) and collapsing a failed probe to an empty string so the caller
-/// renders the visible "unavailable" note instead of raw garbage.
+/// the console tools emit and collapsing a failed probe to an empty string so
+/// the caller renders the visible "unavailable" note instead of raw garbage.
 fn sysinfo_probe(command: &str, out_dir: &std::path::Path, name: &str) -> String {
     let out_file = out_dir.join(format!("sysinfo-{name}.txt"));
     let _ = std::fs::remove_file(&out_file);
@@ -6297,8 +6315,18 @@ fn sysinfo_probe(command: &str, out_dir: &std::path::Path, name: &str) -> String
     if code == u32::MAX && bytes.is_empty() {
         return String::new();
     }
-    let text = decode_bcdedit_bytes(&bytes);
+    let text = decode_console_bytes(&bytes);
     text.trim_end().to_string()
+}
+
+/// `reg query "<key>"` probe that keeps only the key's own value rows.
+///
+/// The bare listing also prints every subkey path; on
+/// `...NT\CurrentVersion` that is dozens of lines of noise which pushed the
+/// report past the edit control's text limit in the live WinRE run.
+fn sysinfo_reg_probe(key: &str, out_dir: &std::path::Path, name: &str) -> String {
+    let raw = sysinfo_probe(&crate::text_parsing::registry_query_all(key), out_dir, name);
+    crate::text_parsing::reg_key_values(&raw)
 }
 
 /// Collect every read-only source for the information window.
@@ -6309,16 +6337,12 @@ fn collect_system_info_sources(
     crate::text_parsing::SystemInfoSources {
         hostname: sysinfo_probe("hostname", out_dir, "hostname"),
         systeminfo: crate::text_parsing::systeminfo_cpu_memory(&systeminfo),
-        os_registry: sysinfo_probe(
-            r#"reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v ProductName /v DisplayVersion /v CurrentBuild /v UBR /v EditionID"#,
+        os_registry: sysinfo_reg_probe(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
             out_dir,
             "os",
         ),
-        bios_registry: sysinfo_probe(
-            r#"reg query "HKLM\HARDWARE\DESCRIPTION\System\BIOS" /v SystemManufacturer /v SystemProductName /v BIOSVendor /v BIOSVersion /v BIOSReleaseDate"#,
-            out_dir,
-            "bios",
-        ),
+        bios_registry: sysinfo_reg_probe(r"HKLM\HARDWARE\DESCRIPTION\System\BIOS", out_dir, "bios"),
         disks: sysinfo_probe("echo list disk | diskpart", out_dir, "disks"),
         volumes: sysinfo_probe("echo list volume | diskpart", out_dir, "volumes"),
         display_devices: sysinfo_probe(
@@ -6369,7 +6393,6 @@ fn sysinfo_environment_label() -> &'static str {
     }
     let recovery_markers = [
         r"X:\Windows\System32\Recovery\ReAgent.xml",
-        r"X:\Windows\System32\winpeshl.ini",
         r"X:\sources\recovery\RecEnv.exe",
         r"X:\Windows\System32\RecEnv.exe",
     ];
@@ -6453,52 +6476,85 @@ unsafe fn show_system_info_window(parent: Hwnd, report: &str) {
         return;
     }
 
+    // The text is deliberately NOT passed to CreateWindowExW: a multiline EDIT
+    // is created with the default 32,767 character limit, and the report
+    // routinely exceeds it, which truncated the 按钮边界 section in the live
+    // WinRE run. Create it empty, lift the limit, then fill it.
     let text_box = create_control(
         window,
         "EDIT",
-        report,
-        WS_TABSTOP | WS_BORDER | ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+        "",
+        WS_TABSTOP
+            | WS_BORDER
+            | ES_MULTILINE
+            | ES_AUTOVSCROLL
+            | ES_AUTOHSCROLL
+            | ES_READONLY
+            | WS_VSCROLL
+            | WS_HSCROLL,
         8,
         8,
         width - 32,
         height - 56,
         ID_PE_SYSINFO_TEXT,
     );
-    let font = CreateFontW(
-        -16,
-        0,
-        0,
-        0,
-        400,
-        0,
-        0,
-        0,
-        1,
-        0,
-        0,
-        0,
-        0,
-        wide("Consolas").as_ptr(),
-    );
-    if !text_box.is_null() && !font.is_null() {
-        SendMessageW(text_box, WM_SETFONT, font as WParam, 1);
+    // WinRE images do not necessarily ship Consolas, and the fallback lacks
+    // Chinese glyphs. The stock GUI font is localized with the image, so the
+    // report remains readable without assuming a font file exists.
+    let font = GetStockObject(DEFAULT_GUI_FONT);
+    if !text_box.is_null() {
+        if !font.is_null() {
+            SendMessageW(text_box, WM_SETFONT, font as WParam, 1);
+        }
+        // 0 means "as large as the control can hold" for multiline edits.
+        SendMessageW(text_box, EM_SETLIMITTEXT, 0, 0);
+        // set_text normalizes lone LF to CRLF; the EDIT control renders a bare
+        // LF as an invisible control character, which glued the report header
+        // into one unreadable row.
+        set_text(text_box, report);
     }
     ShowWindow(window, SW_SHOW);
+    if !text_box.is_null() {
+        // Focus immediately so PageDown/Ctrl+End/the wheel scroll the report
+        // without first having to Tab into the text box.
+        SetFocus(text_box);
+    }
 
-    // Modal by hand: disable the desktop and pump messages until the window is
-    // gone. `IsWindow` is the loop condition because WM_DESTROY posts a quit
-    // message that GetMessageW reports as 0 only after the queue drains.
+    // Modal by hand, following `pe_dialog`: poll with PeekMessageW and stop as
+    // soon as the window is gone. A blocking GetMessageW is wrong here twice
+    // over: it would hang once the last message is drained, and -- seen live
+    // in WinRE -- a quit message left in the queue when `IsWindow` short
+    // circuits the loop condition let the desktop's own loop consume it right
+    // after, which ended the recovery desktop and returned to Windows just
+    // because the user closed this read-only report with Alt+F4.
     EnableWindow(parent, 0);
     let mut message: Msg = std::mem::zeroed();
-    while IsWindow(window) != 0 && GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+    // One message per iteration: an empty queue only means "idle", so checking
+    // IsWindow after every drain is what ends the loop, and the WM_QUIT branch
+    // cannot re-feed itself.
+    loop {
+        if PeekMessageW(&mut message, null_mut(), 0, 0, PM_REMOVE) == 0 {
+            if IsWindow(window) == 0 {
+                break;
+            }
+            Sleep(20);
+            continue;
+        }
+        if message.message == WM_QUIT {
+            // The quit belongs to the desktop, not to this report window: hand
+            // it back so a real exit request still reaches the desktop loop,
+            // then stop being modal.
+            PostQuitMessage(0);
+            break;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
+        if IsWindow(window) == 0 {
+            break;
+        }
     }
     EnableWindow(parent, 1);
     SetForegroundWindow(parent);
-    if !font.is_null() {
-        DeleteObject(font);
-    }
 }
 
 unsafe extern "system" fn system_info_window_proc(
@@ -6523,10 +6579,9 @@ unsafe extern "system" fn system_info_window_proc(
             DestroyWindow(hwnd);
             0
         }
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            0
-        }
+        // No WM_DESTROY handler on purpose: this window shares its thread with
+        // the recovery desktop's message loop, so PostQuitMessage here would
+        // take the desktop down with it. See `show_system_info_window`.
         _ => DefWindowProcW(hwnd, message, w_param, l_param),
     }
 }

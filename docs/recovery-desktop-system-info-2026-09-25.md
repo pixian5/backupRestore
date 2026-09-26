@@ -60,21 +60,42 @@ BitLocker**。因此全部改用 PE/RE 一定自带的控制台工具：
 - `format_system_info_report`：分组稳定性 + 缺失兜底（2 个测试）
 - `systeminfo_cpu_memory`：中英文输出过滤、修补程序列表不泄漏、空输入（2 个测试）
 
-测试数 29 → 33（CLI），core 19 不变。
+测试数 29 → 34（CLI），core 19 不变。`registry_query_all()` 另有回归测试，
+固定使用 `reg query "<key>"` 的完整值集查询形式，避免 Windows `reg query`
+不支持同一命令多个 `/v` 参数导致操作系统/主板分组显示为不可用。
 
 `native_gui.rs` 里只留下必须调用 Win32/子进程的部分，由 Windows ARM64 交叉
 clippy 做类型检查——这也是这三个 Windows-only 文件唯一的编译验证手段。
 
-## 未验证项（重要）
+## 实机验收结果（v1.7.2/v1.7.3，2026-09-26）
 
-**本轮只完成离线验证与构建，尚未在 VM 内实机点击。** 原因：VM 当前停在临时替换的
-GUI WinRE 里供用户观察，按项目约束不得在用户确认前重启、部署或改动 VM 状态。
+已在 Windows 11 ARM64 VM 的真实 WinRE 恢复桌面完成验收：
 
-实机验收仍需：
+1. 「软硬件信息」按钮打开只读、可滚动窗口，九组信息均能显示内容或明确的
+   不可用提示；中文和换行正常，可滚动到底部。
+2. 末尾「按钮边界」可见，明确说明「返回 Windows」只处理 BCD/default/
+   bootsequence 并重启，不会还原原始 `Winre.wim`。
+3. `Alt+F4` 只关闭信息窗口，恢复桌面仍在。
+4. v1.7.3 修复「返回 Windows」诊断链：`set default`、`deletevalue bootsequence`
+   与 `enum {bootmgr}` 分开验证；真正成功才自动重启，失败才显示诊断框并留在
+   PE，不再显示误导性的可见 `bcdedit` 暂停控制台。
+5. 点击「返回 Windows」后自动回到 Windows 11，返回后核对 BCD `default` 和
+   `bootsequence` 已恢复到预期状态。
+6. 原始 WinRE 已恢复到注册路径 `C:\Recovery\WindowsRE\Winre.wim`，SHA-256：
+   `0E09F47DC74F90AC65FE8412372A77B322831DA6E4D06BA087FF88DA1E792AC0`；
+   `reagentc /info` 显示 `Windows RE 状态: Enabled`。
 
-1. 用户确认观察结束。
-2. 按 `AGENTS.md` 先创建并核验新快照。
-3. 部署 v1.7.0 载荷并核对哈希。
-4. 进入恢复桌面点击「软硬件信息」，确认七宫格布局、窗口可滚动、九个分组都有内容
-   或明确的不可用提示、底栏显示 `WinRE`。
-5. 恢复原始 WinRE 并核验 SHA-256 `0E09F47D…E792AC0`。
+测试计数更新为 CLI 39、Core 19。**仍未验证完整备份/还原流程**；本节验收范围
+只覆盖软硬件信息窗口、返回 Windows、v1.7.3 诊断修复和原始 WinRE 恢复链路。
+
+## 2026-09-25 复核补记
+
+在 Windows 11 ARM64 VM 的 `cmd.exe` 中实测旧命令：
+
+- `reg query ... /v ProductName /v DisplayVersion ...` 返回 `Invalid syntax`；
+- 单值 `reg query ... /v ProductName` 正常。
+
+因此已改为按键查询完整值集，并移除 `winpeshl.ini` 这一过于宽泛的 WinRE 标记；
+普通 WinPE 也可能包含该文件，WinRE 判定保留 `ReAgent.xml` / `RecEnv.exe`。
+“返回 Windows”仍只处理 BCD/default/bootsequence 和重启，不负责还原原始
+`Winre.wim`；本次未修改该恢复边界。

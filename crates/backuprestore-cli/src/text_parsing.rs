@@ -151,28 +151,127 @@ pub(crate) fn quote_argument(value: &str) -> String {
     }
 }
 
-/// Decode a bcdedit output file's bytes.
+/// Does this byte string look like UTF-16LE text?
 ///
 /// bcdedit writes UTF-16LE on Chinese/Japanese systems, sometimes without a
-/// BOM, so detect the interleaved-NUL pattern as well as the BOM.
-pub(crate) fn decode_bcdedit_bytes(bytes: &[u8]) -> String {
+/// BOM, so the interleaved-NUL pattern is detected as well as the BOM.
+pub(crate) fn looks_like_utf16le(bytes: &[u8]) -> bool {
     let nul_count = bytes.iter().filter(|&&b| b == 0).count();
-    if bytes.starts_with(&[0xFF, 0xFE]) || (bytes.len() >= 2 && nul_count > bytes.len() / 4) {
-        let body = if bytes.starts_with(&[0xFF, 0xFE]) {
-            &bytes[2..]
-        } else {
-            bytes
-        };
-        let units: Vec<u16> = body
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        String::from_utf16_lossy(&units)
+    bytes.starts_with(&[0xFF, 0xFE]) || (bytes.len() >= 2 && nul_count > bytes.len() / 4)
+}
+
+fn utf16le_to_string(bytes: &[u8]) -> String {
+    let body = if bytes.starts_with(&[0xFF, 0xFE]) {
+        &bytes[2..]
+    } else {
+        bytes
+    };
+    let units: Vec<u16> = body
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// Decode a bcdedit output file's bytes.
+pub(crate) fn decode_bcdedit_bytes(bytes: &[u8]) -> String {
+    if looks_like_utf16le(bytes) {
+        utf16le_to_string(bytes)
     } else {
         String::from_utf8_lossy(bytes).to_string()
     }
+}
+
+/// Which character encoding a PE console tool's captured output actually uses.
+///
+/// `systeminfo`, `diskpart`, `ipconfig`, `reagentc` and `manage-bde` all write
+/// in the **console OEM code page** (CP936/GBK on zh-CN, CP437 on en-US), while
+/// `bcdedit` writes UTF-16LE and our own JSON payloads are UTF-8. Sniffing is
+/// unavoidable; the live WinRE acceptance run proved that decoding GBK bytes as
+/// UTF-8 turns every Chinese label into replacement characters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConsoleBytes {
+    /// UTF-16LE, with or without a BOM.
+    Utf16,
+    /// Strictly valid UTF-8 (already decoded here so callers cannot guess wrong).
+    Utf8(String),
+    /// Neither: must be converted from the console's OEM code page.
+    Oem,
+}
+
+/// Classify console output bytes. UTF-8 is tried **before** the OEM branch so a
+/// genuinely UTF-8 source is never re-decoded through GBK, and UTF-16 is tried
+/// first because its NUL pattern is never valid UTF-8 text of interest.
+pub(crate) fn plan_console_bytes(bytes: &[u8]) -> ConsoleBytes {
+    if looks_like_utf16le(bytes) {
+        return ConsoleBytes::Utf16;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => ConsoleBytes::Utf8(text.to_string()),
+        Err(_) => ConsoleBytes::Oem,
+    }
+}
+
+/// Win32 multiline `EDIT` controls only break lines on `\r\n`. A lone `\n` is
+/// stored as an invisible control character, which is how the information
+/// window's report header collapsed into a single unreadable row.
+pub(crate) fn normalize_edit_newlines(value: &str) -> String {
+    value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n")
+}
+
+/// Whether a `bcdedit /enum {bootmgr}` listing still contains `bootsequence`.
+///
+/// The delete command returns non-zero when the value was already absent, so
+/// its exit code alone cannot distinguish a harmless no-op from a failed
+/// cleanup. Re-enumerating the entry and checking the field is locale-neutral
+/// for the two project-supported images: English prints `bootsequence`, while
+/// zh-CN prints `启动序列`.
+pub(crate) fn bcd_output_has_bootsequence(text: &str) -> bool {
+    text.lines().any(|line| {
+        let key = line.trim_start();
+        let lower = key.to_ascii_lowercase();
+        lower.starts_with("bootsequence") || key.starts_with("启动序列")
+    })
+}
+
+/// Keep only the value rows of a `reg query "<key>"` listing.
+///
+/// Without `/v`, `reg` prints the key's values and then **every subkey path**.
+/// `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` has dozens of subkeys,
+/// which turned the 操作系统 group into kilobytes of paths and pushed the useful
+/// tail of the report past the edit control's text limit. Value rows are
+/// indented, the header and the subkey list are not. When nothing is indented
+/// the original text is returned unchanged so real errors stay visible.
+pub(crate) fn reg_key_values(text: &str) -> String {
+    let mut values: Vec<String> = Vec::new();
+    let mut seen_header = false;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        if trimmed.starts_with(' ') || trimmed.starts_with('\t') {
+            if seen_header {
+                values.push(trimmed.trim_start().to_string());
+            }
+            continue;
+        }
+        if !seen_header {
+            seen_header = true;
+            continue;
+        }
+        // First unindented line after the header: the subkey list starts here.
+        break;
+    }
+    if values.is_empty() {
+        return text.trim().to_string();
+    }
+    values.join("\n")
 }
 
 /// Return the first `{...}` GUID in `text` WITHOUT its braces; callers wrap
@@ -339,6 +438,13 @@ pub(crate) struct SystemInfoSources {
     pub(crate) secure_boot: String,
 }
 
+/// `reg query` accepts only one `/v ValueName` per invocation. Querying the
+/// key without `/v` returns the complete value set and avoids the invalid
+/// syntax that would otherwise turn the OS/BIOS sections into fallback text.
+pub(crate) fn registry_query_all(key: &str) -> String {
+    format!("reg query \"{key}\"")
+}
+
 const SYSTEM_INFO_UNAVAILABLE: &str = "未检测到/不可用";
 
 fn system_info_value(value: &str) -> &str {
@@ -477,6 +583,103 @@ mod tests {
         ] {
             assert!(report.contains(expected), "missing output: {expected}");
         }
+    }
+
+    #[test]
+    fn registry_query_all_uses_the_supported_single_command_form() {
+        let command = registry_query_all(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+        assert_eq!(
+            command,
+            r#"reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion""#
+        );
+        assert!(!command.contains(" /v "));
+    }
+
+    #[test]
+    fn console_bytes_are_sniffed_before_any_lossy_guess() {
+        // GBK "版本" is not valid UTF-8: it must go to the OEM branch instead of
+        // being replaced character by character.
+        let gbk: &[u8] = &[0xB0, 0xE6, 0xB1, 0xBE];
+        assert_eq!(plan_console_bytes(gbk), ConsoleBytes::Oem);
+        // Genuine UTF-8 must never be re-decoded through GBK.
+        assert_eq!(
+            plan_console_bytes("处理器: ARM64".as_bytes()),
+            ConsoleBytes::Utf8("处理器: ARM64".to_string())
+        );
+        // Pure ASCII is valid UTF-8 as well, so the common case stays lossless.
+        assert_eq!(
+            plan_console_bytes(b"MINWINPC\n"),
+            ConsoleBytes::Utf8("MINWINPC\n".to_string())
+        );
+        // UTF-16LE without a BOM (bcdedit's usual shape).
+        let utf16: Vec<u8> = "HKLM"
+            .encode_utf16()
+            .flat_map(|c| c.to_le_bytes())
+            .collect();
+        assert_eq!(plan_console_bytes(&utf16), ConsoleBytes::Utf16);
+        assert_eq!(
+            decode_bcdedit_bytes(&utf16),
+            String::from_utf16_lossy(&[0x0048u16, 0x004b, 0x004c, 0x004d])
+        );
+    }
+
+    #[test]
+    fn edit_text_normalizes_every_line_ending_to_crlf() {
+        assert_eq!(normalize_edit_newlines("a\nb\r\nc\rd"), "a\r\nb\r\nc\r\nd");
+        // Already CRLF must not become CRCRLF.
+        assert_eq!(normalize_edit_newlines("a\r\nb"), "a\r\nb");
+        assert_eq!(normalize_edit_newlines(""), "");
+        assert!(
+            !normalize_edit_newlines(
+                &["BackupRestore 软硬件信息", "【概览】", "计算机名：MINWINPC"].join("\n")
+            )
+            .contains("\n\u{0}")
+        );
+    }
+
+    #[test]
+    fn bootsequence_detection_handles_english_chinese_and_absent_values() {
+        assert!(bcd_output_has_bootsequence(
+            "Windows Boot Manager\nidentifier {bootmgr}\nbootsequence {12345678-1234-1234-1234-123456789abc}"
+        ));
+        assert!(bcd_output_has_bootsequence(
+            "Windows 启动管理器\n标识符 {bootmgr}\n启动序列 {12345678-1234-1234-1234-123456789abc}"
+        ));
+        assert!(!bcd_output_has_bootsequence(
+            "Windows Boot Manager\nidentifier {bootmgr}\ndefault {current}"
+        ));
+        assert!(!bcd_output_has_bootsequence(""));
+    }
+
+    #[test]
+    fn reg_key_values_drops_the_subkey_listing() {
+        let listing = [
+            r#"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion"#,
+            r#"    SystemRoot    REG_SZ    X:\windows"#,
+            r#"    ProductName    REG_SZ    Windows 11 Pro"#,
+            "",
+            r#"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Accessibility"#,
+            r#"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AEDebug"#,
+        ]
+        .join("\n");
+        let values = reg_key_values(&listing);
+        assert_eq!(
+            values,
+            [
+                "SystemRoot    REG_SZ    X:\\windows",
+                "ProductName    REG_SZ    Windows 11 Pro"
+            ]
+            .join("\n")
+        );
+        assert!(!values.contains("Accessibility"));
+        assert!(!values.contains("AEDebug"));
+    }
+
+    #[test]
+    fn reg_key_values_keeps_error_text_visible() {
+        let error = "ERROR: The system was unable to find the specified registry key.";
+        assert_eq!(reg_key_values(error), error);
+        assert_eq!(reg_key_values(""), "");
     }
 
     #[test]
