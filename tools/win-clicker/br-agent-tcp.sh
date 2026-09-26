@@ -50,9 +50,16 @@ get_ip() {
 }
 
 start_agent() {
-  "$PRL" exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass \
-    -File 'X:\tools\win-clicker\br-gui-exec.ps1' -Script br-agent-tcp.ps1 \
-    -B64 "$(printf -- '-Port %s' "$PORT" | base64)" -Log agtcp.txt 2>&1 | LC_ALL=C tr -d '\r'
+  # 走可靠链路：br-s1.sh 会先把宿主最新的 br-gui-exec.ps1 经 UNC 刷进 VM，再由
+  # run-in-session(SYSTEM->Session1) + ShellExecute runas 提权启动。
+  #
+  # 不要再改回下面这种写法：
+  #   "$PRL" exec "$VM" --current-user powershell -File 'X:\tools\win-clicker\br-gui-exec.ps1' ...
+  # 实测（2026-09-27）它会静默失败：X: 盘上的 br-gui-exec.ps1 是旧副本（$src 为 null，
+  # 实测报 "无法绑定参数 LiteralPath 因为该参数是空值"），且 --current-user 在本
+  # Parallels 版本上持续不可用。结果是脚本什么都没部署，却启动了 9124 上的旧 agent，
+  # 新命令（如 exec）报 "ERR unknown op"。
+  "$HERE/br-s1.sh" br-launch-agent.ps1
 }
 
 wait_port() {
@@ -76,6 +83,9 @@ try:
     s = socket.create_connection((ip, port), timeout=15)
 except Exception as e:
     print("CONNECT_FAILED %s:%s %s" % (ip, port, e)); sys.exit(1)
+# 连接建立后放宽读超时：DISM 捕获/挂载这类命令可能跑几十秒到几分钟，
+# 15s 的默认值会把"还在跑"误判成失败。
+s.settimeout(900)
 f = s.makefile('rwb')
 f.readline()  # BRAGENT READY
 for c in cmds:
@@ -126,6 +136,13 @@ case "${1:-}" in
     py_send "$ip" "" "${arr[@]}" ;;
   shot)
     out="${2:?缺输出路径}"; ip=$(get_ip); py_send "$ip" "$out" shot ;;
+  exec)
+    # exec <本地 .ps1>  —— 把脚本 base64(UTF-8) 后交给 VM 内已提权的 agent 执行。
+    # 用途：prl_tools_service 停掉后 prlctl exec 通道失效，改用这条 TCP 通道做
+    # 校验/改盘/启 GUI 等操作。输出行带 O| 前缀。
+    f="${2:?缺脚本路径}"; ip=$(get_ip)
+    b64=$(base64 < "$f" | tr -d '\n')
+    py_send "$ip" "" "exec $b64" | sed 's/^O|//' ;;
   screen|cursor|tick|windows)
     ip=$(get_ip); py_send "$ip" "" "$1" ;;
   click|dbl|move|key|chord|text)
@@ -138,6 +155,7 @@ case "${1:-}" in
   key <vk hex>  | chord <mod,key> | text <字符串>
   windows | cursor | tick | screen
   shot <输出路径> | batch <命令文件>
+  exec <本地.ps1>     （经 TCP 通道在 VM 内提权执行脚本，不依赖 prlctl exec）
 EOF
     exit 1 ;;
 esac

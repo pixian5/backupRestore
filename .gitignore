@@ -112,3 +112,7 @@ tools/win-clicker/_agent/
 tools/win-clicker/_agent-tcp/
 # br-s1.sh 的 GBK 转码暂存目录（每次运行重新生成）
 tools/win-clicker/_s1/
+# 一次性实验工具：临时停/恢复 Parallels Tools Service 的守望任务。
+# v1.7.5 起 \Mac disk 已由产品排除表覆盖，还原不再需要停服务，这批脚本已无用途。
+tools/win-clicker/br-watchdog-install.ps1
+tools/win-clicker/br-watchdog-prl-tools.ps1

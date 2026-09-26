@@ -135,6 +135,25 @@ function Invoke-Line($ln) {
             'cursor' { $c = [BrAgt]::Cur(); $out += "cursor=$c" }
             'tick'   { $t = [BrAgt]::LastTick(); $out += "lastInputTick=$t" }
             'screen' { $out += "screen=" + [BrAgt]::GetSystemMetrics(0) + "x" + [BrAgt]::GetSystemMetrics(1) }
+            'exec'   {
+                # exec <base64(utf8) PowerShell>
+                # Runs arbitrary PowerShell in THIS already-elevated session and returns
+                # stdout/stderr. Needed because `prlctl exec` (the Parallels Tools channel)
+                # goes away when prl_tools_service is stopped, while this agent does not.
+                # Output lines are prefixed with O| so they can never collide with END.
+                # Keep callers' scripts SHORT: the host-side socket has a read timeout.
+                $code = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($rest))
+                $sb = [ScriptBlock]::Create($code)
+                $res = @(& $sb 2>&1)
+                $n = 0
+                foreach ($r in $res) {
+                    foreach ($sub in ([string]$r -split "`r?`n")) {
+                        if ($n -lt 500) { $out += ("O|" + $sub) }
+                        $n++
+                    }
+                }
+                $out += ("O|__EXEC_LINES=" + $n + "__")
+            }
             'shot'   {
                 if (-not $script:guiLoaded) {
                     Add-Type -AssemblyName System.Drawing

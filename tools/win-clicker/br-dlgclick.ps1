@@ -49,6 +49,18 @@ if (-not $p) { W "NO_PROC" } else {
       W ("  clicking button id=" + $Id + " text=[" + [BrDC]::Text($b) + "]")
       [void][BrDC]::SendMessageW($b, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
       Start-Sleep -Milliseconds 600
+      # BM_CLICK 对**其它进程**的 MessageBox 按钮不可靠：实测「破坏性确认」被点掉了，
+      # 而紧跟着弹出的「备份档案缺失」原样留着（脚本仍报 clicking，属于假成功）。
+      # 真正的判据是窗口是否消失；没消失就改用对话框级别的 WM_COMMAND/BN_CLICKED
+      # （wParam = id | BN_CLICKED<<16，BN_CLICKED=0），MessageBox 的对话框过程据此
+      # 调用 EndDialog，这是跨进程关闭模态框的可靠路径。
+      if ([BrDC]::IsWindowVisible($h)) {
+        W ("  still visible after BM_CLICK; sending WM_COMMAND id=" + $Id + " to the dialog")
+        $wp = [IntPtr]([int64]$Id -bor (0 -shl 16))
+        [void][BrDC]::SendMessageW($h, 0x0111, $wp, $b)   # WM_COMMAND / BN_CLICKED
+        Start-Sleep -Milliseconds 600
+        W ("  visible after WM_COMMAND=" + [BrDC]::IsWindowVisible($h))
+      }
     }
   }
   $left = [BrDC]::Dlgs([uint32]$p.Id, "")

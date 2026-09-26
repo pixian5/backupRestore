@@ -4775,6 +4775,23 @@ static ONLINE_RESULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 /// 成功后按保留策略删除最旧索引。还原：dism /Apply-Image。
 fn execute_online(params: &OnlineOpParams) -> String {
     let out = std::env::temp_dir().join("br-online-op.txt");
+    // 捕获必须带排除配置：漏掉它会把 Parallels 的卷根占位符 `\Mac disk` 装进镜像，
+    // 还原时 `/Apply-Image` 重建这个被独占的文件，在 72% 报 0x80070020。
+    // 与 CLI/PE 备份共用 core 的实现，避免再有入口漏接 /ConfigFile。
+    // 路径拼进 cmd 字符串，可能含空格，必须加引号。
+    let mut exclude_arg = String::new();
+    let mut exclusion_warning = String::new();
+    if params.operation == "backup" {
+        let source_root = format!("{}:\\", params.source_drive);
+        match backuprestore_core::write_capture_exclusion_config(Path::new(&source_root)) {
+            Ok(config_path) => exclude_arg = format!(" /ConfigFile:\"{}\"", config_path.display()),
+            Err(error) => {
+                exclusion_warning = format!(
+                    "[WARN] 排除配置生成失败，本次捕获不含排除规则（可能撞上被独占的卷根占位符）: {error}\n"
+                );
+            }
+        }
+    }
     let command = if params.operation == "backup" {
         let name = if params.image_name.is_empty() {
             "Windows Backup".to_string()
@@ -4786,13 +4803,13 @@ fn execute_online(params: &OnlineOpParams) -> String {
         // 否则 DISM 把带空格的名称拆成两个参数报 87（参数错误）。
         if std::path::Path::new(&params.image_path).is_file() {
             format!(
-                "dism.exe /Append-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\"",
-                params.image_path, params.source_drive, name
+                "dism.exe /Append-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\"{}",
+                params.image_path, params.source_drive, name, exclude_arg
             )
         } else {
             format!(
-                "dism.exe /Capture-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\" /Compress:{}",
-                params.image_path, params.source_drive, name, params.compress
+                "dism.exe /Capture-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\" /Compress:{}{}",
+                params.image_path, params.source_drive, name, params.compress, exclude_arg
             )
         }
     } else {
@@ -4802,7 +4819,8 @@ fn execute_online(params: &OnlineOpParams) -> String {
         )
     };
     let code = run_cmd_to_file_timeout(&command, Some(&out), 600000);
-    let mut summary = format!("[ONLINE {}] exit={}\n", params.operation, code);
+    let mut summary = exclusion_warning;
+    summary.push_str(&format!("[ONLINE {}] exit={}\n", params.operation, code));
     if let Ok(text) = std::fs::read_to_string(&out) {
         summary.push_str(&text);
     } else {
@@ -7313,15 +7331,15 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             // 备份进度 GUI：后台窗口线程读 DISM 输出文件实时刷新，
             // 不弹 cmd 黑窗、不阻塞界面（见 recovery_progress.rs）。
             let progress = crate::recovery_progress::spawn(PathBuf::from(out));
-            // 生成 DISM 排除配置（临时目录/回收站/浏览器缓存），写到 PE 的
-            // X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
+            // 生成 DISM 排除配置（Parallels 卷根占位符/临时目录/回收站/浏览器缓存），
+            // 写到 PE 的 X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
+            // 路径拼进 cmd 字符串，可能含空格，必须加引号。
             let mut exclude_arg = String::new();
-            let config_path = std::env::temp_dir().join("BackupRestore-exclusions.ini");
             let source_root = format!("{d}:\\");
-            if let Ok(text) = backuprestore_core::build_capture_exclusions(Path::new(&source_root))
-                && std::fs::write(&config_path, text).is_ok()
+            if let Ok(config_path) =
+                backuprestore_core::write_capture_exclusion_config(Path::new(&source_root))
             {
-                exclude_arg = format!(" /ConfigFile:{}", config_path.display());
+                exclude_arg = format!(" /ConfigFile:\"{}\"", config_path.display());
             }
             // PE 的 dism 对长参数敏感，用最小参数集（Name 值不能含连字符）
             run_cmd_to_file_timeout(

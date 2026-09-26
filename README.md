@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.4**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.7.5**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 ---
 

@@ -1883,12 +1883,12 @@ fn recover_windows(
                 .ok()
                 .flatten();
 
-            // 生成 DISM 排除配置（回收站/临时目录/更新缓存/各用户浏览器缓存），
-            // WinRE 的 TEMP 位于 X: RAM 盘，配置文件不会落在捕获卷内。
-            // 排除项会显著缩小 WIM 体积，且全部为 DISM 规范内的根路径写法。
-            let exclude_config = backuprestore_core::build_capture_exclusions(&source_path)?;
-            let exclude_config_path = env::temp_dir().join("BackupRestore-exclusions.ini");
-            fs::write(&exclude_config_path, exclude_config)?;
+            // 生成 DISM 排除配置（Parallels 卷根占位符/回收站/临时目录/更新缓存/
+            // 各用户浏览器缓存），WinRE 的 TEMP 位于 X: RAM 盘，配置文件不会落在
+            // 捕获卷内。排除项会显著缩小 WIM 体积，且全部为 DISM 规范内的根路径写法。
+            // 与 GUI 在线备份、PE 备份共用 core 的实现，避免某条路径漏接 /ConfigFile。
+            let exclude_config_path =
+                backuprestore_core::write_capture_exclusion_config(&source_path)?;
             let exclude_arg = format!("/ConfigFile:{}", exclude_config_path.display());
 
             // A power loss can leave a partial WIM behind.  For the first

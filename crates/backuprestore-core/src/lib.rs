@@ -7,6 +7,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -1143,6 +1144,14 @@ pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError>
     // 注意：hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information
     // 由 DISM 默认排除，无需在此重复。
     let mut lines = vec![
+        // Parallels 在每个卷根创建同名占位文件并**始终独占持有**它。它不属于
+        // 用户数据，却会让 `dism /Apply-Image` 在重建该文件时以
+        // ERROR_SHARING_VIOLATION(0x80070020) 失败（实测 v1.7.4 在 T: 还原
+        // 72% 处中断）。DISM 在打开文件之前就按排除表跳过，因此排掉它即可
+        // 免除"还原前必须停掉 Parallels Tools Service"这一前置条件。
+        // 实测排除匹配不区分大小写（VERDICT=CASE_INSENSITIVE）。
+        // 非 Parallels 环境不存在该条目，排除它无副作用。
+        "\\Mac disk".to_string(),
         "\\$Recycle.Bin".to_string(),
         "\\$WINDOWS.~BT".to_string(),
         "\\$WINDOWS.~WS".to_string(),
@@ -1244,6 +1253,21 @@ pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError>
         text.push_str("\r\n");
     }
     Ok(text)
+}
+
+/// 生成 DISM 排除配置并落盘，返回可传给 `/ConfigFile:` 的路径。
+///
+/// **三个捕获入口必须共用本函数**：CLI 备份、GUI 在线备份、PE 备份。
+/// 历史上 GUI 在线备份自己拼 `/Capture-Image`，漏掉了 `/ConfigFile`，
+/// 于是"看起来有排除功能、实际一条都没生效"——v1.7.4 的 T: 备份因此把
+/// Parallels 的 `\Mac disk` 装进镜像，还原时撞 0x80070020。
+///
+/// `source_root` 是待捕获卷的根（如 `T:\`）。
+pub fn write_capture_exclusion_config(source_root: &Path) -> Result<PathBuf, TaskError> {
+    let text = build_capture_exclusions(source_root)?;
+    let path = env::temp_dir().join("BackupRestore-exclusions.ini");
+    fs::write(&path, text)?;
+    Ok(path)
 }
 
 /// 列出 `root` 下的一级子目录名（失败时返回空），供枚举浏览器配置目录使用。
@@ -1743,6 +1767,7 @@ mod tests {
 
         // 固定根级排除项
         for fixed in [
+            "\\Mac disk",
             "\\$Recycle.Bin",
             "\\$WINDOWS.~BT",
             "\\Windows.old",
@@ -1794,8 +1819,32 @@ mod tests {
         let root = std::env::temp_dir().join(format!("backuprestore-excl2-{suffix}"));
         let ini = build_capture_exclusions(&root).unwrap();
         assert!(ini.starts_with("[ExclusionList]\r\n"));
+        assert!(ini.contains("\r\n\\Mac disk\r\n"));
         assert!(ini.contains("\r\n\\$Recycle.Bin\r\n"));
         assert!(!ini.contains("\\Users\\"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 三个捕获入口都靠这个函数拿到 `/ConfigFile:` 路径；历史上 GUI 在线备份
+    /// 自己拼参数、漏掉了它，导致 `\Mac disk` 进了镜像、还原撞 0x80070020。
+    #[test]
+    fn write_capture_exclusion_config_lands_file_with_parallels_placeholder() {
+        let root = std::env::temp_dir().join(format!(
+            "backuprestore-excl3-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = write_capture_exclusion_config(&root).unwrap();
+        assert_eq!(path.file_name().unwrap(), "BackupRestore-exclusions.ini");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\r\n\\Mac disk\r\n"),
+            "配置应排除卷根占位符: {text}"
+        );
+        let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(root);
     }
 }

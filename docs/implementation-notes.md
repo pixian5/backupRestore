@@ -1,9 +1,27 @@
 # V1 实现说明
 
+## 2026-09-27 `v1.7.5` 卷根占位符 `\Mac disk` 纳入默认排除（在线备份补上 `/ConfigFile`）
+
+- **缺陷**：v1.7.4 的 GUI **在线备份**路径（`crates/backuprestore-cli/src/native_gui.rs` 的 `execute_online`）自己拼 `dism /Capture-Image`，**完全没传 `/ConfigFile`**，而 CLI 备份与 PE 备份两条路径都有。于是"看起来有排除功能、实际一条都没生效"：Parallels 在每个卷根创建的 `Mac disk` 占位文件（0 字节、由 Parallels Tools 驱动**始终独占持有**）被装进 WIM；`/Apply-Image` 重建该文件时以 `ERROR_SHARING_VIOLATION(0x80070020)` 在 72% 中断。
+- **根因定位**：`Mac disk` 出现在 E:/H:/P:/T: 等**所有固定卷根**（C: 根清单里没有），服务停止时消失、恢复时重建并重新上锁。此前 v1.2.x～v1.3.x 各次验收都是在**比对阶段容忍/单列**这个条目（见下方 2026-08-27 各条 `Mac disk` 记录），属于"绕开"而非"解决"；本次改为在产品层消除。
+- **修复**：
+  - `build_capture_exclusions` 的固定排除表**首项**加入 `\Mac disk`，并新增共享 helper `write_capture_exclusion_config(source_root)` 负责把配置落盘到 `env::temp_dir()`。
+  - **三个捕获入口（CLI 备份/追加、GUI 在线备份、PE 备份）全部收敛到该 helper**，杜绝再有入口漏接 `/ConfigFile`。
+  - 版本 `1.7.4 → 1.7.5`。
+- **实测结论（本节的关键新增事实）**：
+  - `dism /Capture-Image` **没有** `/Exclude` 开关，只能走 `/ConfigFile:<ini>` 的 `[ExclusionList]`；该段在现代 DISM（10.0.26100.9549）上仍然生效。
+  - `[ExclusionList]` **对正被其它进程独占的文件同样生效**——DISM 在**打开文件之前**就按排除表跳过。实测条件 `SRC Mac disk exists=True / locked_at_capture=True`、服务 `Running`，捕获成功且镜像内 `MacDisk_present=False`。
+  - 排除匹配**大小写不敏感**（实测 `\KEEP-MARKER.TXT` 成功排除 `keep-marker.txt`，`VERDICT=CASE_INSENSITIVE`），所以 `\$Recycle.Bin` 能正确排除 `$RECYCLE.BIN`。
+  - 因此**还原不再需要"先停掉 Parallels Tools Service"这一前置条件**：v1.7.5 在服务保持 `Running`、`T:\Mac disk` 仍被独占的情况下完成 T: 端到端备份+还原。
+- **v1.7.5 实机验收（T: 小盘，仅 `/Compress:none`）**：
+  - GUI 在线备份 `op=backup source=T target=C`，`exit=0`，产物 `test-none.wim` 527,855,975 字节（SHA-256 `00381C12…635A`）；只读挂载后根目录 `ABSENT Mac disk`，而 `keep-marker.txt`/`petest`/`data1..4.bin` 均在，证明排除是**精确**的而非误伤。
+  - 制造损伤（改写 marker、删 `data3.bin`、重命名 `data4.bin`、新增 `after.txt`）后，GUI 走 `restore-existing`→target T:→Index 1，在**服务 Running** 下 `exit=0`；`data3.bin` 恢复、`data4.bin` 恢复，marker 回到基线 `632DBB2E…72DE`，`data1/data2/keep-marker.txt/petest` 哈希不变。（DISM `/Apply-Image` 不删除镜像外文件，`after.txt` 与 `data4.bin.renamed` 保留属预期。）
+  - 证据：`.test-artifacts/v175-ui-t-backup-restore/2026-09-27/evidence/`（`t-before.txt`、`t-damaged.txt`、`t-after-restore.txt`、`wim-mount-none.txt`、`gui-log.txt`、`br-online-op-last.txt`）。
+
 ## 2026-09-13 `v1.4.8` DISM 备份排除配置
 
 - 备份捕获增加 `/ConfigFile` 排除（WinRE 主流程与 PE 直连备份两条路径）：
-  - 固定排除：`\$Recycle.Bin`、`\$WINDOWS.~BT`、`\$WINDOWS.~WS`、`\Windows.old`、`\Temp`、`\Windows\Temp`、`\Windows\SoftwareDistribution\Download`、`\Windows\Prefetch`、`\Windows\Logs`、`\Windows\Panther`、`\ProgramData\Microsoft\Windows\WER`。
+  - 固定排除：`\$Recycle.Bin`、`\$WINDOWS.~BT`、`\$WINDOWS.~WS`、`\Windows.old`、`\Temp`、`\Windows\Temp`、`\Windows\SoftwareDistribution\Download`、`\Windows\Prefetch`、`\Windows\Logs`、`\Windows\Panther`、`\ProgramData\Microsoft\Windows\WER`。（`\Mac disk` 于 v1.7.5 补入，见文首。）
   - 按真实用户枚举（逐用户字面路径）：`\Users\<p>\AppData\Local\Temp`、Chrome/Edge/Brave/Vivaldi 的 `User Data\<配置>\{Cache,Code Cache,GPUCache,Service Worker\CacheStorage,Service Worker\ScriptCache}`、Firefox `Profiles\<配置>\{cache2,cache2\entries,OfflineCache,startupCache}`、Opera Stable 缓存、INetCache。
   - `hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information` 由 DISM 默认排除，未重复列出。
 - 关键技术边界（DISM 配置文档约束）：排除表是「根路径锚定」写法；通配符只允许出现在**不以反斜杠开头的路径的最后一段**，因此 `\Users\*\AppData\...` 中间通配符不合法。浏览器缓存目录必须在备份时枚举真实用户目录生成无通配符的字面路径（`crates/backuprestore-core` 的 `build_capture_exclusions`）。

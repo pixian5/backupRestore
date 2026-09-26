@@ -110,6 +110,32 @@ GUI 还原受环境阻塞（见下节），因此另用 `dism /Mount-Image /Read
 stop 该服务并在还原完成后 start），或改用不含该占位文件的卷作为还原目标。两种做法都会改变
 VM 的当前状态，故本轮未擅自执行。
 
+> 本节结论已被 2026-09-27 的 v1.7.5 修复取代：**不再需要停服务**，直接从产品层排除该占位
+> 文件即可。详见下方「v1.7.5 解阻塞与闭环完成」。
+
+## v1.7.5 解阻塞与闭环完成（2026-09-27）
+
+用户裁定「把排除环境噪声做成产品功能」后，v1.7.5 完成修复与实机闭环，上一节的解除阻塞授权
+需求与 72% 失败一并作废。
+
+- **产品改动**：`\Mac disk` 加入固定排除表首项；新增共享 helper
+  `write_capture_exclusion_config`，把 CLI 备份/追加、GUI 在线备份（`execute_online`，原缺陷点）、
+  PE 备份三条路径全部收敛到同一份 `/ConfigFile`。`VERSION` 与两个 `Cargo.toml` 升为 `1.7.5`，
+  产物 1,689,088 字节 SHA-256 `f8b77d0e…e184`，窗口标题实测 `BackupRestore - Rust GUI v1.7.5`。
+- **关键实测事实**：`[ExclusionList]` **对被独占文件同样生效**（DISM 在打开文件之前就跳过），
+  且匹配**大小写不敏感**。所以排除即等价于解除了该锁对还原的阻塞——不必 stop 服务。
+- **本轮只跑 `/Compress:none`**（按用户指令，不再同时跑 fast）。
+  - 备份：`op=backup source=T target=C`，`exit=0`，`test-none.wim` 527,855,975 字节，
+    只读挂载后根目录 `ABSENT Mac disk`，`keep-marker.txt`/`petest`/`data1..4.bin` 齐备。
+  - 还原：损伤 T: 后走 `restore-existing`→target T:→Index 1，**服务保持 `Running`、
+    `T:\Mac disk` 仍被独占**（`locked=True`）的情况下 `exit=0`；`data3.bin`、`data4.bin` 恢复，
+    marker 回到基线 `632DBB2E…72DE`。**这是本节最关键的断言：不停服也能还原成功。**
+  - 覆盖式语义（见「还原语义：已决策」）继续成立：`after.txt`、`data4.bin.renamed` 残留属预期。
+- 证据：`.test-artifacts/v175-ui-t-backup-restore/2026-09-27/evidence/`。
+
+> 上文中“`VERSION` 保持 1.7.4”仅描述当时「还原语义决策本身不改代码」这一事实；v1.7.5 的版本
+> 提升来自随后的排除功能修复，两者不矛盾。
+
 ## 启动入口核验（2026-09-27，只读）
 
 只读审计（`evidence/entry-audit.txt`）。活动入口全部为 v1.7.4 且哈希一致：
