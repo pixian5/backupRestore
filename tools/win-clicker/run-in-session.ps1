@@ -12,8 +12,19 @@
 
 param(
     [int]$SessionId = 1,
-    [string]$Command = ""
+    [string]$Command = "",
+    # prlctl exec 会剥掉双引号，含空格的 -Command 无法直接传参；
+    # 用 -CommandFile 指向一个纯文本文件，从中读取完整的会话内命令行。
+    [string]$CommandFile = ""
 )
+
+if ($CommandFile -ne "") {
+    if (-not (Test-Path -LiteralPath $CommandFile)) {
+        Write-Output "MISSING_CMDFILE $CommandFile"; exit 4
+    }
+    $Command = ([System.IO.File]::ReadAllText($CommandFile)).Trim()
+}
+if ($Command -eq "") { Write-Output "EMPTY_COMMAND"; exit 5 }
 
 Add-Type -TypeDefinition @"
 using System;

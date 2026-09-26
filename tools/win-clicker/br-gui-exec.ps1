@@ -27,8 +27,13 @@ if ($B64 -ne "") {
 
 $p = "C:\Users\Public\pkg"
 $pkg = "C:\Users\Public\backupRestore-package"
-$src = "X:\tools\win-clicker\$Script"
-if (-not (Test-Path $src)) { Write-Output "MISSING_SRC $src"; exit 2 }
+# 源路径优先用 UNC：Parallels 共享盘 X: 只在特定登录会话里挂载，
+# 由 run-in-session 拉起的新登录会话里 X: 可能不存在（实测 dir X:\ 报路径不存在）。
+$src = "\\Mac\backupRestore\tools\win-clicker\$Script"
+if (-not (Test-Path -LiteralPath $src)) {
+    $alt = "X:\tools\win-clicker\$Script"
+    if (Test-Path -LiteralPath $alt) { $src = $alt } else { Write-Output "MISSING_SRC $src"; exit 2 }
+}
 # 二进制复制，不要用 Copy-Item 也不要做编码转换：
 # 实测从 UNC 共享源 Copy-Item 到 C:\ 会得到一个 0 字节文件（读源正常是 12684 字节，
 # 落地却是 0），脚本就静默什么都不执行；ReadAllText+WriteAllText(936) 同样产出 0 字节。

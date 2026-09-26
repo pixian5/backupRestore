@@ -110,3 +110,5 @@ pe-debug.cmd
 .workbuddy/
 tools/win-clicker/_agent/
 tools/win-clicker/_agent-tcp/
+# br-s1.sh 的 GBK 转码暂存目录（每次运行重新生成）
+tools/win-clicker/_s1/
