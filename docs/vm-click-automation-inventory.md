@@ -100,3 +100,48 @@ cd tools/win-clicker
 | `br-win-list.ps1` | 列窗口（hwnd/pid/矩形/前台标志）+ 屏幕分辨率，stdout 直回宿主 |
 | `br-inject-probe.ps1` | 会话/完整性/注入能力探测（med/elev 对照用） |
 | `br-gui-probe.ps1` | 早期探测版（保留作对照） |
+
+## 六、常驻 agent 模式（2026-09-26 21:3x 打通，密集自动化用）
+
+> 为什么又做了常驻：用户确认①大量时间在 Win11 桌面测试（WinRE 只做实机最后验证），
+> ②版本迭代多、操作步数累积可观，③VM 是内网临时机无公网 IP，无安全顾虑。
+> 于是「每步 1.4s」的 exec 通道成为实际瓶颈，常驻方案收益成立。
+
+### 6.1 用法
+
+```bash
+cd tools/win-clicker
+./br-agent.sh start            # 启动常驻 agent（提权、Session 1，空闲 15 分钟自动退出）
+./br-agent.sh click 960 540    # 单条，往返 ~0.2s
+./br-agent.sh batch cmd.txt    # 一次投递多行命令按序执行（50 步 ~0.3s）
+./br-agent.sh windows          # 列窗口（完整中文标题）
+./br-agent.sh shot vm.png      # agent 侧截图 → _agent/vm.png（1155x867，即注入坐标系）
+./br-agent.sh text '中文也行'   # SendInput UNICODE，中文可用
+./br-agent.sh stop
+```
+
+实测性能：单步 0.2s（原 1.4s，快 7 倍）；10 步批量 0.21s（原 14s，快 67 倍）。
+
+### 6.2 架构与关键发现
+
+- 传输走 **Parallels 共享目录的 UNC 路径** `\\Mac\backupRestore\tools\win-clicker\_agent\`，
+  宿主直接写 macOS 本地文件，agent 轮询执行后写回结果——**不开网络端口、不需要 IP**。
+- **盘符 X: 在提权进程里不可见，但 UNC `\\Mac\backupRestore` 可见**（实测）——
+  这是 agent 能工作的前提。
+- **不能复用同一个文件名反复覆盖**：共享目录客户端缓存会让旧内容存活十几秒
+  （实测同名覆盖往返 >12s）。必须每条命令用唯一文件名 `cmd.<id>.txt` / `res.<id>.txt`。
+- 脚本落地必须 **ReadAllBytes 读源 → UTF8 解码 → GBK(936) 编码写目标**：
+  ① UNC 上 `ReadAllText` 会拿到空串；② `Copy-Item` 从共享源复制会产出 0 字节文件；
+  ③ 转 GBK 后中文注释显示正常、报错行号不偏移。
+- **PowerShell 陷阱：`$out += "字面量" + 表达式` 会丢内容**（实测 `cursor`/`shot`
+  两个分支因此静默无输出）。必须先存变量再插值：`$c = ...; $out += "cursor=$c"`。
+- P/Invoke 取窗口标题必须 `EntryPoint="GetWindowTextW"` + `CharSet.Unicode`，
+  否则按 ANSI marshalling，标题被截成首字符。
+- agent 心跳/诊断在 `_agent/heartbeat.txt`（share 路径、elevated、session）。
+
+### 6.3 通道选择结论（更新）
+
+- 键盘优先 `vmkey.sh`（0.6s，全场景覆盖含 WinRE/PE）。
+- Win11 桌面内的密集 GUI 自动化用 **`br-agent.sh`**（0.2s/步，批量更快）。
+- 偶发一次性操作用 `br-gui.sh`（1.4s，无需 agent 常驻）。
+- 网络端口方案仍然不需要：共享目录已给出同量级延迟且零端口。

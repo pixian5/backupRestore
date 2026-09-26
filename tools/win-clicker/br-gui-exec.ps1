@@ -29,7 +29,24 @@ $p = "C:\Users\Public\pkg"
 $pkg = "C:\Users\Public\backupRestore-package"
 $src = "X:\tools\win-clicker\$Script"
 if (-not (Test-Path $src)) { Write-Output "MISSING_SRC $src"; exit 2 }
-Copy-Item $src "$pkg\$Script" -Force
+# 二进制复制，不要用 Copy-Item 也不要做编码转换：
+# 实测从 UNC 共享源 Copy-Item 到 C:\ 会得到一个 0 字节文件（读源正常是 12684 字节，
+# 落地却是 0），脚本就静默什么都不执行；ReadAllText+WriteAllText(936) 同样产出 0 字节。
+# ReadAllBytes/WriteAllBytes 是唯一稳定通道，且顺便检查长度，别再被空文件骗。
+# 复制前先删目标，避免残留/占用导致的截断。
+# 必须用 ReadAllBytes 读源（UNC 上 ReadAllText 会拿到空串，坑），再转成 GBK(936) 落地，
+# 这样中文注释在客体里显示正常，PowerShell 报错的行号也不会因为乱码偏移。
+Remove-Item "$pkg\$Script" -ErrorAction SilentlyContinue
+$srcBytes = [System.IO.File]::ReadAllBytes($src)
+$utf8str  = [System.Text.Encoding]::UTF8.GetString($srcBytes)
+$gbkBytes = [System.Text.Encoding]::GetEncoding(936).GetBytes($utf8str)
+[System.IO.File]::WriteAllBytes("$pkg\$Script", $gbkBytes)
+$sz = (Get-Item "$pkg\$Script").Length
+$srcSz = $srcBytes.Length
+# 只看落地后是否非空白即可：UTF-8 转 GBK 后字节数本来就会变少，不能拿源长度比
+if ($sz -lt 100) {
+    Write-Output "WARN_COPY_BAD $Script src=$srcSz dst=$sz"; exit 3
+}
 
 $cmdline = "powershell -NoProfile -ExecutionPolicy Bypass -File `"" + $pkg + "\" + $Script + "`" " + $Args
 if ($Log -ne "") { $cmdline += " > " + $p + "\" + $Log + " 2>&1" }

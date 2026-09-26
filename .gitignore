@@ -108,3 +108,4 @@ pe-debug.cmd
 # 归档的一次性根目录产物（2026-09-24 清理，内容保留在本机，不入库）
 .archive/
 .workbuddy/
+tools/win-clicker/_agent/
