@@ -94,3 +94,58 @@ GUI 还原受环境阻塞（见下节），因此另用 `dism /Mount-Image /Read
 因该文件被完全独占，唯一可行路径是**先解除 `Parallels Tools Service` 对它的持有**（例如临时
 stop 该服务并在还原完成后 start），或改用不含该占位文件的卷作为还原目标。两种做法都会改变
 VM 的当前状态，故本轮未擅自执行。
+
+## 启动入口核验（2026-09-27，只读）
+
+只读审计（`evidence/entry-audit.txt`）。活动入口全部为 v1.7.4 且哈希一致：
+
+| 入口 | 路径 | 大小 | SHA-256 | 版本/标题 |
+| --- | --- | --- | --- | --- |
+| 运行进程 pid=6996 | `C:\Users\Public\backupRestore-package\BackupRestore.exe` | 1688064 | `C0DDDFD9…1ACF` | 窗口标题 `BackupRestore - Rust GUI v1.7.4` |
+| 同目录 | `C:\Users\Public\backupRestore-package\Recovery.exe` | 1688064 | `C0DDDFD9…1ACF` | mtime 2026-09-26 23:50:43 |
+| 桌面快捷方式 | `C:\Users\x\Desktop\BackupRestore.lnk` | — | — | 指向上述 exe |
+| HKCU Run | `BackupRestoreTest` | — | — | 指向上述 exe |
+| 计划任务 `BRLaunch`（Disabled） | 同上 | — | — | 参数 `--tab 1` |
+
+**发现：仍存在旧版本载荷（本轮未被使用）**
+
+- **WinRE 载荷不是 v1.7.4**：`C:\Recovery\WindowsRE\Winre.wim`
+  （712108371B，SHA `DBBCE2BD…`，mtime 2026-09-26 23:02:00）内
+  `\Windows\System32\Recovery.exe` = 1687040B，SHA `653ABC68…`，mtime 2026-09-26 08:58:08。
+  该哈希与 `.test-artifacts/v173-20260926/prepare-gui-re.ps1` 中的 `$expectedExe` 完全相同，
+  即实际为 **v1.7.3** 构建。
+- **PE 载荷（T: 上的遗留副本）更旧**：`T:\petest\boot.wim`（367395379B，SHA `D5F1515A…`，
+  2026-09-13 遗留）内 `\Windows\System32\BackupRestore.exe` 与 `Recovery.exe` 均为 1026560B，
+  SHA `22E6829B…`，mtime 2026-08-25 23:38:13；未在历史构建产物中匹配到版本号。
+- 非入口旧副本（不在启动路径）：`backupRestore-package\tasks_hold2\payload\Recovery.exe`
+  （1511424，`A06144…`）、`C:\Users\Public\BR-Recheck-20260925\Recovery.exe`（1624576，`648590…`）、
+  `C:\BackupRestoreBuild\package\BackupRestore-windows-arm64-v1.5.12\Recovery.exe`（1511424，`A06144…`）。
+- `BR-GUI` / `BR-GUI2`（Disabled）指向不存在的 `C:\Users\Public\backupRestore-package-v12`。
+
+**需注意的遗留计划任务（本轮均未触发）**
+
+- `BRPREP` / `BRPREP2`（Ready）：`BackupRestore.exe prepare --operation backup --source-drive C
+  --target-drive C --image-path E:\br-cdrive-v1.wim --compress fast` —— 参数与 C: 相关。
+- `BRGuiSetText`（Ready）：会向 GUI 控件 1203 写入 `H:\Images\CurrentEfiV131.wim`。
+
+证据：`evidence/pe-payload-winre.txt`、`evidence/pe-payload-t-petest.txt`。
+
+本轮 T: 走**在线**路径（`affected=T`、`system=C` 不相等），不重启、不进 WinRE/PE，因此上述旧载荷
+本轮未被使用。但若后续改走 WinRE/PE 恢复链，实际执行的仍是 v1.7.3（或更早）的二进制。
+更新 WinRE/PE 载荷属于「修改 WinRE/PE 部署」，按项目约束需先创建并核验新快照并获授权，本轮未执行。
+
+WinRE 只读状态：`reagentc /info` 为 Enabled，location
+`\\?\GLOBALROOT\device\harddisk0\partition4\Recovery\WindowsRE`；
+`C:\Windows\System32\Recovery\Winre.wim` 不存在。
+
+## 本轮范围、未做项与自行披露
+
+- C: 从未作为备份源或还原目标。**C: 的完整系统备份/还原本轮完全未测试、未验证。**
+- 未修改 BCD、WinRE、默认启动项、bootsequence；未创建/删除快照；未重启 VM；未停止任何 Parallels 服务。
+- 自行披露：在压缩机制早期排查中，曾手工执行两条**非产品**的 DISM 命令：
+  `dism /Capture-Image /ImageFile:…\test-fast.wima … /Compress:fast`（文件名拼写错误的一次尝试）
+  与 `dism /Capture-Image /ImageFile:…\manual-test.wim /CaptureDir:C:\Users\Public\pkg … /Compress:none`
+  （捕获的是一个 C: 上的目录，不是 C: 卷，也不是产品备份路径）。正式结论只采用产品 GUI 创建任务后
+  `dism.log` 记录的 `/Compress:fast`、`/Compress:none` 两次命令。
+- 因 GUI 还原受阻，`after.txt` 的"应被清除"这条在本实现（覆盖式 `/Apply-Image`）下不会发生；
+  还原闭环与该项验证均未完成。
