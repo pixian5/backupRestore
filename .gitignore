@@ -109,3 +109,4 @@ pe-debug.cmd
 .archive/
 .workbuddy/
 tools/win-clicker/_agent/
+tools/win-clicker/_agent-tcp/

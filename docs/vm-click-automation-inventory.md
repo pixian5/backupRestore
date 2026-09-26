@@ -94,12 +94,24 @@ cd tools/win-clicker
 
 | 文件（`tools/win-clicker/`） | 作用 |
 |---|---|
-| `br-gui.sh` | **宿主一键入口**：windows/move/click/dbl/key/chord/text/selfcheck/shot/log |
+| `br-agent-tcp.sh` | **宿主首选入口**（TCP 版）：start/ping/click/move/key/chord/text/windows/shot/batch/stop |
+| `br-agent-tcp.ps1` | **客体常驻 agent**：提权监听 0.0.0.0:9124，收命令→注入→回结果，空闲 15 分钟自退 |
+| `br-agent.sh` / `br-agent.ps1` | 共享目录 UNC 版（免端口，备用；单步 0.2s） |
+| `br-gui.sh` | 一次性 exec 注入（不起常驻，1.4s/步） |
 | `br-gui-exec.ps1` | 客体桥接：同步脚本到 C:\ → `runas` 提权执行；参数走 base64 绕开 prlctl 吃引号 |
 | `br-gui-selftest.ps1` | 注入自检：LastInputTick 判据 + 无害点击任务栏空白 |
 | `br-win-list.ps1` | 列窗口（hwnd/pid/矩形/前台标志）+ 屏幕分辨率，stdout 直回宿主 |
 | `br-inject-probe.ps1` | 会话/完整性/注入能力探测（med/elev 对照用） |
 | `br-gui-probe.ps1` | 早期探测版（保留作对照） |
+
+### TCP 通道（当前首选）
+
+- VM IP（Parallels 共享网段）`10.211.55.13`，端口 `9124`（环境变量 `VM_IP`/`PORT` 可覆盖）。
+- 实测：单步 0.20s（其中 ~0.15s 是宿主 python 启动开销，网络往返 <5ms）；
+  12 步 batch 0.45s；中文窗口标题完整；截图 base64 回传 110KB。
+- 前提：客体防火墙放行（测试 VM 已关闭防火墙）。VM 无公网 IP，不暴露到外网。
+- agent 启动走 `br-gui-exec.ps1` 提权（High IL，可注入提权前台窗口），日志在
+  客体 `C:\Users\Public\pkg\agt cp.txt`。
 
 ## 六、常驻 agent 模式（2026-09-26 21:3x 打通，密集自动化用）
 
