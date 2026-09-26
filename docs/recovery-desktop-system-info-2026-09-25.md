@@ -60,7 +60,7 @@ BitLocker**。因此全部改用 PE/RE 一定自带的控制台工具：
 - `format_system_info_report`：分组稳定性 + 缺失兜底（2 个测试）
 - `systeminfo_cpu_memory`：中英文输出过滤、修补程序列表不泄漏、空输入（2 个测试）
 
-测试数 29 → 34（CLI），core 19 不变。`registry_query_all()` 另有回归测试，
+测试数 29 → 39（CLI），core 19 不变。`registry_query_all()` 另有回归测试，
 固定使用 `reg query "<key>"` 的完整值集查询形式，避免 Windows `reg query`
 不支持同一命令多个 `/v` 参数导致操作系统/主板分组显示为不可用。
 
@@ -87,6 +87,14 @@ clippy 做类型检查——这也是这三个 Windows-only 文件唯一的编�
 
 测试计数更新为 CLI 39、Core 19。**仍未验证完整备份/还原流程**；本节验收范围
 只覆盖软硬件信息窗口、返回 Windows、v1.7.3 诊断修复和原始 WinRE 恢复链路。
+
+实机证据保存在已忽略的 `.test-artifacts/v173-20260926/`：返回 Windows 前后截图、
+返回后 BCD 枚举、恢复前后 WinRE 哈希和 `reagentc /info` 输出。恢复原始 WinRE
+前快照为 `{fd14b936-561a-4cd9-86b8-b4abc58cd145}`，最终快照为
+`{f1f69481-33a5-4717-bce2-5089138e7c43}`；清理后仅保留最终快照和禁止删除的
+受保护基线 `{d69b3c91-7e71-43eb-b87c-3923138812f5}`。由于 `Winre.wim`
+是隐藏/系统文件，直接 `Copy-Item`/`copy` 在本 VM 的服务会话中未完成替换，
+最终使用 `xcopy /h /y` 复制并在复制后重新核验哈希和 `reagentc /info`。
 
 ## 2026-09-25 复核补记
 
