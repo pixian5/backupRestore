@@ -50,13 +50,47 @@
 - 不压缩产物明显大于压缩产物，与两种压缩语义一致。
 - WIM 均落在 `C:\Users\Public\br-test\v174-20260926\`，未写入 T:（不污染被备份源）。
 
-### 还原：本轮未完成，不能视为已验证
+### 备份保真度：WIM 只读挂载核对（替代性证据）
+
+GUI 还原受环境阻塞（见下节），因此另用 `dism /Mount-Image /ReadOnly` 只读挂载两个 WIM 的索引 1，
+直接读取镜像内文件并比对哈希。这一步不写 T:，也不触发任何还原事务：
+
+| 镜像 | 索引 1 名称 | 镜像内 `before.txt` | 镜像内 `data1..4.bin` | 镜像内 `keep-marker.txt` | `after.txt` / `data4.bin.renamed` |
+| --- | --- | --- | --- | --- | --- |
+| `test-fast.wim` | `2026-09-27 01:17` | 99B `0C356FD7…A44E` | 各 52428800B `8565A714…2DA2` | 13B `7A023DFB…B905` | 均不存在 |
+| `test-none.wim` | `2026-09-27 01:37` | 99B `0C356FD7…A44E` | 各 52428800B `8565A714…2DA2` | 13B `7A023DFB…B905` | 均不存在 |
+
+两镜像的索引数与 `Size`（580,281,306）一致，内容哈希与 T: 基线清单逐一相同，
+说明**备份链路在数据层面是忠实、可校验的**；挂载后均已 `/Unmount-Image /Discard`，
+`dism /Get-MountedImageInfo` 复查为 `No mounted images found`。
+证据：`evidence/wim-mount-fast.txt`、`evidence/wim-mount-none.txt`。
+
+### 还原：本轮未完成，被环境阻塞，不能视为已验证
 
 - 单系统还原（目标 T:）执行的是覆盖式 `dism /Apply-Image /ApplyDir:T:\`，不删除镜像外文件。
-- 实测还原在 72% 处失败：`CreateDestinationFileEx` 对 `T:\Mac disk` 报 `0x80070020`
-  （ERROR_SHARING_VIOLATION）。该 0 字节文件被 Parallels Tools 独占持有
-  （`prl_cc`/`prl_tools`/`prl_tools_service` 在运行；用任意共享模式、任意读写权限打开均失败，
-  且它不是重解析点）。用户要求不主动删除该文件，因此还原闭环暂停，等待处置决定。
+- 实测还原在 72% 处失败：`CreateDestinationFileEx:(3804) -> CreateFile failed T:\Mac disk`
+  `HRESULT=0x80070020`（ERROR_SHARING_VIOLATION）。
+- 根因已定位（Restart Manager + 服务/进程查询，均为只读）：
+  - `T:\Mac disk` 是 Parallels SmartMount 的占位产物，由 `prl_tools_service.exe`
+    （pid 4116，session 0）在服务启动时创建并独占持有；Restart Manager `RmGetList` 报告的唯一
+    持有者即 `Parallels Tools Service`（`restartable=True`）。
+  - 文件创建时间 `2026-09-26 23:44:10` 与该服务进程启动时间完全相同。
+  - 同一时刻 `E:`(105,277,091,840B)、`H:`(53,160,550,400B)、`P:`(0B)、`T:`(0B) 四个数据卷根目录
+    同时出现同名占位文件，`C:` 与 `Y:` 没有 —— 说明它是 Parallels 生成的多卷占位，不是用户数据。
+  - 6 种 (ReadWrite/Write/Read × None/ReadWrite) 打开组合全部失败，故在锁被持有期间
+    连改名和删除都不可行。
+  - 该占位文件同时存在于两个 WIM 内（0B，SHA-256 `E3B0C442…`），因此 `Apply-Image` 必然尝试创建它。
+- 同一失败并非本轮引入：`dism.log` 中 `2026-09-13 23:27:25`/`23:27:45` 已有两条完全相同的
+  `T:\Mac disk (HRESULT=0x80070020)` 记录（PID=1228、PID=4720），属长期存在的环境问题，
+  与本轮产品代码无关。
 - 失败前已写入的部分内容经核对是备份时的状态（标记文件与 data3/data4 均回到基线哈希），
   但这不是一次完整、干净的还原，**不得据此宣称还原已验证**。
+- 本轮未重启 VM、未修改 BCD/WinRE/启动项、未删除任何快照、未停止任何 Parallels 服务，
+  也未删除 `Mac disk`（用户要求不主动删除）。还原闭环因此暂停，等待授权处置。
 - C: 的完整系统备份/还原本轮完全未测试、未验证。
+
+### 解除阻塞所需的授权（待用户决定）
+
+因该文件被完全独占，唯一可行路径是**先解除 `Parallels Tools Service` 对它的持有**（例如临时
+stop 该服务并在还原完成后 start），或改用不含该占位文件的卷作为还原目标。两种做法都会改变
+VM 的当前状态，故本轮未擅自执行。
