@@ -67,7 +67,8 @@ GUI 还原受环境阻塞（见下节），因此另用 `dism /Mount-Image /Read
 
 ### 还原：本轮未完成，被环境阻塞，不能视为已验证
 
-- 单系统还原（目标 T:）执行的是覆盖式 `dism /Apply-Image /ApplyDir:T:\`，不删除镜像外文件。
+- 单系统还原（目标 T:）执行的是覆盖式 `dism /Apply-Image /ApplyDir:T:\`，不删除镜像外文件
+  （该语义已由用户裁定接受，见下「还原语义：已决策」）。
 - 实测还原在 72% 处失败：`CreateDestinationFileEx:(3804) -> CreateFile failed T:\Mac disk`
   `HRESULT=0x80070020`（ERROR_SHARING_VIOLATION）。
 - 根因已定位（Restart Manager + 服务/进程查询，均为只读）：
@@ -89,7 +90,21 @@ GUI 还原受环境阻塞（见下节），因此另用 `dism /Mount-Image /Read
   也未删除 `Mac disk`（用户要求不主动删除）。还原闭环因此暂停，等待授权处置。
 - C: 的完整系统备份/还原本轮完全未测试、未验证。
 
-### 解除阻塞所需的授权（待用户决定）
+### 还原语义：已决策（2026-09-27，用户裁定）
+
+用户裁定**接受覆盖式语义**，即 `dism /Apply-Image /ApplyDir:<target>` 只写入镜像内文件、
+不删除镜像外文件。验收标准据此调整：
+
+| 破坏动作 | 期望结果（覆盖式） |
+| --- | --- |
+| 修改 `BRTEST174-20260926-before.txt` | 恢复为基线 SHA-256 `0C356FD7…A44E` |
+| 删除/改名 `data4.bin` | 被重新写回，SHA-256 `8565A714…2DA2` |
+| 新增 `BRTEST174-20260926-after.txt` | **残留、不被清除**（预期行为，不计为失败） |
+
+原定的「`after.txt` 被清除」一条**作废**，不再作为失败判据。此决策不改动产品代码，
+`VERSION` 保持 1.7.4。
+
+### 解除阻塞所需的授权（仍待用户决定）
 
 因该文件被完全独占，唯一可行路径是**先解除 `Parallels Tools Service` 对它的持有**（例如临时
 stop 该服务并在还原完成后 start），或改用不含该占位文件的卷作为还原目标。两种做法都会改变
@@ -147,5 +162,6 @@ WinRE 只读状态：`reagentc /info` 为 Enabled，location
   与 `dism /Capture-Image /ImageFile:…\manual-test.wim /CaptureDir:C:\Users\Public\pkg … /Compress:none`
   （捕获的是一个 C: 上的目录，不是 C: 卷，也不是产品备份路径）。正式结论只采用产品 GUI 创建任务后
   `dism.log` 记录的 `/Compress:fast`、`/Compress:none` 两次命令。
-- 因 GUI 还原受阻，`after.txt` 的"应被清除"这条在本实现（覆盖式 `/Apply-Image`）下不会发生；
-  还原闭环与该项验证均未完成。
+- 因 GUI 还原受阻，还原闭环未完成。该项验收标准已按用户裁定改为覆盖式语义（见「还原语义：已决策」）：
+  `after.txt` 残留属预期行为，不作为失败判据；仍需在闭环中验证的是镜像内文件全部恢复且哈希匹配。
+- 还原闭环仍被 `T:\Mac disk` 独占锁阻塞，等待解除该锁的授权。
