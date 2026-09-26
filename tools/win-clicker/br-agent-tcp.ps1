@@ -218,4 +218,12 @@ while ($true) {
     }
     try { $writer.Flush() } catch { }
     $client.Close()
+    # 'quit' must actually terminate the agent: previously it only dropped the
+    # client, so the outer accept loop kept the listener alive until the 900s idle
+    # timeout and host-side `br-agent-tcp.sh stop` reported success while the
+    # port stayed open (observed 2026-09-27). Close the listener and exit here.
+    if (-not $alive) {
+        try { $listener.Stop() } catch { }
+        exit 0
+    }
 }
