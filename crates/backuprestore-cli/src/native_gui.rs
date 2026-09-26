@@ -17,8 +17,8 @@ use std::process::Command;
 use std::ptr::{null, null_mut};
 
 use crate::text_parsing::{
-    WimImageInfo, decode_bcdedit_bytes, first_braced_guid, format_bytes, json_text,
-    parse_wim_images, quote_argument,
+    WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, first_braced_guid, format_bytes,
+    json_text, parse_wim_images, quote_argument,
 };
 use backuprestore_core::PROGRAM_VERSION;
 
@@ -686,7 +686,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "index") => "选择 WIM 索引；下拉项显示索引及详细元数据。",
         (Language::Chinese, "menu") => "第二系统在 Windows 启动菜单中显示的名称。",
         (Language::Chinese, "compress") => {
-            "备份镜像压缩率（仅首次创建 WIM 时生效）：\n• fast 快速（默认/推荐）：体积仅比 max 大约 10%，但耗时约 1/3.5，性价比最高\n• max 高压缩：WIM 最小，但备份明显更慢（压缩 CPU 开销大）\n• none 不压缩：WIM 最大（约等于源数据量），备份最快\n增量备份说明：镜像已存在时追加为新索引，压缩率沿用 WIM 首次创建时的设置；压缩率不影响能否增量备份。"
+            "备份镜像压缩方式（仅首次创建 WIM 时生效）：\n• 压缩（默认/推荐）：使用 fast 压缩，速度和体积平衡\n• 不压缩：WIM 最大（约等于源数据量），备份最快\n增量备份说明：镜像已存在时追加为新索引，压缩方式沿用 WIM 首次创建时的设置；压缩方式不影响能否增量备份。"
         }
         (Language::Chinese, "index_name") => {
             "备份索引名（写入 WIM 的 Name 字段）。默认是程序启动时间，可修改；追加备份时用于区分历史版本。"
@@ -744,7 +744,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::English, "index") => "Select a WIM index; each item shows detailed metadata.",
         (Language::English, "menu") => "Name shown for the second system in the Windows boot menu.",
         (Language::English, "compress") => {
-            "Backup WIM compression (applies only when the WIM is first created):\n• fast (default/recommended): only ~10% larger than max, but ~1/3.5 the time — best value\n• max high compression: smallest WIM, notably slower backup (CPU cost)\n• none uncompressed: largest WIM (~source size), fastest backup\nIncremental notes: appending to an existing WIM keeps the compression set at first creation; compression does not affect whether incremental backup is available."
+            "Backup WIM compression (applies only when the WIM is first created):\n• Compression (default/recommended): uses fast compression for a balanced speed and size\n• No compression: largest WIM (approximately the source size), fastest backup\nIncremental notes: appending to an existing WIM keeps the compression set at first creation; compression does not affect whether incremental backup is available."
         }
         (Language::English, "index_name") => {
             "Backup image name (written to the WIM Name field). Defaults to program start time; editable. Appended backups use it to distinguish history."
@@ -844,7 +844,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "backup_hint") => {
             "「备份」把选中的源分区制作成 WIM 镜像（使用 DISM 捕获）：\n\n\
              • 源卷：要备份的分区，默认当前系统分区；镜像路径：用于保存 .wim 的绝对路径；\n\
-             • 压缩率：fast（推荐）速度快、体积适中；max 体积最小但明显更慢；none 不压缩最快但文件最大；\n\
+             • 压缩方式：「压缩」使用 fast，速度和体积平衡；「不压缩」最快但文件最大；\n\
              • 可设置「索引名」与「保留最近 N 个」管理历史版本；镜像已存在时自动追加为新索引；\n\
              • 流程：准备完成后自动进入恢复环境（PE / WinRE），离线捕获源卷，完成后自动返回 Windows。\n\n\
              说明：系统分区必须在离线环境备份；数据卷可在当前系统在线直接备份。"
@@ -900,7 +900,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "Inspect is a completely non-destructive safety check; run it first to validate your environment.\n\n• Refreshes and verifies the current Windows, recovery environment (WinRE / PE entry) and every volume, identified by disk+partition GUID instead of drive letter;\n• 'Create task' only writes and validates the task files and WinRE payloads to confirm the setup;\n• It never backs up, restores, formats, touches boot entries, or reboots.\n\nTip: first-time users should switch to Inspect and run once to confirm Windows, WinRE and volumes are recognized before using other features."
         }
         (Language::English, "backup_hint") => {
-            "Backup captures the selected source partition into a WIM image (via DISM).\n\n• Source volume: the partition to back up (defaults to the system partition); Image path: absolute path for the .wim;\n• Compression: fast (recommended) is fast with moderate size; max is smallest but notably slower; none is fastest but largest;\n• 'Image name' and 'Keep latest N' manage history; when the image already exists a new index is appended automatically;\n• Flow: after preparation it enters recovery (PE / WinRE), captures the source volume offline, then returns to Windows.\n\nNote: the system partition must be backed up offline; data volumes can be backed up online in the current system."
+            "Backup captures the selected source partition into a WIM image (via DISM).\n\n• Source volume: the partition to back up (defaults to the system partition); Image path: absolute path for the .wim;\n• Compression: \"Compression\" uses fast for balanced speed and size; \"No compression\" is fastest but largest;\n• 'Image name' and 'Keep latest N' manage history; when the image already exists a new index is appended automatically;\n• Flow: after preparation it enters recovery (PE / WinRE), captures the source volume offline, then returns to Windows.\n\nNote: the system partition must be backed up offline; data volumes can be backed up online in the current system."
         }
         (Language::English, "restore_hint") => {
             "Restore writes an image system back to the target partition and rebuilds the boot loader.\n\n• Target volume: the partition to be formatted and written; Image & index: the WIM and its index to restore;\n• Restoring overwrites all data on the target; 'Create task' asks for confirmation again, so proceed with care;\n• Flow: format the target offline → DISM Apply → BCDBoot to rebuild boot entries, making the image the only Windows;\n• Use case: damaged system or failure to boot, recovering from a backup.\n\nSafety: confirm the target partition is correct and important data is backed up; the operation cannot be cancelled midway."
@@ -1147,7 +1147,7 @@ unsafe fn set_operation_visibility(state: &State) {
         "restore-existing" | "create-secondary" | "install-pe-entry"
     );
     let show_index = matches!(operation, "restore-existing" | "create-secondary");
-    // WIM 压缩率（max/fast/none）只对备份首次创建有意义，仅「备份」tab 显示。
+    // WIM 压缩方式（fast/none）只对备份首次创建有意义，仅「备份」tab 显示。
     let show_compress = operation == "backup";
     // 「第二系统名称」输入框及其标签只在「新增第二系统」tab 显示；
     // 「PE 恢复」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
@@ -2028,21 +2028,13 @@ unsafe fn set_wim_items(state: &State) {
     SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
 }
 
-/// 压缩率下拉显示文本（按语言；用户指定 verbatim）。
-/// 索引 0/1/2 固定对应 DISM 术语 max/fast/none（取值映射见 create_task）。
-fn compress_level_labels(language: Language) -> [&'static str; 3] {
+/// 压缩方式下拉显示文本。只保留「压缩/不压缩」两项，不再暴露 max/LZX。
+/// 索引 0/1 固定对应 DISM 术语 fast/none（映射见 text_parsing）。
+fn compress_level_labels(language: Language) -> [&'static str; 2] {
     if language == Language::Chinese {
-        [
-            "LZX（文件最小，耗时特别长，CPU占用特别多）",
-            "XPRESS（推荐！文件稍大，非常快，CPU占用低）",
-            "不压缩（最快，文件最大，几乎不耗CPU）",
-        ]
+        ["压缩", "不压缩"]
     } else {
-        [
-            "LZX (smallest file, very slow, highest CPU)",
-            "XPRESS (recommended! slightly larger, very fast, low CPU)",
-            "No compression (fastest, largest file, almost no CPU)",
-        ]
+        ["Compression", "No compression"]
     }
 }
 
@@ -2056,7 +2048,7 @@ unsafe fn apply_language(state: &mut State) {
     ];
     set_drive_items(state, desired);
     set_wim_items(state);
-    // 压缩率下拉随语言重填（reset + 重填 + 保持原选择，无选择时默认 fast）
+    // 压缩下拉随语言重填（reset + 重填 + 保持原选择，无选择时默认「压缩」）。
     let compress_position = combo_selection(state.controls.compress);
     reset_combo(state.controls.compress);
     for label in compress_level_labels(language) {
@@ -2065,7 +2057,7 @@ unsafe fn apply_language(state: &mut State) {
     SendMessageW(
         state.controls.compress,
         CB_SETCURSEL,
-        compress_position.unwrap_or(1),
+        compress_position.unwrap_or(0),
         0,
     );
     for (id, key) in [
@@ -4396,11 +4388,13 @@ unsafe fn create_task(state: &State) {
     // 判断用「当前活动系统」（%SystemDrive%），不是「任何含 Windows 的卷」：
     // 双系统时另一个 Windows 卷并未运行，可直接在线备份/还原。
     let compress = if operation == "backup" {
-        // 下拉显示说明文本（LZX/XPRESS/不压缩），取值按索引映射回 DISM 术语
-        match combo_selection(state.controls.compress) {
-            Some(0) => "max".to_string(),
-            Some(2) => "none".to_string(),
-            _ => "fast".to_string(),
+        // 两项下拉映射为 DISM 术语：压缩=fast、不压缩=none。
+        match compression_from_ui_index(combo_selection(state.controls.compress)) {
+            Ok(level) => level.to_string(),
+            Err(error) => {
+                append_gui_log(state, &format!("invalid compression selection: {error}"));
+                return;
+            }
         }
     } else {
         String::new()
@@ -4537,7 +4531,7 @@ unsafe fn create_task(state: &State) {
         ]);
     }
     if operation == "backup" {
-        // 压缩率下拉：值即 max/fast/none（DISM 术语，语言无关，已在上方分流处解析）。
+        // 压缩下拉：值即 fast/none（DISM 术语，语言无关，已在上方分流处解析）。
         arguments.extend(["--compress".to_string(), compress]);
         // 备份索引名（用户输入，默认程序启动时间）与保留最近 N 个索引。
         arguments.extend(["--image-name".to_string(), image_name]);
@@ -5115,13 +5109,11 @@ unsafe extern "system" fn window_proc(
         add_combo_item(controls.language, "English");
         SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
         SendMessageW(controls.operation_tabs[0], BM_SETCHECK, BST_CHECKED, 0);
-        // 压缩率下拉：显示按语言给出的说明文本（中文 verbatim 见
-        // compress_level_labels），初始语言为中文；索引 0/1/2 ↔ max/fast/none，
-        // 默认 fast（索引 1）。
+        // 压缩下拉：初始语言为中文；索引 0/1 ↔ fast/none，默认「压缩」。
         for label in compress_level_labels(Language::Chinese) {
             add_combo_item(controls.compress, label);
         }
-        SendMessageW(controls.compress, CB_SETCURSEL, 1, 0);
+        SendMessageW(controls.compress, CB_SETCURSEL, 0, 0);
         // 备份索引名默认值 = 程序启动时间（本地），用户可修改。
         let mut now = SystemTime {
             year: 0,

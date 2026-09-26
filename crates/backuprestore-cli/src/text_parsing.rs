@@ -14,6 +14,20 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+/// Map the two-entry compression dropdown to DISM terms.
+///
+/// This mapping lives outside `native_gui.rs` so macOS tests can prove that
+/// index 0 is "压缩"/`fast`, index 1 is "不压缩"/`none`, no third option maps
+/// anywhere, and an unselected control safely keeps the default `fast`.
+pub(crate) fn compression_from_ui_index(index: Option<usize>) -> Result<&'static str, String> {
+    match index {
+        None => Ok("fast"),
+        Some(0) => Ok("fast"),
+        Some(1) => Ok("none"),
+        Some(_) => Err("compression dropdown has an unsupported third option".to_string()),
+    }
+}
+
 /// What a `mountvol <letter>: /L` query actually told us.
 ///
 /// The three cases must stay distinct. Treating `Unknown` as `Unmounted` is
@@ -522,6 +536,14 @@ pub(crate) fn format_system_info_report(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn compression_dropdown_has_only_two_supported_mappings() {
+        assert_eq!(compression_from_ui_index(None).unwrap(), "fast");
+        assert_eq!(compression_from_ui_index(Some(0)).unwrap(), "fast");
+        assert_eq!(compression_from_ui_index(Some(1)).unwrap(), "none");
+        assert!(compression_from_ui_index(Some(2)).is_err());
+    }
 
     #[test]
     fn system_info_report_has_stable_groups_and_safe_fallbacks() {

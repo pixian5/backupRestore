@@ -7,7 +7,8 @@
 
 use backuprestore_core::{
     BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest, TargetRole, TargetSpec, Task,
-    TaskError, TaskStore, VolumeIdentity, sha256_file, validate_absolute_path, write_json_atomic,
+    TaskError, TaskStore, VolumeIdentity, canonical_compression, sha256_file,
+    validate_absolute_path, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -108,7 +109,7 @@ pub(crate) struct PrepareOptions {
     test_fault: Option<String>,
     allow_destructive: bool,
     no_reboot: bool,
-    /// WIM 压缩率：max/fast/none，仅备份首次创建时生效。
+    /// WIM 压缩率：fast/none，仅备份首次创建时生效。
     compress: Option<String>,
     /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
     force_restore_hash: bool,
@@ -358,10 +359,10 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             "--no-reboot" => no_reboot = true,
             "--compress" => {
                 let level = value("--compress", &mut args)?;
-                if !matches!(level.as_str(), "max" | "fast" | "none") {
-                    return Err(err("--compress must be max, fast or none"));
-                }
-                compress = Some(level);
+                let level = canonical_compression(&level).map_err(|_| {
+                    err("--compress must be fast or none; max compression is not supported")
+                })?;
+                compress = Some(level.to_string());
             }
             "--force-restore-hash" => force_restore_hash = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),

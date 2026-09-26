@@ -9,6 +9,8 @@
 #[cfg(windows)]
 use crate::text_parsing::{MountedVolumes, VolumeMountQuery, classify_mountvol_output};
 #[cfg(windows)]
+use backuprestore_core::canonical_compression;
+#[cfg(windows)]
 use backuprestore_core::{BootMode, Operation, PayloadManifest, verify_image_file};
 use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
 use chrono::Utc;
@@ -1929,7 +1931,8 @@ fn recover_windows(
                 index
             } else {
                 // 压缩率：仅首次创建 WIM 时生效；追加备份沿用 WIM 已有压缩设置。
-                let compress_level = task.compress.as_deref().unwrap_or("fast");
+                let compress_level =
+                    canonical_compression(task.compress.as_deref().unwrap_or("fast"))?;
                 run_logged(
                     "dism.exe",
                     &[

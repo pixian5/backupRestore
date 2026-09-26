@@ -309,7 +309,8 @@ pub struct Task {
     pub image: Option<ImageSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<DestinationSpec>,
-    /// WIM 压缩率（max/fast/none），仅备份首次创建时生效；追加备份沿用已有压缩。
+    /// WIM 压缩率（fast/none），仅备份首次创建时生效；追加备份沿用已有压缩。
+    /// `max` 已从产品功能中删除，旧任务中的该值必须拒绝执行。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress: Option<String>,
     /// 保留最近 N 个 WIM 索引：备份追加成功后删除更旧索引（0/None=不清理）。
@@ -383,6 +384,9 @@ impl Task {
         }
         if let Some(hash) = self.boot_plan.previous_bcd_sha256.as_deref() {
             validate_sha256_text("previous BCD", hash)?;
+        }
+        if let Some(compression) = self.compress.as_deref() {
+            canonical_compression(compression)?;
         }
         if let Some(payload) = self.payload.as_ref() {
             if payload.task_id != self.task_id {
@@ -620,6 +624,20 @@ fn missing(name: &str) -> TaskError {
 }
 fn valid_menu_name(value: &str) -> bool {
     value.chars().count() <= 256 && !value.chars().any(char::is_control)
+}
+/// Normalize the only two supported WIM compression choices.
+///
+/// `fast` is the product's "压缩" choice and `none` is "不压缩". The former
+/// maximum-compression mode is deliberately rejected here so GUI, CLI and old
+/// task files cannot accidentally pass it to DISM through a fallback path.
+pub fn canonical_compression(value: &str) -> Result<&'static str, TaskError> {
+    match value {
+        "fast" => Ok("fast"),
+        "none" => Ok("none"),
+        _ => Err(TaskError::Invalid(
+            "compression must be fast or none; max compression is not supported".into(),
+        )),
+    }
 }
 pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
     canonical_task_id(value).map(|_| ())
@@ -1294,6 +1312,22 @@ mod tests {
     fn backup_rejects_same_partition() {
         let mut task = backup_task();
         task.destination.as_mut().unwrap().volume.partition_guid = "source".into();
+        assert!(task.validate().is_err());
+    }
+    #[test]
+    fn compression_supports_fast_and_none_but_rejects_max() {
+        assert_eq!(canonical_compression("fast").unwrap(), "fast");
+        assert_eq!(canonical_compression("none").unwrap(), "none");
+        assert!(canonical_compression("max").is_err());
+
+        let mut task = backup_task();
+        task.compress = Some("fast".into());
+        assert!(task.validate().is_ok());
+        task.compress = Some("none".into());
+        assert!(task.validate().is_ok());
+        task.compress = Some("max".into());
+        assert!(task.validate().is_err());
+        task.compress = Some("unknown".into());
         assert!(task.validate().is_err());
     }
     #[test]

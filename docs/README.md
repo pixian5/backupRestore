@@ -7,6 +7,8 @@
 WinRE/WinPE 入口隔离与载荷闭包修复见 [winre-payload-contract-2026-09-16.md](winre-payload-contract-2026-09-16.md)。
 `current-progress-2026-09-13.md` 及更早的按日期进度文档是历史测试记录，不能覆盖当前执行基线。
 
+当前压缩选项边界：[compression-options-2026-09-26.md](compression-options-2026-09-26.md)。
+
 按下面顺序阅读，避免把离线检查误解成 Windows 恢复已验收：
 
 1. [project-status.md](project-status.md)：当前进度、用户决策、已完成与未完成项目、继续条件；
