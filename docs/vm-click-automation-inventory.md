@@ -1,5 +1,9 @@
 # VM 内「辅助点击 / UI 自动化」能力清单（2026-09-26 清查）
 
+> 📘 **日常操作请看 `docs/vm-input-control-guide.md`（操作手册）。**
+> 本文件是资产清单 + 考古记录：有什么、怎么来的、踩过哪些坑。
+> 下面第四节的「用法」部分写于通道打通当天，已被操作手册取代，仅作历史留档。
+
 > 结论：**有，而且是本项目自研的一套完整通道**，不是第三方软件。VM 里没有安装
 > AutoHotkey/按键精灵/向日葵/ToDesk 之类的通用辅助或远控程序——已安装的第三方
 > 只有 WinRAR、Chrome/Edge、CC Switch、VS2022 生成工具、ADK/WinPE、Parallels Tools。
@@ -42,7 +46,7 @@ macOS 宿主合成的鼠标事件（CGEvent / SmartMouse）**不会被 Parallels
   `ERROR: Element not found`（exec 不是交互式会话）。要在可见桌面生效，
   走 `run-in-session.ps1`（SYSTEM→交互会话）或让任务的时间触发器自然触发。
 
-## 四、怎么用（2026-09-26 20:3x 实测打通，推荐入口：`tools/win-clicker/br-gui.sh`）
+## 四、怎么用（2026-09-26 20:3x 实测打通；⚠ 已被 `vm-input-control-guide.md` 取代，历史留档）
 
 ### 4.1 一键入口（宿主 macOS 侧）
 
@@ -111,7 +115,7 @@ cd tools/win-clicker
   12 步 batch 0.45s；中文窗口标题完整；截图 base64 回传 110KB。
 - 前提：客体防火墙放行（测试 VM 已关闭防火墙）。VM 无公网 IP，不暴露到外网。
 - agent 启动走 `br-gui-exec.ps1` 提权（High IL，可注入提权前台窗口），日志在
-  客体 `C:\Users\Public\pkg\agt cp.txt`。
+  客体 `C:\Users\Public\pkg\agtcp.txt`。
 
 ## 六、常驻 agent 模式（2026-09-26 21:3x 打通，密集自动化用）
 
@@ -151,9 +155,13 @@ cd tools/win-clicker
   否则按 ANSI marshalling，标题被截成首字符。
 - agent 心跳/诊断在 `_agent/heartbeat.txt`（share 路径、elevated、session）。
 
-### 6.3 通道选择结论（更新）
+### 6.3 通道选择结论（2026-09-26 22:0x 再次更新）
 
 - 键盘优先 `vmkey.sh`（0.6s，全场景覆盖含 WinRE/PE）。
-- Win11 桌面内的密集 GUI 自动化用 **`br-agent.sh`**（0.2s/步，批量更快）。
+- Win11 桌面内的 GUI 自动化用 **`br-agent-tcp.sh`**（TCP，0.2s/步，往返 <5ms）。
+  用户拍板：VM 无公网 IP、防火墙已关，开端口没有安全顾虑，不必再绕共享目录。
+- 免端口场合用 **`br-agent.sh`**（UNC 共享目录，0.2s/步）。
 - 偶发一次性操作用 `br-gui.sh`（1.4s，无需 agent 常驻）。
-- 网络端口方案仍然不需要：共享目录已给出同量级延迟且零端口。
+
+> 早期"网络端口方案不需要"的结论已作废——当时按生产级远控标准评估测试期工具，论证过度。
+> 详见操作手册与 `.workbuddy/memory/MEMORY.md` 的通道选型条目。
