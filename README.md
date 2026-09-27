@@ -165,7 +165,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 核心改动：`validate_volume_roles` 扩展 5 参数 + `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` 开关 | 已落地 | `core` 28 单测全绿（新增 `plan_d_opens_f3_when_source_hosts_registered_winre` 锁定「开关开→F3 放开、关→恢复拒绝」） |
 | 准备层 F3 放开（离线备份源 == WinRE 宿主不再被拒） | 已落地 | `windows_prepare.rs:509` 传 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` |
 | 执行层 `restore_clean_winre_before_capture` | 已落地 | `main.rs:1213`，捕获前覆写源卷注册 WIM 为干净原件并校验哈希；**失败即硬失败终止任务**，绝不静默产脏镜像 |
-| 执行层入口提前还原（方案 D 触发时机前移） | 已落地（2026-09-28） | `main.rs` WinRE 入口（`WinreRestoreGuard` 建立、task 加载后）即调用 `restore_original_winre` 把注册 WIM 覆写回干净原件，F3 污染窗口在入口闭合；捕获前 + 结尾两道保留作幂等安全网 |
+| 执行层入口提前还原（方案 D 触发时机前移） | 已落地（2026-09-28） | `main.rs` WinRE 入口（`WinreRestoreGuard` 建立、task 加载后）即调用 `restore_original_winre` 把注册 WIM 覆写回干净原件，F3 污染窗口在入口闭合；捕获前 + 结尾两道保留作幂等安全网。⚠️ **已知冲突**：该还原与断电续跑冲突——续跑隐式依赖「注册位=注入件」自动拉起 Recovery.exe，入口替换后续跑会落进原版 WinRE 导致续不起来；分析与修复方案见 [docs/20260928-073809-resume-vs-clean-winre-conflict.md](docs/20260928-073809-resume-vs-clean-winre-conflict.md) |
 | 执行层二次闸 `winre_role_conflict_at_execution` 随开关放开 F3 | 已落地 | `main.rs:1170`，`false` 可一键回退到旧拒绝 |
 | 构建（macOS 交叉编译 ARM64） | 产物 `BackupRestore.exe` = 1,697,792B | `build-win.sh` 修复 `rust-lld` 路径后构建通过，字节与方案 D 落地前一致（仅新增 `#[cfg(test)]` 测试） |
 | **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **已通过（2026-09-28 实机闭环）** | 详见 [阶段2 文档 9.5.2.1](docs/winre-task-wim-phase2-2026-09-27.md)：P: 作承载 RE 的卷，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检 `\Recovery\WindowsRE\Winre.wim` 哈希 = `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原 |
