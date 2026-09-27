@@ -85,7 +85,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 路径 | 内容 |
 |---|---|
 | `crates/` | 产品源码（Rust，唯一产品语言） |
-| `docs/` | **全部文档，31 份，索引见 `docs/README.md`** |
+| `docs/` | **全部文档：顶层 32 份 + `开发方案/` 12 份，索引见 `docs/README.md`** |
 | `tools/win-clicker/` | 测试脚手架：操控 VM 键鼠的自动化通道（PowerShell，不进产品） |
 | `build-win.sh` | ARM64 交叉构建 + 部署 + 哈希核对 |
 | `artifacts/` | PE 构建产物（`BackupRestorePE.iso/wim`、`BaseWinPE.iso`） |
@@ -113,7 +113,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ## 六、文档索引
 
-**所有文档的逐份说明在 [`docs/README.md`](docs/README.md)**，31 份分九类。新接手先读这三份：
+**所有文档的逐份说明在 [`docs/README.md`](docs/README.md)**，顶层 32 份分九类 + `开发方案/` 子目录。新接手先读这三份：
 
 | 文档 | 作用 |
 |---|---|
@@ -131,11 +131,42 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ---
 
-## 七、当前已知状态
+## 七、当前进度（截至 2026-09-27）
 
-- 自动 WinRE `probe`、非 C: 分区的 DISM Capture / Apply / BCDBoot 已实机验证。
-- **独立 EFI 的固件首启动回恢复系统仍是待验证项。**
-- Parallels Desktop **27.x 固件存在 ramdisk 引导回归**（6 秒复位循环，已 A/B 闭环证明，与本项目代码无关）。
+### 已实机验证（测试卷 T:，非系统卷，在线路径）
+
+| 项 | 状态 |
+|---|---|
+| 压缩选项收敛：`压缩`/`不压缩` → `/Compress:fast` / `/Compress:none`，`max` 已删除 | 中英文界面实测，两项索引不变 |
+| `backup` 捕获 WIM + 只读挂载哈希比对 | 两种压缩各一次，哈希与源逐项一致 |
+| `restore-existing` 还原闭环 | v1.7.5 起**不停 Parallels 服务也能成功**（见下） |
+| v1.7.5 修复：`\Mac disk` 纳入默认排除 + GUI 在线备份补接 `/ConfigFile` | 产物 `f8b77d0e…e184`，已部署客体并核对哈希 |
+| 离线测试 | 61 passed / 0 failed |
+
+### 尚未闭环的三个空洞（按严重度）
+
+1. **C: 完整系统备份/还原从未实机测试** —— 而它恰恰是产品的主场景。目前所有验证了实机的
+   都是**数据卷 + 在线路径**，不是 README 流程图里那条「进 WinRE 离线还原系统分区」的主链路。
+2. **WinRE / PE 载荷是旧版本** —— `C:\Recovery\WindowsRE\Winre.wim` 内的 `Recovery.exe` 实为
+   **v1.7.3**，PE 遗留副本是更早的未知版本。一旦改走 WinRE/PE 恢复链，跑的不是当前代码。
+   更新载荷属「修改 WinRE/PE 部署」，按约束须先建快照并获授权，**尚未执行**。
+3. **F1 / F3 两个 P0 未实施** —— 见 `docs/development-roadmap-2026-09-26.md`：
+   F1（还原格式化可能删掉 WinRE 宿主卷恢复入口）与 F3（备份含 WinRE 的源卷会污染镜像）
+   目前仍是「代码未拒绝，仅设计」状态，必须同批交付。
+
+### 其他已知限制
+
+- **独立 EFI 首启动回恢复系统**：<｜hy_place▁holder▁no▁813｜>验证（`0xc0430001`，已标记为 V1 已知限制，非交付门槛）。
+- **Parallels Desktop 27.x 固件存在 ramdisk 引导回归**（6 秒复位循环，已 A/B 闭环证明，与本项目代码无关）。
   开发验证目前留在 **PD 26.4.2** 上做，注意关闭自动更新。
+
+> 提醒：README 里的流程图描述的是**目标链路**，不是当前已验证链路。判断「做到了哪一步」
+> 请以 `docs/verification-matrix.md` 的实机证据为准。
+
+### 文档基线脱节（待修）
+
+`docs/project-status.md` 停留在 **2026-09-24 / v1.6.6**，落后当前 1.7.5 五个版本；
+`docs/current-status-2026-09-16.md` 更早。用它们判断当前进度会得出错误结论，
+当前版本以 `VERSION` 和 `git log` 为准。
 
 仓库：https://github.com/pixian5/backupRestore
