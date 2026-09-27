@@ -297,8 +297,91 @@ WinRE 启动时按 **ReAgent 注册位置的路径 + 文件名** 校验ramdisk �
 ### 8.5 待确认 / 下一步
 
 - [x] 用户裁定「排除 + 事后重建」（替代 swap-in-place / 换 PE / 维持现状三选一）
-- [ ] PoC：WinRE 内对已 Apply 的目标卷做离线 `reagentc /setreimage /target` + `/enable`
-- [ ] 是否启用 sidecar（多 ~700MB/份镜像）
-- [ ] 实施 8.2 四条改动 + 单测
-- [ ] 测试盘验证：离线备份承载 RE 的卷（用不同于生产系统的小卷模拟）+ 抽检镜像无 `\Recovery` +
-      任务后注册/目标 WIM 哈希复原
+- [x] **PoC 完成：WinRE 内离线重注册链路可行**（见第 9 节）
+- [ ] 是否启用 sidecar（多 ~700MB/份镜像）——若选方案 D 则不需要
+- [ ] **裁定「Capture 排除」还是「捕获前换回干净原件」的方案 D**（见 9.5）
+- [ ] 实施 8.2 改动 + 第 9.3 节落地配方 + 单测
+- [ ] 测试盘验证：离线备份承载 RE 的卷 + 抽检镜像 + 任务后注册/目标 WIM 哈希复原
+
+---
+
+## 9. PoC：WinRE 内离线重注册链路（2026-09-27 晚，实机验证）
+
+> 结论一句话：**可行**，但必须调用**目标 OS 自带**的 `reagentc.exe`，不能用 WinRE 自带的
+> —— **WinRE / WinPE 里根本没有这个程序**（本次最重要的发现）。
+
+### 9.1 实验记录
+
+环境：WinRE 注册在 `C:\Recovery\WindowsRE`（v1.7.6 载荷 `1060a552…`）；离线目标卷 P:（有 Windows、
+无 `\Recovery`）；快照 `{7032b458}`（桌面端实验）与 `{8550df15}`（WinRE 内部探针）。
+
+| # | 实验 | 结果 |
+|---|---|---|
+| 1 | 桌面端 `reagentc /setreimage /path P:\Recovery\WindowsRE /target P:\Windows` | ✅ rc=0。解析为 `\\?\GLOBALROOT\device\harddisk2\partition2\Recovery\WindowsRE`（**按磁盘/分区身份定位，不靠盘符**）；目标 `ReAgent.xml` 的 `ImageLocation` 更新成 P 自己的分区 GUID、`WinREStaged=1`；**运行中的 C: 完全不受影响** |
+| 2 | 同上之后 `reagentc /info /target P:\Windows` | ⚠️ 仍 **Disabled**（只是 staged，还没 enable） |
+| 3 | `bcdboot` 生成的新 BCD 是否自带 WinRE | ❌ **不带**。只有 bootmgr + osloader + resume + ramdiskoptions，**没有 recoverysequence、没有 Winre.wim ramdisk 项** → 现有「还原后 bcdboot」步骤不足以恢复 RE |
+| 4 | 桌面端能否把离线目标 enable | ❌ `/enable` **没有 `/target`**，只有 `/osguid`，帮助文本写明该参数用于 WinPE |
+| 5 | WinRE 里 `reagentc` 是否存在 | ❌ **不存在**（rc=9009；`whoami` 同样没有） |
+| 6 | WinRE 里调用 `%TARGET%\Windows\System32\reagentc.exe` | ✅ 可执行（104,448B），rc=0 |
+| 7 | WinRE 内 `/enable /osguid {a8bafbae-…}`（离线目标 C:） | ✅ **rc=0 成功** |
+| 8 | WinRE 内 `/disable` | ❌ rc=50：`在 Windows 预安装环境(Windows PE)中不支持此命令` |
+| 9 | WinRE 内 `/setreimage`（目标已 Enabled） | ❌ rc=183：`Windows RE 已经启用`。**必须先 disable 才能改，而 disable 在 PE 不支持** ⇒ 顺序只能是「先 setreimage（Disabled 态）→ 后 enable」 |
+| 10 | WinRE 内 `/info` 不带 `/target` | ❌ `必须指定目标 Windows 安装` |
+
+### 9.2 WinRE 环境事实（写代码必须记住）
+
+- `SYSTEMDRIVE=X:`（RAMDISK 挂载点），真实 Windows 卷在别的盘符；
+- **盘符会重排**：桌面 `T:/P:/H:` → WinRE 里是 `D:/F:/G:`（本次实测）。任何路径都不能假设盘符，
+  必须走已有的「卷 GUID → 重新解析盘符」机制；
+- WinRE 里有 `bcdedit`、`dism`；**没有 `reagentc`、`whoami`**。要用 reagentc 必须全路径指向目标 OS。
+
+### 9.3 落地配方（「事后补回重建 WinRE」）
+
+在 WinRE 中、Apply 完成之后：
+
+```
+1) 把任务目录暂存的原件 Winre.wim 写到 <目标>\Recovery\WindowsRE\Winre.wim（哈希校对）
+2) bcdboot（现有步骤，同时拿到目标 osloader GUID；注意别冲掉默认项，见 9.4）
+3) RE = "<目标>:\Windows\System32\reagentc.exe"
+   %RE% /info  /target <目标>:\Windows                       → 记录前置状态
+   %RE% /setreimage /path <目标>:\Recovery\WindowsRE /target <目标>:\Windows
+        （目标处于 Disabled 态才会成功；已 Enabled 时返回 183，可忽略）
+   %RE% /enable /osguid {目标 osloader GUID}
+4) %RE% /info /target <目标>:\Windows → 断言 Enabled，否则明确告警（不许静默失败）
+```
+
+### 9.4 事故与教训：不要对着真实 ESP 跑 bcdboot
+
+- 现象：PoC 里对真实 ESP 执行 `bcdboot P:\Windows /s S: /f UEFI` 之后，bootmgr 的
+  **`default` 与 `displayorder` 被改写到 P: 的加载项** —— 若没发现，VM 下次启动会直接进 P:。
+- 处置：删除 P: 的加载项/恢复项，把 `default`/`displayorder` 改回 C: 加载项
+  `{a8bafbae-af1a-11f1-a77c-9813bbfbbd66}`；重启验证已回到桌面、WinRE 仍 Enabled、
+  C: Winre.wim 哈希未变（`1060a552…`）。
+- 约定（新增）：
+  1. **PoC 禁止对真实 ESP 跑 bcdboot**，只能在「假 ESP」（普通卷 + 复制出来的 BCD）上做；
+  2. 改 BCD 前的字节快照必须**当场校验写成功**——本次 pre-copy 因 BCD 被占用失败却没人检查，
+     只剩更早的逻辑转储，只能人工重建；
+  3. 产品里「核对 `{default}` 具体 GUID 而不是别名」的做法是对的：`bcdedit` 会把指向当前项的
+     default 显示成 `{current}`，别名不足以判定。
+
+### 9.5 由此浮现的新候选：方案 D「捕获前换回干净原件」
+
+原计划是把 `\Recovery\WindowsRE\Winre.wim` **排除**出镜像。既然链路已验证可行，还有一条更贴合
+微软惯例的路：**WinRE 此刻已经跑在内存里，磁盘上那个文件不再被读取** —— 那就在 Capture 之前把它
+**覆写回干净原件**（我们手上本来就有 `original/Winre.wim` + 哈希），Capture 打进去的就是干净 WinRE。
+
+| | 8.2 排除方案 | 9.5 方案 D |
+|---|---|---|
+| 镜像内容 | 不含 `\Recovery\WindowsRE` | 含**干净未被注入的** Winre.wim（就是任务前那份原件） |
+| 还原后 | 复制文件 + 注册 | 只需注册（文件由镜像带回） |
+| 与微软惯例 | 相悖（官方建议备份包含它） | 一致 |
+| 代价 | 无额外写入 | Capture 前多写一次 ~700MB |
+| 异地 / 旧镜像还原 | 依赖 sidecar | **镜像自包含** |
+
+两者都仍需 9.3 的注册收尾。**待用户裁定**（倾向 D：镜像自包含 + 不违背惯例，代价仅一次写入）。
+
+### 9.6 收尾状态
+
+VM 已复原：注册 WIM = `1060a552…`（v1.7.6 载荷原件）、`reagentc /info` Enabled、BCD 默认项 =
+C: 加载项 `{a8bafbae-…}`、`recoverysequence = {22e68a38-…}`，探测残留（H:\probe、C:\probe-out*.txt）
+已清理。回退快照：`{8550df15-2fa1-4ba4-ab60-22bf9c20183f}`。
