@@ -60,7 +60,7 @@
 
 | 文档 | 作用 |
 |---|---|
-| **[vm-input-control-guide.md](vm-input-control-guide.md)** | **操作 VM 鼠标键盘的操作手册（最新，日常用这个）**：四条通道选择矩阵、全部命令、坐标系换算、生效判据、故障排查 |
+| **[vm-input-control-guide.md](vm-input-control-guide.md)** | **操作 VM 的操作手册（最新，日常用这个）**：① 鼠标键盘**注入**——四条通道选择矩阵、全部命令、坐标系换算、生效判据、故障排查；② **提权命令通道**——`prlctl exec` 不加 `--current-user` 即 SYSTEM+管理员，DISM/reagentc/改 `C:\Recovery` 直接干，不用 runas 桥接 |
 | [vm-click-automation-inventory.md](vm-click-automation-inventory.md) | VM 内 UI 自动化能力的**资产清单与考古记录**：有哪些脚本、怎么来的、踩过哪些坑。顶部已指向操作手册 |
 | [operation-channels.md](operation-channels.md) | 早期操作通道全指南（合并豆包/Trae 经验）。**历史全量记录，部分结论已被 `vm-input-control-guide.md` 的 2026-09-26 实测更新**（如注入通道选型、DPI 坐标），冲突时以后者为准 |
 | [pd26-downgrade-vm-recovery-2026-09-25.md](pd26-downgrade-vm-recovery-2026-09-25.md) | PD 27→26.4.2 降级后 VM 卡 UEFI 菜单的**修复手册**（NVRAM 重建、快照、ReAgent.xml 等） |

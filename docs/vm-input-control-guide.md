@@ -1,8 +1,15 @@
-# 操作 VM 鼠标键盘 —— 操作手册
+# 操作 VM —— 鼠标键盘 + 提权命令通道（操作手册）
 
-> 面向日常使用：怎么在 macOS 宿主上驱动 Parallels 里 Windows 11 虚拟机的键鼠。
+> 面向日常使用：怎么在 macOS 宿主上驱动 Parallels 里 Windows 11 虚拟机的键鼠，
+> 以及怎么在 VM 里跑管理员命令（DISM / reagentc / 改 `C:\Recovery`）。
 > 资产清单与考古记录见 `vm-click-automation-inventory.md`，本文件只讲「怎么用」和「出问题怎么办」。
 > 更新：2026-09-27
+
+> **先分清两件事**：
+> - **要模拟键鼠**（点按钮、打字）→ 下面第一~七节，必须在 Session 1 桌面里注入，需要提权是因为 UIPI。
+> - **只要跑命令**（DISM 挂载、`reagentc`、读写 `C:\Recovery`、批量脚本）→ 直接跳到
+>   **[第十节：提权命令通道](#十提权命令通道跑命令改系统不需要-runas-桥接)**，
+>   `prlctl exec` 不加 `--current-user` 就是 SYSTEM+管理员，**不需要 runas 桥接**，比键鼠通道快得多也稳得多。
 
 ---
 
@@ -172,8 +179,10 @@ TCP 通道不可用时（比如防火墙不让开端口）用它。
 ### 8.2 注入没反应（tick 不变）
 
 - 前台是**提权**窗口（BackupRestore GUI 就是）时，中等完整性进程的注入会被 UIPI 静默拦截。
-  三条通道都已经走 `runas` 提权，若自己写脚本必须同样提权。
+  三条键鼠通道都已经走 `runas` 提权，若自己写脚本必须同样提权。
 - 确认在 Session 1（用户桌面）。`prlctl exec --current-user` 实测就在 Session 1。
+- 注意：**只是跑命令不要走这条路**。`prlctl exec` 不加 `--current-user` 直接是 SYSTEM+管理员，
+  见第十节。SYSTEM 在 Session 0，反过来**不能**用来注入键鼠。
 
 ### 8.3 VM 切到前台后，连 macOS 光标都动不了（左右键正常）
 
@@ -221,7 +230,56 @@ TCP 通道不可用时（比如防火墙不让开端口）用它。
 
 ---
 
-## 十、相关文件
+## 十、提权命令通道（跑命令 / 改系统，不需要 runas 桥接）
+
+2026-09-27 实测发现，比旧的 `runas` 桥接（`br-gui-exec.ps1` / `elev-bridge.ps1`）简单得多。
+**只要在 VM 里跑命令、不需要模拟键鼠，一律用这条。**
+
+```bash
+# SYSTEM + 管理员，DISM / reagentc / 写 C:\Recovery 全部直接可用
+prlctl exec "Windows 11" cmd /d /c "whoami & net session >nul 2>nul && echo ADMIN_YES || echo ADMIN_NO"
+# → nt authority\system / ADMIN_YES
+
+# 标准套路：脚本从共享目录拷进 VM，再本地执行（见下方坑 2、3）
+prlctl exec "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\.test-artifacts\\x.ps1 C:\Users\Public\pkg\\x.ps1 & powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\Public\pkg\\x.ps1"
+```
+
+**什么时候不能用它**：需要模拟键鼠、操作 GUI 窗口时——SYSTEM 在 Session 0，没有桌面交互，
+键鼠注入必须回到 `--current-user` + runas 提权的通道（第一~七节）。
+
+### 五个必须遵守的点
+
+1. **不加 `--current-user`** 才是 SYSTEM；加了就是普通用户的 Session 1（中等完整性，会被 UIPI 拦）。
+2. SYSTEM **看不到 `X:` 盘符**，但 UNC `\\Mac\backupRestore\...` **读写都正常**
+   （读脚本、把结果写回宿主都走 UNC）。
+3. **`powershell -File` 不能直接吃 UNC 路径**——prlctl 传参会把路径搞坏，PowerShell 报「找不到 .ps1」。
+   先 `copy` 到 `C:\Users\Public\pkg\` 再执行本地路径。
+4. **脚本正文保持 ASCII**：`-File` 按 GBK 解码，中文注释可能把脚本解坏（既有踩坑，见第九节第 1 条）。
+   要输出中文，就写到 UNC 上的 UTF-8 文件里，回宿主再读：
+   ```powershell
+   [System.IO.File]::WriteAllText("\\Mac\backupRestore\.test-artifacts\out.txt", $text, (New-Object System.Text.UTF8Encoding($false)))
+   ```
+5. **`Get-Item` 对几百 MB 的 WIM 会报「找不到路径」，但 `Get-FileHash` 正常**。
+   取长度用 `[System.IO.FileInfo]::new($p).Length`。
+6. 命令行里的反斜杠要写成 `\\`（UNC 写成 `\\\\Mac\\...`）——prlctl 会吃一层。
+
+### 已验证可用清单
+
+| 操作 | 结果 |
+|---|---|
+| `dism /Mount-Image`、`/Unmount-Image /Commit`、`/Get-ImageInfo` | ✅ |
+| `reagentc /info`、`/boottore` | ✅ |
+| 读写 `C:\Recovery\WindowsRE\`（含覆盖 `Winre.wim`） | ✅ |
+| 复制文件进出 UNC `\\Mac\backupRestore` | ✅ |
+| 启动 VM 里的程序并取回 stdout/stderr/退出码 | ✅ |
+| 触发 `shutdown /r`（会真的重启 VM，注意后果） | ✅ |
+
+实例脚本（可直接抄）：`.test-artifacts/v176-step{1..7}-*.ps1`；
+说明见 [`winre-payload-and-p0-fix-2026-09-27.md`](winre-payload-and-p0-fix-2026-09-27.md) 第 9 节。
+
+---
+
+## 十一、相关文件
 
 | 路径 | 说明 |
 |---|---|
