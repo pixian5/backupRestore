@@ -70,6 +70,7 @@
 | [20260928-065800-parallels-shared-folder-and-deploy.md](20260928-065800-parallels-shared-folder-and-deploy.md) | **宿主↔VM 共享盘根因**：`prl_fs` 虚拟通道只在有登录会话时建立；`net view \\Mac` 1702 是假警报；盘符会话级须用 UNC；`build-win.sh --deploy` 选 B（UNC）并端到端验证 |
 | [20260928-072014-winre-restore-clean-at-entry.md](20260928-072014-winre-restore-clean-at-entry.md) | **方案 D 还原干净 WinRE 提前到 WinRE 入口**：纠正"清理一次性启动项"实为 guard/bootstatus 机制；入口（guard 后、task 加载后）立即 `restore_original_winre`；捕获前+结尾保留作幂等安全网 |
 | [20260928-073809-resume-vs-clean-winre-conflict.md](20260928-073809-resume-vs-clean-winre-conflict.md) | ⚠️ **冲突分析（回归）**：入口还原干净 RE 与断电续跑真实冲突——续跑隐式依赖「注册位=注入件」才能自动跑 Recovery.exe，入口替换后续跑会落进原版 WinRE；含冲突矩阵、旧设计对比、修复方案（resume 侧重建 payload） |
+| [20260928-074516-registered-winre-policy-and-resume-design.md](20260928-074516-registered-winre-policy-and-resume-design.md) | **注册 WinRE 状态机设计**：注册位单位置双角色（载荷宿主 vs 捕获纯净）只能时间分片；三条不变量 + 七阶段流程 + 13 种场景矩阵 + 幂等/防循环论证；结论=回退入口翻转、改为「续跑前重建载荷」 |
 
 ---
 
