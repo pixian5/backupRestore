@@ -756,6 +756,28 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task.status
         )));
     }
+    // 方案 D（入口提前版）：进入 WinRE、一次性启动项已被 bootmgr 消费、恢复卷挂载完成
+    // 之后，立即把注册 WinRE 覆写回任务前干净原件。WinRE 此刻已运行在内存（X: RAM 盘），
+    // 磁盘上的注册 WIM 不再被读取，覆写不影响当前会话；之后整个 WinRE 会话（含任何 DISM
+    // 捕获）打进镜像的都是干净原件，F3 污染窗口在入口即闭合——比「捕获前才还原」更早、更稳。
+    // 只在「备份源卷 == 承载注册 WinRE 的卷」时动作（还原任务或布局不命中则不动注册位）。
+    // 捕获前的 restore_clean_winre_before_capture 与结尾的 restore_original_winre 仍保留，
+    // 作为幂等安全网：本次已在入口还原，二者均走「已匹配」/「已干净」早返回，无副作用。
+    if let Operation::Backup = task.operation {
+        if let Some(recovery) = recovery_volume_from_env(&values) {
+            if let Some(source) = task.source.as_ref() {
+                if backuprestore_core::capture_source_hosts_registered_winre(source, Some(&recovery))
+                {
+                    if let Err(cleanup_error) =
+                        restore_original_winre(&values, &task_dir, &early_log, recovery_letter)
+                    {
+                        // 与结尾同一函数：失败即硬失败终止任务，绝不静默产脏镜像。
+                        return Err(cleanup_error);
+                    }
+                }
+            }
+        }
+    }
     // 主日志默认在任务目录；挂载镜像卷后（见下）切换到镜像同目录 Recovery.log，
     // 方便用户在 WIM 旁直接查看。workspace_log 保留给 GUI 状态报告读取。
     let workspace_log = store.log_path(&task_id)?;

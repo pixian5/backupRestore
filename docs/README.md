@@ -68,6 +68,7 @@
 | [vm-boot-repair-newvm.md](vm-boot-repair-newvm.md) | VM 引导修复的「新建 VM 挂旧盘」方案（2026-09-13） |
 | [cleanup-dev-residue.md](cleanup-dev-residue.md) | 开发残留清理清单与测试盘重建步骤 |
 | [20260928-065800-parallels-shared-folder-and-deploy.md](20260928-065800-parallels-shared-folder-and-deploy.md) | **宿主↔VM 共享盘根因**：`prl_fs` 虚拟通道只在有登录会话时建立；`net view \\Mac` 1702 是假警报；盘符会话级须用 UNC；`build-win.sh --deploy` 选 B（UNC）并端到端验证 |
+| [20260928-072014-winre-restore-clean-at-entry.md](20260928-072014-winre-restore-clean-at-entry.md) | **方案 D 还原干净 WinRE 提前到 WinRE 入口**：纠正"清理一次性启动项"实为 guard/bootstatus 机制；入口（guard 后、task 加载后）立即 `restore_original_winre`；捕获前+结尾保留作幂等安全网 |
 
 ---
 
