@@ -72,13 +72,16 @@ prl_exec_retry() {
 
 if [ "$1" = "--deploy" ]; then
   echo ">> 部署到 VM Windows 11"
-  # Parallels mounts X: only in the interactive Windows session. Use the
-  # elevated channel for process cleanup and the interactive channel for the
-  # actual shared-folder copy. Never accept a stale executable as success.
+  # 部署全程用 SYSTEM 通道（prlctl exec 不加 --current-user），不依赖 VM 是否有
+  # 交互登录会话来跑命令。共享盘用 UNC 路径 \\Mac\backupRestore 而非盘符 X:，
+  # 因为盘符是会话级的、SYSTEM 看不到；UNC 在 SYSTEM 下可读写。注意 Parallels
+  # 共享文件夹虚拟通道本身只在客体有登录会话时才建立，所以共享盘能否用仍取决于
+  # 是否登录（本机已登录，故可用）。真正的成功判据只有下面的 DEPLOYED 标记和
+  # SHA-256 比对，重试不会放过真实失败。
   # 清理步骤的失败都是良性的（进程本来没在跑、文件本来不存在），
   # 用 exit /b 0 收尾，避免良性退出码在 set -e 下中断部署。
   prl_exec_retry "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe >nul 2>nul & taskkill /f /im Recovery.exe >nul 2>nul & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd 2>nul & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini 2>nul & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd 2>nul & exit /b 0"
-  DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" --current-user cmd /d /c "copy /y X:\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul && copy /y X:\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul && copy /y X:\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini >nul && echo DEPLOYED")
+  DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini >nul && echo DEPLOYED")
   if ! echo "$DEPLOY_OUTPUT" | grep -q '^DEPLOYED'; then
     echo "部署失败：客体未返回 DEPLOYED 成功标记" >&2
     echo "$DEPLOY_OUTPUT" >&2

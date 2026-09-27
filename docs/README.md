@@ -67,6 +67,7 @@
 | [pd26-downgrade-vm-recovery-2026-09-25.md](pd26-downgrade-vm-recovery-2026-09-25.md) | PD 27→26.4.2 降级后 VM 卡 UEFI 菜单的**修复手册**（NVRAM 重建、快照、ReAgent.xml 等） |
 | [vm-boot-repair-newvm.md](vm-boot-repair-newvm.md) | VM 引导修复的「新建 VM 挂旧盘」方案（2026-09-13） |
 | [cleanup-dev-residue.md](cleanup-dev-residue.md) | 开发残留清理清单与测试盘重建步骤 |
+| [20260928-065800-parallels-shared-folder-and-deploy.md](20260928-065800-parallels-shared-folder-and-deploy.md) | **宿主↔VM 共享盘根因**：`prl_fs` 虚拟通道只在有登录会话时建立；`net view \\Mac` 1702 是假警报；盘符会话级须用 UNC；`build-win.sh --deploy` 选 B（UNC）并端到端验证 |
 
 ---
 
