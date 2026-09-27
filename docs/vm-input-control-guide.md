@@ -247,31 +247,44 @@ prlctl exec "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\.test-artifa
 **什么时候不能用它**：需要模拟键鼠、操作 GUI 窗口时——SYSTEM 在 Session 0，没有桌面交互，
 键鼠注入必须回到 `--current-user` + runas 提权的通道（第一~七节）。
 
-### 五个必须遵守的点
+### 五个必须遵守的点（2026-09-27 23:30 实测修正）
+
+0. **【最关键】SYSTEM 模式必须用「多参数」姿态**：
+   `prlctl exec "Windows 11" cmd.exe /c "whoami"` —— `cmd.exe` 是程序，`/c` 和脚本是后续参数。
+   **不能**把 `"cmd.exe /c whoami"` 整体当一个引号串传给 `prlctl exec`：SYSTEM 模式（不加
+   `--current-user`）会把它当成「程序名 = cmd.exe /c whoami」（含空格），找不到 → exec 静默失败、
+   stdout 为空。2026-09-27 当晚一度误判「exec 通道全断」，根因就是这个姿势错误，不是基础设施坏。
 
 1. **不加 `--current-user`** 才是 SYSTEM；加了就是普通用户的 Session 1（中等完整性，会被 UIPI 拦）。
-2. SYSTEM **看不到 `X:` 盘符**，但 UNC `\\Mac\backupRestore\...` **读写都正常**
-   （读脚本、把结果写回宿主都走 UNC）。
-3. **`powershell -File` 不能直接吃 UNC 路径**——prlctl 传参会把路径搞坏，PowerShell 报「找不到 .ps1」。
-   先 `copy` 到 `C:\Users\Public\pkg\` 再执行本地路径。
-4. **脚本正文保持 ASCII**：`-File` 按 GBK 解码，中文注释可能把脚本解坏（既有踩坑，见第九节第 1 条）。
-   要输出中文，就写到 UNC 上的 UTF-8 文件里，回宿主再读：
-   ```powershell
-   [System.IO.File]::WriteAllText("\\Mac\backupRestore\.test-artifacts\out.txt", $text, (New-Object System.Text.UTF8Encoding($false)))
-   ```
-5. **`Get-Item` 对几百 MB 的 WIM 会报「找不到路径」，但 `Get-FileHash` 正常**。
-   取长度用 `[System.IO.FileInfo]::new($p).Length`。
-6. 命令行里的反斜杠要写成 `\\`（UNC 写成 `\\\\Mac\\...`）——prlctl 会吃一层。
 
-### 已验证可用清单
+2. **`--current-user` 在 VM 冷启、尚无登录会话时返回固定占位 `p8b6\x^M`**（每次都一样、8 字节），
+   **不是通道坏了，是无会话**。判别法：用 SYSTEM 模式跑 `whoami`，返回干净 `nt authority\system`
+   即证明通道活；返回 `p8b6\x` 则是 `--current-user` 缺会话。要彻底用 `--current-user`，先让 VM 登录。
+
+3. SYSTEM 看不到 `X:` 盘符；UNC `\\Mac\backupRestore\...` **读**取决于共享盘状态，但
+   **【2026-09-27 23:30 实测】VM→宿主共享盘写入失败**（冷启 + 新 dispatcher 后仍写不进，
+   `echo > \\Mac\...` 不落地）。因此**结果回传改走 exec stdout**（见下方清单），不再依赖共享盘写。
+
+4. **脚本内联优先**：共享盘写坏后，把逻辑直接塞进 `powershell.exe -Command "<内联>"`（多参数），
+   复杂脚本用 Here-String 先写 VM 本地 `C:\Users\Public\pkg\`（exec `cmd /c echo` 或 powershell 写），
+   再 `powershell -File` 本地路径执行。
+
+5. **stdout 是 GBK 编码**：中文会乱码但内容正确；宿主侧读回后用 `iconv -f GBK -t UTF-8`
+   或 python `bytes.decode('gbk')` 解码。多行 / 长输出（如 `reagentc /info`）正常回传。
+
+6. 命令行反斜杠：多参数姿势下引号内写单 `\`（zsh 不转义）；VM 内 UNC 是 `\\Mac\...`。
+   取长度用 `[System.IO.FileInfo]::new($p).Length`（`Get-Item` 对几百 MB 的 WIM 会报「找不到路径」，
+   但 `Get-FileHash` 正常）。
+
+### 已验证可用清单（2026-09-27 23:30 复核）
 
 | 操作 | 结果 |
 |---|---|
-| `dism /Mount-Image`、`/Unmount-Image /Commit`、`/Get-ImageInfo` | ✅ |
-| `reagentc /info`、`/boottore` | ✅ |
-| 读写 `C:\Recovery\WindowsRE\`（含覆盖 `Winre.wim`） | ✅ |
-| 复制文件进出 UNC `\\Mac\backupRestore` | ✅ |
-| 启动 VM 里的程序并取回 stdout/stderr/退出码 | ✅ |
+| `dism /Mount-Image`、`/Unmount-Image /Commit`、`/Get-ImageInfo` | ✅（SYSTEM 多参数） |
+| `reagentc /info`（多行）、`/boottore` | ✅ |
+| 读写 `C:\Recovery\WindowsRE\`（含覆盖 `Winre.wim`） | ✅（VM 本地） |
+| **启动 VM 程序并取回 stdout**（GBK，多行/长输出正常） | ✅ **主结果回传通道** |
+| 复制文件**进** UNC `\\Mac\backupRestore`（VM→宿主写） | ❌ 当前坏，改用 stdout 回传 |
 | 触发 `shutdown /r`（会真的重启 VM，注意后果） | ✅ |
 
 实例脚本（可直接抄）：`.test-artifacts/v176-step{1..7}-*.ps1`；

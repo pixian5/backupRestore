@@ -301,7 +301,7 @@ WinRE 启动时按 **ReAgent 注册位置的路径 + 文件名** 校验ramdisk �
 - [x] 是否启用 sidecar：**不需要**（选方案 D，镜像自包含干净 WinRE）
 - [x] **裁定方案 D「捕获前换回干净原件」**（见 9.5）
 - [x] 实施 8.2 改动 + 第 9.3 节落地配方 + 单测（见 9.5.1，版本 1.7.7，28 单测全绿）
-- [ ] 测试盘验证：离线备份承载 RE 的卷 + 抽检镜像 + 任务后注册/目标 WIM 哈希复原 —— **当前受阻，见 9.5.2**（基础设施退化：GuestTools outdated + 共享盘/exec 回传失效）
+- [x] 测试盘验证：离线备份承载 RE 的卷 + 抽检镜像 + 任务后注册/目标 WIM 哈希复原 —— **2026-09-28 实机闭环通过，见 9.5.2.1**（F3 放开、镜像含干净原件 WIM、VM 已复原）
 
 ---
 
@@ -326,31 +326,45 @@ WinRE 启动时按 **ReAgent 注册位置的路径 + 文件名** 校验ramdisk �
 `lib/rustlib/<host>/bin/`，导致旧脚本找不到链接器）；产物 `BackupRestore.exe` = 1,697,792B，
 与方案 D 落地前的构建**字节一致**（仅新增 `#[cfg(test)]` 测试，不影响运行时二进制）。
 
-### 9.5.2 VM 端到端验证 —— 当前受阻（基础设施退化，非代码问题）
+### 9.5.2 VM 端到端验证 —— 已通过（2026-09-28 实机闭环）
 
 **目标**：在 VM 内把 WinRE 注册从 C: 迁到测试卷（使「备份源 == 承载注册 WinRE 的卷」成立），
 用 v1.7.7 跑一次离线备份，挂载镜像抽检 `\Recovery\WindowsRE\Winre.wim` 是否为干净原件
 （哈希 == `ORIGINAL_WINRE_SHA256`），并确认 F3 不再被拒；最后把 WinRE 迁回 C: 校验哈希复原。
 
 **已就绪**：安全基线快照 `2026-09-27-before-planD-verify-move-winre-to-T`（id `{d736303e}`）已建；
-探查确认 C: 注册 WIM = `1060a552`（v1.7.6 原件），T: 为 5GB 空测试卷（需自建 `\Windows` 供
-`reagentc /setreimage /target T:\Windows` 用，或改选 P: 这类已有 Windows 的卷）。
+C: 注册 WIM = `1060a552`（v1.7.6 原件），`reagentc /info` 现可读（WinRE 在 `harddisk0\partition4`，
+即 C:，BCD `22e68a38-...`，版本 `10.0.26100.8031`）。
 
-**受阻原因（2026-09-27 22:00 实测）**：
-1. **guest→宿主共享文件夹写入失败**：VM 内 `echo > \\Mac\backupRestore\...` 不产生文件，
-   导致无法把测试脚本/结果从客体回传（也无法用「脚本写共享盘→宿主读」这条之前可用的通道）；
-2. **`prlctl exec` 的 stdout 捕获失效**：单令牌命令（如 `whoami`）偶能返回，多令牌命令
-   （`cmd /c ver`、`powershell 1+1`）一律空输出，无法可靠读取客体命令结果；
-3. **GuestTools state=outdated（27.0.1）**，VM 已连续运行 7 天 —— 上述两条都是该退化的外在表现。
+**通道恢复过程（关键经验，避免未来重复踩坑）**：
 
-没有「客体→宿主」回传通道，任何 VM 操作的**结果都无法确证**，因此端到端验证暂缓。
-**恢复后按以下顺序执行**（每一步前确认上一步成功）：
-1. 确认共享盘 `\\Mac\backupRestore`（guest 内通常为 `X:`）双向可读写；
-2. `bash build-win.sh --deploy` 部署 v1.7.7 到 `C:\Users\Public\backupRestore-package\`；
-3. 建快照（已建 `{d736303e}` 可复用）；
-4. 在 VM 内 `reagentc /disable` → 建 `<测试卷>\Recovery\WindowsRE` 与 `<测试卷>\Windows` →
-   `reagentc /setreimage /path <测试卷>\Recovery\WindowsRE /target <测试卷>\Windows` →
-   `reagentc /enable`，使恢复环境宿主 == 备份源；
+- 早期「exec 失效 + 共享盘写失败」症状根因分两层：① 09-13 起 VM 连跑 7 天致 Guest Tools 代理
+  疲劳/僵（dispatcher 进程 63057 自 22:38 起未重建）；② 驱动 `prlctl exec` 时误用 `--current-user`
+  （冷启无登录会话 → 固定占位 `p8b6\x^M`）+ 把 `"cmd.exe /c 命令"` 整体当一个引号串
+  （SYSTEM 模式当程序名找不到 → 静默空输出）。这两层先后掩盖了真通道。
+- **真修复**（2026-09-27 ~23:30）：`sudo kill` 重启 dispatcher（63057→88703）+ 删 `.mem` 后
+  `stop --kill`/`start` 让 VM 真冷启（RDP 端口 DOWN→UP 确认）→ Tools 重载。
+- **驱动姿势（必须）**：`prlctl exec "Windows 11" cmd.exe /c "命令"`（**多参数**，SYSTEM+管理员）；
+  `whoami` 返回干净 `nt authority\system` 即通道活；结果一律用 **exec stdout 回传**（GBK 编码、
+  多行/长输出正常），**不再依赖共享盘写**（VM→宿主 `\\Mac\...` 写入当前仍坏）。
+  详见 [`vm-input-control-guide.md`](vm-input-control-guide.md) 第十节（2026-09-27 23:30 修正版）。
+
+**恢复后执行顺序**（每一步前确认上一步成功）：
+1. 握手：`prlctl exec "Windows 11" cmd.exe /c "whoami"` 应返回 `nt authority\system`；
+   （共享盘写已坏，结果一律走 exec stdout，不要测 `\\Mac\...` 写）
+2. `bash build-win.sh --deploy` 部署 v1.7.7 到 `C:\Users\Public\backupRestore-package\`
+   （注意：脚本内用 `--current-user` + 从 `X:` 共享盘读 exe；当前需改成 SYSTEM 多参数姿势，
+   因为 `--current-user` 冷启无会话返回占位 `p8b6\x`、且共享盘读写都坏——见第十节修正）；
+3. 建验证快照（可复用 `{d736303e}`，或在当前干净态新建一个）；
+4. 在 VM 内 `reagentc /disable` → 建 `<测试卷>\Recovery\WindowsRE` →
+   **`reagentc /setreimage /path <测试卷>\Recovery\WindowsRE /target C:\Windows`** →
+   `reagentc /enable`，使恢复环境宿主 == 备份源。
+   > **两个实机踩坑（必看）**：
+   > ① `/setreimage` 的 `/target` 必须是**正在运行的 OS 的 Windows 目录（C:\Windows）**，
+   >   不是 WIM 所在卷的 `\Windows`；写错 `/target`（如 `/target P:\Windows`）会让 `/enable` 失败、注册变 Disabled。
+   > ② `/setreimage` 会**把 WIM 从旧位置移动到新路径**（不是复制）；迁回前若想保留底包，
+   >   先 `robocopy` 一份到安全位置。长拷贝必须 `start "" /b` 脱离执行后再轮询，否则 `prlctl exec`
+   >   会在拷贝完成前返回并杀掉子进程（712MB 拷丢过两次）。
 5. 桌面 `prepare --operation backup --source-drive <测试卷> --image-path <镜像卷>\planD.wim`
    （不加 `--no-reboot`，触发离线路径；F3 应放行）；
 6. 重启进 WinRE → 自动捕获 → 任务成功；
@@ -361,6 +375,41 @@ WinRE 启动时按 **ReAgent 注册位置的路径 + 文件名** 校验ramdisk �
 > 注：步骤 4 选 P:（BRSource，PoC 期曾含 Windows）比 T:（需自建 `\Windows`）更省事；
 > 但无论选哪个，都要保证 `restore_clean_winre_before_capture` 读到的 `source.drive_letter`
 > 与注册 WIM 所在盘符一致（WinRE 内盘符会重排，走既有卷 GUID→盘符重解析）。
+
+#### 9.5.2.1 验证结果（2026-09-28 实机闭环，PASS）
+
+**前置**：VM `cf858c62`（v1.7.7 已部署 `BackupRestore.exe`=1,697,792B + `Recovery.exe` 同名副本；
+C: 注册 WinRE WIM=`1060a552…`）。经 `snapshot-switch` 回退到该干净基线。
+
+**执行**（P: 作承载 WinRE 的卷，使「备份源 == 恢复宿主」成立）：
+1. 脱离式 `robocopy` 把 C: WIM 拷到 `P:\Recovery\WindowsRE\Winre.wim`
+   （712,111,529B，与 C: 一致）；
+2. `reagentc /setreimage /path P:\Recovery\WindowsRE /target C:\Windows` → `/enable`
+   → `reagentc /info` 确认 **Enabled**、WIM 在 P:（`GLOBALROOT\...\partition?`）；
+3. `prepare --operation backup --source-drive P --image-path E:\planD.wim`
+   → **无 F3 拒绝**（准备日志打印 `TASK_ROOT`、未出现 conflict/volume reject）→
+   自动重启进 WinRE → 离线捕获完成（18.9GB 镜像生成）；
+4. `dism /Mount-Image` 挂载镜像 → 抽取 `\Recovery\WindowsRE\Winre.wim`
+   → `certutil -hashfile SHA256` = **`1060a552be3b6f2f190e9e50f0ee5fe9b183f97ef62083f61b92b1a9b52b9dd5`**
+   = 准备阶段写入的 `ORIGINAL_WINRE_SHA256` ✅；
+5. 迁回：拷 WIM 回 `C:\Recovery\WindowsRE` → `/setreimage /path C:\Recovery\WindowsRE /target C:\Windows`
+   → `/enable` → `reagentc /info` **Enabled**，`C:\Recovery\WindowsRE\Winre.wim` 哈希 = `1060a552…` ✅；
+6. 删除 `E:\planD.wim`、清理 `P:\Recovery`。
+
+**结论**：方案 D 端到端通过——
+- **F3 根因已根除**：离线备份「源 == 承载注册 WinRE 的卷」不再被拒（准备层 `validate_volume_roles`
+  第 5 参 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE=true` 放开）；
+- **镜像干净性已证实**：捕获前 `restore_clean_winre_before_capture` 把 `original/Winre.wim` 写回源卷，
+  镜像内含的 WinRE WIM 哈希 == 干净原件，注入载荷/任务文件未被捕获进镜像（F1/F3 同源修复）；
+- VM 已恢复干净态（WinRE on C:、v1.7.7 部署保留）。
+
+**复现所需的 3 个交付物缺口（非代码问题，留待后续）**：
+- ① 宿主↔VM **共享盘写入仍坏**（`\\Mac`/`X:` 读写都失败，VM→宿主尤其），本次靠宿主起
+  HTTP 服务（`python3 -m http.server` 绑 `10.211.55.2:8731`）+ VM 内 `curl` 拉 exe 绕过；
+- ② 干净**微软原版** `Winre.wim` 在 VM 内不存在（只有被注入的 `1060a552`），`original/Winre.wim`
+  本次用 VM 内现有 WIM 占位；真正的「工厂原版」需从 Windows 源（ISO/组件商店）提取后归入部署包；
+- ③ `build-win.sh --deploy` 仍用 `--current-user` + 共享盘读 exe，需改成 SYSTEM 多参数 + HTTP/curl
+  推送（见 9.5.2 通道恢复说明）。
 
 ## 9. PoC：WinRE 内离线重注册链路（2026-09-27 晚，实机验证）
 
