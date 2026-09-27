@@ -158,11 +158,17 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 1. **C: 完整系统备份/还原仍未实机测试** —— 它是产品主场景，但按用户长期约束，开发/测试一律在
    测试盘进行，C: 只在最终验收时做一次。此外当前这台 WinRE 注册在 C: 上，F3 第一段会拒绝
-   「离线备份 C:」这条组合（在线 `--no-reboot` 不受影响）；要放开需做 F3 第二段（任务专用 WIM）。
-2. **PE 载荷未同步** —— 按裁定本轮不处理。VM 内 `T:\petest\boot.wim` 是 2026-09-13 实验残留，
-   宿主 `artifacts/BackupRestorePE.wim` 是另一条产物线；需先定「以哪个为准」再一次性同步。
-3. **F1 / F3 第二段未做** —— 任务专用 WIM + 独立 BCD 对象（F1），任务副本注入 + Capture 精确排除（F3）。
-   做完才能安全放开「还原/备份到承载 WinRE 的卷」。
+   「离线备份 C:」这条组合（在线 `--no-reboot` 不受影响）。
+2. **阶段 2 PoC 已证伪「任务副本 + BCD 重定向」**（详见
+   [`docs/winre-task-wim-phase2-2026-09-27.md`](docs/winre-task-wim-phase2-2026-09-27.md) 第 7 节）：
+   WinRE 强校验「启动 ramdisk 路径 == ReAgent 注册位置」，改共享对象、克隆对象、
+   recoverysequence 自洽、官方 `/setreimage` 四条路全部被拒。要解锁主场景只剩
+   swap-in-place（任务副本临时顶班注册位置）或换 WinPE 两条路，**待用户裁定**。
+3. **Windows servicing 会静默冲掉部署的载荷**（当天新发现）——v1.7.6 载荷部署数小时后
+   被累积更新替换为官方原版 WinRE，已重新注入恢复。任务准备阶段的载荷哈希校验因此不可省略，
+   长期需要把任务环境与注册 WinRE 解耦。
+4. **PE 载荷未同步** —— VM 内 `T:\petest\boot.wim` 是 2026-09-13 实验残留，
+   宿主 `artifacts/BackupRestorePE.wim` 是另一条产物线；若路线 B（WinPE）被选中则需一并处理。
 
 ### 其他已知限制
 
