@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.6**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.7.7**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 ---
 
@@ -141,7 +141,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | `backup` 捕获 WIM + 只读挂载哈希比对 | 两种压缩各一次，哈希与源逐项一致 |
 | `restore-existing` 还原闭环 | v1.7.5 起**不停 Parallels 服务也能成功**（见下） |
 | v1.7.5 修复：`\Mac disk` 纳入默认排除 + GUI 在线备份补接 `/ConfigFile` | 产物 `f8b77d0e…e184`，已部署客体并核对哈希 |
-| 离线测试 | `cargo test -p backuprestore-core` 25 passed / 0 failed |
+| 离线测试 | `cargo test -p backuprestore-core` 28 passed / 0 failed |
 
 ### v1.7.6（2026-09-27）：载荷更新 + F1/F3 第一段已闭环
 
@@ -154,20 +154,31 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 详见 [`docs/winre-payload-and-p0-fix-2026-09-27.md`](docs/winre-payload-and-p0-fix-2026-09-27.md)。
 
+### v1.7.7（2026-09-27 晚）：方案 D「捕获前换回干净原件」落地，F1/F3 两个根因彻底解锁
+
+阶段 2 路线在 1.7.6 之后收敛为用户裁定的**方案 D**：不把 `\Recovery\WindowsRE\Winre.wim`
+排除出镜像，而是**在 DISM 捕获之前把它覆写回任务暂存的干净原件**，于是镜像自带干净 WinRE
+（合乎微软惯例、异地/旧镜像还原自包含），代价仅一次 ~700MB 写入。一处修复同时解 F1/F3 两个 P0。
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 核心改动：`validate_volume_roles` 扩展 5 参数 + `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` 开关 | 已落地 | `core` 28 单测全绿（新增 `plan_d_opens_f3_when_source_hosts_registered_winre` 锁定「开关开→F3 放开、关→恢复拒绝」） |
+| 准备层 F3 放开（离线备份源 == WinRE 宿主不再被拒） | 已落地 | `windows_prepare.rs:509` 传 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` |
+| 执行层 `restore_clean_winre_before_capture` | 已落地 | `main.rs:1213`，捕获前覆写源卷注册 WIM 为干净原件并校验哈希；**失败即硬失败终止任务**，绝不静默产脏镜像 |
+| 执行层二次闸 `winre_role_conflict_at_execution` 随开关放开 F3 | 已落地 | `main.rs:1170`，`false` 可一键回退到旧拒绝 |
+| 构建（macOS 交叉编译 ARM64） | 产物 `BackupRestore.exe` = 1,697,792B | `build-win.sh` 修复 `rust-lld` 路径后构建通过，字节与方案 D 落地前一致（仅新增 `#[cfg(test)]` 测试） |
+| **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **当前受阻** | 详见 [阶段2 文档 9.5.2](docs/winre-task-wim-phase2-2026-09-27.md)：GuestTools outdated + 共享盘/exec 回传失效，恢复后按文档步骤执行 |
+
+> 方案 D 让「离线备份承载 WinRE 的卷」不再被拒，结合 1.7.6 的 F1/F3 第一段逻辑，**产品主场景（系统盘离线备份/还原）在代码层面已解锁**；VM 实机闭环是最后一个待补的证据缺口。
+
 ### 尚未闭环（按严重度）
 
 1. **C: 完整系统备份/还原仍未实机测试** —— 它是产品主场景，但按用户长期约束，开发/测试一律在
-   测试盘进行，C: 只在最终验收时做一次。此外当前这台 WinRE 注册在 C: 上，F3 第一段会拒绝
-   「离线备份 C:」这条组合（在线 `--no-reboot` 不受影响）。
-2. **阶段 2 路线已定：Capture 排除 + 事后补回重建 WinRE**（详见
-   [`docs/winre-task-wim-phase2-2026-09-27.md`](docs/winre-task-wim-phase2-2026-09-27.md) 第 7、8 节）。
-   PoC 已证伪「任务副本 + BCD 重定向」：WinRE 强校验「启动 ramdisk 路径 == ReAgent 注册位置」，
-   改共享对象、克隆对象、recoverysequence 自洽、官方 `/setreimage` 四条路全部被拒——
-   **所以「注入副本必须写回注册位置」是为启动，不可省**；真正解决 F1/F3 的是
-   **把 `\Recovery\WindowsRE\Winre.wim` 加入 Capture 排除表，任务结束后补回原件并离线重注册**，
-   一处修复同时解两个 P0。待 PoC：WinRE 内对已 Apply 的目标卷做离线 `reagentc /setreimage /target` + `/enable`。
-   **该问题只存在于 WinRE 通道；PE 通道（`install_pe_ramdisk`，任意路径 ramdisk、无 ReAgent 校验）天生没有 F1/F3。**
-3. **Windows servicing 会静默冲掉部署的载荷**（当天新发现）——v1.7.6 载荷部署数小时后
+   测试盘进行，C: 只在最终验收时做一次。v1.7.7 方案 D 已从代码层面解锁「离线备份 C:」这条组合
+   （F3 随开关放开，捕获前换回干净原件），待 VM 端到端验证补齐证据。
+2. **阶段 2 方案 D 代码已完成，VM 端到端验证受阻**（见上表）。PE 通道（`install_pe_ramdisk`，
+   任意路径 ramdisk、无 ReAgent 校验）天生没有 F1/F3，本阶段不需要动 PE。
+3. **Windows servicing 会静默冲掉部署的载荷** —— v1.7.6 载荷部署数小时后
    被累积更新替换为官方原版 WinRE，已重新注入恢复。任务准备阶段的载荷哈希校验因此不可省略，
    长期需要把任务环境与注册 WinRE 解耦。
 4. **PE 载荷未同步** —— VM 内 `T:\petest\boot.wim` 是 2026-09-13 实验残留，

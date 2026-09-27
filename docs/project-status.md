@@ -1,13 +1,14 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-09-27
-当前开发版本：**`1.7.6`**（Cargo.toml×2 与 VERSION 已同步）
+当前开发版本：**`1.7.7`**（Cargo.toml×2 与 VERSION 已同步）
 
 > **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) + [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >
 > 2026-09-27 关键事实速览：
 > - v1.7.6：WinRE 载荷更新 + F1/F3 第一段拒绝已交付（详见上述两文档）；
 > - **阶段 2 PoC 已完成并证伪「任务副本 + BCD 重定向」**：WinRE 强校验启动 ramdisk 路径必须等于 ReAgent 注册位置，共享 osloader 改路径 / 克隆对象 / recoverysequence 自洽 / reagentc /setreimage 四条路全部被拒（对照实验证明机制本身正常）；
+> - **v1.7.7 方案 D「捕获前换回干净原件」已落地（代码 + 单测）**：离线备份源 == WinRE 宿主不再被拒，捕获前把源卷注册 WIM 覆写回干净原件并校验哈希，一处修复同时解 F1/F3 两个 P0；VM 端到端验证因基础设施退化（GuestTools outdated + 共享盘/exec 回传失效）暂缓，恢复后按阶段2 文档 9.5.2 执行；
 > - **Windows servicing 会静默替换注册 Winre.wim**（当天部署的 v1.7.6 载荷被累积更新冲掉为官方原版），已重新注入恢复；载荷持久性成为新的部署风险项；
 > - 「不动 C:」边界更新：只是不用程序备份/还原 C，其它操作（更新载荷、reagentc、写 C:\Recovery）都允许；测试卷 workspace=H:\brwork、image=E:\brimg、source=T:、target=P:。
 

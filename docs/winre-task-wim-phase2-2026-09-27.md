@@ -298,12 +298,69 @@ WinRE 启动时按 **ReAgent 注册位置的路径 + 文件名** 校验ramdisk �
 
 - [x] 用户裁定「排除 + 事后重建」（替代 swap-in-place / 换 PE / 维持现状三选一）
 - [x] **PoC 完成：WinRE 内离线重注册链路可行**（见第 9 节）
-- [ ] 是否启用 sidecar（多 ~700MB/份镜像）——若选方案 D 则不需要
-- [ ] **裁定「Capture 排除」还是「捕获前换回干净原件」的方案 D**（见 9.5）
-- [ ] 实施 8.2 改动 + 第 9.3 节落地配方 + 单测
-- [ ] 测试盘验证：离线备份承载 RE 的卷 + 抽检镜像 + 任务后注册/目标 WIM 哈希复原
+- [x] 是否启用 sidecar：**不需要**（选方案 D，镜像自包含干净 WinRE）
+- [x] **裁定方案 D「捕获前换回干净原件」**（见 9.5）
+- [x] 实施 8.2 改动 + 第 9.3 节落地配方 + 单测（见 9.5.1，版本 1.7.7，28 单测全绿）
+- [ ] 测试盘验证：离线备份承载 RE 的卷 + 抽检镜像 + 任务后注册/目标 WIM 哈希复原 —— **当前受阻，见 9.5.2**（基础设施退化：GuestTools outdated + 共享盘/exec 回传失效）
 
 ---
+
+## 9.5.1 v1.7.7 实施落点（方案 D 代码，2026-09-27 晚）
+
+用户裁定「方案 D：捕获前换回干净原件」后，代码已按 8.2 四条 + 9.5 收尾动作落地，
+版本升至 **1.7.7**。具体改动：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `core::validate_volume_roles`（lib.rs:254） | 签名从 4 参数扩展为 **5 参数**，新增末尾 `restore_clean_winre_before_capture: bool`。`Backup` 分支：`mutates_registered_winre && !restore_clean_winre_before_capture && source==recovery` 才返回 `BackupSourceOnRegisteredWinre`（F3）；`true` 时直接放行 |
+| 2 | `core` 新增 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE: bool = true` 与 `capture_source_hosts_registered_winre()` 纯函数（判定「源卷==承载注册 WinRE 的卷」的唯一成立条件） |
+| 3 | `windows_prepare.rs::prepare`（509 行） | 调用 `validate_volume_roles(..., !options.no_reboot, PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE)`；F3 在离线备份方向随方案 D 放开 |
+| 4 | `main.rs::winre_role_conflict_at_execution`（1170 行） | `Backup` 分支：`PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` 为 `true` 时返回 `None`（执行层二次闸也不拦 F3）；`false` 时恢复旧拒绝（一键回退，无需改调用点） |
+| 5 | `main.rs::restore_clean_winre_before_capture`（1213 行，新增） | 捕获前把源卷上的注册 WinRE 覆写回任务暂存的 `original/Winre.wim` 并校验哈希；只在 `source==recovery` 且源卷确有注册 WIM 时动作；**任何失败返回 Err**（磁盘上仍是注入副本，继续捕获必产脏镜像，必须终止），绝不静默降级 |
+| 6 | `main.rs::recover_windows` Backup 分支（1959 行） | 真正 `dism` 捕获之前调用 `restore_clean_winre_before_capture`，成功记日志、失败终止任务 |
+
+单测：`backuprestore-core` 现有 28 个测试全绿，新增 `plan_d_opens_f3_when_source_hosts_registered_winre`
+（锁定「方案 D 开关开启→F3 放开；关闭→恢复拒绝；workspace/image 冲突判定不受开关影响」）。
+
+构建：`build-win.sh` 已修 `rust-lld` 路径（rustup 把它从 `bin/` 挪到了
+`lib/rustlib/<host>/bin/`，导致旧脚本找不到链接器）；产物 `BackupRestore.exe` = 1,697,792B，
+与方案 D 落地前的构建**字节一致**（仅新增 `#[cfg(test)]` 测试，不影响运行时二进制）。
+
+### 9.5.2 VM 端到端验证 —— 当前受阻（基础设施退化，非代码问题）
+
+**目标**：在 VM 内把 WinRE 注册从 C: 迁到测试卷（使「备份源 == 承载注册 WinRE 的卷」成立），
+用 v1.7.7 跑一次离线备份，挂载镜像抽检 `\Recovery\WindowsRE\Winre.wim` 是否为干净原件
+（哈希 == `ORIGINAL_WINRE_SHA256`），并确认 F3 不再被拒；最后把 WinRE 迁回 C: 校验哈希复原。
+
+**已就绪**：安全基线快照 `2026-09-27-before-planD-verify-move-winre-to-T`（id `{d736303e}`）已建；
+探查确认 C: 注册 WIM = `1060a552`（v1.7.6 原件），T: 为 5GB 空测试卷（需自建 `\Windows` 供
+`reagentc /setreimage /target T:\Windows` 用，或改选 P: 这类已有 Windows 的卷）。
+
+**受阻原因（2026-09-27 22:00 实测）**：
+1. **guest→宿主共享文件夹写入失败**：VM 内 `echo > \\Mac\backupRestore\...` 不产生文件，
+   导致无法把测试脚本/结果从客体回传（也无法用「脚本写共享盘→宿主读」这条之前可用的通道）；
+2. **`prlctl exec` 的 stdout 捕获失效**：单令牌命令（如 `whoami`）偶能返回，多令牌命令
+   （`cmd /c ver`、`powershell 1+1`）一律空输出，无法可靠读取客体命令结果；
+3. **GuestTools state=outdated（27.0.1）**，VM 已连续运行 7 天 —— 上述两条都是该退化的外在表现。
+
+没有「客体→宿主」回传通道，任何 VM 操作的**结果都无法确证**，因此端到端验证暂缓。
+**恢复后按以下顺序执行**（每一步前确认上一步成功）：
+1. 确认共享盘 `\\Mac\backupRestore`（guest 内通常为 `X:`）双向可读写；
+2. `bash build-win.sh --deploy` 部署 v1.7.7 到 `C:\Users\Public\backupRestore-package\`；
+3. 建快照（已建 `{d736303e}` 可复用）；
+4. 在 VM 内 `reagentc /disable` → 建 `<测试卷>\Recovery\WindowsRE` 与 `<测试卷>\Windows` →
+   `reagentc /setreimage /path <测试卷>\Recovery\WindowsRE /target <测试卷>\Windows` →
+   `reagentc /enable`，使恢复环境宿主 == 备份源；
+5. 桌面 `prepare --operation backup --source-drive <测试卷> --image-path <镜像卷>\planD.wim`
+   （不加 `--no-reboot`，触发离线路径；F3 应放行）；
+6. 重启进 WinRE → 自动捕获 → 任务成功；
+7. 挂载 `planD.wim`，抽取 `<源卷>\Recovery\WindowsRE\Winre.wim`，校验 SHA-256 == `ORIGINAL_WINRE_SHA256`（应一致 = 方案 D 根除 F3 污染）；
+8. `reagentc /disable` → 迁回 C:（`/setreimage /path C:\Recovery\WindowsRE /target C:\Windows` → `/enable`），校验 C: Winre.wim == `1060a552`；
+9. 写验证报告、更新本文档与 README。
+
+> 注：步骤 4 选 P:（BRSource，PoC 期曾含 Windows）比 T:（需自建 `\Windows`）更省事；
+> 但无论选哪个，都要保证 `restore_clean_winre_before_capture` 读到的 `source.drive_letter`
+> 与注册 WIM 所在盘符一致（WinRE 内盘符会重排，走既有卷 GUID→盘符重解析）。
 
 ## 9. PoC：WinRE 内离线重注册链路（2026-09-27 晚，实机验证）
 

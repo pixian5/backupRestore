@@ -243,13 +243,20 @@ pub struct VolumeRoles<'a> {
 /// WinRE 里盘符会变，盘符相等不代表同一分区，分区 GUID 才是身份。
 ///
 /// `mutates_registered_winre`：本次准备是否会把注入后的 WIM 覆盖回系统注册位置。
-/// 只有这种旧注入模式才会污染镜像（`--no-reboot` 在线路径不改写注册 WIM，
+/// 只有这种注入模式才会污染镜像（`--no-reboot` 在线路径不改写注册 WIM，
 /// 因此备份源与恢复环境同分区时是安全的，不应拒绝）。
+///
+/// `restore_clean_winre_before_capture`：方案 D 是否已落地——捕获之前先把源卷上的
+/// 注册 WIM 覆写回任务暂存的那份干净原件，再让 DISM 捕获。此时磁盘上的注册 WIM
+/// 已经是干净的，同一分区不再构成污染，因此放行；捕获前的换回若失败，执行层会
+/// 直接终止任务（硬失败），不会静默产出脏镜像。传 `false` 表示仍在旧行为下，
+/// 保留拒绝。
 pub fn validate_volume_roles(
     roles: &VolumeRoles<'_>,
     operation: Operation,
     recovery: &VolumeIdentity,
     mutates_registered_winre: bool,
+    restore_clean_winre_before_capture: bool,
 ) -> Result<(), VolumeRoleConflict> {
     if roles.workspace.same_partition(recovery) {
         return Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre);
@@ -259,8 +266,10 @@ pub fn validate_volume_roles(
     }
     match operation {
         Operation::Backup => {
-            // F3：源卷 == 恢复环境宿主卷，且本次会把注入后的 WIM 写回注册位置。
+            // F3：源卷 == 恢复环境宿主卷，且本次会把注入后的 WIM 写回注册位置，
+            // 且没有「捕获前换回干净原件」这一步来消除污染窗口。
             if mutates_registered_winre
+                && !restore_clean_winre_before_capture
                 && roles
                     .source
                     .is_some_and(|source| source.same_partition(recovery))
@@ -280,6 +289,28 @@ pub fn validate_volume_roles(
         Operation::Probe => {}
     }
     Ok(())
+}
+
+/// 方案 D 开关：捕获前把源卷上的注册 WinRE 覆写回任务暂存的干净原件。
+///
+/// 设计、实测依据与回退方式见 `docs/winre-task-wim-phase2-2026-09-27.md` 第 9.5 节。
+/// 置 `false` 即回到「备份源 == 恢复环境宿主分区时直接拒绝」的旧行为（F3 第一段），
+/// 作为线上出问题时的一键回退，不需要改任何调用点。
+pub const PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE: bool = true;
+
+/// 方案 D 判定：这次捕获是否需要先把源卷上的注册 WinRE 覆写回干净原件。
+///
+/// 成立条件只有一个：**备份源卷就是承载注册 WinRE 的那个卷**。此时注册 WIM 必然位于
+/// `<源卷>:\Recovery\WindowsRE\Winre.wim`，而它此刻是本次任务注入后的副本——直接捕获
+/// 会把任务残留（`Recovery.exe`/`task.json`/`RecoveryTask.env`）一起打进镜像（F3）。
+///
+/// 其它布局下源卷上根本没有注册 WIM，无需也不应改动任何系统文件。
+/// 恢复环境身份缺失（旧任务、env 缺键）时返回 `false`：拿不到身份就不要动系统文件。
+pub fn capture_source_hosts_registered_winre(
+    source: &VolumeIdentity,
+    recovery: Option<&VolumeIdentity>,
+) -> bool {
+    recovery.is_some_and(|recovery| source.same_partition(recovery))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1461,7 +1492,8 @@ mod tests {
                 &roles(&recovery, &image, Some(&source), None),
                 Operation::Backup,
                 &recovery,
-                true
+                true,
+                false
             ),
             Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre)
         );
@@ -1471,7 +1503,8 @@ mod tests {
                 &roles(&workspace, &recovery, Some(&source), None),
                 Operation::Backup,
                 &recovery,
-                true
+                true,
+                false
             ),
             Err(VolumeRoleConflict::ImageOnRegisteredWinre)
         );
@@ -1489,7 +1522,8 @@ mod tests {
                 &roles(&workspace, &image, Some(&source), Some(&target)),
                 Operation::RestoreExisting,
                 &recovery,
-                true
+                true,
+                false
             )
             .is_ok()
         );
@@ -1500,7 +1534,8 @@ mod tests {
                     &roles(&workspace, &image, Some(&source), Some(&recovery)),
                     Operation::CreateSecondary,
                     &recovery,
-                    mutates
+                    mutates,
+                    false
                 ),
                 Err(VolumeRoleConflict::RestoreTargetOnRegisteredWinre)
             );
@@ -1518,7 +1553,8 @@ mod tests {
                 &roles(&workspace, &image, Some(&recovery), None),
                 Operation::Backup,
                 &recovery,
-                true
+                true,
+                false
             ),
             Err(VolumeRoleConflict::BackupSourceOnRegisteredWinre)
         );
@@ -1528,6 +1564,7 @@ mod tests {
                 &roles(&workspace, &image, Some(&recovery), None),
                 Operation::Backup,
                 &recovery,
+                false,
                 false
             )
             .is_ok()
@@ -1538,10 +1575,79 @@ mod tests {
                 &roles(&workspace, &image, Some(&source), None),
                 Operation::Backup,
                 &recovery,
+                true,
+                false
+            )
+            .is_ok()
+        );
+    }
+    #[test]
+    fn f3_plan_d_restore_clean_winre_before_capture_unblocks_backup() {
+        let recovery = identity("recovery", 100);
+        let workspace = identity("workspace", 100);
+        let image = identity("image", 100);
+        let source = identity("source", 100);
+        // 方案 D 未落地（旧行为）：源 == 恢复环境宿主 + 会改写注册 WIM → 仍然拒绝。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&recovery), None),
+                Operation::Backup,
+                &recovery,
+                true,
+                false
+            ),
+            Err(VolumeRoleConflict::BackupSourceOnRegisteredWinre)
+        );
+        // 方案 D 已落地：捕获前会把注册 WIM 换回干净原件，污染窗口消失 → 放行。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&recovery), None),
+                Operation::Backup,
+                &recovery,
+                true,
                 true
             )
             .is_ok()
         );
+        // 方案 D 不改变 F1：还原目标 == 恢复环境宿主依然拒绝。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&source), Some(&recovery)),
+                Operation::RestoreExisting,
+                &recovery,
+                true,
+                true
+            ),
+            Err(VolumeRoleConflict::RestoreTargetOnRegisteredWinre)
+        );
+        // 方案 D 不改变工作区/镜像卷两条硬约束。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace, &recovery, Some(&source), None),
+                Operation::Backup,
+                &recovery,
+                true,
+                true
+            ),
+            Err(VolumeRoleConflict::ImageOnRegisteredWinre)
+        );
+    }
+    #[test]
+    fn capture_source_hosts_registered_winre_matches_only_source_partition() {
+        let recovery = identity("recovery", 100);
+        let source = identity("source", 100);
+        // 源 == 恢复环境宿主 → 捕获前必须换回干净原件。
+        assert!(capture_source_hosts_registered_winre(
+            &recovery,
+            Some(&recovery)
+        ));
+        // 源 != 恢复环境宿主 → 不需要动系统文件。
+        assert!(!capture_source_hosts_registered_winre(
+            &source,
+            Some(&recovery)
+        ));
+        // 拿不到恢复环境身份（旧任务/env 缺键）→ 不动系统文件。
+        assert!(!capture_source_hosts_registered_winre(&recovery, None));
     }
     #[test]
     fn f1_and_f3_do_not_interfere() {
@@ -1556,7 +1662,8 @@ mod tests {
                 &roles(&workspace, &image, Some(&source), Some(&recovery)),
                 Operation::Backup,
                 &recovery,
-                true
+                true,
+                false
             )
             .is_ok()
         );
@@ -1566,9 +1673,61 @@ mod tests {
                 &roles(&workspace, &image, Some(&recovery), Some(&target)),
                 Operation::RestoreExisting,
                 &recovery,
-                true
+                true,
+                false
             )
             .is_ok()
+        );
+    }
+    /// 方案 D（捕获前换回干净原件）落地后，备份源 == 承载注册 WinRE 的分区
+    /// 不再是硬拒绝：污染窗口已被换回动作消除。本测试锁定这一行为翻转，
+    /// 并确认「关掉方案 D 开关」能立刻恢复旧的 F3 拒绝（线上回退路径）。
+    #[test]
+    fn plan_d_opens_f3_when_source_hosts_registered_winre() {
+        let recovery = identity("recovery", 100);
+        let workspace = identity("workspace", 100);
+        let image = identity("image", 100);
+        // 源与恢复环境宿主是同一分区（same_partition 只看 disk+partition GUID）。
+        let source_eq_recovery = identity("recovery", 100);
+
+        // 方案 D 开启：源 == 恢复宿主，且本次会改写注册 WIM（mutates=true），仍放行。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&source_eq_recovery), None),
+                Operation::Backup,
+                &recovery,
+                true,
+                true
+            )
+            .is_ok(),
+            "方案 D 开启时应放开 F3（源==恢复宿主）"
+        );
+
+        // 方案 D 关闭（回退到旧行为）：同样的布局必须仍然拒绝。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&source_eq_recovery), None),
+                Operation::Backup,
+                &recovery,
+                true,
+                false
+            ),
+            Err(VolumeRoleConflict::BackupSourceOnRegisteredWinre),
+            "方案 D 关闭时必须恢复 F3 拒绝"
+        );
+
+        // 开关不影响 workspace/image 与恢复宿主冲突的判定（始终拒绝）。
+        let workspace_eq_recovery = identity("recovery", 100);
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace_eq_recovery, &image, Some(&source_eq_recovery), None),
+                Operation::Backup,
+                &recovery,
+                true,
+                true
+            ),
+            Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre),
+            "方案 D 不应放开 workspace==恢复宿主"
         );
     }
     #[test]

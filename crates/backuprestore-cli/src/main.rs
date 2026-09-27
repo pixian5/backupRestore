@@ -1176,16 +1176,102 @@ fn winre_role_conflict_at_execution(
     use backuprestore_core::{Operation, VolumeRoleConflict};
     let recovery = recovery_volume_from_env(values?)?;
     match operation {
-        // F3：捕获会打进被本次任务改写过的 Winre.wim（污染窗口内），拒绝产出脏镜像。
-        Operation::Backup => source
-            .is_some_and(|source| source.same_partition(&recovery))
-            .then_some(VolumeRoleConflict::BackupSourceOnRegisteredWinre),
+        // F3：方案 D 落地后不再拒绝——Capture 之前会把源卷上的注册 WIM 覆写回任务
+        // 暂存的干净原件（见 `restore_clean_winre_before_capture`），污染窗口不存在。
+        // 保留这条分支是为了开关回退：把 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE`
+        // 置 false 即可立刻恢复「源 == 恢复环境宿主就拒绝」的旧行为。
+        Operation::Backup => {
+            if backuprestore_core::PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE {
+                None
+            } else {
+                source
+                    .is_some_and(|source| source.same_partition(&recovery))
+                    .then_some(VolumeRoleConflict::BackupSourceOnRegisteredWinre)
+            }
+        }
         // F1：格式化会删除 Winre.wim 与用于回滚的原件副本，拒绝执行。
         Operation::RestoreExisting | Operation::CreateSecondary => target
             .is_some_and(|target| target.same_partition(&recovery))
             .then_some(VolumeRoleConflict::RestoreTargetOnRegisteredWinre),
         Operation::Probe => None,
     }
+}
+
+/// 方案 D：捕获之前把源卷上的注册 WinRE 覆写回干净原件（F3 根除）。
+///
+/// WinRE 此刻已经跑在内存（X: RAM 盘）里，磁盘上 `<源卷>:\Recovery\WindowsRE\Winre.wim`
+/// 不再被读取，覆写它既不影响当前运行环境，又能让本次 DISM 捕获打进镜像的是任务前的
+/// 干净原件，而不是本次任务注入后的副本——后者会把 `Recovery.exe`、`task.json`、
+/// `RecoveryTask.env` 一起带进镜像，也就是 F3 污染。
+///
+/// 只在「备份源卷 == 承载注册 WinRE 的卷」时动作；其它布局下源卷上根本没有注册 WIM。
+/// 恢复环境身份缺失（旧任务 / env 缺键）或源卷上没有注册 WIM 时跳过并记日志。
+///
+/// 返回是否真的执行了覆写。**任何失败都返回 Err**：此时磁盘上仍是注入副本，
+/// 继续捕获必然产出脏镜像，必须终止任务（绝不静默降级成「照旧捕获」）。
+#[cfg(windows)]
+fn restore_clean_winre_before_capture(
+    values: Option<&BTreeMap<String, String>>,
+    task_dir: &Path,
+    source: &backuprestore_core::VolumeIdentity,
+    log: &Path,
+) -> Result<bool, TaskError> {
+    let empty = BTreeMap::new();
+    let values = values.unwrap_or(&empty);
+    let Some(recovery) = recovery_volume_from_env(values) else {
+        append_log(
+            log,
+            "Plan D skipped: RecoveryTask.env has no registered WinRE volume identity",
+        )?;
+        return Ok(false);
+    };
+    if !backuprestore_core::capture_source_hosts_registered_winre(source, Some(&recovery)) {
+        return Ok(false);
+    }
+    let letter = source.drive_letter.ok_or_else(|| {
+        err("source volume has no drive letter; cannot restore the clean WinRE image before capture")
+    })?;
+    let registered = PathBuf::from(format!(r"{}:\Recovery\WindowsRE\Winre.wim", letter));
+    if !registered.is_file() {
+        append_log(
+            log,
+            &format!(
+                "Plan D skipped: no registered WinRE image at {}",
+                registered.display()
+            ),
+        )?;
+        return Ok(false);
+    }
+    let original = task_dir.join("original").join("Winre.wim");
+    if !original.is_file() {
+        return Err(err(
+            "original WinRE copy is missing; refusing to capture a modified WinRE image",
+        ));
+    }
+    let expected = env_optional(values, "ORIGINAL_WINRE_SHA256").ok_or_else(|| {
+        err("RecoveryTask.env is missing ORIGINAL_WINRE_SHA256; refusing to capture")
+    })?;
+    // 已经是干净原件就不必再写一次（例如断电后从 Capturing 阶段续跑）。
+    if sha256_file(&registered)?.eq_ignore_ascii_case(&expected) {
+        append_log(
+            log,
+            &format!(
+                "Plan D: registered WinRE at {} already matches the clean original",
+                registered.display()
+            ),
+        )?;
+        return Ok(false);
+    }
+    fs::copy(&original, &registered)?;
+    backuprestore_core::verify_sha256(&registered, &expected)?;
+    append_log(
+        log,
+        &format!(
+            "Plan D: restored clean original WinRE at {} before capture",
+            registered.display()
+        ),
+    )?;
+    Ok(true)
 }
 
 #[cfg(windows)]
@@ -1865,22 +1951,27 @@ fn recover_windows(
                 .destination
                 .clone()
                 .ok_or_else(|| err("missing destination"))?;
-            // F3 执行层二次拒绝：能走到这里说明注册 WIM 已被本次任务改写，
-            // 若源卷就是恢复环境宿主卷，捕获必然把改写后的 Winre.wim 打进镜像。
-            // 此刻拒绝会让外层 cleanup 用 original/Winre.wim 还原注册位置。
-            if let Some(conflict) = winre_role_conflict_at_execution(
-                metadata_context,
-                task.operation,
-                Some(&source),
-                None,
-            ) {
-                append_log(
-                    log,
-                    &format!("Backup refused before capture: {}", conflict.code()),
-                )?;
-                return Err(err(conflict.message()));
-            }
             let source_path = resolve_volume_root(&source)?;
+            // 方案 D：源卷承载注册 WinRE 时，先把它覆写回任务暂存的干净原件再捕获
+            // （WinRE 运行在内存里，此刻该文件已不被读取）。成功 = 镜像带回的是任务前
+            // 的干净 WinRE；失败直接终止，绝不带着注入副本捕获。
+            let task_dir_for_plan_d = store.task_dir(&task.task_id)?;
+            match restore_clean_winre_before_capture(
+                metadata_context,
+                &task_dir_for_plan_d,
+                &source,
+                log,
+            ) {
+                Ok(true) => append_log(
+                    log,
+                    "Plan D applied: clean original WinRE restored on the source volume",
+                )?,
+                Ok(false) => {}
+                Err(error) => {
+                    append_log(log, &format!("Plan D failed before capture: {error}"))?;
+                    return Err(error);
+                }
+            }
             let destination_path =
                 resolve_volume_path(&destination.volume, &destination.relative_path)?;
             // 备份索引名：任务自定义（GUI 默认程序启动时间）或默认名。

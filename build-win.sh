@@ -8,9 +8,14 @@
 set -e
 cd "$(dirname "$0")"
 
-RLLD=$(find ~/.rustup/toolchains/stable-aarch64-apple-darwin -name "rust-lld" -type f 2>/dev/null | head -1)
-if [ -z "$RLLD" ]; then
-  echo "找不到 rust-lld，请检查 rustup toolchain" >&2
+# rust-lld 位于 toolchain 的 lib/rustlib/<host>/bin 下（rustup 更新后从 bin/ 挪到了这里）。
+# 用 sysroot 推导，避免硬编码 toolchain 版本号。
+RLLD=$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/rust-lld
+if [ ! -f "$RLLD" ]; then
+  RLLD=$(find ~/.rustup/toolchains -name "rust-lld" -type f 2>/dev/null | head -1)
+fi
+if [ -z "$RLLD" ] || [ ! -f "$RLLD" ]; then
+  echo "找不到 rust-lld，请检查 rustup toolchain（需安装 rust-std）" >&2
   exit 1
 fi
 for d in /Users/x/win-sdk-arm64/um/arm64 /Users/x/win-sdk-arm64/ucrt/arm64 /Users/x/win-sdk-arm64/vc/arm64; do

@@ -6,9 +6,10 @@
 //! plus the Windows inbox command-line tools that perform the OS operations.
 
 use backuprestore_core::{
-    BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest, TargetRole, TargetSpec, Task,
-    TaskError, TaskStore, VolumeIdentity, VolumeRoles, canonical_compression, sha256_file,
-    validate_absolute_path, validate_volume_roles, write_json_atomic,
+    BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest,
+    PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE, TargetRole, TargetSpec, Task, TaskError, TaskStore,
+    VolumeIdentity, VolumeRoles, canonical_compression, sha256_file, validate_absolute_path,
+    validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -490,6 +491,11 @@ fn prepare_task(
     //   - F3：备份源 == 恢复环境宿主分区，且本次会把注入后的 WIM 写回注册位置
     //     （非 --no-reboot 的旧注入模式）→ 镜像会被污染。
     // 只带 --no-reboot 的在线备份不改写注册 WIM，没有污染窗口，因此放行。
+    //
+    // 方案 D（`PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE`）：离线备份已能做到
+    // 「捕获前把源卷上的注册 WIM 覆写回任务暂存的干净原件」，污染窗口不复存在，
+    // 因此备份方向不再因同分区而拒绝。换回动作由执行层在 Capture 之前完成，
+    // 失败即硬失败终止任务（不会静默产出脏镜像）。
     let roles = VolumeRoles {
         workspace,
         image: &image_volume,
@@ -500,9 +506,13 @@ fn prepare_task(
         )
         .then_some(&target),
     };
-    if let Err(conflict) =
-        validate_volume_roles(&roles, options.operation, &recovery, !options.no_reboot)
-    {
+    if let Err(conflict) = validate_volume_roles(
+        &roles,
+        options.operation,
+        &recovery,
+        !options.no_reboot,
+        PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE,
+    ) {
         return Err(err(conflict.message()));
     }
     validate_operation_inputs(
