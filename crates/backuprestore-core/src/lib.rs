@@ -179,6 +179,109 @@ impl VolumeIdentity {
     }
 }
 
+/// 卷角色冲突：某个任务角色所在分区与「承载注册 WinRE 的分区」是同一个。
+///
+/// 这台机器上 WinRE 可能注册在 OS 分区（`C:\Recovery\WindowsRE`）而不是独立
+/// 的 GPT Recovery 分区，因此「系统盘」与「恢复环境宿主卷」常常是同一分区。
+/// F1（还原目标）与 F3（备份源）都是这个冲突的不同侧面，共用一个枚举可以让
+/// GUI / CLI / Recovery 三处拿到同一套错误语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeRoleConflict {
+    /// 程序目录（工作区）在承载注册 WinRE 的分区上。
+    WorkspaceOnRegisteredWinre,
+    /// 镜像存放卷在承载注册 WinRE 的分区上。
+    ImageOnRegisteredWinre,
+    /// 备份源卷在承载注册 WinRE 的分区上（F3：镜像会被注入后的 Winre.wim 污染）。
+    BackupSourceOnRegisteredWinre,
+    /// 还原目标卷在承载注册 WinRE 的分区上（F1：格式化会摧毁恢复环境与回滚副本）。
+    RestoreTargetOnRegisteredWinre,
+}
+
+impl VolumeRoleConflict {
+    /// 稳定错误码，供日志、文档与 GUI 做分支判断，不随文案变化。
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::WorkspaceOnRegisteredWinre => "workspace-on-registered-winre",
+            Self::ImageOnRegisteredWinre => "image-on-registered-winre",
+            Self::BackupSourceOnRegisteredWinre => "backup-source-on-registered-winre",
+            Self::RestoreTargetOnRegisteredWinre => "restore-target-on-registered-winre",
+        }
+    }
+    /// 面向用户的中文说明。这是硬性阻断，必须说清「为什么」和「下一步怎么办」，
+    /// 不能只说「把程序移走」（移走程序解决不了目标/源与恢复环境同分区的问题）。
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::WorkspaceOnRegisteredWinre => {
+                "程序目录不能位于承载 Windows 恢复环境（WinRE）的分区：任务目录与恢复镜像同分区时，格式化或回滚会互相破坏。请把程序移到其它卷再运行。"
+            }
+            Self::ImageOnRegisteredWinre => {
+                "镜像存放位置不能位于承载 Windows 恢复环境（WinRE）的分区。请更换镜像保存卷。"
+            }
+            Self::BackupSourceOnRegisteredWinre => {
+                "备份源分区承载当前 Windows 恢复环境（WinRE）：离线备份需要临时改写注册的 Winre.wim，该副本会被一起捕获进镜像，产出带上次任务残留的脏镜像。请改用在线备份（--no-reboot），或先把 WinRE 迁移到独立恢复分区。"
+            }
+            Self::RestoreTargetOnRegisteredWinre => {
+                "还原目标分区承载当前 Windows 恢复环境（WinRE）：格式化会删除 Winre.wim 及用于回滚的原件副本，系统将失去恢复环境且无法自动回滚。请先把 WinRE 迁出该分区，或选择其它还原目标。"
+            }
+        }
+    }
+}
+
+/// 参与角色校验的四个卷。`source`/`target` 按操作类型可选：
+/// 备份没有目标，还原的源与目标都必须给全。
+#[derive(Debug, Clone, Copy)]
+pub struct VolumeRoles<'a> {
+    pub workspace: &'a VolumeIdentity,
+    pub image: &'a VolumeIdentity,
+    pub source: Option<&'a VolumeIdentity>,
+    pub target: Option<&'a VolumeIdentity>,
+}
+
+/// 校验「任务角色卷」与「承载注册 WinRE 的卷」之间的关系（F1/F3 第一段防御）。
+///
+/// 判定只用 `disk_guid + partition_guid`（`same_partition`），不依赖盘符：
+/// WinRE 里盘符会变，盘符相等不代表同一分区，分区 GUID 才是身份。
+///
+/// `mutates_registered_winre`：本次准备是否会把注入后的 WIM 覆盖回系统注册位置。
+/// 只有这种旧注入模式才会污染镜像（`--no-reboot` 在线路径不改写注册 WIM，
+/// 因此备份源与恢复环境同分区时是安全的，不应拒绝）。
+pub fn validate_volume_roles(
+    roles: &VolumeRoles<'_>,
+    operation: Operation,
+    recovery: &VolumeIdentity,
+    mutates_registered_winre: bool,
+) -> Result<(), VolumeRoleConflict> {
+    if roles.workspace.same_partition(recovery) {
+        return Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre);
+    }
+    if roles.image.same_partition(recovery) {
+        return Err(VolumeRoleConflict::ImageOnRegisteredWinre);
+    }
+    match operation {
+        Operation::Backup => {
+            // F3：源卷 == 恢复环境宿主卷，且本次会把注入后的 WIM 写回注册位置。
+            if mutates_registered_winre
+                && roles
+                    .source
+                    .is_some_and(|source| source.same_partition(recovery))
+            {
+                return Err(VolumeRoleConflict::BackupSourceOnRegisteredWinre);
+            }
+        }
+        Operation::RestoreExisting | Operation::CreateSecondary => {
+            // F1：目标卷 == 恢复环境宿主卷，格式化会摧毁 WinRE 与其回滚副本。
+            if roles
+                .target
+                .is_some_and(|target| target.same_partition(recovery))
+            {
+                return Err(VolumeRoleConflict::RestoreTargetOnRegisteredWinre);
+            }
+        }
+        Operation::Probe => {}
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageSpec {
@@ -1331,6 +1434,142 @@ mod tests {
         assert!(Stage::Preflight.can_transition_to(Stage::Success));
         assert!(Stage::ImageApplied.can_transition_to(Stage::BootRepaired));
         assert!(!Stage::Prepared.can_transition_to(Stage::Success));
+    }
+    /// 构造一次角色校验：四个角色默认各占一个不同分区，"recovery" 固定为恢复环境宿主。
+    fn roles<'a>(
+        workspace: &'a VolumeIdentity,
+        image: &'a VolumeIdentity,
+        source: Option<&'a VolumeIdentity>,
+        target: Option<&'a VolumeIdentity>,
+    ) -> VolumeRoles<'a> {
+        VolumeRoles {
+            workspace,
+            image,
+            source,
+            target,
+        }
+    }
+    #[test]
+    fn volume_roles_reject_workspace_and_image_on_registered_winre() {
+        let recovery = identity("recovery", 100);
+        let workspace = identity("workspace", 100);
+        let image = identity("image", 100);
+        let source = identity("source", 100);
+        // 工作区落在恢复环境宿主分区上：任何操作都拒绝。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&recovery, &image, Some(&source), None),
+                Operation::Backup,
+                &recovery,
+                true
+            ),
+            Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre)
+        );
+        // 镜像卷落在恢复环境宿主分区上：同样任何操作都拒绝。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace, &recovery, Some(&source), None),
+                Operation::Backup,
+                &recovery,
+                true
+            ),
+            Err(VolumeRoleConflict::ImageOnRegisteredWinre)
+        );
+    }
+    #[test]
+    fn f1_restore_target_on_registered_winre_is_rejected() {
+        let recovery = identity("recovery", 100);
+        let workspace = identity("workspace", 100);
+        let image = identity("image", 100);
+        let source = identity("source", 100);
+        let target = identity("target", 100);
+        // 目标 != 恢复环境宿主：放行（正常布局）。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&source), Some(&target)),
+                Operation::RestoreExisting,
+                &recovery,
+                true
+            )
+            .is_ok()
+        );
+        // 目标 == 恢复环境宿主：F1 第一段拒绝，与是否改写注册 WIM 无关。
+        for mutates in [true, false] {
+            assert_eq!(
+                validate_volume_roles(
+                    &roles(&workspace, &image, Some(&source), Some(&recovery)),
+                    Operation::CreateSecondary,
+                    &recovery,
+                    mutates
+                ),
+                Err(VolumeRoleConflict::RestoreTargetOnRegisteredWinre)
+            );
+        }
+    }
+    #[test]
+    fn f3_backup_source_on_registered_winre_depends_on_winre_mutation() {
+        let recovery = identity("recovery", 100);
+        let workspace = identity("workspace", 100);
+        let image = identity("image", 100);
+        let source = identity("source", 100);
+        // 源 == 恢复环境宿主 + 旧注入模式（会写回注册 WIM）→ 拒绝，防脏镜像。
+        assert_eq!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&recovery), None),
+                Operation::Backup,
+                &recovery,
+                true
+            ),
+            Err(VolumeRoleConflict::BackupSourceOnRegisteredWinre)
+        );
+        // 同一布局但 --no-reboot（不改写注册 WIM）→ 放行，因为没有污染窗口。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&recovery), None),
+                Operation::Backup,
+                &recovery,
+                false
+            )
+            .is_ok()
+        );
+        // 源 != 恢复环境宿主 → 放行。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&source), None),
+                Operation::Backup,
+                &recovery,
+                true
+            )
+            .is_ok()
+        );
+    }
+    #[test]
+    fn f1_and_f3_do_not_interfere() {
+        let recovery = identity("recovery", 100);
+        let workspace = identity("workspace", 100);
+        let image = identity("image", 100);
+        let source = identity("source", 100);
+        let target = identity("target", 100);
+        // 备份时即使传了 target（GUI 复用字段）也不应触发 F1。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&source), Some(&recovery)),
+                Operation::Backup,
+                &recovery,
+                true
+            )
+            .is_ok()
+        );
+        // 还原时源 == 恢复环境宿主也不应触发 F3（F3 只约束备份）。
+        assert!(
+            validate_volume_roles(
+                &roles(&workspace, &image, Some(&recovery), Some(&target)),
+                Operation::RestoreExisting,
+                &recovery,
+                true
+            )
+            .is_ok()
+        );
     }
     #[test]
     fn backup_rejects_same_partition() {

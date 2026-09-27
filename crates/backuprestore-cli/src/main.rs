@@ -1147,6 +1147,47 @@ fn env_optional_u64(values: &BTreeMap<String, String>, key: &str) -> Option<u64>
     env_optional(values, key).and_then(|value| value.parse::<u64>().ok())
 }
 
+/// 从 `RecoveryTask.env` 取出「承载注册 WinRE 的分区」身份，供执行层二次校验使用。
+///
+/// 只用 disk/partition GUID（`same_partition` 就只比这两项），不需要盘符：
+/// WinRE 里盘符与桌面不同，盘符相等不代表同一分区。
+/// 旧任务或缺失这两行时返回 `None`，调用方据此跳过这道附加防线（不臆造身份）。
+#[cfg(windows)]
+fn recovery_volume_from_env(
+    values: &BTreeMap<String, String>,
+) -> Option<backuprestore_core::VolumeIdentity> {
+    let disk = env_optional(values, "RECOVERY_DISK_GUID")?;
+    let partition = env_optional(values, "RECOVERY_PARTITION_GUID")?;
+    Some(backuprestore_core::VolumeIdentity::new(disk, partition))
+}
+
+/// 执行层二次拒绝（F1/F3 第一段的第二道闸）。
+///
+/// 准备层的校验只能拦住新任务；旧任务、`recover` 手工续跑或跨版本任务可能绕过它。
+/// 这里在真正动手（格式化 / 捕获）之前再判一次，把「还原目标或备份源 == 承载注册
+/// WinRE 的分区」挡在执行之外。返回 None 表示这道闸不适用（拿不到恢复环境身份）。
+#[cfg(windows)]
+fn winre_role_conflict_at_execution(
+    values: Option<&BTreeMap<String, String>>,
+    operation: backuprestore_core::Operation,
+    source: Option<&backuprestore_core::VolumeIdentity>,
+    target: Option<&backuprestore_core::VolumeIdentity>,
+) -> Option<backuprestore_core::VolumeRoleConflict> {
+    use backuprestore_core::{Operation, VolumeRoleConflict};
+    let recovery = recovery_volume_from_env(values?)?;
+    match operation {
+        // F3：捕获会打进被本次任务改写过的 Winre.wim（污染窗口内），拒绝产出脏镜像。
+        Operation::Backup => source
+            .is_some_and(|source| source.same_partition(&recovery))
+            .then_some(VolumeRoleConflict::BackupSourceOnRegisteredWinre),
+        // F1：格式化会删除 Winre.wim 与用于回滚的原件副本，拒绝执行。
+        Operation::RestoreExisting | Operation::CreateSecondary => target
+            .is_some_and(|target| target.same_partition(&recovery))
+            .then_some(VolumeRoleConflict::RestoreTargetOnRegisteredWinre),
+        Operation::Probe => None,
+    }
+}
+
 #[cfg(windows)]
 fn verify_task_identity_env(
     values: &BTreeMap<String, String>,
@@ -1824,6 +1865,21 @@ fn recover_windows(
                 .destination
                 .clone()
                 .ok_or_else(|| err("missing destination"))?;
+            // F3 执行层二次拒绝：能走到这里说明注册 WIM 已被本次任务改写，
+            // 若源卷就是恢复环境宿主卷，捕获必然把改写后的 Winre.wim 打进镜像。
+            // 此刻拒绝会让外层 cleanup 用 original/Winre.wim 还原注册位置。
+            if let Some(conflict) = winre_role_conflict_at_execution(
+                metadata_context,
+                task.operation,
+                Some(&source),
+                None,
+            ) {
+                append_log(
+                    log,
+                    &format!("Backup refused before capture: {}", conflict.code()),
+                )?;
+                return Err(err(conflict.message()));
+            }
             let source_path = resolve_volume_root(&source)?;
             let destination_path =
                 resolve_volume_path(&destination.volume, &destination.relative_path)?;
@@ -2115,6 +2171,20 @@ fn recover_windows(
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let target = task.target.clone().ok_or_else(|| err("missing target"))?;
+            // F1 执行层二次拒绝：格式化之前最后一道闸。目标卷若承载注册 WinRE，
+            // DiskPart format 会删掉 Winre.wim 与回滚原件，系统从此没有恢复环境。
+            if let Some(conflict) = winre_role_conflict_at_execution(
+                metadata_context,
+                task.operation,
+                task.source.as_ref(),
+                Some(&target.volume),
+            ) {
+                append_log(
+                    log,
+                    &format!("Restore refused before format: {}", conflict.code()),
+                )?;
+                return Err(err(conflict.message()));
+            }
             let image_index = task.image.as_ref().map(|image| image.index).unwrap_or(1);
             if target.role == TargetRole::NewWindows
                 && task.boot_plan.mode != BootMode::AddSecondary

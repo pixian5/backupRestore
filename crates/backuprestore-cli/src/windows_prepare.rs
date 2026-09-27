@@ -7,8 +7,8 @@
 
 use backuprestore_core::{
     BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest, TargetRole, TargetSpec, Task,
-    TaskError, TaskStore, VolumeIdentity, canonical_compression, sha256_file,
-    validate_absolute_path, write_json_atomic,
+    TaskError, TaskStore, VolumeIdentity, VolumeRoles, canonical_compression, sha256_file,
+    validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -478,11 +478,32 @@ fn prepare_task(
     }
     let recovery = recovery_identity()?;
     let efi = efi_identity(options.efi_drive)?;
-    if workspace.same_partition(&recovery) || workspace.same_partition(&efi) {
-        return Err(err("program directory cannot be on Recovery or EFI volume"));
+    if workspace.same_partition(&efi) {
+        return Err(err("program directory cannot be on EFI volume"));
     }
-    if image_volume.same_partition(&recovery) || image_volume.same_partition(&efi) {
-        return Err(err("image volume cannot be on Recovery or EFI volume"));
+    if image_volume.same_partition(&efi) {
+        return Err(err("image volume cannot be on EFI volume"));
+    }
+    // F1/F3 第一段：角色卷与「承载注册 WinRE 的分区」的冲突统一交给核心库的纯函数
+    // 判定（GUI 与 CLI 共用同一份矩阵，避免两处规则漂移）。
+    //   - F1：还原目标 == 恢复环境宿主分区 → 格式化会摧毁 WinRE 与回滚副本；
+    //   - F3：备份源 == 恢复环境宿主分区，且本次会把注入后的 WIM 写回注册位置
+    //     （非 --no-reboot 的旧注入模式）→ 镜像会被污染。
+    // 只带 --no-reboot 的在线备份不改写注册 WIM，没有污染窗口，因此放行。
+    let roles = VolumeRoles {
+        workspace,
+        image: &image_volume,
+        source: Some(&source),
+        target: matches!(
+            options.operation,
+            Operation::RestoreExisting | Operation::CreateSecondary
+        )
+        .then_some(&target),
+    };
+    if let Err(conflict) =
+        validate_volume_roles(&roles, options.operation, &recovery, !options.no_reboot)
+    {
+        return Err(err(conflict.message()));
     }
     validate_operation_inputs(
         &source,

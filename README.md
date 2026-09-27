@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.5**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.7.6**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 ---
 
@@ -141,18 +141,28 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | `backup` 捕获 WIM + 只读挂载哈希比对 | 两种压缩各一次，哈希与源逐项一致 |
 | `restore-existing` 还原闭环 | v1.7.5 起**不停 Parallels 服务也能成功**（见下） |
 | v1.7.5 修复：`\Mac disk` 纳入默认排除 + GUI 在线备份补接 `/ConfigFile` | 产物 `f8b77d0e…e184`，已部署客体并核对哈希 |
-| 离线测试 | 61 passed / 0 failed |
+| 离线测试 | `cargo test -p backuprestore-core` 25 passed / 0 failed |
 
-### 尚未闭环的三个空洞（按严重度）
+### v1.7.6（2026-09-27）：载荷更新 + F1/F3 第一段已闭环
 
-1. **C: 完整系统备份/还原从未实机测试** —— 而它恰恰是产品的主场景。目前所有验证了实机的
-   都是**数据卷 + 在线路径**，不是 README 流程图里那条「进 WinRE 离线还原系统分区」的主链路。
-2. **WinRE / PE 载荷是旧版本** —— `C:\Recovery\WindowsRE\Winre.wim` 内的 `Recovery.exe` 实为
-   **v1.7.3**，PE 遗留副本是更早的未知版本。一旦改走 WinRE/PE 恢复链，跑的不是当前代码。
-   更新载荷属「修改 WinRE/PE 部署」，按约束须先建快照并获授权，**尚未执行**。
-3. **F1 / F3 两个 P0 未实施** —— 见 `docs/development-roadmap-2026-09-26.md`：
-   F1（还原格式化可能删掉 WinRE 宿主卷恢复入口）与 F3（备份含 WinRE 的源卷会污染镜像）
-   目前仍是「代码未拒绝，仅设计」状态，必须同批交付。
+| 项 | 状态 | 证据 |
+|---|---|---|
+| WinRE 载荷 v1.7.3 → **v1.7.6** | 测试盘重建 → 快照授权写回 → **WinRE 内实跑** | 注册 WIM `5df96301…`；WinRE 产物 sidecar `"programVersion": "1.7.6"` |
+| F1（还原目标 == WinRE 宿主卷） | 准备层拒绝 + 格式化前二次闸 | T1b 拒绝 / T1c·T5·T6 正常通过 |
+| F3（离线备份源 == WinRE 宿主卷） | 准备层拒绝（收紧到 `--no-reboot` 之外的离线路径）+ 捕获前二次闸 | T2 拒绝 / T3 在线放行 / T4 正常通过 |
+| 完整离线链路（桌面 prepare → WinRE 捕获 → 回桌面） | 测试卷 T: → E: 实跑成功 | `E:\brimg\t.wim` 367,990,173 B，日志 `WinRE cleanup completed` |
+
+详见 [`docs/winre-payload-and-p0-fix-2026-09-27.md`](docs/winre-payload-and-p0-fix-2026-09-27.md)。
+
+### 尚未闭环（按严重度）
+
+1. **C: 完整系统备份/还原仍未实机测试** —— 它是产品主场景，但按用户长期约束，开发/测试一律在
+   测试盘进行，C: 只在最终验收时做一次。此外当前这台 WinRE 注册在 C: 上，F3 第一段会拒绝
+   「离线备份 C:」这条组合（在线 `--no-reboot` 不受影响）；要放开需做 F3 第二段（任务专用 WIM）。
+2. **PE 载荷未同步** —— 按裁定本轮不处理。VM 内 `T:\petest\boot.wim` 是 2026-09-13 实验残留，
+   宿主 `artifacts/BackupRestorePE.wim` 是另一条产物线；需先定「以哪个为准」再一次性同步。
+3. **F1 / F3 第二段未做** —— 任务专用 WIM + 独立 BCD 对象（F1），任务副本注入 + Capture 精确排除（F3）。
+   做完才能安全放开「还原/备份到承载 WinRE 的卷」。
 
 ### 其他已知限制
 
@@ -165,7 +175,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ### 文档基线脱节（待修）
 
-`docs/project-status.md` 停留在 **2026-09-24 / v1.6.6**，落后当前 1.7.5 五个版本；
+`docs/project-status.md` 停留在 **2026-09-24 / v1.6.6**，落后当前 1.7.6 六个版本；
 `docs/current-status-2026-09-16.md` 更早。用它们判断当前进度会得出错误结论，
 当前版本以 `VERSION` 和 `git log` 为准。
 

@@ -45,6 +45,8 @@
 
 | 文档 | 作用 |
 |---|---|
+| [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) | **v1.7.6**：WinRE 载荷从 v1.7.3 更新到 v1.7.6（测试盘重建 → 快照授权写回 → WinRE 实跑验证），F1/F3 两个 P0 的第一段拒绝（变更清单、测试盘验证、最终验收检查项、回滚方案、VM 提权执行通道经验） |
+| [winre-payload-and-p0-recon-2026-09-27.md](winre-payload-and-p0-recon-2026-09-27.md) | 上一条的**勘察报告**：载荷现状盘点、F1/F3 触发条件与根因、Q1~Q7 待确认项（只读，未改任何代码/载荷/启动项） |
 | [winre-repair-implementation-plan-2026-09-25.md](winre-repair-implementation-plan-2026-09-25.md) | v1.6.8 审查后的**详细实施方案**（分阶段改动、函数清单、启动事务、故障注入、验收标准）。**仅为待实施方案，不代表已修复** |
 | [winre-payload-contract-2026-09-16.md](winre-payload-contract-2026-09-16.md) | WinRE 与 WinPE 模板分离、载荷契约与回归防线（v1.6.0） |
 | [winre-autostart-pitfalls.md](winre-autostart-pitfalls.md) | WinRE 恢复路线端到端跑通时踩的坑（2026-09-13 实机验证） |
