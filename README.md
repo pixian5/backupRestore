@@ -159,20 +159,24 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 1. **C: 完整系统备份/还原仍未实机测试** —— 它是产品主场景，但按用户长期约束，开发/测试一律在
    测试盘进行，C: 只在最终验收时做一次。此外当前这台 WinRE 注册在 C: 上，F3 第一段会拒绝
    「离线备份 C:」这条组合（在线 `--no-reboot` 不受影响）。
-2. **阶段 2 PoC 已证伪「任务副本 + BCD 重定向」**（详见
-   [`docs/winre-task-wim-phase2-2026-09-27.md`](docs/winre-task-wim-phase2-2026-09-27.md) 第 7 节）：
-   WinRE 强校验「启动 ramdisk 路径 == ReAgent 注册位置」，改共享对象、克隆对象、
-   recoverysequence 自洽、官方 `/setreimage` 四条路全部被拒。要解锁主场景只剩
-   swap-in-place（任务副本临时顶班注册位置）或换 WinPE 两条路，**待用户裁定**。
+2. **阶段 2 路线已定：Capture 排除 + 事后补回重建 WinRE**（详见
+   [`docs/winre-task-wim-phase2-2026-09-27.md`](docs/winre-task-wim-phase2-2026-09-27.md) 第 7、8 节）。
+   PoC 已证伪「任务副本 + BCD 重定向」：WinRE 强校验「启动 ramdisk 路径 == ReAgent 注册位置」，
+   改共享对象、克隆对象、recoverysequence 自洽、官方 `/setreimage` 四条路全部被拒——
+   **所以「注入副本必须写回注册位置」是为启动，不可省**；真正解决 F1/F3 的是
+   **把 `\Recovery\WindowsRE\Winre.wim` 加入 Capture 排除表，任务结束后补回原件并离线重注册**，
+   一处修复同时解两个 P0。待 PoC：WinRE 内对已 Apply 的目标卷做离线 `reagentc /setreimage /target` + `/enable`。
+   **该问题只存在于 WinRE 通道；PE 通道（`install_pe_ramdisk`，任意路径 ramdisk、无 ReAgent 校验）天生没有 F1/F3。**
 3. **Windows servicing 会静默冲掉部署的载荷**（当天新发现）——v1.7.6 载荷部署数小时后
    被累积更新替换为官方原版 WinRE，已重新注入恢复。任务准备阶段的载荷哈希校验因此不可省略，
    长期需要把任务环境与注册 WinRE 解耦。
 4. **PE 载荷未同步** —— VM 内 `T:\petest\boot.wim` 是 2026-09-13 实验残留，
-   宿主 `artifacts/BackupRestorePE.wim` 是另一条产物线；若路线 B（WinPE）被选中则需一并处理。
+   宿主 `artifacts/BackupRestorePE.wim` 是另一条产物线。按已定路线（保持 WinRE 任务通道）
+   **本阶段不需要动 PE**；先用户裁定「以哪个为准」再一次性同步。
 
 ### 其他已知限制
 
-- **独立 EFI 首启动回恢复系统**：<｜hy_place▁holder▁no▁813｜>验证（`0xc0430001`，已标记为 V1 已知限制，非交付门槛）。
+- **独立 EFI 首启动回恢复系统**：未验证（`0xc0430001`，已标记为 V1 已知限制，非交付门槛）。
 - **Parallels Desktop 27.x 固件存在 ramdisk 引导回归**（6 秒复位循环，已 A/B 闭环证明，与本项目代码无关）。
   开发验证目前留在 **PD 26.4.2** 上做，注意关闭自动更新。
 

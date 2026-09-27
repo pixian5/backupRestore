@@ -1,7 +1,10 @@
 # 阶段 2 拆分实施：任务专用 WinRE 副本（2026-09-27）
 
-文档状态：**设计 + 实机勘察，方案已获用户选定（阶段 2 拆分做）**。代码改动按 2A → 2B 顺序推进，
-每个子阶段独立交付、独立回滚。
+文档状态：**2A 原方案已被实机 PoC 证伪；路线已定 —— Capture 排除 + 事后补回重建 WinRE（第 8 节）**。
+代码改动按 8.2 四条推进；先做「WinRE 内离线 reagentc 重注册」PoC（8.5），通过后才动 WinRE 通道代码。
+
+> 边界提醒：本轮所有改动**只在 WinRE 任务通道内**。PE 通道（`install_pe_ramdisk`）不受
+> F1/F3 影响，本阶段不碰，见 8.1。
 
 前置：v1.7.6 已完成阶段 1（F1/F3 第一段拒绝 + 载荷同步）。本文档只讲阶段 2。
 
@@ -111,11 +114,14 @@
 
 ## 6. 待办与决策记录
 
-- [x] 用户选定「阶段 2 拆分做」（2A 先，2B 后）
+- [x] 用户选定「阶段 2 拆分做」（2A 先，2B 后）——后被 2A PoC 推翻
 - [x] 建快照（改 BCD 前）：`{eb423a36-f670-4d59-9a2c-c5a517db8c6b}`
 - [x] **PoC 完成：2A 原方案被证伪**（见第 7 节）
-- [ ] **路线待用户裁定**（见第 8 节）
-- [ ] 选定路线后实施 + 测试盘验证
+- [x] **路线已定：Capture 排除 + 事后补回重建 WinRE**（见 8.0~8.2，用户 2026-09-27 质疑后收敛）
+- [ ] PoC：WinRE 内对已 Apply 的目标卷做离线 `reagentc /setreimage /target` + `/enable`
+- [ ] 决定是否启用 sidecar `<镜像>.winre.wim`（多 ~700MB/份）
+- [ ] 实施 8.2 四条改动 + 单测
+- [ ] 测试盘验证 + 根目录 README 进度更新
 
 ---
 
@@ -160,30 +166,98 @@
 
 ---
 
-## 8. 修订后的路线候选（待用户裁定）
+## 8. 最终方案（2026-09-27 用户裁定）：Capture 排除 + 事后重建 WinRE
 
-### 8.1 路线 A：swap-in-place（仍用 WinRE，任务副本临时顶班）
+### 8.0 先回答两个被质疑的问题
 
-任务准备时：官方 WIM 暂存任务目录 → 任务副本（注入后）**命名为
-`C:\Recovery\WindowsRE\Winre.wim`**（路径/文件名/注册位置三者一致，ReAgent 满意）→
-`reagentc /boottore` → WinRE 启动任务副本。任务结束：换回官方 WIM + 校验哈希。
+**Q：老流程为什么要「把注入后的 WIM 覆盖回注册位置」？直接排除那个文件不就行了？**
 
-- F3 处理：Capture 排除 `\Recovery\WindowsRE\Winre.wim`（此时是任务副本），镜像不含 WinRE；
-  还原完成后由恢复端把 original WIM 放回目标卷并离线注册（即 2B 的「原恢复资产保护 + 重注册」）。
-- 优点：不换环境，改动集中在 prepare/recover 两端。
-- 缺点：任务期间注册位置是任务副本（断电时系统仍能进 WinRE，风险可控）；
-  官方 WIM 的持久性仍受 servicing 威胁（7.2）。
+覆盖不是为备份，是**为启动**。今天下午的 PoC（第 7 节）已经用实机证明：
+WinRE 启动时按 **ReAgent 注册位置的路径 + 文件名** 校验ramdisk 源，不一致就判
+`invalid location` 并自退回 Windows。四条 BCD 重定向路线全被拒，官方 `/setreimage`
+也不行。**任务环境唯一能启动的位置就是注册位置**，所以「注入后的 WIM」必须坐进
+`C:\Recovery\WindowsRE\Winre.wim`，没有第二个选择。
 
-### 8.2 路线 B：任务环境换 WinPE
+**排除能否解决污染？能，而且它就是 F3 的正解。** 两者解决的是不同问题，不互相替代：
 
-PE 没有 ReAgent 校验，从任意路径 ramdisk 启动（GUI 已有 `install_pe_ramdisk` +
-`{ramdiskoptions}` + boot.sdi 启动链）。注册 WinRE 全程不碰 → F3 根除。
+| 动作 | 解决什么 | 不做会怎样 |
+|---|---|---|
+| 注入副本写回注册位置 | **能启动**（WinRE 强约束，见 7.1，不可省） | 根本进不了任务环境 |
+| Capture 排除 `\Recovery\WindowsRE\Winre.wim` | **F3 污染**（用户提的这条） | 镜像里带一份注入后的脏 WIM + 上次任务的 env/task.json |
+| 任务结束后换回原件 + 校验哈希 | 注册 WIM 持久干净 | 系统长期带着副本跑 |
 
-- 优点：启动机制已被 GUI 实现并部分验证；注册 WinRE 与任务完全解耦。
-- 缺点：PE 载荷需建设（此前裁定「PE 先不处理」，现在情况变化需重新裁定）；
-  PE 与 WinRE 的环境差异（盘符、挂载、工具）需要回归。
+唯一的例外：**如果任务环境换成 PE，第一条约束就不存在**（见 8.1）。但只要任务跑在 WinRE 里，
+「注入副本必须坐进注册位置」就不可省，跟备不备份无关。
 
-### 8.3 路线 C：维持现状
+**Q：F1（格式化删掉 WinRE 宿主目录）不是同理吗？**
 
-接受 F3 第一段拒绝：无独立 Recovery 分区的机器上主场景（离线备份/还原系统盘）不可用。
-验收风险自担，不推荐。
+同理。**F1 与 F3 收敛成同一个收尾动作：任务结束 / 还原完成后补回 WinRE 并重新注册。**
+排除掉 WIM 之后，镜像里本来就没有恢复资产；格式化删掉的东西与「补回」要写的东西完全重叠——
+都只是 `\Recovery\WindowsRE\` 那一个目录。所以一处修复解两个 P0：
+
+```
+还原到 C:：Format → Apply（镜像里本来就没有 \Recovery\WindowsRE）
+            ↓ 收尾：把暂存的原件 WIM 写回 <目标卷>\Recovery\WindowsRE\Winre.wim
+            ↓ 离线 reagentc /setreimage /target <目标卷>\Windows + /enable
+结果：目标系统有正常可用的 RE（还是任务前的原件，哈希可验）
+```
+
+### 8.1 RE 与 PE 必须严格区分（不要混为一谈）
+
+**这两个 P0 只存在于 WinRE 通道，PE 通道天生没有。** 代码事实：
+
+| | WinRE 任务通道 | PE 通道（`install_pe_ramdisk`） |
+|---|---|---|
+| 入口 | `prepare` → `prepare_payload` → `reagentc /boottore` | GUI「PE 恢复」页手动安装启动项 |
+| 存放位置 | **固定** `X:\Recovery\WindowsRE\Winre.wim`（注册位置） | **任意** `<dir>\sources\boot.wim`（用户选的目录） |
+| 谁在校验路径 | ReAgent（BootUX/winpeshl 启动前按注册位置核对） | 无，只有 BCD ramdisk 设备/路径本身 |
+| 需要覆盖系统文件 | 是（注册 WIM） | 否（只复制到用户指定目录 + 加一条 BCD 项） |
+| 会不会被 servicing 冲掉 | **会**（今天实测，7.2） | 不会（不在 servicing 管辖区内） |
+| F1 / F3 | **存在** | **不存在** |
+
+结论：**阶段 2 的所有改动必须限定在 WinRE 通道内**，不得顺手改 PE 的逻辑、也不得把 PE
+的启动链当成「任务环境已可用」。GUI 里那条 PE 启动链目前只是「安装一个手动 PE 恢复环境」
+的功能，**没有任何任务走它**——`recover-env` / `prepare` / `recover` 全都在 WinRE 里跑。
+
+### 8.2 实施方案（四条改动）
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `core::build_capture_exclusions` | 追加固定排除项 `\Recovery\WindowsRE\Winre.wim`（WinRE 任务模式下）。此时注册位置放的是任务副本，本来就不该进镜像 |
+| 2 | `windows_prepare.rs::prepare_payload` | 保持现在的「注入副本写回注册位置」，但日志与 manifest 明确标注这是**临时顶班**；`original/Winre.wim` 已存在，继续作为换回源与哈希基准 |
+| 3 | 恢复端收尾（新增 `redeploy_winre_after_task`） | 备份任务结束：把 `original/Winre.wim` 换回注册位置并校验 == `ORIGINAL_WINRE_SHA256`。还原任务结束：把同一份原件写到**目标卷** `\Recovery\WindowsRE\Winre.wim`，再离线 `reagentc /setreimage /target <OS根>` + `/enable` |
+| 4 | `core::validate_volume_roles` | 新策略标记下**放开** F3（`source == recovery`）与 F1（`target == recovery`）的拒绝；旧任务无标记则维持拒绝 |
+
+### 8.3 「补回 WinRE」的资产来源（必须解决，否则排除反而有害）
+
+排除了就没有退路，所以**补回的资产来源**必须保证。三条候选，推荐 A+B 组合：
+
+- **A. 任务目录里的 `original/Winre.wim`**（准备期哈希留底）。
+  可行性已被现有规则保证：`windows_prepare.rs:164-172` 已禁止「还原目标 == 程序目录所在分区」，
+  任务目录一定活过目标卷格式化。**这是主来源。**
+- **B. 镜像旁挂 sidecar `<镜像名>.winre.wim`**（可选开关，默认开）。
+  覆盖「拿旧镜像/别的机器的镜像还原」场景——那时任务目录里没有原件。
+  代价：每份备份多 ~700MB，做成可开关（默认开，空间紧张时可关）。
+- **C. 目标卷还原后仍未恢复 WinRE 时明确告警**（兜底，不允许静默失败）。
+
+三者都做才好：A 快、B 让镜像自包含、C 保证不会「还原完安静地没有恢复环境」。
+
+### 8.4 残留风险（诚实清单）
+
+1. **离线 `reagentc /setreimage /target` + `/enable` 在 WinRE 里能否成功**：未 PoC，必须先验证
+   （WinRE 里跑 reagentc 作用于**离线目标卷**是另一套行为）。失败则退到手工 `bcdedit` 建项。
+2. **servicing 仍会冲掉注册的 WIM**（7.2）。所以准备期的哈希校验不能去，并且基准必须取
+   「本次任务开始时留底的 `original/Winre.wim` 哈希」，不能假设本地存在一份权威原件。
+3. **中途断电**：注册位置仍是任务副本 → 系统依旧能正常进 WinRE（不是砖），但下次任务开始前
+   应先检测并换回。
+4. **与微软惯例相悖**：官方建议系统备份包含 `\Recovery\WindowsRE`。我们排除它是有理由的偏离
+   （任务副本绝不能被捕获），条件是自动补回 + 显著日志，**必须写进用户文档而不是悄悄改**。
+
+### 8.5 待确认 / 下一步
+
+- [x] 用户裁定「排除 + 事后重建」（替代 swap-in-place / 换 PE / 维持现状三选一）
+- [ ] PoC：WinRE 内对已 Apply 的目标卷做离线 `reagentc /setreimage /target` + `/enable`
+- [ ] 是否启用 sidecar（多 ~700MB/份镜像）
+- [ ] 实施 8.2 四条改动 + 单测
+- [ ] 测试盘验证：离线备份承载 RE 的卷（用不同于生产系统的小卷模拟）+ 抽检镜像无 `\Recovery` +
+      任务后注册/目标 WIM 哈希复原

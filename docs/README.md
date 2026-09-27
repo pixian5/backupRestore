@@ -46,7 +46,7 @@
 | 文档 | 作用 |
 |---|---|
 | [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) | **v1.7.6**：WinRE 载荷从 v1.7.3 更新到 v1.7.6（测试盘重建 → 快照授权写回 → WinRE 实跑验证），F1/F3 两个 P0 的第一段拒绝（变更清单、测试盘验证、最终验收检查项、回滚方案、VM 提权执行通道经验） |
-| [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) | **阶段 2（PoC 已完成，路线待裁定）**：**2A 原方案被证伪**——WinRE 强校验启动 ramdisk 路径==注册位置，共享对象改路径/克隆对象/recoverysequence 自洽/setreimage 四路全拒（对照实验进 WinRE 成功，机制正常）；**意外发现 Windows servicing 会静默冲掉部署的载荷**（v1.7.6 当天被替换为官方原版，已重注入恢复）；修订路线 A swap-in-place / B 换 WinPE / C 维持现状待裁定 |
+| [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) | **阶段 2（路线已定，待实施）**：BCD 实机勘察；**2A 原方案被证伪**——WinRE 强校验启动 ramdisk 路径==注册位置，共享对象改路径/克隆对象/recoverysequence 自洽/setreimage 四路全拒（对照实验进 WinRE 成功，机制正常）；**意外发现 Windows servicing 会静默冲掉部署的载荷**（v1.7.6 当天被替换为官方原版，已重注入恢复）；**结论：注入副本必须坐进注册位置（为启动，不可省），F1/F3 的正解是 Capture 排除 `\Recovery\WindowsRE\Winre.wim` + 任务后补回并离线重注册**——一处修复解两个 P0；含 RE/PE 通道严格区分（PE 通道无此问题）、资产来源方案、残留风险与下一步 |
 | [winre-payload-and-p0-recon-2026-09-27.md](winre-payload-and-p0-recon-2026-09-27.md) | 上一条的**勘察报告**：载荷现状盘点、F1/F3 触发条件与根因、Q1~Q7 待确认项（只读，未改任何代码/载荷/启动项） |
 | [winre-repair-implementation-plan-2026-09-25.md](winre-repair-implementation-plan-2026-09-25.md) | v1.6.8 审查后的**详细实施方案**（分阶段改动、函数清单、启动事务、故障注入、验收标准）。**仅为待实施方案，不代表已修复** |
 | [winre-payload-contract-2026-09-16.md](winre-payload-contract-2026-09-16.md) | WinRE 与 WinPE 模板分离、载荷契约与回归防线（v1.6.0） |
