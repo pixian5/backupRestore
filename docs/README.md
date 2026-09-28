@@ -74,6 +74,7 @@
 | [20260928-085000-v178-vm-verify-partial-and-bug.md](20260928-085000-v178-vm-verify-partial-and-bug.md) | **v1.7.8 VM 实机验证（部分通过 + 真实 BUG）**：常规备份周期 2 个完整任务通过；但**续跑修复路径实机失败**——`volume has no disk number`（resume 修复路径复用了 `ensure_volume_mounted` 的 disk_number 强制语义，本机 WinRE 注册卷无独立盘号）；含复现、定位、修复方向、遗留清单 |
 | [20260928-093132-v179-fix-resume-mount-and-verify.md](20260928-093132-v179-fix-resume-mount-and-verify.md) | ✅ **v1.7.9：续跑挂载 BUG 修复 + 实机闭环 PASS**——根因=读取端丢弃 env 已有字段 + 挂载端单路依赖 DiskPart；修复=读取端补齐 + 挂载端三级降级（盘符复用→mountvol GUID→DiskPart）；同一任务日志前后对比（00:58 失败 → 01:21 修复→01:22 success）；含可复用验证方法（power-loss-window 注入 + original 覆写构造死局） |
 | [20260928-221500-parallels-balloon-host-disk-full.md](20260928-221500-parallels-balloon-host-disk-full.md) | 🚨 **Parallels 气球文件（`Mac disk`）撑爆宿主盘事故**：客体每卷 190-220GB 巨型占位文件、删不掉会自动重建；根因=宿主演化正反馈（宿主越满→Parallels 越想回收→气球越大）；`--online-compact off` **无效**；**停 Tools 的瞬间气球自动消失**是唯一可利用窗口；含 SYSTEM 计划任务编排套路 + 本次处置（删 target 8.7G + 快照 54G → 宿主 393MB→136GB） |
+| [20260928-231000-cleanup-test-volumes-and-disks.md](20260928-231000-cleanup-test-volumes-and-disks.md) | 🧹 测试卷/旧备份清理：删 br.hdd(E:)物理盘+3 个残留快照（device-del 被快照引用挡停机也报错的坑）、格式化 P:/T:、删 10 个旧任务目录；保留 F:c-real.wim 真实备份；含 rb3 真实还原被「目标分区承载 WinRE」防护拦截的记录（待设计迁出→还原→重建注册流程） |
 
 ---
 
