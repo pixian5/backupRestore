@@ -54,6 +54,7 @@
 | [winre-bcd-loop-fix-2026-09-16.md](winre-bcd-loop-fix-2026-09-16.md) | BCD 丢失导致引导循环的修复过程与 WinRE 引导结论 |
 | [winre-boot-failure-parallels27-2026-09-25.md](winre-boot-failure-parallels27-2026-09-25.md) | **PD 27.x 固件 ramdisk 引导回归**的排查与 A/B 闭环证明（26.4.2 同链路正常进 WinRE） |
 | [recovery-desktop-system-info-2026-09-25.md](recovery-desktop-system-info-2026-09-25.md) | 恢复桌面「软硬件信息」按钮（v1.7.0）的设计与实现说明 |
+| [20260929-050206-winre-progress-window-freeze-fix.md](20260929-050206-winre-progress-window-freeze-fix.md) | **进度窗口冻住/不显示百分比**（用户进 WinRE 备份时弹窗无详情）：根因=`stream_to_log` 用 `read_until(b'\n')`，而 DISM 进度用 `\r` 原地刷新不带 `\n`，中间百分比全卡管道缓冲直到结束才落盘；修复=按 `\r` 实时落盘 + 备份加 `STEP n/N` 编号步骤并显示「步骤 n/N：名称」；含回归单测 |
 
 ---
 

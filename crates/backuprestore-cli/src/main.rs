@@ -19,18 +19,15 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
-#[cfg(windows)]
 use std::io::Read;
 use std::io::Write;
-#[cfg(windows)]
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
 use std::process::{ChildStderr, ChildStdout, Stdio};
-#[cfg(windows)]
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::thread;
@@ -2456,6 +2453,7 @@ fn recover_windows(
         }
         Operation::Backup => {
             use backuprestore_core::{BackupMetadata, PROGRAM_VERSION, write_json_atomic};
+            append_log(log, "STEP 1/4 准备备份环境（挂载卷、校验、必要时代原恢复环境）")?;
             let source = task.source.clone().ok_or_else(|| err("missing source"))?;
             let destination = task
                 .destination
@@ -2554,6 +2552,7 @@ fn recover_windows(
             // original remains recoverable until the candidate has passed
             // DISM inspection and is renamed into place.
             let _ = fs::remove_file(&partial);
+            append_log(log, "STEP 2/4 捕获系统分区镜像（DISM，百分比见进度条）")?;
             let new_index = if existing {
                 let candidate = PathBuf::from(format!(
                     "{}.{}.append-candidate.wim",
@@ -2626,6 +2625,7 @@ fn recover_windows(
                     image_size,
                 ),
             )?;
+            append_log(log, "STEP 3/4 校验镜像并计算哈希、写入元数据")?;
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
             let source_volume_serial = source.volume_serial.clone();
             let source_partition_size = source.partition_size;
@@ -2767,6 +2767,7 @@ fn recover_windows(
                 write_json_atomic(legacy_path, &first)?;
             }
             if finalize_success {
+                append_log(log, "STEP 4/4 完成并重建恢复环境（回收 RE 暂存卷）")?;
                 // v2 终态：备份源曾承载注册 WinRE 的任务，在写 Success 前把源卷重新注册回自身
                 // 干净 WinRE 并回收 RE 暂存卷（离线 reagentc；失败不阻断任务）。
                 if let Some(source) = task.source.clone() {
@@ -3512,30 +3513,58 @@ fn verify_bcd_target(efi_root: &Path, target_root: &Path, log: &Path) -> Result<
     Ok(())
 }
 
-#[cfg(windows)]
 fn stream_to_log<R: Read>(
     label: &str,
     stream: R,
     sink: Arc<Mutex<std::fs::File>>,
 ) -> Result<(), TaskError> {
     let mut reader = BufReader::new(stream);
-    let mut bytes = Vec::new();
-    loop {
-        bytes.clear();
-        if reader.read_until(b'\n', &mut bytes)? == 0 {
-            break;
-        }
+    let mut line: Vec<u8> = Vec::new();
+    let mut saw_cr = false;
+    let emit = |line: &[u8], sink: &Arc<Mutex<std::fs::File>>| -> Result<(), TaskError> {
         // DISM/bcdboot use the Windows console code page on localized hosts;
         // stdout is not guaranteed to be UTF-8. Preserve every byte in the
         // log with replacement decoding instead of failing the recovery task
         // after the native operation has already started.
-        let line = String::from_utf8_lossy(&bytes);
-        {
-            let mut file = sink
-                .lock()
-                .map_err(|_| err("recovery log lock was poisoned"))?;
-            write!(file, "[{label}] {line}")?;
-            file.flush()?;
+        let text = String::from_utf8_lossy(line);
+        let mut file = sink
+            .lock()
+            .map_err(|_| err("recovery log lock was poisoned"))?;
+        writeln!(file, "[{label}] {text}")?;
+        file.flush()?;
+        Ok(())
+    };
+    loop {
+        let mut byte = [0u8; 1];
+        if reader.read(&mut byte)? == 0 {
+            if !line.is_empty() {
+                emit(&line, &sink)?;
+            }
+            break;
+        }
+        match byte[0] {
+            b'\n' => {
+                if saw_cr {
+                    // \r\n: the \r already flushed this logical line; ignore the \n.
+                    saw_cr = false;
+                    line.clear();
+                } else {
+                    emit(&line, &sink)?;
+                    line.clear();
+                }
+            }
+            b'\r' => {
+                // DISM 进度条用 \r 原地刷新（不带 \n）。把每次 \r 当作一行边界实时
+                // 落盘，进度窗口才能看到中间百分比；否则整段进度会卡在管道缓冲里，
+                // 直到 DISM 结束吐出 \n 才一次性落盘，窗口进度条全程冻在 0%。
+                emit(&line, &sink)?;
+                line.clear();
+                saw_cr = true;
+            }
+            other => {
+                line.push(other);
+                saw_cr = false;
+            }
         }
     }
     Ok(())
@@ -3801,5 +3830,40 @@ mod tests {
                 "{fault} must use the current system EFI by default"
             );
         }
+    }
+
+    #[test]
+    fn dism_carriage_return_progress_streams_each_update() {
+        // 回归：DISM 用 \r 原地刷新进度条（不带 \n）。旧实现用 read_until(b'\n')，
+        // 导致所有 [= xx% =] 卡在管道缓冲、直到结束才落盘，进度窗口全程冻在 0%。
+        // 现在每次 \r 都应作为一行边界实时写入日志。
+        use std::io::Cursor;
+        use std::sync::{Arc, Mutex};
+
+        let dir = std::env::temp_dir().join("br_stream_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("recovery.log");
+        let _ = std::fs::remove_file(&log_path);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        let sink = Arc::new(Mutex::new(file));
+        let data: Vec<u8> =
+            b"[=   10.0% =]\r[=   20.0% =]\r[=  100.0% =]\nDone\n".to_vec();
+        super::stream_to_log("stdout", Cursor::new(data), Arc::clone(&sink)).unwrap();
+        drop(sink);
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("10.0%"), "missing first percent update: {content}");
+        assert!(content.contains("20.0%"), "missing second percent update: {content}");
+        assert!(content.contains("100.0%"), "missing final percent update: {content}");
+        assert!(content.contains("Done"), "missing trailing line: {content}");
+        // \r\n 不应产生重复空行。
+        assert!(
+            !content.contains("[stdout] \n[stdout] "),
+            "carriage-return+newline doubled a line: {content}"
+        );
+        let _ = std::fs::remove_file(&log_path);
     }
 }

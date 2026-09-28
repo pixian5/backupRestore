@@ -393,12 +393,26 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         stage = Some("操作完成".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {
         stage = Some("正在准备恢复环境…".to_string());
+    } else if let Some(rest) = line.strip_prefix("STEP ") {
+        // 备份/还原流程打的编号步骤标记，形如 "STEP 2/4 捕获系统分区镜像"。
+        // 进度窗口据此显示「步骤 n/N：<名称>」，让用户看清当前处在第几步。
+        let rest = rest.trim();
+        if let Some((step, name)) = rest.split_once(' ') {
+            if step.contains('/') {
+                stage = Some(format!("步骤 {}：{}", step, name.trim()));
+            } else {
+                stage = Some(format!("步骤：{}", name.trim()));
+            }
+        } else {
+            stage = Some(format!("步骤：{rest}"));
+        }
     }
     let percent = parse_percent(line);
     let detail = if line.trim().is_empty()
         || ((line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%'))
+        || line.starts_with("STEP ")
     {
-        None // 空行和纯进度行不占详情
+        None // 空行、纯进度行、编号步骤行都不占详情（步骤已由阶段标题展示）
     } else {
         Some(line.trim_end().to_string())
     };
@@ -1046,6 +1060,16 @@ Possible values for VolumeName along with current mount points are:
                 .as_deref(),
             Some("正在扫描系统分区…")
         );
+    }
+
+    #[test]
+    fn step_markers_render_as_numbered_stage_and_stay_out_of_detail() {
+        let (stage, _percent, detail) = classify_log_line("STEP 2/4 捕获系统分区镜像");
+        assert_eq!(stage.as_deref(), Some("步骤 2/4：捕获系统分区镜像"));
+        assert_eq!(detail, None, "编号步骤行不应占详情框（已由阶段标题展示）");
+
+        let (single, _, _) = classify_log_line("STEP 准备环境");
+        assert_eq!(single.as_deref(), Some("步骤：准备环境"));
     }
 
     #[test]
