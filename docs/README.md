@@ -71,6 +71,7 @@
 | [20260928-072014-winre-restore-clean-at-entry.md](20260928-072014-winre-restore-clean-at-entry.md) | ⚠️ **已回退（历史）**：曾把方案 D 还原挪到 WinRE 入口；因与断电续跑冲突而撤销。含"清理一次性启动项"实为 bootmgr 消费 + guard 机制的纠正，仍有参考价值 |
 | [20260928-073809-resume-vs-clean-winre-conflict.md](20260928-073809-resume-vs-clean-winre-conflict.md) | ✅ **冲突分析（已修复）**：入口还原干净 RE 与断电续跑真实冲突——**续跑隐式依赖「注册位=注入件」**才能自动跑 Recovery.exe；含冲突矩阵、旧设计对比（该缺口在旧设计中同样存在，只是窗口更小）、修复方案（resume 侧重建 payload） |
 | [20260928-074516-registered-winre-policy-and-resume-design.md](20260928-074516-registered-winre-policy-and-resume-design.md) | **注册 WinRE 状态机设计（现行）**：注册位单位置双角色（载荷宿主 vs 捕获纯净）只能时间分片；三条不变量 + 七阶段流程 + 13 种场景矩阵 + 幂等/防循环论证；结论=回退入口翻转、改为「续跑前重建载荷」。**改动 1–4 已实现**（`ensure_registered_is_payload` 接入 resume） |
+| [20260928-085000-v178-vm-verify-partial-and-bug.md](20260928-085000-v178-vm-verify-partial-and-bug.md) | **v1.7.8 VM 实机验证（部分通过 + 真实 BUG）**：常规备份周期 2 个完整任务通过；但**续跑修复路径实机失败**——`volume has no disk number`（resume 修复路径复用了 `ensure_volume_mounted` 的 disk_number 强制语义，本机 WinRE 注册卷无独立盘号）；含复现、定位、修复方向、遗留清单 |
 
 ---
 
