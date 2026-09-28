@@ -7,7 +7,9 @@
 //! WinRE's `winpeshl.ini` without depending on a desktop runtime.
 
 #[cfg(windows)]
-use crate::text_parsing::{MountedVolumes, VolumeMountQuery, classify_mountvol_output};
+use crate::text_parsing::{
+    MountedVolumes, VolumeMountQuery, classify_mountvol_output, parse_mountvol_listing,
+};
 #[cfg(windows)]
 use backuprestore_core::canonical_compression;
 #[cfg(windows)]
@@ -1508,46 +1510,145 @@ fn mount_env_volume(
         )?;
         return Ok(existing);
     }
+    // Drive letters are ephemeral across boots: WinRE assigns letters in its
+    // own discovery order, so the requested letter can already belong to a
+    // different volume while the expected volume already sits at another
+    // letter (a real-C: backup with many attached volumes hit exactly that:
+    // IMAGE wanted I: but WinRE had given I: to an unrelated volume, and the
+    // old refusal aborted the whole task). Enumerate every current mount
+    // first and never assign over a foreign mount — diskpart's
+    // `assign letter=` would steal it: reuse the expected volume's own letter
+    // when it has one, otherwise walk candidate letters until one is free.
+    let listing = match enumerate_mounted_volumes(log) {
+        Ok(listing) => listing,
+        Err(error) => {
+            append_log(
+                log,
+                &format!(
+                    "mount {prefix}: mountvol listing unavailable ({error}); probing letters directly"
+                ),
+            )?;
+            Vec::new()
+        }
+    };
+    if let Some((_, letters)) = listing
+        .iter()
+        .find(|(guid, _)| guid.eq_ignore_ascii_case(&expected))
+    {
+        if let Some(&existing) = letters.first() {
+            verify_mounted_volume(existing, &expected, log)?;
+            verify_live_volume_identity(existing, values, prefix, allow_reformatted_serial)?;
+            append_log(
+                log,
+                &format!(
+                    "mount {prefix} complete via pre-mounted letter {existing}: in {}ms",
+                    mount_started.elapsed().as_millis()
+                ),
+            )?;
+            mounts.record(&expected, existing);
+            return Ok(existing);
+        }
+    }
+    for letter in mount_letter_candidates(letter, &listing, mounts) {
+        match query_mounted_volume(letter, log)? {
+            VolumeMountQuery::Mounted(actual) => {
+                if actual.eq_ignore_ascii_case(&expected) {
+                    verify_mounted_volume(letter, &expected, log)?;
+                    verify_live_volume_identity(
+                        letter,
+                        values,
+                        prefix,
+                        allow_reformatted_serial,
+                    )?;
+                    append_log(
+                        log,
+                        &format!(
+                            "mount {prefix} complete via pre-mounted letter {letter}: in {}ms",
+                            mount_started.elapsed().as_millis()
+                        ),
+                    )?;
+                    mounts.record(&expected, letter);
+                    return Ok(letter);
+                }
+                // Occupied by a foreign volume: assigning over it would tear
+                // down whoever relies on it, so try the next free letter.
+                append_log(
+                    log,
+                    &format!(
+                        "mount {prefix}: {letter}: is already mounted to {actual}, trying the next free letter"
+                    ),
+                )?;
+            }
+            // An unproven letter must not be assigned over: doing so can tear
+            // down another role's mount, and it bypasses the checks above.
+            VolumeMountQuery::Unknown => {
+                append_log(
+                    log,
+                    &format!(
+                        "mount {prefix}: {letter}: mount state could not be determined, trying the next free letter"
+                    ),
+                )?;
+            }
+            VolumeMountQuery::Unmounted => {
+                match assign_volume_letter(
+                    letter,
+                    disk,
+                    partition,
+                    &expected,
+                    values,
+                    prefix,
+                    log,
+                    allow_reformatted_serial,
+                    mounts,
+                    mount_started,
+                ) {
+                    Ok(letter) => return Ok(letter),
+                    Err(error) => {
+                        append_log(
+                            log,
+                            &format!(
+                                "mount {prefix}: assigning {letter}: failed ({error}); trying the next free letter"
+                            ),
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    Err(err(&format!(
+        "mount {prefix}: every candidate drive letter is unavailable for volume {expected}"
+    )))
+}
+
+/// Assign `expected` to `letter` via mountvol, falling back to diskpart, and
+/// verify both the resulting mount and the live volume identity. This is the
+/// single assignment path behind `mount_env_volume`'s candidate-letter loop.
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn assign_volume_letter(
+    letter: char,
+    disk: u32,
+    partition: u32,
+    expected: &str,
+    values: &BTreeMap<String, String>,
+    prefix: &str,
+    log: &Path,
+    allow_reformatted_serial: bool,
+    mounts: &mut MountedVolumes,
+    mount_started: Instant,
+) -> Result<char, TaskError> {
     // X: is the writable WinRE RAM disk. C: may be the offline Windows
     // volume (or unavailable), so never use it for the assignment script.
     let script = PathBuf::from(format!(
         r"X:\Windows\Temp\BackupRestore-assign-{letter}.txt"
     ));
-    match query_mounted_volume(letter, log)? {
-        VolumeMountQuery::Mounted(actual) => {
-            if !actual.eq_ignore_ascii_case(&expected) {
-                return Err(err(&format!(
-                    "volume {letter}: is already mounted to {actual}, refusing to replace it"
-                )));
-            }
-            verify_mounted_volume(letter, &expected, log)?;
-            verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
-            append_log(
-                log,
-                &format!(
-                    "mount {prefix} complete via requested letter in {}ms",
-                    mount_started.elapsed().as_millis()
-                ),
-            )?;
-            mounts.record(&expected, letter);
-            return Ok(letter);
-        }
-        // An unproven letter must not be assigned over: doing so can tear
-        // down another role's mount, and it bypasses the refusal above.
-        VolumeMountQuery::Unknown => {
-            return Err(err(&format!(
-                "volume {letter}: mount state could not be determined, refusing to assign it"
-            )));
-        }
-        VolumeMountQuery::Unmounted => {}
-    }
     append_log(
         log,
         &format!("mount {prefix}: assigning {letter}: with mountvol.exe"),
     )?;
     let direct_started = Instant::now();
     let direct_status = Command::new("mountvol.exe")
-        .args([format!("{letter}:"), expected.clone()])
+        .args([format!("{letter}:"), expected.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -1653,6 +1754,79 @@ fn mount_env_volume(
     )?;
     mounts.record(&expected, letter);
     Ok(letter)
+}
+
+/// Snapshot every current volume→letter mount by running `mountvol` with no
+/// arguments. Drive letters are assigned in boot-order luck, so the recovery
+/// path must check what is actually mounted instead of trusting the letters
+/// recorded at preparation time. GUID lines and `X:\` tokens are ASCII even
+/// in localized WinRE, so lossy decoding keeps the parse reliable.
+#[cfg(windows)]
+fn enumerate_mounted_volumes(log: &Path) -> Result<Vec<(String, Vec<char>)>, TaskError> {
+    let started = Instant::now();
+    let mut child = Command::new("mountvol.exe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let mut raw = Vec::new();
+            if let Some(mut stdout) = child.stdout.take() {
+                stdout.read_to_end(&mut raw)?;
+            }
+            let output = String::from_utf8_lossy(&raw).into_owned();
+            let listing = parse_mountvol_listing(&output);
+            append_log(
+                log,
+                &format!(
+                    "mountvol listing: {} volumes, {} mounted letters, exited {status} after {}ms",
+                    listing.len(),
+                    listing.iter().map(|(_, letters)| letters.len()).sum::<usize>(),
+                    started.elapsed().as_millis()
+                ),
+            )?;
+            return Ok(listing);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err("mountvol listing timed out"));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Candidate letters for a role, best first. The role's own letter leads so
+/// the common path is unchanged; the spares are only walked when that letter
+/// is occupied by a foreign volume or unproven. Never offer a letter that is
+/// currently mounted by any volume, the WinRE ramdisk X:, the offline Windows
+/// volume C:, floppy A:/B:, or a letter another role already mounted in this
+/// recovery session (R:/S:/T:/W:/Z:).
+#[cfg(windows)]
+fn mount_letter_candidates(
+    requested: char,
+    listing: &[(String, Vec<char>)],
+    mounts: &MountedVolumes,
+) -> Vec<char> {
+    let mut mounted_letters: Vec<char> = listing
+        .iter()
+        .flat_map(|(_, letters)| letters.iter().copied())
+        .collect();
+    mounted_letters.extend(mounts.letters());
+    let reserved = ['A', 'B', 'C', 'X', 'R', 'S', 'T', 'W', 'Z'];
+    let mut candidates = vec![requested];
+    for spare in ['J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'U', 'V', 'Y'] {
+        if spare != requested
+            && !mounted_letters.contains(&spare)
+            && !reserved.contains(&spare)
+        {
+            candidates.push(spare);
+        }
+    }
+    candidates
 }
 
 #[cfg(windows)]

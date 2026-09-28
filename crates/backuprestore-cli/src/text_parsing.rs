@@ -63,6 +63,50 @@ pub(crate) fn classify_mountvol_output(
     }
 }
 
+/// Parse the `mountvol` listing (no arguments) into `(volume GUID, letters)`
+/// pairs, in the order the listing reports them.
+///
+/// The listing is locale-independent where it matters: volume GUID lines are
+/// always `\\?\Volume{...}\` and mount points are always `X:\` tokens, while
+/// headers and the localized "no mount points" notice are ignored because they
+/// match neither shape. A volume with several mount points lists them
+/// space-separated on one line; folder mount points (no drive letter) are
+/// skipped because roles only ever need a letter.
+pub(crate) fn parse_mountvol_listing(output: &str) -> Vec<(String, Vec<char>)> {
+    let mut result: Vec<(String, Vec<char>)> = Vec::new();
+    let mut current: Option<(String, Vec<char>)> = None;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let upper = trimmed.to_ascii_uppercase();
+        if upper.starts_with("\\\\?\\VOLUME{") && trimmed.ends_with('\\') {
+            if let Some(entry) = current.take() {
+                result.push(entry);
+            }
+            current = Some((trimmed.to_string(), Vec::new()));
+            continue;
+        }
+        if let Some((_, letters)) = current.as_mut() {
+            for token in trimmed.split_whitespace() {
+                let bytes = token.as_bytes();
+                if bytes.len() == 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && bytes[2] == b'\\'
+                {
+                    let letter = (bytes[0] as char).to_ascii_uppercase();
+                    if !letters.contains(&letter) {
+                        letters.push(letter);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(entry) = current.take() {
+        result.push(entry);
+    }
+    result
+}
+
 /// Read a JSON field as display text, accepting the string, number and bool
 /// spellings that DISM and our own reports mix.
 pub(crate) fn json_text(value: &Value, key: &str) -> String {
@@ -430,6 +474,12 @@ impl MountedVolumes {
         self.by_guid.insert(Self::key(volume_guid), letter);
     }
 
+    /// Every letter recorded so far, so candidate letters stay clear of the
+    /// mounts earlier roles in this recovery session rely on.
+    pub(crate) fn letters(&self) -> Vec<char> {
+        self.by_guid.values().copied().collect()
+    }
+
     fn key(volume_guid: &str) -> String {
         volume_guid.to_ascii_uppercase()
     }
@@ -543,6 +593,76 @@ mod tests {
         assert_eq!(compression_from_ui_index(Some(0)).unwrap(), "fast");
         assert_eq!(compression_from_ui_index(Some(1)).unwrap(), "none");
         assert!(compression_from_ui_index(Some(2)).is_err());
+    }
+
+    #[test]
+    fn mountvol_listing_parses_guids_and_letters_across_locales() {
+        let listing = "\
+Possible values for VolumeName along with current mount points are:
+
+    \\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\
+        C:\\
+
+    \\\\?\\Volume{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}\\
+        *** NO MOUNT POINTS ***
+
+    \\\\?\\Volume{99999999-8888-7777-6666-555555555555}\\
+        D:\\ E:\\
+
+    \\\\?\\Volume{dddddddd-cccc-bbbb-aaaa-999999999999}\\
+        \\\\?\\C:\\mount\\folder
+";
+        let parsed = parse_mountvol_listing(listing);
+        assert_eq!(parsed.len(), 4);
+        assert_eq!(
+            parsed[0],
+            (
+                "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\".to_string(),
+                vec!['C']
+            )
+        );
+        assert_eq!(
+            parsed[1],
+            (
+                "\\\\?\\Volume{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}\\".to_string(),
+                Vec::<char>::new()
+            )
+        );
+        // Multiple mount points on one line, letter-only, de-duplicated.
+        assert_eq!(
+            parsed[2],
+            (
+                "\\\\?\\Volume{99999999-8888-7777-6666-555555555555}\\".to_string(),
+                vec!['D', 'E']
+            )
+        );
+        // Folder mount points carry no drive letter and are skipped.
+        assert_eq!(
+            parsed[3],
+            (
+                "\\\\?\\Volume{dddddddd-cccc-bbbb-aaaa-999999999999}\\".to_string(),
+                Vec::<char>::new()
+            )
+        );
+    }
+
+    #[test]
+    fn mountvol_listing_tolerates_localized_headers_and_garbage() {
+        // Chinese locale output: header lines and notices are localized, but
+        // GUID lines and `X:\` tokens stay ASCII (mountvol writes them raw).
+        let listing = "\
+列出可用于 VolumeName 的可能值以及当前装入点:
+
+    \\\\?\\Volume{761230e8-107c-4396-8c37-82273720183d}\\
+        C:\\
+
+    \\\\?\\Volume{f0753766-30a4-410e-944f-38d139113634}\\
+        *** 没有装入点 ***
+";
+        let parsed = parse_mountvol_listing(listing);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].1, vec!['C']);
+        assert!(parsed[1].1.is_empty());
     }
 
     #[test]
