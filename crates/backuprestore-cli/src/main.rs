@@ -389,6 +389,21 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
                 task.status
             ),
         )?;
+        // We are giving up on automatic resumption, so hand the registered WinRE
+        // back to its clean original: a machine stranded hosting our payload
+        // would relaunch a task that nobody is going to finish. Failures here
+        // only enrich the log; manual inspection is already due either way.
+        let suppressed_log = task_dir.join("prepare.log");
+        match try_restore_original_winre_from_task(&task_dir, &suppressed_log) {
+            Ok(()) => append_log(
+                &suppressed_log,
+                "Suppressed resume: original registered WinRE restored and verified",
+            )?,
+            Err(error) => append_log(
+                &suppressed_log,
+                &format!("Suppressed resume: could not restore original registered WinRE: {error}"),
+            )?,
+        }
         return Ok(false);
     }
     for required in [
@@ -420,6 +435,21 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
             task.task_id, task.operation, task.status
         ),
     )?;
+    // Invariant A before re-arming: the registered WinRE must still be this
+    // task's payload, otherwise the reboot lands in the stock Microsoft WinRE
+    // (no winpeshl hook) and the interrupted task silently never resumes. The
+    // previous session may have flipped it clean for the capture, or left it
+    // half-written; both are repaired here before we request the boot.
+    if let Err(error) = try_ensure_registered_is_payload(&task_dir, &log) {
+        append_log(
+            &log,
+            &format!(
+                "Pending boot recovery abandoned: registered WinRE could not host the payload: {error}"
+            ),
+        )?;
+        release_boot_resume_attempt(&task_dir, task.status)?;
+        return Ok(false);
+    }
     let reagentc = Command::new("reagentc.exe")
         .args(["/boottore"])
         .stdin(Stdio::null())
@@ -756,28 +786,16 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             task.status
         )));
     }
-    // 方案 D（入口提前版）：进入 WinRE、一次性启动项已被 bootmgr 消费、恢复卷挂载完成
-    // 之后，立即把注册 WinRE 覆写回任务前干净原件。WinRE 此刻已运行在内存（X: RAM 盘），
-    // 磁盘上的注册 WIM 不再被读取，覆写不影响当前会话；之后整个 WinRE 会话（含任何 DISM
-    // 捕获）打进镜像的都是干净原件，F3 污染窗口在入口即闭合——比「捕获前才还原」更早、更稳。
-    // 只在「备份源卷 == 承载注册 WinRE 的卷」时动作（还原任务或布局不命中则不动注册位）。
-    // 捕获前的 restore_clean_winre_before_capture 与结尾的 restore_original_winre 仍保留，
-    // 作为幂等安全网：本次已在入口还原，二者均走「已匹配」/「已干净」早返回，无副作用。
-    if let Operation::Backup = task.operation {
-        if let Some(recovery) = recovery_volume_from_env(&values) {
-            if let Some(source) = task.source.as_ref() {
-                if backuprestore_core::capture_source_hosts_registered_winre(source, Some(&recovery))
-                {
-                    if let Err(cleanup_error) =
-                        restore_original_winre(&values, &task_dir, &early_log, recovery_letter)
-                    {
-                        // 与结尾同一函数：失败即硬失败终止任务，绝不静默产脏镜像。
-                        return Err(cleanup_error);
-                    }
-                }
-            }
-        }
-    }
+    // 这里曾经在入口立即把注册 WinRE 覆写回干净原件（commits fcb48a1），已于
+    // 2026-09-28 回退：那样会让整个会话的注册位都不是注入件，而断电续跑要求重启后
+    // bootmgr 加载的注册位必须仍是注入件（含 winpeshl → 自动拉起 Recovery.exe），
+    // 否则重启会落进微软原版 WinRE、任务不会自动继续。
+    //
+    // 注册位只有一处，却要同时扮演「载荷宿主」与「捕获纯净」两个互斥角色，且不能用
+    // 第二宿主位置绕开（WinRE 强校验启动路径 == ReAgent 注册位置），因此只能按时间
+    // 分片：任务存活期保持注入件，只在 DISM 捕获前那一刻翻成干净原件
+    // （见 `restore_clean_winre_before_capture`），任务终结时再还原一次。
+    // 完整设计与场景矩阵：docs/20260928-074516-registered-winre-policy-and-resume-design.md
     // 主日志默认在任务目录；挂载镜像卷后（见下）切换到镜像同目录 Recovery.log，
     // 方便用户在 WIM 旁直接查看。workspace_log 保留给 GUI 状态报告读取。
     let workspace_log = store.log_path(&task_id)?;
@@ -1800,6 +1818,82 @@ fn restore_original_winre(
     backuprestore_core::verify_sha256(&registered, &expected)?;
     append_log(log, "Original registered WinRE restored and verified")?;
     Ok(())
+}
+
+/// Put this task's injected payload back into the registered WinRE slot.
+///
+/// Invariant A of the registered-WinRE policy: while a task is still live and
+/// may need to be re-entered automatically, the registered image must be the
+/// payload (its `winpeshl` hook relaunches `Recovery.exe`). The clean original
+/// only belongs there at DISM capture time and once the task is terminal.
+///
+/// This is idempotent: when the registered image already matches the staged
+/// payload nothing is written. A hash mismatch (the previous session flipped it
+/// to the clean original, left a partial copy, or the file vanished) triggers a
+/// full re-copy from `stage/Winre.wim`, so it also repairs interrupted writes.
+#[cfg(windows)]
+fn ensure_registered_is_payload(
+    recovery: &backuprestore_core::VolumeIdentity,
+    task_dir: &Path,
+    manifest: &PayloadManifest,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let staged = task_dir.join("stage").join("Winre.wim");
+    // Never deploy a payload we cannot vouch for; a corrupted staged image would
+    // strand the machine with an unbootable WinRE.
+    backuprestore_core::verify_sha256(&staged, &manifest.staged_winre_sha256).map_err(|error| {
+        err(&format!(
+            "staged WinRE payload does not match manifest: {error}"
+        ))
+    })?;
+    let letter = crate::windows_prepare::ensure_volume_mounted(recovery, 'R', log)?;
+    let registered = PathBuf::from(format!(r"{}:\Recovery\WindowsRE\Winre.wim", letter));
+    let already_payload = registered.is_file()
+        && sha256_file(&registered)
+            .map(|hash| hash.eq_ignore_ascii_case(&manifest.staged_winre_sha256))
+            .unwrap_or(false);
+    if already_payload {
+        append_log(log, "Registered WinRE already hosts this task's payload")?;
+        return Ok(());
+    }
+    fs::copy(&staged, &registered)?;
+    backuprestore_core::verify_sha256(&registered, &manifest.staged_winre_sha256)?;
+    append_log(log, "Task payload re-registered as WinRE for resumption")?;
+    Ok(())
+}
+
+/// Read the durable recovery artifacts so the boot-resume path can prove the
+/// registered WinRE is the payload it expects before re-arming the boot.
+#[cfg(windows)]
+fn read_resume_artifacts(
+    task_dir: &Path,
+) -> Result<(PayloadManifest, BTreeMap<String, String>), TaskError> {
+    let manifest: PayloadManifest = read_json(task_dir.join("manifest.json"))?;
+    let env_values = read_env_file(task_dir.join("payload").join("RecoveryTask.env"))?;
+    Ok((manifest, env_values))
+}
+
+/// Convenience wrapper used by the normal-Windows resume path. Fails loudly when
+/// the recovery identity is absent, because without it the registered slot
+/// cannot be reached at all.
+#[cfg(windows)]
+fn try_ensure_registered_is_payload(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
+    let (manifest, env_values) = read_resume_artifacts(task_dir)?;
+    let recovery = recovery_volume_from_env(&env_values)
+        .ok_or_else(|| err("task environment is missing the RECOVERY identity"))?;
+    ensure_registered_is_payload(&recovery, task_dir, &manifest, log)
+}
+
+/// Hand the registered WinRE back to its clean original from normal Windows.
+/// Used when resumption is abandoned so the machine is not left hosting a
+/// payload nobody is going to finish.
+#[cfg(windows)]
+fn try_restore_original_winre_from_task(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
+    let env_values = read_env_file(task_dir.join("payload").join("RecoveryTask.env"))?;
+    let recovery = recovery_volume_from_env(&env_values)
+        .ok_or_else(|| err("task environment is missing the RECOVERY identity"))?;
+    let letter = crate::windows_prepare::ensure_volume_mounted(&recovery, 'R', log)?;
+    restore_original_winre(&env_values, task_dir, log, letter)
 }
 
 #[cfg(windows)]

@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-09-28
-当前开发版本：**`1.7.7`**（Cargo.toml×2 与 VERSION 已同步）
+当前开发版本：**`1.7.8`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,705,472B）
 
 > **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) + [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >
@@ -9,6 +9,13 @@
 > - v1.7.6：WinRE 载荷更新 + F1/F3 第一段拒绝已交付（详见上述两文档）；
 > - **阶段 2 PoC 已完成并证伪「任务副本 + BCD 重定向」**：WinRE 强校验启动 ramdisk 路径必须等于 ReAgent 注册位置，共享 osloader 改路径 / 克隆对象 / recoverysequence 自洽 / reagentc /setreimage 四条路全部被拒（对照实验证明机制本身正常）；
 > - **v1.7.7 方案 D「捕获前换回干净原件」已落地（代码 + 单测）+ 2026-09-28 实机闭环验证通过**：离线备份源 == WinRE 宿主不再被拒，捕获前把源卷注册 WIM 覆写回干净原件并校验哈希，一处修复同时解 F1/F3 两个 P0；VM 内以 P: 作承载 RE 的卷跑离线备份，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检镜像内 `\Recovery\WindowsRE\Winre.wim` 哈希 == `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原，VM 已恢复干净态；
+> - **v1.7.8（2026-09-28）：注册 WinRE 状态机定型**——确立「注册位单位置双角色只能时间分片」策略，
+>   同时满足「不重启循环 / 断电续跑 / 幂等 / 镜像纯净」四个目标：①**回退** v1.7.7-晚临时加的「进入 WinRE
+>   就立即还原干净 RE」（它与断电续跑真实冲突，属回归）；②新增 `ensure_registered_is_payload()`，在
+>   `resume_pending_boot_task` 重武装之前确保注册位是本任务注入件（已是则跳过，幂等），使**捕获期间或
+>   翻转过程中断电都能正确续跑**（此漏洞在旧设计中同样存在）；③续跑被压制（同 stage 二次中断）时恢复
+>   干净注册位，避免机器带着 payload 被搁置。交叉编译通过、core 28 单测全绿，**VM 实机闭环（含断电续跑
+>   场景）尚未验证**。设计：[20260928-074516-registered-winre-policy-and-resume-design.md](20260928-074516-registered-winre-policy-and-resume-design.md)；
 > - **Windows servicing 会静默替换注册 Winre.wim**（当天部署的 v1.7.6 载荷被累积更新冲掉为官方原版），已重新注入恢复；载荷持久性成为新的部署风险项；
 > - 「不动 C:」边界更新：只是不用程序备份/还原 C，其它操作（更新载荷、reagentc、写 C:\Recovery）都允许；测试卷 workspace=H:\brwork、image=E:\brimg、source=T:、target=P:。
 

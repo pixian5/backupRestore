@@ -2,7 +2,11 @@
 
 > 日期：2026-09-28
 > 结论：**有一处真实冲突**（断电续跑 × 入口还原干净 WinRE），由「方案 D 入口提前」改动引入；已定位根因与修复方案。
-> 相关：[20260928-072014-winre-restore-clean-at-entry.md](20260928-072014-winre-restore-clean-at-entry.md)
+>
+> ✅ **状态：已修复（2026-09-28 晚）**。按 [20260928-074516-registered-winre-policy-and-resume-design.md](20260928-074516-registered-winre-policy-and-resume-design.md)
+> 实现改动 1–4：① 回退入口翻转；② 新增 `ensure_registered_is_payload()`；③ 接入 resume 重武装之前；
+> ④ 续跑被压制分支恢复干净注册位。交叉编译通过、core 28 单测全绿（**VM 实机闭环验证尚未做**）。
+> 本文作为**冲突根因的历史记录**保留，其中"当前状态"描述为修复前的情况，请以实际代码为准。
 
 ---
 

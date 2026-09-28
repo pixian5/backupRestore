@@ -3,6 +3,9 @@
 > 日期：2026-09-28
 > 目标：给出一套**同时满足三个要求**的完整流程，并明确解释为何必须放弃"入口立即还原"这一步。
 > 相关：[20260928-073809-resume-vs-clean-winre-conflict.md](20260928-073809-resume-vs-clean-winre-conflict.md)（冲突定位）
+>
+> **状态：改动 1–4 已实现并提交**（详见第九节）。校验：Windows 交叉编译通过（仅 LNK4099 缺 PDB 警告），
+> `cargo test -p backuprestore-core` 28 全绿。**VM 实机闭环验证尚未做**，按第八节建议执行。
 
 ---
 

@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.7**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.7.8**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 ---
 
@@ -165,12 +165,20 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 核心改动：`validate_volume_roles` 扩展 5 参数 + `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` 开关 | 已落地 | `core` 28 单测全绿（新增 `plan_d_opens_f3_when_source_hosts_registered_winre` 锁定「开关开→F3 放开、关→恢复拒绝」） |
 | 准备层 F3 放开（离线备份源 == WinRE 宿主不再被拒） | 已落地 | `windows_prepare.rs:509` 传 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` |
 | 执行层 `restore_clean_winre_before_capture` | 已落地 | `main.rs:1213`，捕获前覆写源卷注册 WIM 为干净原件并校验哈希；**失败即硬失败终止任务**，绝不静默产脏镜像 |
-| 执行层入口提前还原（方案 D 触发时机前移） | 已落地（2026-09-28） | `main.rs` WinRE 入口（`WinreRestoreGuard` 建立、task 加载后）即调用 `restore_original_winre` 把注册 WIM 覆写回干净原件，F3 污染窗口在入口闭合；捕获前 + 结尾两道保留作幂等安全网。⚠️ **已知冲突**：该还原与断电续跑冲突——续跑隐式依赖「注册位=注入件」自动拉起 Recovery.exe，入口替换后续跑会落进原版 WinRE 导致续不起来；分析与修复方案见 [docs/20260928-073809-resume-vs-clean-winre-conflict.md](docs/20260928-073809-resume-vs-clean-winre-conflict.md) |
+| 执行层入口提前还原 | **已回退（2026-09-28，不再采用）** | 曾把还原挪到 WinRE 入口，但因**与断电续跑冲突**而撤销：续跑隐式依赖「注册位=注入件」自动拉起 Recovery.exe，入口即换干净件会让续跑落进微软原版 WinRE。详见 [docs/20260928-073809-resume-vs-clean-winre-conflict.md](docs/20260928-073809-resume-vs-clean-winre-conflict.md) |
+| 注册 WinRE 状态机（不循环 + 断电续跑 + 幂等） | 已落地（2026-09-28） | 会话期间注册位**保持注入件**；仅 DISM 捕获前翻干净（唯一权威纯净闸门）；新增 `ensure_registered_is_payload()` 在 resume 重武装之前确保注册位=注入件（已是则跳过，幂等）；续跑被压制分支恢复干净。设计见 [docs/20260928-074516-registered-winre-policy-and-resume-design.md](docs/20260928-074516-registered-winre-policy-and-resume-design.md) |
+| 交叉编译 + 单测 | 通过 | Windows `aarch64-pc-windows-msvc` 构建通过（仅 LNK4099 缺 PDB 警告）；`cargo test -p backuprestore-core` 28 全绿。**VM 实机闭环（含断电续跑场景）尚未验证** |
 | 执行层二次闸 `winre_role_conflict_at_execution` 随开关放开 F3 | 已落地 | `main.rs:1170`，`false` 可一键回退到旧拒绝 |
-| 构建（macOS 交叉编译 ARM64） | 产物 `BackupRestore.exe` = 1,697,792B | `build-win.sh` 修复 `rust-lld` 路径后构建通过，字节与方案 D 落地前一致（仅新增 `#[cfg(test)]` 测试） |
+| 构建（macOS 交叉编译 ARM64） | v1.7.8 产物 `BackupRestore.exe` = 1,705,472B | `build-win.sh` 构建通过（仅 LNK4099 缺 PDB 警告，无害）；较 v1.7.7 的 1,697,792B 增加 7,680B（新增注册位策略相关函数） |
 | **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **已通过（2026-09-28 实机闭环）** | 详见 [阶段2 文档 9.5.2.1](docs/winre-task-wim-phase2-2026-09-27.md)：P: 作承载 RE 的卷，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检 `\Recovery\WindowsRE\Winre.wim` 哈希 = `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原 |
 
 > 方案 D 让「离线备份承载 WinRE 的卷」不再被拒，结合 1.7.6 的 F1/F3 第一段逻辑，**产品主场景（系统盘离线备份/还原）在代码层面已解锁**；该解锁已于 2026-09-28 在 VM 内对「备份源 == 承载注册 WinRE 的卷」这一最坏组合实机闭环验证通过。
+
+> **版本说明**：上表中「执行层入口提前还原」= v1.7.7 发布当晚追加的尝试（`fcb48a1`），**已于 v1.7.8 回退**；
+> 「注册 WinRE 状态机」= v1.7.8 的正式做法。两者是一对互斥方案，请勿把前者当作现行逻辑。
+> v1.7.8 另修复了一个**旧设计里同样存在、此前未被记录的缺口**：DISM 捕获期间（或干净件翻转过程中）断电时，
+> 续跑重启会落进干净原版 WinRE 而没有 `winpeshl` 钩子 → `Recovery.exe` 不会自动拉起 → 任务续不起来。
+> 现由 `ensure_registered_is_payload()` 在重武装之前保证注册位是注入件，把该漏洞与新引入的回归一并堵死。
 
 ### 尚未闭环（按严重度）
 

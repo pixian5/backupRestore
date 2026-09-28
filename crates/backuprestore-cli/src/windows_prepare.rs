@@ -1876,7 +1876,9 @@ fn is_drive_letter_available(letter: char) -> bool {
         .any(|line| !line.is_empty())
 }
 
-fn ensure_volume_mounted(
+/// Reused by the normal-Windows boot-resume path so that resumption can reach
+/// the registered WinRE file even when it lives on a hidden recovery partition.
+pub(crate) fn ensure_volume_mounted(
     identity: &VolumeIdentity,
     preferred: char,
     _log: &Path,
