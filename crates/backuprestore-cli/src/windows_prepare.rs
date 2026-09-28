@@ -525,13 +525,18 @@ fn prepare_task(
     // F1（还原目标承载注册 WinRE）：不再硬拒，改为准备层「迁出 → 还原 → 重建注册」
     // （docs/20260928-233000-winre-hosted-restore-solution.md）。仅还原操作命中该冲突时标记
     // 需在 payload 构建完成后迁出；workspace/image/backup-source 同分区的其它冲突维持硬拒。
-    let evacuation_required = matches!(
-        re_conflict,
-        Some(VolumeRoleConflict::RestoreTargetOnRegisteredWinre)
-    ) && matches!(
-        options.operation,
-        Operation::RestoreExisting | Operation::CreateSecondary
-    );
+    // 迁出（v2）：还原目标承载注册 WinRE → 格式化前把续跑启动源迁到暂存卷；
+    // 备份源承载注册 WinRE → 把注册迁到暂存卷，使 C: 的 Winre.wim 全程保持干净原件、
+    // 不再需要在捕获前注入↔干净来回翻转（docs/20260928-233000 §6.2）。
+    // workspace/image 同分区的其它冲突仍维持硬拒。
+    let evacuation_required = match (re_conflict, options.operation) {
+        (
+            Some(VolumeRoleConflict::RestoreTargetOnRegisteredWinre),
+            Operation::RestoreExisting | Operation::CreateSecondary,
+        ) => true,
+        (Some(VolumeRoleConflict::BackupSourceOnRegisteredWinre), Operation::Backup) => true,
+        _ => false,
+    };
     if let Some(conflict) = re_conflict {
         if !evacuation_required {
             return Err(err(conflict.message()));
@@ -659,17 +664,24 @@ fn prepare_task(
         }
         return Err(error);
     }
-    // F1 迁出：还原目标承载注册 WinRE 时，把「续跑启动源」迁到 RE 暂存卷后再格式化。
-    // 默认选镜像卷（WIM 所在卷），用户可用 --re-scratch-drive 改选任意持久可写且 ≠ 目标的卷。
+    // F1/F3 迁出：备份源或还原目标承载注册 WinRE 时，把「续跑启动源」迁到 RE 暂存卷。
+    // 默认选镜像卷（WIM 所在卷），用户可用 --re-scratch-drive 改选任意持久可写且 ≠ 源/目标的卷。
     if evacuation_required {
         let scratch = match options.re_scratch_drive {
             Some(letter) => volume_identity(letter)?,
             None => image_volume.clone(),
         };
-        if scratch.same_partition(&target) {
-            return Err(err(
-                "RE 暂存卷不能与还原目标为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷",
-            ));
+        // 暂存卷不能与「被迁出的卷」同分区：备份=源卷，还原=目标卷。
+        let forbidden = match options.operation {
+            Operation::Backup => source.clone(),
+            _ => target.clone(),
+        };
+        if scratch.same_partition(&forbidden) {
+            return Err(err(if options.operation == Operation::Backup {
+                "RE 暂存卷不能与备份源为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
+            } else {
+                "RE 暂存卷不能与还原目标为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
+            }));
         }
         crate::evacuate_registered_winre(&scratch, &task_dir, &prepare_log)?;
     }

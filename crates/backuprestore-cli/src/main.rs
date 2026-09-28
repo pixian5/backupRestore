@@ -2181,16 +2181,22 @@ pub(crate) fn evacuate_registered_winre(
 
 /// v2 终态（docs/20260928-233000-winre-hosted-restore-solution.md §2.3）。
 ///
-/// 还原任务 `Success` 后（仍在 WinRE 内、还原目标离线）调用：把干净原件写回还原目标
-/// 的注册位置作防御性兜底（Plan D 已保证镜像内即干净原件），并清理 RE 暂存卷上的临时
-/// WinRE。注册本身由镜像自带 ReAgent.xml 承担（指向 C:），无需离线 `reagentc /osguid`，
-/// 因此本函数不触碰 BCD/WinRE 注册，仅做文件级兜底与暂存卷回收。
+/// 迁出任务 `Success` 后调用，把 OS 的 WinRE 注册指回它自身的干净原件，并清理 RE 暂存卷
+/// 上的临时 WinRE。两种操作的差异：
+/// - 还原（RestoreExisting/CreateSecondary）：在 WinRE 内、目标离线，镜像自带 ReAgent.xml
+///   已指向自身，故只做文件级兜底拷贝（必要时把干净原件写回目标注册位），不跑离线 reagentc；
+///   暂存卷随后回收。
+/// - 备份（Backup）：在 WinRE 内、源卷离线，用离线 `reagentc /setreimage /target + /enable
+///   /target` 把源 Windows 的注册指回自身干净 WinRE（C: 全程未被注入，原件即干净），
+///   成功后才回收暂存卷；若离线重注册失败则保留暂存卷（WinRE 仍可从暂存卷启动）并告警，
+///   不阻断任务成功。
 ///
 /// 普通（未迁出）任务：env 无 `WINRE_EVACUATED` 标记 → 直接返回，零副作用。
 #[cfg(windows)]
 pub(crate) fn finalize_evacuated_winre(
     task_dir: &Path,
-    target: &backuprestore_core::VolumeIdentity,
+    operation: backuprestore_core::Operation,
+    registered: &backuprestore_core::VolumeIdentity,
     log: &Path,
 ) -> Result<(), TaskError> {
     let env_path = task_dir.join("payload").join("RecoveryTask.env");
@@ -2203,27 +2209,74 @@ pub(crate) fn finalize_evacuated_winre(
     }
     append_log(
         log,
-        "WinRE finalize: restoring clean original to target and cleaning scratch volume",
+        "WinRE finalize: restoring clean original registration and cleaning scratch volume",
     )?;
     let original = task_dir.join("original").join("Winre.wim");
+    // 防御性兜底：确保注册卷上有干净原件（还原目标来自镜像、备份源本就未被注入）。
     if original.is_file() {
-        let letter = crate::windows_prepare::ensure_volume_mounted(target, 'T', log)?;
-        let registered = PathBuf::from(format!(r"{}:\Recovery\WindowsRE\Winre.wim", letter));
-        if let Some(parent) = registered.parent() {
+        let letter = crate::windows_prepare::ensure_volume_mounted(registered, 'T', log)?;
+        let registered_path = PathBuf::from(format!(r"{}:\Recovery\WindowsRE\Winre.wim", letter));
+        if let Some(parent) = registered_path.parent() {
             fs::create_dir_all(parent)?;
         }
         let expected = env_optional(&values, "ORIGINAL_WINRE_SHA256").unwrap_or_default();
-        let needs_copy = !registered.is_file()
-            || sha256_file(&registered)
+        let needs_copy = !registered_path.is_file()
+            || sha256_file(&registered_path)
                 .map(|hash| !hash.eq_ignore_ascii_case(&expected))
                 .unwrap_or(true);
         if needs_copy {
-            fs::copy(&original, &registered)?;
+            fs::copy(&original, &registered_path)?;
             if !expected.is_empty() {
-                let _ = backuprestore_core::verify_sha256(&registered, &expected);
+                let _ = backuprestore_core::verify_sha256(&registered_path, &expected);
             }
         }
-        // 回收 RE 暂存卷上的临时 WinRE（任务目录里的 stage/original 保留作审计）。
+    }
+    // 把 OS 的 WinRE 注册指回它自己的干净原件，再回收暂存卷。
+    let mut scratch_cleaned = false;
+    match operation {
+        backuprestore_core::Operation::Backup => {
+            // 备份 finalize 仍在 WinRE 内、源卷离线：用离线 reagentc 把源 Windows 指回自身
+            // 干净 WinRE。/disable 在 WinRE 内对离线目标可能不被支持，忽略其错误即可。
+            let wletter = crate::windows_prepare::ensure_volume_mounted(registered, 'W', log)?;
+            let win_dir = format!(r"{}:\Windows", wletter);
+            let winre_dir = format!(r"{}:\Recovery\WindowsRE", wletter);
+            let _ = run_logged(
+                "reagentc.exe",
+                &["/disable", &format!("/target{win_dir}")],
+                log,
+            );
+            if let Err(error) = run_logged(
+                "reagentc.exe",
+                &[
+                    "/setreimage",
+                    &format!("/path{winre_dir}"),
+                    &format!("/target{win_dir}"),
+                ],
+                log,
+            )
+            .and_then(|_| {
+                run_logged("reagentc.exe", &["/enable", &format!("/target{win_dir}")], log)
+            }) {
+                append_log(
+                    log,
+                    &format!(
+                        "WinRE finalize: offline re-registration failed ({error}); \
+                         keeping scratch volume so WinRE still boots from it"
+                    ),
+                )?;
+            } else {
+                scratch_cleaned = true;
+            }
+        }
+        backuprestore_core::Operation::RestoreExisting
+        | backuprestore_core::Operation::CreateSecondary => {
+            // 还原目标离线，镜像自带 ReAgent.xml 已指向自身；注册由镜像承担，无需离线 reagentc。
+            scratch_cleaned = true;
+        }
+        backuprestore_core::Operation::Probe => {}
+    }
+    // 回收 RE 暂存卷上的临时 WinRE（任务目录里的 stage/original 保留作审计）。
+    if scratch_cleaned {
         if let Some(scratch) = recovery_volume_from_env(&values) {
             if let Ok(sletter) = crate::windows_prepare::ensure_volume_mounted(&scratch, 'S', log) {
                 let _ = fs::remove_file(PathBuf::from(format!(
@@ -2714,6 +2767,16 @@ fn recover_windows(
                 write_json_atomic(legacy_path, &first)?;
             }
             if finalize_success {
+                // v2 终态：备份源曾承载注册 WinRE 的任务，在写 Success 前把源卷重新注册回自身
+                // 干净 WinRE 并回收 RE 暂存卷（离线 reagentc；失败不阻断任务）。
+                if let Some(source) = task.source.clone() {
+                    finalize_evacuated_winre(
+                        &store.task_dir(&task.task_id)?,
+                        task.operation,
+                        &source,
+                        log,
+                    )?;
+                }
                 store.write_transition(task, Stage::Success)?;
             }
         }
@@ -2863,7 +2926,12 @@ fn recover_windows(
                 if finalize_success {
                     store.write_transition(task, Stage::Success)?;
                     // v2 终态：还原目标曾承载注册 WinRE 的任务，把干净原件写回目标并回收 RE 暂存卷。
-                    finalize_evacuated_winre(&store.task_dir(&task.task_id)?, &target.volume, log)?;
+                    finalize_evacuated_winre(
+                        &store.task_dir(&task.task_id)?,
+                        task.operation,
+                        &target.volume,
+                        log,
+                    )?;
                 }
             } else if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
                 // 数据卷还原：目标卷无 SYSTEM hive（非 Windows 系统），跳过 BCDBoot 启动修复。
@@ -3491,9 +3559,11 @@ mod tests {
     use super::{
         bcd_identifier_from_line, claim_boot_resume_attempt, diskpart_format_script,
         parse_boot_manager_state, parse_recover_options, split_workspace_root_rel,
-        stage_resumable_after_interruption, winre_role_conflict_at_execution,
+        stage_resumable_after_interruption,
     };
-    use backuprestore_core::{Operation, Stage, VolumeIdentity, VolumeRoleConflict};
+    use backuprestore_core::Stage;
+    #[cfg(windows)]
+    use backuprestore_core::{Operation, VolumeIdentity, VolumeRoleConflict};
 
     #[test]
     fn automatic_boot_resume_is_limited_to_once_per_durable_stage() {
@@ -3632,6 +3702,7 @@ mod tests {
     #[test]
     fn evacuated_restore_target_skips_f1_execution_reject() {
         use std::collections::BTreeMap;
+        use super::winre_role_conflict_at_execution;
         // 还原目标与注册 WinRE 同分区（最坏场景 F1），但准备层已迁出到 RE 暂存卷。
         let recovery = VolumeIdentity::new("disk-guid", "part-guid");
         let target = recovery.clone();

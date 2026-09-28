@@ -1,15 +1,18 @@
 # 还原目标承载 WinRE 的解决方案：迁出 → 还原 → 重建注册（保幂等续跑）
 
-> 状态：v2 已实现（代码落地，待 VM 实机验收）。对应真实 C: 还原（F3 最坏场景）的最后一道闸。
-> 代码对接点均已落地：prepare 层在命中 `RestoreTargetOnRegisteredWinre` 时调用 `evacuate_registered_winre`
-> （默认=镜像卷，用户用 `--re-scratch-drive` 改选），执行层 `winre_role_conflict_at_execution` 在
-> `WINRE_EVACUATED=1` 时放行，还原 `Success` 后 `finalize_evacuated_winre` 写回干净原件并回收暂存卷。
-> 非迁出（旧任务/普通还原）行为零变化。
-> 触发：用户要求「真实 C: 完整备份+还原」验收时，`prepare --operation restore-existing --target-drive C`
-> 被 `VolumeRoleConflict::RestoreTargetOnRegisteredWinre` 拦截（见 docs/20260928-231000-*）。
+> 状态：v2 已实现（代码落地，待 VM 实机验收）。对应真实 C: 还原（F1 最坏场景）+ 真实 C: 备份（F3 最坏场景）的最后一道闸。
+> 代码对接点均已落地：prepare 层在命中 `RestoreTargetOnRegisteredWinre`（还原）或 `BackupSourceOnRegisteredWinre`（备份）时
+> 均调用 `evacuate_registered_winre`（默认=镜像卷，用户用 `--re-scratch-drive` 改选）；
+> 执行层 `winre_role_conflict_at_execution` 在 `WINRE_EVACUATED=1` 时放行；
+> 还原 `Success` 后 `finalize_evacuated_winre` 文件级兜底写回干净原件并回收暂存卷，
+> 备份 `Success` 后 `finalize_evacuated_winre` 用离线 `reagentc` 把源 Windows 指回自身干净 WinRE 再回收暂存卷。
+> 非迁出（旧任务/普通还原/普通备份）行为零变化。
+> 触发：用户要求「真实 C: 完整备份+还原」验收时，
+> `prepare --operation restore-existing --target-drive C` 命中 `RestoreTargetOnRegisteredWinre`、
+> `prepare --operation backup --source-drive C` 命中 `BackupSourceOnRegisteredWinre`（见 docs/20260928-231000-*）。
 >
 > **v2 修订（2026-09-28 用户提议）**：RE 暂存卷（原英文 refugee）改为**默认 = 镜像卷（WIM 所在卷）、用户可在 prepare 阶段改选**；
-> 任务 `Success` 后在 finalize 删除该卷上的临时 RE。备份场景见 §6.2——镜像卷默认**不消除**备份对 C: 注册位的 payload 部署（掉电续跑硬约束），仅统一暂存/清理口径。
+> 任务 `Success` 后在 finalize 删除该卷上的临时 RE。备份同样走迁出 → C: 注册位全程保持干净原版、消除注入↔干净来回（详见 §6.2，原「镜像卷不消除备份 C: 部署」一节已据此更正）。
 
 ## 0. 问题本质（先说清楚为什么「格式化后就断更」）
 
@@ -86,14 +89,15 @@
 
 ## 4. 与现有代码的对接点（落地时改这几处）
 
-| 位置 | 现状 | 改法 |
+| 位置 | 现状 | 改法（已落地） |
 |---|---|---|
-| `windows_prepare.rs:509` `validate_volume_roles` | 命中 `RestoreTargetOnRegisteredWinre` 直接 `Err` | 命中且存在合法 RE 暂存卷 → 先执行 2.1 迁出，再放行 |
-| `main.rs:2575` `winre_role_conflict_at_execution` | F1 硬拒 | 任务已 `WinreEvacuated` 且 RE 暂存卷可达 → 放行；否则拒 |
-| `main.rs:2027` `ensure_registered_is_payload` | 按 `recovery` identity 部署 | 复用，仅把 identity 指到 RE 暂存卷 |
+| `windows_prepare.rs` `validate_volume_roles` 之后的迁出闸门 | 仅 `RestoreTargetOnRegisteredWinre` 触发迁出 | 扩展为 `RestoreTargetOnRegisteredWinre`（还原）**或** `BackupSourceOnRegisteredWinre`（备份）触发；暂存卷校验禁区按操作区分（备份=源卷、还原=目标卷） |
+| `main.rs` `winre_role_conflict_at_execution` | F1 硬拒 | 任务已 `WINRE_EVACUATED=1`（env RECOVERY_* 已指向暂存卷）→ 放行；否则按原逻辑拒 |
+| `main.rs` `evacuate_registered_winre` | — | 部署 payload 到暂存卷 + `/disable`+`/setreimage /path 暂存卷`+`/enable`，改写 env 的 `RECOVERY_*` 指向暂存卷并写 `WINRE_EVACUATED=1` |
+| `main.rs` `ensure_registered_is_payload` | 按 `recovery` identity 部署 | 复用，仅把 identity 指到 RE 暂存卷 |
 | `main.rs:333` `resume_pending_boot_task` | 读 `RECOVERY_*` 找注册位 | 无需改（env 改成 RE 暂存卷 GUID 即可） |
-| finalize 路径 | 当前结尾 guard 还原原版到 C:（fcb48a1 回退后保留） | 在「还原原版到 C:」**之前**补一步 `reagentc /setreimage /path C:...`+`/enable` |
-| prepare UI/CLI | 无 RE 暂存卷选择项 | 新增「RE 暂存卷」候选（默认预选镜像卷、用户可改选），写入 `RecoveryTask.env` |
+| `main.rs` `finalize_evacuated_winre` | 仅还原文件级兜底 | 还原：写回干净原件到目标 + 删暂存卷；备份：离线 `reagentc /setreimage /path 源 /target 源:\Windows`+`/enable /target` 重注册回 C:，成功后才删暂存卷（失败保留并告警） |
+| prepare UI/CLI | 无 RE 暂存卷选择项 | 新增 `--re-scratch-drive`（默认预选镜像卷、用户可改选），写入 `RecoveryTask.env` |
 
 ## 5. 验证方法（实现后）
 
@@ -112,18 +116,24 @@
   用户可改选任意其它持久可写卷。该选择写入 `RecoveryTask.env`，resume/finalize 全程按它定位，不回退 C:。
 - 校验（硬拒）：选中的卷 == target，或不可写/不可达 → 提示改选，绝不裸格式化 C:。
 
-### 6.2 备份场景的澄清（重要，避免误判）
-- 备份**不格式化 C:**，因此备份本身**不需要 RE 暂存卷来保安全**——当前 `c2a5ebe3` 已成功即是证明。
-- 但备份的**掉电续跑**依赖 `reagentc /boottore` 重新进 WinRE，而该入口要求
-  **注册位置（`C:\Recovery\WindowsRE\Winre.wim`）== 注入件（payload）**（状态机不变量 A，已实机证明）。
-  所以备份在 WinRE 会话期间**仍会把 payload 部署到 C: 注册位**（时间分片，捕获瞬间翻干净）；
-  「把临时 RE 放到镜像卷」**并不能消除这次 C: 注册位部署**，它只是统一了 payload 的来源副本/暂存位置与清理口径。
-- 若用户希望备份**完全不碰 C: 注册位**，只能放弃掉电续跑（备份一次性捕获、失败手动重跑）。
-  这是安全性取舍，默认**不采用**（保持当前续跑安全行为）。
+### 6.2 备份场景（已落地：备份同样走迁出，C: 注册位全程干净）
+- 备份**不格式化 C:**，本方案对备份**同样适用且已落地**（2026-09-29 扩展）：
+  prepare 命中 `BackupSourceOnRegisteredWinre` 即把注册迁到 RE 暂存卷（默认=镜像卷），于是：
+  - 备份会话期间 `C:\Recovery\WindowsRE\Winre.wim` **始终为干净原版、从不注入**；
+    `reagentc /boottore` 续跑启动源指向暂存卷上的 payload（不变量 A 仍满足，只是注册位换成了暂存卷）。
+  - DISM 捕获 C: 时天然拿到干净原版；Plan-D `restore_clean_winre_before_capture` 因 env 已指向暂存卷
+    （`recovery ≠ source`）而判定无需翻转，退化为 no-op——注入↔干净的来回被彻底消除。
+  - `Success` 后 finalize（仍在 WinRE 内、源卷离线）用离线
+    `reagentc /setreimage /path <源>:\Recovery\WindowsRE /target <源>:\Windows` + `/enable /target`
+    把源 Windows 指回自身干净 WinRE，随后回收暂存卷；离线重注册失败时**保留暂存卷**（WinRE 仍可从暂存卷启动）并告警，不阻断任务。
+- **结论**：临时 RE 放镜像卷对**备份也是根治**（消除注入↔干净来回），且不牺牲掉电续跑。
+  早前 v2 文档曾误述「镜像卷默认不消除备份对 C: 注册位的 payload 部署」——那是基于「备份仍把注册留在 C:」的假设；
+  实际迁出后该假设不成立，此节据此更正。
 
 ### 6.3 终态清理
-- 任务 `Success` 后、finalize（首次健康 Windows 启动）里：拷回 `original` 到 C: 并
-  `/setreimage /path C: + /enable` 重建注册之后，删除 RE 暂存卷上的 `<refugee>:\Recovery\WindowsRE`
-  （任务目录里的 stage/original 保留作审计）。
-- **不在 WinRE 内删**：因 `ImageApplied`→`Success` 之间若再掉电，仍需 RE 暂存卷作启动源续跑；
-  终态清理统一放到 finalize（Windows）最稳妥。
+- 任务 `Success` 后、finalize（仍在 WinRE 内）里：
+  - 还原：把 `original` 写回还原目标注册位作防御性兜底（镜像自带 ReAgent.xml 已指向自身，通常无需写），
+    随后删除 RE 暂存卷上的 `<refugee>:\Recovery\WindowsRE`（任务目录里的 stage/original 保留作审计）。
+  - 备份：用离线 `reagentc` 把源 Windows 指回自身干净 WinRE，成功后才删除暂存卷上的临时 RE。
+- **不在 WinRE 内提前删**：因 `ImageApplied`→`Success` 之间若再掉电，仍需 RE 暂存卷作启动源续跑；
+  终态清理统一放到 finalize（Success 时）最稳妥。
