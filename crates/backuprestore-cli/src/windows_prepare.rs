@@ -8,8 +8,8 @@
 use backuprestore_core::{
     BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest,
     PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE, TargetRole, TargetSpec, Task, TaskError, TaskStore,
-    VolumeIdentity, VolumeRoles, canonical_compression, sha256_file, validate_absolute_path,
-    validate_volume_roles, write_json_atomic,
+    VolumeIdentity, VolumeRoleConflict, VolumeRoles, canonical_compression, sha256_file,
+    validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -110,6 +110,9 @@ pub(crate) struct PrepareOptions {
     test_fault: Option<String>,
     allow_destructive: bool,
     no_reboot: bool,
+    /// 还原目标承载注册 WinRE 时，把「续跑启动源」迁出的**难民卷（RE 暂存卷）**盘符。
+    /// 留空则由程序默认选镜像卷（WIM 所在卷）；用户可在此改选任意持久可写且 ≠ 还原目标的卷。
+    re_scratch_drive: Option<char>,
     /// WIM 压缩率：fast/none，仅备份首次创建时生效。
     compress: Option<String>,
     /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
@@ -297,6 +300,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut test_fault = None;
     let mut allow_destructive = false;
     let mut no_reboot = false;
+    let mut re_scratch_drive = None;
     let mut compress = None;
     let mut force_restore_hash = false;
     let mut args = arguments.into_iter();
@@ -358,6 +362,9 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             }
             "--allow-destructive" => allow_destructive = true,
             "--no-reboot" => no_reboot = true,
+            "--re-scratch-drive" => {
+                re_scratch_drive = Some(parse_drive(&value("--re-scratch-drive", &mut args)?)?)
+            }
             "--compress" => {
                 let level = value("--compress", &mut args)?;
                 let level = canonical_compression(&level).map_err(|_| {
@@ -424,6 +431,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         test_fault,
         allow_destructive,
         no_reboot,
+        re_scratch_drive,
         compress,
         image_name,
         keep_indexes,
@@ -506,14 +514,28 @@ fn prepare_task(
         )
         .then_some(&target),
     };
-    if let Err(conflict) = validate_volume_roles(
+    let re_conflict = validate_volume_roles(
         &roles,
         options.operation,
         &recovery,
         !options.no_reboot,
         PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE,
-    ) {
-        return Err(err(conflict.message()));
+    )
+    .err();
+    // F1（还原目标承载注册 WinRE）：不再硬拒，改为准备层「迁出 → 还原 → 重建注册」
+    // （docs/20260928-233000-winre-hosted-restore-solution.md）。仅还原操作命中该冲突时标记
+    // 需在 payload 构建完成后迁出；workspace/image/backup-source 同分区的其它冲突维持硬拒。
+    let evacuation_required = matches!(
+        re_conflict,
+        Some(VolumeRoleConflict::RestoreTargetOnRegisteredWinre)
+    ) && matches!(
+        options.operation,
+        Operation::RestoreExisting | Operation::CreateSecondary
+    );
+    if let Some(conflict) = re_conflict {
+        if !evacuation_required {
+            return Err(err(conflict.message()));
+        }
     }
     validate_operation_inputs(
         &source,
@@ -636,6 +658,20 @@ fn prepare_task(
             let _ = append_log(&prepare_log, &format!("Preparation failed: {error}"));
         }
         return Err(error);
+    }
+    // F1 迁出：还原目标承载注册 WinRE 时，把「续跑启动源」迁到 RE 暂存卷后再格式化。
+    // 默认选镜像卷（WIM 所在卷），用户可用 --re-scratch-drive 改选任意持久可写且 ≠ 目标的卷。
+    if evacuation_required {
+        let scratch = match options.re_scratch_drive {
+            Some(letter) => volume_identity(letter)?,
+            None => image_volume.clone(),
+        };
+        if scratch.same_partition(&target) {
+            return Err(err(
+                "RE 暂存卷不能与还原目标为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷",
+            ));
+        }
+        crate::evacuate_registered_winre(&scratch, &task_dir, &prepare_log)?;
     }
     // recoveryLog 指向镜像同目录（如 E:\Recovery.log），与 WIM 并排便于查看；
     // GUI「刷新任务状态」据此显示。备份/还原都会把日志写到镜像同目录。
@@ -1201,7 +1237,7 @@ fn put_value(values: &mut BTreeMap<String, String>, key: &str, value: String) {
     values.insert(key.to_string(), value);
 }
 
-fn insert_identity(values: &mut BTreeMap<String, String>, prefix: &str, identity: &VolumeIdentity) {
+pub(crate) fn insert_identity(values: &mut BTreeMap<String, String>, prefix: &str, identity: &VolumeIdentity) {
     let insert = |suffix: &str, value: String, values: &mut BTreeMap<String, String>| {
         values.insert(format!("{prefix}_{suffix}"), value);
     };

@@ -1,6 +1,10 @@
 # 还原目标承载 WinRE 的解决方案：迁出 → 还原 → 重建注册（保幂等续跑）
 
-> 状态：v2 设计定稿（默认=镜像卷·用户可调·终态清理），待实现。对应真实 C: 还原（F3 最坏场景）的最后一道闸。
+> 状态：v2 已实现（代码落地，待 VM 实机验收）。对应真实 C: 还原（F3 最坏场景）的最后一道闸。
+> 代码对接点均已落地：prepare 层在命中 `RestoreTargetOnRegisteredWinre` 时调用 `evacuate_registered_winre`
+> （默认=镜像卷，用户用 `--re-scratch-drive` 改选），执行层 `winre_role_conflict_at_execution` 在
+> `WINRE_EVACUATED=1` 时放行，还原 `Success` 后 `finalize_evacuated_winre` 写回干净原件并回收暂存卷。
+> 非迁出（旧任务/普通还原）行为零变化。
 > 触发：用户要求「真实 C: 完整备份+还原」验收时，`prepare --operation restore-existing --target-drive C`
 > 被 `VolumeRoleConflict::RestoreTargetOnRegisteredWinre` 拦截（见 docs/20260928-231000-*）。
 >
