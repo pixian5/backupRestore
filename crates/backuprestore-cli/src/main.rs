@@ -1198,7 +1198,25 @@ fn recovery_volume_from_env(
 ) -> Option<backuprestore_core::VolumeIdentity> {
     let disk = env_optional(values, "RECOVERY_DISK_GUID")?;
     let partition = env_optional(values, "RECOVERY_PARTITION_GUID")?;
-    Some(backuprestore_core::VolumeIdentity::new(disk, partition))
+    let mut identity = backuprestore_core::VolumeIdentity::new(disk, partition);
+    // `same_partition` only compares the two GUIDs, but mounting needs more:
+    // without the volume GUID and the numeric disk/partition coordinates the
+    // resume path had nothing to resolve a drive letter from and failed with
+    // "volume has no disk number" on machines whose registered WinRE sits on
+    // the OS partition. `insert_identity` already writes all of them, so carry
+    // them through instead of throwing them away.
+    identity.volume_guid = env_optional(values, "RECOVERY_VOLUME_GUID").unwrap_or_default();
+    identity.disk_number = env_optional(values, "RECOVERY_DISK_NUMBER")
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    identity.partition_number = env_optional(values, "RECOVERY_PARTITION_NUMBER")
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    identity.partition_offset = env_optional(values, "RECOVERY_PARTITION_OFFSET")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or_default();
+    identity.partition_size = env_optional(values, "RECOVERY_PARTITION_SIZE")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or_default();
+    Some(identity)
 }
 
 /// 执行层二次拒绝（F1/F3 第一段的第二道闸）。

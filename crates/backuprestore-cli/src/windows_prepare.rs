@@ -1876,6 +1876,80 @@ fn is_drive_letter_available(letter: char) -> bool {
         .any(|line| !line.is_empty())
 }
 
+/// Find a drive letter that Windows already exposes for `identity`.
+///
+/// Matching on the disk/partition GUIDs (and the volume GUID when known) is
+/// what makes the resume path independent from numeric coordinates: drive
+/// letters are reassigned between Windows and WinRE, but the GUIDs are stable.
+fn mounted_letter_for_identity(identity: &VolumeIdentity) -> Option<char> {
+    let volume_guid = identity.volume_guid.trim();
+    for letter in 'C'..='Z' {
+        if !Path::new(&format!(r"{}:\", letter)).is_dir() {
+            continue;
+        }
+        let Ok(actual) = volume_identity(letter) else {
+            continue;
+        };
+        if actual.same_partition(identity) {
+            return Some(letter);
+        }
+        if !volume_guid.is_empty() && actual.volume_guid.eq_ignore_ascii_case(volume_guid) {
+            return Some(letter);
+        }
+    }
+    None
+}
+
+/// Attach `\\?\Volume{...}` to a free drive letter with `mountvol`.
+fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskError> {
+    let trimmed = volume_guid.trim().trim_end_matches('\\').to_string();
+    if trimmed.is_empty() {
+        return Err(err("volume GUID is empty"));
+    }
+    let mut last_error = None;
+    for letter in identity_drive_candidates(preferred) {
+        if !is_drive_letter_available(letter) {
+            continue;
+        }
+        let output = match Command::new("mountvol.exe")
+            .args([format!("{letter}:"), trimmed.clone()])
+            .stdin(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                last_error = Some(err(&format!("mountvol {letter}: failed to start: {error}")));
+                continue;
+            }
+        };
+        if !output.status.success() {
+            last_error = Some(err(&format!(
+                "mountvol {letter}: exited with {}",
+                output.status
+            )));
+            continue;
+        }
+        // Assignment succeeding is not proof: verify the letter really points
+        // at the volume we asked for before handing it back.
+        match volume_identity(letter) {
+            Ok(actual) if actual.volume_guid.trim().trim_end_matches('\\').eq_ignore_ascii_case(&trimmed) => {
+                return Ok(letter);
+            }
+            Ok(actual) => {
+                last_error = Some(err(&format!(
+                    "mountvol assigned {letter}: to {}, expected {trimmed}",
+                    actual.volume_guid
+                )));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        err("unable to mount the volume GUID on an available drive letter")
+    }))
+}
+
 /// Reused by the normal-Windows boot-resume path so that resumption can reach
 /// the registered WinRE file even when it lives on a hidden recovery partition.
 pub(crate) fn ensure_volume_mounted(
@@ -1886,9 +1960,26 @@ pub(crate) fn ensure_volume_mounted(
     if let Some(letter) = identity.drive_letter {
         return Ok(letter);
     }
-    let disk = identity
-        .disk_number
-        .ok_or_else(|| err("volume has no disk number"))?;
+    // Prefer reusing a mount point that already exists. The registered WinRE
+    // very often lives on the OS partition, which Windows already exposes, so
+    // this is both the common case and the cheapest one.
+    if let Some(letter) = mounted_letter_for_identity(identity) {
+        return Ok(letter);
+    }
+    // Attach the volume by its GUID path. This is the only strategy that works
+    // for identities without numeric disk/partition coordinates (imported or
+    // legacy tasks) and for hidden recovery partitions DiskPart refuses to
+    // expose by number.
+    if !identity.volume_guid.trim().is_empty() {
+        if let Ok(letter) = mount_volume_guid(&identity.volume_guid, preferred) {
+            return Ok(letter);
+        }
+    }
+    let disk = identity.disk_number.ok_or_else(|| {
+        err(
+            "volume has no disk number and could not be matched by GUID or an existing mount point",
+        )
+    })?;
     let partition = identity
         .partition_number
         .ok_or_else(|| err("volume has no partition number"))?;

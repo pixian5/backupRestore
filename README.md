@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.8**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.7.9**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 ---
 
@@ -169,7 +169,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 注册 WinRE 状态机（不循环 + 断电续跑 + 幂等） | 已落地（2026-09-28） | 会话期间注册位**保持注入件**；仅 DISM 捕获前翻干净（唯一权威纯净闸门）；新增 `ensure_registered_is_payload()` 在 resume 重武装之前确保注册位=注入件（已是则跳过，幂等）；续跑被压制分支恢复干净。设计见 [docs/20260928-074516-registered-winre-policy-and-resume-design.md](docs/20260928-074516-registered-winre-policy-and-resume-design.md) |
 | 交叉编译 + 单测 | 通过 | Windows `aarch64-pc-windows-msvc` 构建通过（仅 LNK4099 缺 PDB 警告）；`cargo test -p backuprestore-core` 28 全绿。**VM 实机闭环（含断电续跑场景）尚未验证** |
 | 执行层二次闸 `winre_role_conflict_at_execution` 随开关放开 F3 | 已落地 | `main.rs:1170`，`false` 可一键回退到旧拒绝 |
-| 构建（macOS 交叉编译 ARM64） | v1.7.8 产物 `BackupRestore.exe` = 1,705,472B | `build-win.sh` 构建通过（仅 LNK4099 缺 PDB 警告，无害）；较 v1.7.7 的 1,697,792B 增加 7,680B（新增注册位策略相关函数） |
+| 构建（macOS 交叉编译 ARM64） | v1.7.9 产物 `BackupRestore.exe` = 1,715,712B | `build-win.sh` 构建通过（仅 LNK4099 缺 PDB 警告，无害） |
 | **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **已通过（2026-09-28 实机闭环）** | 详见 [阶段2 文档 9.5.2.1](docs/winre-task-wim-phase2-2026-09-27.md)：P: 作承载 RE 的卷，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检 `\Recovery\WindowsRE\Winre.wim` 哈希 = `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原 |
 
 > 方案 D 让「离线备份承载 WinRE 的卷」不再被拒，结合 1.7.6 的 F1/F3 第一段逻辑，**产品主场景（系统盘离线备份/还原）在代码层面已解锁**；该解锁已于 2026-09-28 在 VM 内对「备份源 == 承载注册 WinRE 的卷」这一最坏组合实机闭环验证通过。
@@ -179,6 +179,10 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 > v1.7.8 另修复了一个**旧设计里同样存在、此前未被记录的缺口**：DISM 捕获期间（或干净件翻转过程中）断电时，
 > 续跑重启会落进干净原版 WinRE 而没有 `winpeshl` 钩子 → `Recovery.exe` 不会自动拉起 → 任务续不起来。
 > 现由 `ensure_registered_is_payload()` 在重武装之前保证注册位是注入件，把该漏洞与新引入的回归一并堵死。
+> **v1.7.9（2026-09-28）**：修复 v1.7.8 实机验证抓到的续跑挂载 BUG（`volume has no disk number`，
+> 根因=读取端丢弃 env 字段 + 挂载端单路依赖 DiskPart），并以「power-loss-window 注入 + original 覆写
+> 构造死局」完成**断电续跑场景实机闭环验证 PASS**（修复→重武装→WinRE 自动跑完→success→终态还原干净）。
+> 详见 [docs/20260928-093132-v179-fix-resume-mount-and-verify.md](docs/20260928-093132-v179-fix-resume-mount-and-verify.md)。
 
 ### 尚未闭环（按严重度）
 

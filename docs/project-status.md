@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-09-28
-当前开发版本：**`1.7.8`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,705,472B）
+当前开发版本：**`1.7.9`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,715,712B）
 
 > **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) + [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >
@@ -14,8 +14,13 @@
 >   就立即还原干净 RE」（它与断电续跑真实冲突，属回归）；②新增 `ensure_registered_is_payload()`，在
 >   `resume_pending_boot_task` 重武装之前确保注册位是本任务注入件（已是则跳过，幂等），使**捕获期间或
 >   翻转过程中断电都能正确续跑**（此漏洞在旧设计中同样存在）；③续跑被压制（同 stage 二次中断）时恢复
->   干净注册位，避免机器带着 payload 被搁置。交叉编译通过、core 28 单测全绿，**VM 实机闭环（含断电续跑
->   场景）尚未验证**。设计：[20260928-074516-registered-winre-policy-and-resume-design.md](20260928-074516-registered-winre-policy-and-resume-design.md)；
+>   干净注册位，避免机器带着 payload 被搁置。交叉编译通过、core 28 单测全绿。设计：[20260928-074516-registered-winre-policy-and-resume-design.md](20260928-074516-registered-winre-policy-and-resume-design.md)；
+> - **v1.7.9（2026-09-28）：续跑挂载 BUG 修复 + 实机闭环 PASS**——v1.7.8 实机验证抓到 `volume has no disk number`：
+>   根因=读取端（`recovery_volume_from_env`）丢弃 env 已有的 volume_guid/disk_number 等字段 + 挂载端
+>   （`ensure_volume_mounted`）单路依赖 DiskPart。修复=读取端补齐字段 + 挂载端三级降级（盘符 GUID 复用 →
+>   `mountvol` 按卷 GUID 挂载 → DiskPart 兜底）。同一任务日志前后对比：v1.7.8 两次 `abandoned` →
+>   v1.7.9 修复→重武装→WinRE 自动跑完→success 100%→终态注册位回干净原件。**断电续跑场景实机闭环通过**。
+>   [20260928-093132-v179-fix-resume-mount-and-verify.md](20260928-093132-v179-fix-resume-mount-and-verify.md)；
 > - **Windows servicing 会静默替换注册 Winre.wim**（当天部署的 v1.7.6 载荷被累积更新冲掉为官方原版），已重新注入恢复；载荷持久性成为新的部署风险项；
 > - 「不动 C:」边界更新：只是不用程序备份/还原 C，其它操作（更新载荷、reagentc、写 C:\Recovery）都允许；测试卷 workspace=H:\brwork、image=E:\brimg、source=T:、target=P:。
 
