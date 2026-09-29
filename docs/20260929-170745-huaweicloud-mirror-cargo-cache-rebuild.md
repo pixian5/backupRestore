@@ -103,3 +103,17 @@ cargo check --workspace
 需留意：**openssl@3 将切版**——OpenSSL 3.6 仅支持到 2026-11-01，届时 homebrew 会把 `openssl@3` 降到 OpenSSL 3.5 LTS（编译依赖它的包时可能触发重编，属预期行为）。
 
 另清理了 `~/.zprofile:5` 失效的 mirrors 慢域配置：该行与 `~/.zshrc:200` 同名（`HOMEBREW_PIP_INDEX_URL`），zshrc 后加载会覆盖它，已统一改为 repo 快域并加注释。
+
+## 附：openssl 切 3.5 LTS（2026-09-29）
+
+openssl@3.6 支持期仅到 2026-11-01，已提前切换到 3.5 LTS：
+
+```
+brew install openssl@3.5
+brew unlink openssl@3 && brew link openssl@3.5
+```
+
+- `openssl version` → 3.5.8，`pkg-config --modversion openssl` → 3.5.8
+- `~/.zshrc` 追加 `PKG_CONFIG_PATH` / `CMAKE_PREFIX_PATH` 指向 `openssl@3.5`（源码编译默认走 LTS）
+
+**边界（重要）**：homebrew 二进制（curl/python/ruby/uv 等 15 个包）编译时写死了 `/opt/homebrew/opt/openssl@3/lib`，仍跑 3.6.4，且 brew formula 写死 `depends_on "openssl@3"`，重编也不会改用 3.5。要它们全面切 3.5，只能等 2026-11 官方把 openssl@3 降版后 `brew upgrade` 自动处理；实测切 link 后这些包运行全部正常。
