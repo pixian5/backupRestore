@@ -7,8 +7,8 @@
 
 use backuprestore_core::{
     BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest,
-    PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE, TargetRole, TargetSpec, Task, TaskError, TaskStore,
-    VolumeIdentity, VolumeRoleConflict, VolumeRoles, canonical_compression, sha256_file,
+    TargetRole, TargetSpec, Task, TaskError, TaskStore,
+    VolumeIdentity, VolumeRoles, canonical_compression, sha256_file,
     validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
@@ -110,9 +110,6 @@ pub(crate) struct PrepareOptions {
     test_fault: Option<String>,
     allow_destructive: bool,
     no_reboot: bool,
-    /// 还原目标承载注册 WinRE 时，把「续跑启动源」迁出的**难民卷（RE 暂存卷）**盘符。
-    /// 留空则由程序默认选镜像卷（WIM 所在卷）；用户可在此改选任意持久可写且 ≠ 还原目标的卷。
-    re_scratch_drive: Option<char>,
     /// WIM 压缩率：fast/none，仅备份首次创建时生效。
     compress: Option<String>,
     /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
@@ -300,7 +297,6 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut test_fault = None;
     let mut allow_destructive = false;
     let mut no_reboot = false;
-    let mut re_scratch_drive = None;
     let mut compress = None;
     let mut force_restore_hash = false;
     let mut args = arguments.into_iter();
@@ -362,8 +358,13 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             }
             "--allow-destructive" => allow_destructive = true,
             "--no-reboot" => no_reboot = true,
+            // v1.7.11 起载荷固定放镜像卷、注册位只读，没有「RE 暂存卷」可选。
+            // 旧脚本若还带这个开关，直接明确拒绝，避免调用方以为改选生效了。
             "--re-scratch-drive" => {
-                re_scratch_drive = Some(parse_drive(&value("--re-scratch-drive", &mut args)?)?)
+                return Err(err(
+                    "--re-scratch-drive is obsolete: v1.7.11 keeps the payload on the image \
+                     volume and never touches the registered WinRE",
+                ));
             }
             "--compress" => {
                 let level = value("--compress", &mut args)?;
@@ -431,7 +432,6 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         test_fault,
         allow_destructive,
         no_reboot,
-        re_scratch_drive,
         compress,
         image_name,
         keep_indexes,
@@ -493,17 +493,11 @@ fn prepare_task(
     if image_volume.same_partition(&efi) {
         return Err(err("image volume cannot be on EFI volume"));
     }
-    // F1/F3 第一段：角色卷与「承载注册 WinRE 的分区」的冲突统一交给核心库的纯函数
-    // 判定（GUI 与 CLI 共用同一份矩阵，避免两处规则漂移）。
-    //   - F1：还原目标 == 恢复环境宿主分区 → 格式化会摧毁 WinRE 与回滚副本；
-    //   - F3：备份源 == 恢复环境宿主分区，且本次会把注入后的 WIM 写回注册位置
-    //     （非 --no-reboot 的旧注入模式）→ 镜像会被污染。
-    // 只带 --no-reboot 的在线备份不改写注册 WIM，没有污染窗口，因此放行。
-    //
-    // 方案 D（`PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE`）：离线备份已能做到
-    // 「捕获前把源卷上的注册 WIM 覆写回任务暂存的干净原件」，污染窗口不复存在，
-    // 因此备份方向不再因同分区而拒绝。换回动作由执行层在 Capture 之前完成，
-    // 失败即硬失败终止任务（不会静默产出脏镜像）。
+    // v1.7.11 新启动通道：注册 WinRE **全程只读**，因此
+    //   - F1（还原目标 == 注册 WinRE 宿主）：格式化不再威胁「续跑启动源」（它在镜像卷上）；
+    //   - F3（备份源 == 注册 WinRE 宿主）：载荷从不写注册位，镜像天然干净。
+    // 两道冲突门与迁出闸门随之删除；仅保留 workspace/镜像卷不能落在注册 WinRE 分区
+    // 这条基础规则（那是程序自身资产，与任务启动源无关）。
     let roles = VolumeRoles {
         workspace,
         image: &image_volume,
@@ -514,60 +508,9 @@ fn prepare_task(
         )
         .then_some(&target),
     };
-    let re_conflict = validate_volume_roles(
-        &roles,
-        options.operation,
-        &recovery,
-        !options.no_reboot,
-        PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE,
-    )
-    .err();
-    // F1（还原目标承载注册 WinRE）：不再硬拒，改为准备层「迁出 → 还原 → 重建注册」
-    // （docs/20260928-233000-winre-hosted-restore-solution.md）。仅还原操作命中该冲突时标记
-    // 需在 payload 构建完成后迁出；workspace/image/backup-source 同分区的其它冲突维持硬拒。
-    // 迁出（v2）：还原目标承载注册 WinRE → 格式化前把续跑启动源迁到暂存卷；
-    // 备份源承载注册 WinRE → 把注册迁到暂存卷，使 C: 的 Winre.wim 全程保持干净原件、
-    // 不再需要在捕获前注入↔干净来回翻转（docs/20260928-233000 §6.2）。
-    // workspace/image 同分区的其它冲突仍维持硬拒。
-    let evacuation_required = match (re_conflict, options.operation) {
-        (
-            Some(VolumeRoleConflict::RestoreTargetOnRegisteredWinre),
-            Operation::RestoreExisting | Operation::CreateSecondary,
-        ) => true,
-        (Some(VolumeRoleConflict::BackupSourceOnRegisteredWinre), Operation::Backup) => true,
-        _ => false,
-    };
-    if let Some(conflict) = re_conflict {
-        if !evacuation_required {
-            return Err(err(conflict.message()));
-        }
+    if let Some(conflict) = validate_volume_roles(&roles, options.operation, &recovery).err() {
+        return Err(err(conflict.message()));
     }
-    // RE 暂存卷（迁移目标）：默认 = 镜像卷，用户可用 --re-scratch-drive 改选。
-    // 必须在 payload 构建之前确定：env 里的 RECOVERY_* 与 WINRE_EVACUATED 要先于
-    // DISM 注入烘焙进 Winre.wim，否则 WinRE 读到旧 env 会在执行层被 F1 二次拒绝
-    // （2026-09-29 实机踩坑：迁出曾放在 prepare_payload 之后，既赶不上关机也改不进 WIM）。
-    let scratch = if evacuation_required {
-        let candidate = match options.re_scratch_drive {
-            Some(letter) => volume_identity(letter)?,
-            None => image_volume.clone(),
-        };
-        // 暂存卷不能与「被迁出的卷」同分区：备份=源卷，还原=目标卷。
-        let forbidden = match options.operation {
-            Operation::Backup => source.clone(),
-            _ => target.clone(),
-        };
-        if candidate.same_partition(&forbidden) {
-            let message = if options.operation == Operation::Backup {
-                "RE 暂存卷不能与备份源为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
-            } else {
-                "RE 暂存卷不能与还原目标为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
-            };
-            return Err(err(message));
-        }
-        Some(candidate)
-    } else {
-        None
-    };
     validate_operation_inputs(
         &source,
         &target,
@@ -672,6 +615,14 @@ fn prepare_task(
     task.boot_plan.previous_bcd_sha256 = Some(sha256_file(&bootstrap_bcd)?);
     task.boot_plan.boot_sequence_requested = true;
     task.validate()?;
+    // 新启动通道：载荷放到镜像卷（re_staging），注册位只读。
+    let re_staging = ReStaging {
+        volume: image_volume.clone(),
+        boot_sdi: PathBuf::from(format!(
+            r"{}:\Recovery\WindowsRE\boot.sdi",
+            ensure_volume_mounted(&recovery, 'R', &prepare_log)?
+        )),
+    };
     let result = prepare_payload(
         executable_dir,
         &store,
@@ -681,7 +632,7 @@ fn prepare_task(
         &options,
         &prepare_log,
         &bootstrap_bcd,
-        scratch.as_ref(),
+        &re_staging,
     );
     let _ = fs::remove_file(&bootstrap_bcd);
     if let Err(error) = result {
@@ -718,6 +669,15 @@ fn prepare_task(
     Ok(())
 }
 
+/// 新启动通道（v1.7.11）需要的「载荷 RE 暂存位置」信息。
+///
+/// * `volume` — 承载载荷 WIM 的卷（默认 = 镜像卷；本来就可写、且不被还原格式化）。
+/// * `boot_sdi` — RAM 盘模板文件来源（注册卷上的 `boot.sdi`，可能不存在）。
+pub struct ReStaging {
+    pub volume: VolumeIdentity,
+    pub boot_sdi: PathBuf,
+}
+
 // These values have different ownership and rollback roles. Keeping the
 // parameters explicit makes preparation ordering and cleanup dependencies
 // auditable at the call site.
@@ -731,7 +691,7 @@ fn prepare_payload(
     options: &PrepareOptions,
     log: &Path,
     bootstrap_bcd: &Path,
-    scratch: Option<&VolumeIdentity>,
+    re_staging: &ReStaging,
 ) -> Result<(), TaskError> {
     let task_dir = store.task_dir(&task.task_id)?;
     let payload = task_dir.join("payload");
@@ -773,18 +733,7 @@ fn prepare_payload(
 
     let env_path = payload.join("RecoveryTask.env");
     // 迁出任务：env 的 RECOVERY_* 直接指向 RE 暂存卷（先于注入烘焙进 WIM），
-    // WinRE 侧据此挂载暂存卷、执行层 F1 放宽也据此放行。
-    let env_recovery = scratch.unwrap_or(recovery);
-    // 第 5 个实参是「家卷」：永远等于迁出前的注册卷 `recovery`，与 RECOVERY_* 解耦。
-    write_recovery_env(
-        &env_path,
-        executable_dir,
-        task,
-        env_recovery,
-        recovery,
-        efi,
-        options,
-    )?;
+    write_recovery_env(&env_path, executable_dir, task, recovery, efi, options)?;
     fs::copy(store.task_path(&task.task_id)?, payload.join("task.json"))?;
     let recovery_hash = sha256_file(payload.join("Recovery.exe"))?;
     let task_hash = sha256_file(payload.join("task.json"))?;
@@ -792,12 +741,27 @@ fn prepare_payload(
         &env_path,
         &[("ORIGINAL_WINRE_SHA256", original_hash.as_str())],
     )?;
-    if scratch.is_some() {
-        append_env(&env_path, &[("WINRE_EVACUATED", "1")])?;
-    }
 
     let staged = stage.join("Winre.wim");
     fs::copy(&registered_wim, &staged)?;
+    // ★ v1.7.11 顺序要点：**先建 BCD 条目，再做 DISM 注入**。
+    // 实机结论：同一串 argv 下，bcdedit 在「本进程刚跑过 DISM」时校验镜像卷上的 WIM 会
+    // 失败（报「指定的设备无效」，对象状态经 /enum 核验完全正确；换个进程立刻重试就成功）。
+    // 而建条目只需要「镜像卷上有一个合法 WIM」——干净的注册 WIM 副本就够。
+    // 一次性启动留到载荷注入并拷贝完成之后再武装（此时才允许人重启进来）。
+    let boot_entry = crate::boot_entry::create_entry(
+        &staged,
+        &re_staging.boot_sdi,
+        &re_staging.volume,
+        task_dir.as_path(),
+        log,
+    )?;
+    crate::boot_entry::copy_into_staging(
+        &staged,
+        &re_staging.boot_sdi,
+        &re_staging.volume,
+        log,
+    )?;
     let staged_arg = staged.to_string_lossy().into_owned();
     let mount_arg = mount.to_string_lossy().into_owned();
     run_logged(
@@ -853,46 +817,27 @@ fn prepare_payload(
         return Ok(());
     }
 
-    // Do not replace the registered WinRE image until every task artifact and
-    // its manifest are durable. If any subsequent preparation step fails,
-    // restore the original image and BCD snapshot immediately so a failed
-    // desktop launch cannot strand the machine with a half-installed WinRE.
-    let restore_registered = || -> Result<(), TaskError> {
-        fs::copy(original.join("Winre.wim"), &registered_wim)?;
-        backuprestore_core::verify_sha256(&registered_wim, &original_hash)?;
-        append_log(
-            log,
-            "Restored original registered WinRE after preparation failure",
-        )?;
-        Ok(())
-    };
-    if let Some(scratch) = scratch {
-        // 迁出：把注入后的 payload 部署到 RE 暂存卷并把注册指向它（disable →
-        // setreimage 暂存卷 → enable）。注册卷（备份源/还原目标）的 Winre.wim
-        // 全程保持干净原件、不再被注入件替换（docs/20260928-233000 §2.1 v2 修订）。
-        if let Err(error) = crate::evacuate_registered_winre(scratch, task_dir.as_path(), log) {
-            let _ = restore_registered();
-            return Err(error);
-        }
-    } else if let Err(error) = (|| {
-        fs::copy(&staged, &registered_wim)?;
-        backuprestore_core::verify_sha256(&registered_wim, &staged_hash)
-    })() {
-        let _ = restore_registered();
+    // v1.7.11 新启动通道：**不写注册位、不跑 reagentc /boottore**。
+    // 注入后的载荷 WIM 覆盖到镜像卷的 BackupRestoreRE\，然后武装我们自建的那条
+    // BCD 条目（条目本身在 DISM 之前就建好了，见上面的顺序要点）。
+    // 注册位全程只是只读资产来源，因此迁出 / WINRE_HOME / 待回家收尾 / Plan D / F1·F3 全部不需要。
+    // 依据：docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md
+    if let Err(error) = crate::boot_entry::copy_into_staging(
+        &staged,
+        &re_staging.boot_sdi,
+        &re_staging.volume,
+        log,
+    ) {
         return Err(error);
     }
-    if let Err(error) = run_logged("reagentc.exe", &["/boottore"], log) {
-        let _ = restore_registered();
+    if let Err(error) = crate::boot_entry::rearm(&boot_entry, log) {
         return Err(error);
     }
+    let _ = &boot_entry;
     if let Err(error) = store.write_transition(task, backuprestore_core::Stage::BootRequested) {
-        let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, efi, log);
         return Err(error);
     }
     if let Err(error) = write_status_env(&task_dir, task, "boot-requested") {
-        let _ = restore_registered();
-        let _ = rollback_boot_request(&task_dir, efi, log);
         return Err(error);
     }
     if options.test_fault.as_deref() == Some("power-loss-window") {
@@ -903,7 +848,11 @@ fn prepare_payload(
         return Ok(());
     }
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
-        let _ = restore_registered();
+        // 重启请求失败：撤销这条一次性启动与自建条目，别把机器留在
+        // 「下次开机进任务 RE，但没有人会来跑」的状态。
+        if let Some(entry) = crate::boot_entry::ReBootEntry::read(task_dir.as_path())? {
+            let _ = crate::boot_entry::disarm(&entry, log);
+        }
         let _ = rollback_boot_request(&task_dir, efi, log);
         return Err(error);
     }
@@ -1149,7 +1098,6 @@ fn write_recovery_env(
     executable_dir: &Path,
     task: &Task,
     recovery: &VolumeIdentity,
-    winre_home: &VolumeIdentity,
     efi: &VolumeIdentity,
     options: &PrepareOptions,
 ) -> Result<(), TaskError> {
@@ -1176,11 +1124,6 @@ fn write_recovery_env(
     insert_identity(&mut values, "WORKSPACE", workspace);
     put_value(&mut values, "WORKSPACE_ROOT_REL", task_root_rel);
     insert_identity(&mut values, "RECOVERY", recovery);
-    // RECOVERY_* = 本次任务「注册位当前所在的卷」（迁出任务 = RE 暂存卷）；
-    // WINRE_HOME_* = 「注册位原本的家」（迁出前 reagentc 指向的卷，通常 C:）。
-    // 两者必须分开记：终态要把干净原件写回**家卷**，写回暂存卷等于家卷一直空着
-    // （v1.7.10 修复的根因，见 docs/20260929-*-winre-finalize-wrote-to-scratch-volume.md）。
-    insert_identity(&mut values, "WINRE_HOME", winre_home);
     insert_identity(&mut values, "SOURCE", source);
     if options.test_fault.as_deref() == Some("identity-env-mismatch") {
         put_value(&mut values, "SOURCE_VOLUME_SERIAL", "FAULT-INJECTED".into());

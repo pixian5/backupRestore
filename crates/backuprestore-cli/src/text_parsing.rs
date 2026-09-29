@@ -596,32 +596,107 @@ pub(crate) fn format_system_info_report(
     .join("\n")
 }
 
-/// 从 `reagentc /info` 输出里解析「Windows RE 位置」的磁盘号/分区号。
+// ---- BCD GUID / ramdisk 设备串解析（v1.7.11 新启动通道；宿主也编译，便于单测） ----
+
+/// 从 bcdedit / reagentc 的输出里抽取 GUID，兼容「有花括号」与「无花括号」两种形态，
+/// 并统一补回花括号。抽不到一律返回 `None`（调用方必须当作致命错误）。
+pub(crate) fn parse_guid(text: &str) -> Option<String> {
+    let raw = text.find('{').and_then(|start| {
+        text[start..]
+            .find('}')
+            .map(|end| text[start..start + end + 1].to_string())
+    });
+    let candidate = raw.or_else(|| {
+        // 无花括号形态：`ccb31eed-bbb7-11f1-88f5-cbcfb69d515d`
+        let mut found = None;
+        for token in text.split(|c: char| c.is_whitespace() || c == ':' || c == ',') {
+            let is_guid = token.len() == 36
+                && token.as_bytes().get(8) == Some(&b'-')
+                && token.as_bytes().get(13) == Some(&b'-')
+                && token.as_bytes().get(18) == Some(&b'-')
+                && token.as_bytes().get(23) == Some(&b'-')
+                && token.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+            if is_guid {
+                found = Some(token.to_string());
+                break;
+            }
+        }
+        found
+    })?;
+    // 统一补回花括号后再做严格校验：无花括号形态（reagentc /info 就是这样）曾被
+    // 「要求花括号」的校验误杀，导致准备阶段直接失败。
+    let normalized = if candidate.starts_with('{') {
+        candidate
+    } else {
+        format!("{{{}}}", candidate)
+    };
+    if !is_guid(&normalized) {
+        return None;
+    }
+    Some(normalized)
+}
+
+pub(crate) fn is_guid(value: &str) -> bool {
+    let body = value.strip_prefix('{').and_then(|v| v.strip_suffix('}'));
+    let Some(body) = body else {
+        return false;
+    };
+    let parts: Vec<&str> = body.split('-').collect();
+    parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && body.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// `device`/`osdevice` 的值形态（照抄实机可用形态）：
+/// `ramdisk=[F:\\BootupRestoreRE\\Winre.wim,{设备选项对象}` —— **开头一个 `[`，没有配对 `]`**。
+/// 多写一个 `]`（写成 `…Winre.wim],{…}`）bcdedit 会报「按规定设备无效」，这是实机踩过的坑。
+pub(crate) fn ramdisk_spec(wim_path: &str, devopts: &str) -> String {
+    format!("ramdisk=[{wim_path},{devopts}")
+}
+
+/// 运行 bcdedit 并回读输出；退出码非 0 即失败（带上输出便于定位）。
+
+/// 从 `bcdedit /enum <osloader> /v` 的输出里取**设备选项对象** GUID。
 ///
-/// 状态与标签是本地化的（中文版写「Windows RE 状态 / 位置」），但位置**值**永远是
-/// 与语言无关的设备路径：`\\?\GLOBALROOT\device\harddisk0\partition4\Recovery\WindowsRE`。
-/// 因此只解析其中的 `harddiskN\partitionM`，不依赖任何本地化标签。
-/// 返回 `(磁盘号, 分区号)`；WinRE 已禁用/输出里没有位置时返回 `None`。
-pub(crate) fn reagentc_info_location(text: &str) -> Option<(u32, u32)> {
-    let lower = text.to_ascii_lowercase();
-    let disk_at = lower.find("harddisk")? + "harddisk".len();
-    let disk_digits: String = lower[disk_at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    if disk_digits.is_empty() {
-        return None;
+/// 必须从 `device`/`osdevice` 行里取：该输出第一个 GUID 是 **osloader 自己**，
+/// 直接「取第一个 GUID」会把它当成设备选项对象去 `/copy`，随后
+/// `bcdedit /set ramdisksdidevice` 报「指定的元素无法识别」（2026-09-29 实机踩坑）。
+pub(crate) fn ramdisk_device_options_guid(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("device ") || trimmed.starts_with("osdevice ") {
+            if let Some(guid) = parse_guid(trimmed) {
+                return Some(guid);
+            }
+        }
     }
-    let rest = &lower[disk_at + disk_digits.len()..];
-    let part_at = rest.find("partition")? + "partition".len();
-    let part_digits: String = rest[part_at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    if part_digits.is_empty() {
-        return None;
+    None
+}
+
+/// 严格 GUID 形态校验（带花括号的 8-4-4-4-12）。空值/畸形一律 `Err`，
+/// 这是「绝不误伤 `{default}`」这条硬约束的守门人：bcdedit 在标识符参数为空时会
+/// 静默作用于 `{default}`（真实事故：曾把 Windows 11 启动项 device 改成 ramdisk）。
+/// 载荷 RE 的 `ramdisksdipath`：**必须以 `\` 开头**（绝对路径）。
+/// 少了开头反斜杠时 bcdedit 在接受 `device ramdisk=…` 这一步报「指定的设备无效」
+/// （2026-09-29 实机踩坑：少了 `\` 整整卡了一轮）。
+pub(crate) fn staging_sdi_path(staging_dir: &str) -> String {
+    let dir = staging_dir.trim_start_matches('\\');
+    format!("\\{dir}\\boot.sdi")
+}
+
+pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("BCD {what}: GUID is empty - refusing to touch {{default}}"));
     }
-    Some((disk_digits.parse().ok()?, part_digits.parse().ok()?))
+    if !is_guid(trimmed) {
+        return Err(format!("BCD {what}: not a valid GUID: {trimmed}"));
+    }
+    Ok(trimmed.to_string())
 }
 
 #[cfg(test)]
@@ -1184,23 +1259,45 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert!(!kept.contains("Hotfix"));
         assert_eq!(systeminfo_cpu_memory(""), "");
     }
-    #[test]
-    fn reagentc_info_location_ignores_localized_labels() {
-        let english = "\
-Windows Recovery Environment (Windows RE) and system reset configuration
-Information:
 
-    Windows RE status:         Enabled
-    Windows RE location:       \\\\?\\GLOBALROOT\\device\\harddisk0\\partition4\\Recovery\\WindowsRE
-    Boot Configuration Data (BCD) identifier: {b2c1e3d4-0000-0000-0000-000000000001}
-";
-        assert_eq!(reagentc_info_location(english), Some((0, 4)));
-        let chinese =
-            "    Windows RE \u{4f4d}\u{7f6e}: \\\\?\\GLOBALROOT\\device\\harddisk2\\partition2\\Recovery\\WindowsRE\r\n";
-        assert_eq!(reagentc_info_location(chinese), Some((2, 2)));
-        // 已禁用时 /info 不打印位置；空输出同理 —— 绝不能猜一个分区出来。
-        assert_eq!(reagentc_info_location("Windows RE status: Disabled"), None);
-        assert_eq!(reagentc_info_location(""), None);
-        assert_eq!(reagentc_info_location("harddisk1\\Recovery"), None);
+#[test]
+    fn guid_parsing_accepts_both_shapes() {
+        assert_eq!(
+            parse_guid("已将该项成功复制到 {ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}。").as_deref(),
+            Some("{ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}")
+        );
+        assert_eq!(
+            parse_guid("引导配置数据(BCD)标识符: ccb31eed-bbb7-11f1-88f5-cbcfb69d515d").as_deref(),
+            Some("{ccb31eed-bbb7-11f1-88f5-cbcfb69d515d}")
+        );
+        assert_eq!(parse_guid("Windows RE 状态: Enabled"), None);
+        assert_eq!(parse_guid(""), None);
+    }
+
+#[test]
+    fn empty_guid_is_refused_before_any_bcd_write() {
+        // 这条是硬约束：空 GUID 会让 bcdedit 作用于 {default}（真实事故）。
+        let error = require_guid("", "test").unwrap_err();
+        assert!(error.contains("refusing to touch"), "{error}");
+        assert!(require_guid("{bootmgr}", "test").is_err());
+        assert!(require_guid("{ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}", "test").is_ok());
+    }
+
+    #[test]
+    fn device_options_guid_comes_from_the_device_line_not_the_first_guid() {
+        // 实机形态：第一个 GUID 是 osloader 自己，设备选项对象只在 device/osdevice 行里。
+        let enum_text = "Windows 启动加载器\r\n-------------------\r\n标识符                  {ccb31eed-bbb7-11f1-88f5-cbcfb69d515d}\r\ndevice                  ramdisk=[P:]\\Recovery\\WindowsRE\\Winre.wim,{ccb31eee-bbb7-11f1-88f5-cbcfb69d515d}\r\nosdevice                ramdisk=[P:]\\Recovery\\WindowsRE\\Winre.wim,{ccb31eee-bbb7-11f1-88f5-cbcfb69d515d}\r\n";
+        assert_eq!(
+            ramdisk_device_options_guid(enum_text).as_deref(),
+            Some("{ccb31eee-bbb7-11f1-88f5-cbcfb69d515d}")
+        );
+        assert_eq!(ramdisk_device_options_guid("device partition=C:"), None);
+        assert_eq!(ramdisk_device_options_guid(""), None);
+    }
+
+    #[test]
+    fn staging_sdi_path_always_starts_with_a_backslash() {
+        assert_eq!(staging_sdi_path("BackupRestoreRE"), r"\BackupRestoreRE\boot.sdi");
+        assert_eq!(staging_sdi_path(r"\BackupRestoreRE"), r"\BackupRestoreRE\boot.sdi");
     }
 }
