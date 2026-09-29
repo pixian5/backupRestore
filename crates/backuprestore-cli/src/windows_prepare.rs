@@ -609,6 +609,25 @@ fn prepare_task(
 
     let task_dir = store.task_dir(&task.task_id)?;
     let prepare_log = task_dir.join("prepare.log");
+    // 诊断：把自建启动项提到最前面（早于 BCD 导出、ESP 挂载、DISM、文件拷贝），
+    // 验证「前面的卷挂载/拷贝是否让本进程后代里的 bcdedit 拒绝 ramdisk 设备」。
+    let early_staging = ReStaging {
+        volume: image_volume.clone(),
+        boot_sdi: PathBuf::from(format!(
+            r"{}:\Recovery\WindowsRE\boot.sdi",
+            ensure_volume_mounted(&recovery, 'R', &prepare_log)?
+        )),
+    };
+    crate::boot_entry::create_entry(
+        &PathBuf::from(format!(
+            r"{}:\Recovery\WindowsRE\Winre.wim",
+            ensure_volume_mounted(&recovery, 'R', &prepare_log)?
+        )),
+        &early_staging.boot_sdi,
+        &early_staging.volume,
+        task_dir.as_path(),
+        &prepare_log,
+    )?;
     let bootstrap_bcd = executable_dir.join(format!(".backuprestore-{}.bcd", task.task_id));
     let bootstrap_arg = bootstrap_bcd.to_string_lossy().into_owned();
     run_logged("bcdedit.exe", &["/export", &bootstrap_arg], &bootstrap_log)?;

@@ -3082,27 +3082,6 @@ fn bcd_set(args: Vec<String>) -> Result<(), TaskError> {
     )));
 }
 
-#[cfg(windows)]
-fn bcd_set_legacy(args: Vec<String>) -> Result<(), TaskError> {
-    let mut command = Command::new("bcdedit.exe");
-    command.args(&args);
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    if !text.trim().is_empty() {
-        eprintln!("{}", text.trim());
-    }
-    if !output.status.success() {
-        return Err(err(&format!(
-            "bcdedit {} failed with {}",
-            args.join(" "),
-            output.status
-        )));
-    }
-    Ok(())
-}
-
 fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
     let mut command = Command::new(program);
     command.args(args);

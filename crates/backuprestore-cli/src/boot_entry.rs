@@ -109,27 +109,75 @@ fn bcd(args: &[&str]) -> Result<String, TaskError> {
 /// 影响 bcdedit 对 ramdisk 设备的校验。所以写入统一交给 `BackupRestore.exe bcd-set`
 /// 这个短生命周期子进程，父进程这边只判退出码。
 #[cfg(windows)]
-fn bcd_write_once(args: &[&str]) -> Result<(), TaskError> {
-    let executable = std::env::current_exe().map_err(|error| {
-        crate::err(&format!("cannot locate our own executable: {error}"))
-    })?;
-    let mut child_args: Vec<String> = vec!["bcd-set".to_string()];
-    child_args.extend(args.iter().map(|arg| arg.to_string()));
-    let output = Command::new(&executable)
-        .args(&child_args)
-        .creation_flags(crate::CREATE_NO_WINDOW)
-        .output()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    if !output.status.success() {
-        return Err(crate::err(&format!(
-            "bcd-set {} failed with {}: {}",
-            args.join(" "),
-            output.status,
-            text.trim()
-        )));
+fn bcd_write_once(args: &[&str], log: &Path) -> Result<(), TaskError> {
+    // 三种形态都试，并记录哪一种成功：
+    //   1) 不继承句柄（CreateProcessW bInheritHandles=FALSE）——判「继承句柄」假设；
+    //   2) 继承句柄的 Rust Command —— 常规路径；
+    //   3) 我们的短生命周期子进程（BackupRestore.exe bcd-set）。
+    let attempts: Vec<(&str, Result<i32, String>)> = vec![
+        ("no-inherit", no_inherit::run_no_inherit("bcdedit.exe", args, false)),
+        (
+            "inherit",
+            no_inherit::run_no_inherit("bcdedit.exe", args, true),
+        ),
+    ];
+    for (label, result) in attempts {
+        match result {
+            Ok(0) => {
+                if label != "inherit" {
+                    crate::append_log(
+                        log,
+                        &format!("bcdedit write succeeded via {label}: {}", args.join(" ")),
+                    )
+                    .ok();
+                }
+                return Ok(());
+            }
+            Ok(code) => {
+                crate::append_log(
+                    log,
+                    &format!(
+                        "new boot channel: bcdedit {} via {label} exited {code}",
+                        args.join(" ")
+                    ),
+                )
+                .ok();
+            }
+            Err(error) => {
+                crate::append_log(
+                    log,
+                    &format!(
+                        "new boot channel: bcdedit {} via {label} could not run: {error}",
+                        args.join(" ")
+                    ),
+                )
+                .ok();
+            }
+        }
     }
-    Ok(())
+    // 兜底：让一个全新的本程序子进程去跑
+    if let Ok(executable) = std::env::current_exe() {
+        let mut child_args: Vec<String> = vec!["bcd-set".to_string()];
+        child_args.extend(args.iter().map(|arg| arg.to_string()));
+        if let Ok(output) = Command::new(&executable)
+            .args(&child_args)
+            .creation_flags(crate::CREATE_NO_WINDOW)
+            .output()
+        {
+            if output.status.success() {
+                crate::append_log(
+                    log,
+                    &format!("bcdedit write succeeded via child process: {}", args.join(" ")),
+                )
+                .ok();
+                return Ok(());
+            }
+        }
+    }
+    Err(crate::err(&format!(
+        "bcdedit {} failed in every invocation mode",
+        args.join(" ")
+    )))
 }
 
 /// 写操作 + 重试（先试 `.status()` 形态；个别环境里无父控制台可继承时退回 `.output()`）。
@@ -137,7 +185,7 @@ fn bcd_write_once(args: &[&str]) -> Result<(), TaskError> {
 fn bcd_write(args: &[&str], log: &Path) -> Result<(), TaskError> {
     let mut last: Option<TaskError> = None;
     for attempt in 1..=3 {
-        match bcd_write_once(args) {
+        match bcd_write_once(args, log) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last = Some(error);
@@ -240,6 +288,32 @@ fn diag_battery(loader: &str, devopts: &str, spec: &str, wim_path: &Path, log: &
         )
         .ok();
     }
+    // 诊断：把子进程的当前目录切到镜像卷/暂存目录再跑同一条命令
+    for cwd in [r"F:\", r"F:\BackupRestoreRE", r"C:\Windows", r"H:\brwork"] {
+        let inner = format!("cd /d {cwd} && bcdedit.exe /set {loader} device {spec}");
+        match Command::new("cmd.exe")
+            .args(["/d", "/c", &inner])
+            .creation_flags(crate::CREATE_NO_WINDOW)
+            .output()
+        {
+            Ok(output) => crate::append_log(
+                log,
+                &format!(
+                    "DIAG[{stamp}] write-device-cwd-{cwd} rc={} :: {}{}",
+                    output.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )
+            .ok(),
+            Err(error) => crate::append_log(
+                log,
+                &format!("DIAG[{stamp}] write-device-cwd-{cwd} spawn error: {error}"),
+            )
+            .ok(),
+        };
+    }
+
     let cmdline = format!(
         "bcdedit.exe /set {loader} device {spec}"
     );
@@ -310,7 +384,7 @@ fn diag_battery(loader: &str, devopts: &str, spec: &str, wim_path: &Path, log: &
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            let lines: Vec<&str> = text.lines().take(30).collect();
+            let lines: Vec<&str> = text.lines().collect();
             crate::append_log(
                 log,
                 &format!("DIAG[{stamp}] {label} :: {}", lines.join(" || ")),
@@ -334,6 +408,125 @@ fn diag_battery(loader: &str, devopts: &str, spec: &str, wim_path: &Path, log: &
         ),
     )
     .ok();
+}
+
+/// 用 `CreateProcessW(bInheritHandles = FALSE)` 起一个**不继承父进程句柄**的子进程。
+///
+/// 为什么需要：Rust 的 `Command` 恒为 `bInheritHandles=TRUE`，子进程会连父进程的全部
+/// 可继承句柄一起拿走。2026-09-29 实机上，「本进程后代里的 bcdedit」对
+/// `device ramdisk=…` 一律报「指定的设备无效」，而 `description`/`path`/`partition=`
+/// 全都正常；同一条命令换到非本进程后代的上下文就成功。用不继承句柄的方式起进程，
+/// 既是对「继承句柄」这个假设的判定实验，也是确证后的生产路径。
+#[cfg(windows)]
+mod no_inherit {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct StartupInfoW {
+        pub cb: u32,
+        pub reserved: *mut u16,
+        pub desktop: *mut u16,
+        pub title: *mut u16,
+        pub dw_x: u32,
+        pub dw_y: u32,
+        pub dw_x_size: u32,
+        pub dw_y_size: u32,
+        pub dw_x_count_chars: u32,
+        pub dw_y_count_chars: u32,
+        pub dw_fill_attribute: u32,
+        pub dw_flags: u32,
+        pub w_show_window: u16,
+        pub cb_reserved2: u16,
+        pub lp_reserved2: *mut u8,
+        pub std_input: *mut c_void,
+        pub std_output: *mut c_void,
+        pub std_error: *mut c_void,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct ProcessInformation {
+        pub process: *mut c_void,
+        pub thread: *mut c_void,
+        pub process_id: u32,
+        pub thread_id: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateProcessW(
+            application_name: *const u16,
+            command_line: *mut u16,
+            process_attributes: *const c_void,
+            thread_attributes: *const c_void,
+            inherit_handles: i32,
+            creation_flags: u32,
+            environment: *const c_void,
+            current_directory: *const u16,
+            startup_info: *const StartupInfoW,
+            process_information: *mut ProcessInformation,
+        ) -> i32;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn GetExitCodeProcess(handle: *mut c_void, exit_code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// 运行程序并等待，返回退出码。`inherit=false` 时子进程不继承父进程句柄。
+    pub fn run_no_inherit(program: &str, args: &[&str], inherit: bool) -> Result<i32, String> {
+        let mut command_line = format!("\"{program}\"");
+        for arg in args {
+            command_line.push(' ');
+            if arg.contains(' ') || arg.contains('"') {
+                command_line.push('"');
+                command_line.push_str(&arg.replace('"', "\""));
+                command_line.push('"');
+            } else {
+                command_line.push_str(arg);
+            }
+        }
+        let mut line = wide(&command_line);
+        let mut startup: StartupInfoW = StartupInfoW {
+            cb: std::mem::size_of::<StartupInfoW>() as u32,
+            ..StartupInfoW::default()
+        };
+        let mut information = ProcessInformation::default();
+        let created = unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                if inherit { 1 } else { 0 },
+                0x0800_0000, // CREATE_NO_WINDOW
+                std::ptr::null(),
+                std::ptr::null(),
+                &startup,
+                &mut information,
+            )
+        };
+        if created == 0 {
+            return Err(format!("CreateProcessW failed for {command_line}"));
+        }
+        unsafe {
+            WaitForSingleObject(information.process, u32::MAX);
+            let mut code = 0_u32;
+            GetExitCodeProcess(information.process, &mut code);
+            CloseHandle(information.process);
+            if !information.thread.is_null() {
+                CloseHandle(information.thread);
+            }
+            Ok(code as i32)
+        }
+    }
 }
 
 /// 建后即验：对象必须真的可枚举，否则后面所有 `/set` 都会落空。
@@ -495,7 +688,12 @@ pub fn create_entry(
         return Ok(existing);
     }
 
-    let (wim_path, wim_sha256) = copy_into_staging(staged_wim, sdi_source, wim_volume, log)?;
+    // 目标 WIM 路径只由「卷盘符 + 暂存目录名 + 文件名」决定，可以在拷贝前就算出来。
+    let staging_letter = ensure_volume_mounted(wim_volume, 'R', log)?;
+    let staging_dir = PathBuf::from(format!(r"{}:\{RE_STAGING_DIR}", staging_letter));
+    let wim_path = staging_dir.join("Winre.wim").to_string_lossy().into_owned();
+    let wim_sha256 = String::new();
+    let _ = &wim_sha256;
     // 模板优先取「当前注册的 WinRE 条目」；它不可用（条目/设备选项对象已被 reagentc 删掉）
     // 时退回枚举所有 WinRE 条目，挑一个设备选项对象确实存在的。
     let (template_loader, template_devopts) = match registered_winre_templates(log) {
@@ -624,6 +822,12 @@ pub fn create_entry(
         &format!("new boot channel: one-shot bootsequence armed at {loader}"),
     )?;
 
+    // BCD 全部就位之后，才把载荷 WIM/SDI 放进镜像卷的暂存目录。
+    // 顺序很重要：实机上「本进程刚做完 700MB 文件拷贝」会让同一进程树里的 bcdedit
+    // 拒绝 `device ramdisk=…`（诊断电池记录的事实），所以拷贝必须放在最后。
+    let (staged_path, staged_sha) = copy_into_staging(staged_wim, sdi_source, wim_volume, log)?;
+    let wim_path = staged_path;
+    let wim_sha256 = staged_sha;
     let entry = ReBootEntry {
         loader_guid: loader,
         devopts_guid: devopts,
