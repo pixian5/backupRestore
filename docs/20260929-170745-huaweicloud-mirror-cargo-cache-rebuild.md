@@ -6,9 +6,9 @@
 
 - pip：`https://mirrors.huaweicloud.com/repository/pypi/simple/`（`~/.pip/pip.conf`）
 - npm：`https://mirrors.huaweicloud.com/npm/`（`~/.npmrc`）
-- Homebrew API：`https://mirrors.huaweicloud.com/homebrew-bottles/api`（环境变量 `HOMEBREW_API_DOMAIN`）
+- ~~Homebrew API：`https://mirrors.huaweicloud.com/homebrew-bottles/api`~~ **华为云已下架 Homebrew 镜像，见下文，实际走 tuna**
 
-## 关键结论：华为云没有 crates.io 镜像
+## 关键结论一：华为云没有 crates.io 镜像
 
 华为云开源镜像站仓库列表中**已无 Cargo 镜像**，以下地址均 404（2026-09-29 实测）：
 
@@ -53,3 +53,22 @@ cargo check --workspace
 ## npm 缓存现状（未处理，待用户决定）
 
 `~/.npm` 占用 11G。npm 缓存（cacache）按下载 URL 寻址，源切换后旧条目自动失效，不影响新源命中，故未清理；如需回收磁盘可 `npm cache clean --force`（可再生，但其它 node 项目下次安装需重下）。
+
+## 关键结论二：华为云已完全下架 Homebrew 镜像（2026-09-29 追加）
+
+三个端点实测全部返回 **HTML 前端页面**（`Content-Type: text/html`），后端仓库不存在：
+
+- `https://mirrors.huaweicloud.com/homebrew/brew.git/info/refs?service=git-upload-pack`
+- `https://mirrors.huaweicloud.com/homebrew-bottles/api/formula.json`
+- `https://mirrors.huaweicloud.com/homebrew-bottles/bottles/<包>.bottle.tar.gz`
+
+**坑**：只看 HTTP 状态码会误判——这些路径都返回 200，但内容类型是网页不是 `application/json` / `application/octet-stream` / `x-git-upload-pack-advertisement`。判定镜像可用必须看 `Content-Type`（或 `file` 首字节）。
+
+因此 `~/.zprofile` 的 Homebrew 三个变量改用清华 tuna（均已验证）：
+
+- `HOMEBREW_BREW_GIT_REMOTE=https://mirrors.tuna.tsinghua.edu.cn/git/homebrew/brew.git`
+- `HOMEBREW_API_DOMAIN=https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/api`
+- `HOMEBREW_BOTTLE_DOMAIN=https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles`
+
+同时 `git -C /opt/homebrew remote set-url origin <tuna brew.git>`。`brew update` 实测通过。
+（注意：另一个终端若在用 tuna 跑 brew update 会占锁且在命令末尾把 remote 改回去，改完 remote 后要复验。）
