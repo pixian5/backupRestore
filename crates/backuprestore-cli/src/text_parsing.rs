@@ -371,6 +371,135 @@ pub(crate) fn parse_percent(line: &str) -> Option<u32> {
 
 /// Derive the progress window's stage caption, percentage and detail line
 /// from one recovery log line.
+/// 编号步骤与总进度。
+///
+/// PE 里的恢复流程是 `STEP n/N <名称>` 形式的编号步骤（见 `main.rs` 的
+/// `append_log(log, "STEP 1/4 …")`）。进度窗口要回答三个问题——
+/// **一共几步、现在第几步、当前这一步到百分之几**——所以把这三件事算清楚。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct StepProgress {
+    /// 已出现的步骤，按编号升序、去重：`(编号, 名称)`。
+    pub steps: Vec<(u32, String)>,
+    /// 总步骤数（`N`），从任一步骤的 `n/N` 里取；取不到就是 `None`。
+    pub total: Option<u32>,
+    /// 当前步骤号 = 已出现的最大编号。
+    pub current: Option<u32>,
+    /// 当前步骤内部的百分比（DISM 那种 0–100）。
+    pub current_percent: Option<u32>,
+    /// 总进度百分比：已完成整步 + 当前步骤的部分进度。
+    pub overall_percent: Option<u32>,
+}
+
+/// 从一段日志文本里算出步骤进度。
+///
+/// `log` 是**累积**的日志（不是增量），因为步骤清单要把前面已完成的步骤也列出来；
+/// 调用方每次刷新都从当前 offset 起读，所以这里只处理新读到的那段——
+/// 真正的累积由 `StepTracker` 负责（见 `text_parsing::StepTracker`）。
+pub(crate) fn step_progress_of_new_lines(lines: &[&str]) -> StepProgress {
+    let mut progress = StepProgress::default();
+    for line in lines {
+        let Some((index, total, name)) = parse_step_marker(line) else {
+            continue;
+        };
+        progress.total = Some(total);
+        if progress.steps.iter().any(|(seen, _)| *seen == index) {
+            // 同一步骤可能被重打（续跑、重试），保留第一次的名字即可。
+            continue;
+        }
+        progress.steps.push((index, name));
+    }
+    progress.steps.sort_by_key(|(index, _)| *index);
+    progress.current = progress.steps.last().map(|(index, _)| *index);
+    progress
+}
+
+/// 带累积的步骤跟踪器：把总进度一起算出来。
+///
+/// 单独一个结构体是因为进度窗口每次只读到日志的**增量**，而"一共几步"和
+/// "已完成几步"必须跨增量累积——不然窗口会在两次刷新之间忘记自己走到哪。
+#[derive(Debug, Default, Clone)]
+pub(crate) struct StepTracker {
+    inner: StepProgress,
+}
+
+impl StepTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 喂入一批新读到的日志行，返回累加后的进度快照。
+    pub fn feed(&mut self, lines: &[&str]) -> StepProgress {
+        let fresh = step_progress_of_new_lines(lines);
+        if let Some(total) = fresh.total {
+            self.inner.total = Some(total);
+        }
+        for (index, name) in fresh.steps {
+            if !self.inner.steps.iter().any(|(seen, _)| *seen == index) {
+                self.inner.steps.push((index, name));
+            }
+        }
+        self.inner.steps.sort_by_key(|(index, _)| *index);
+        self.inner.current = self.inner.steps.last().map(|(index, _)| *index);
+        self.inner.current_percent = fresh.current_percent.or(self.inner.current_percent);
+        self.inner.overall_percent = self.overall();
+        self.inner.clone()
+    }
+
+    /// 记录当前步骤内部的百分比（来自 DISM 进度行）。
+    pub fn set_current_percent(&mut self, percent: Option<u32>) {
+        self.inner.current_percent = percent;
+        self.inner.overall_percent = self.overall();
+    }
+
+    pub fn snapshot(&self) -> StepProgress {
+        self.inner.clone()
+    }
+
+    /// 总进度 = (已完成整步数 + 当前步骤的部分) / 总步数。
+    fn overall(&self) -> Option<u32> {
+        let total = self.inner.total?;
+        let current = self.inner.current?;
+        if total == 0 {
+            return None;
+        }
+        let done_steps = current.saturating_sub(1) as f64;
+        let inside = self.inner.current_percent.unwrap_or(0).min(100) as f64 / 100.0;
+        let overall = ((done_steps + inside) / total as f64) * 100.0;
+        Some(overall.round().clamp(0.0, 100.0) as u32)
+    }
+}
+
+// 从任意一行日志里取出编号步骤标记 `(编号, 总数, 名称)`；取不到返回 `None`。
+//
+// 日志行的真实形态是 `[2026-09-29T03:36:32.259862400+00:00] STEP 1/4 准备备份环境…`
+// —— `STEP` 前面有方括号时间戳。所以**不能**用 `strip_prefix("STEP ")` 只匹配行首：
+// 2026-09-30 之前 `classify_log_line` 和进度窗口都是那么写的，结果编号步骤
+// 从来没能被识别，PE 里显示的一直是那句不动的「正在准备恢复环境…」。
+//
+// 放在这里让「识别编号步骤」只有一份实现：进度窗口、阶段标题、单测共用。
+pub(crate) fn parse_step_marker(line: &str) -> Option<(u32, u32, String)> {
+    let start = line.find("STEP ")?;
+    let rest = line[start + 5..].trim();
+    let (token, name) = rest.split_once(' ')?;
+    if !token.contains('/') {
+        return None;
+    }
+    let mut parts = token.splitn(2, '/');
+    let (Some(index), Some(total)) = (parts.next(), parts.next()) else {
+        return None;
+    };
+    let (Ok(index), Ok(total)) = (
+        index.trim().parse::<u32>(),
+        total.trim().parse::<u32>(),
+    ) else {
+        return None;
+    };
+    if index == 0 || total == 0 || index > total {
+        return None;
+    }
+    Some((index, total, name.trim().to_string()))
+}
+
 pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Option<String>) {
     let mut stage = None;
     if line.contains("running dism.exe") {
@@ -393,19 +522,12 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         stage = Some("操作完成".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {
         stage = Some("正在准备恢复环境…".to_string());
-    } else if let Some(rest) = line.strip_prefix("STEP ") {
+    } else if let Some((index, total, name)) = parse_step_marker(line) {
         // 备份/还原流程打的编号步骤标记，形如 "STEP 2/4 捕获系统分区镜像"。
         // 进度窗口据此显示「步骤 n/N：<名称>」，让用户看清当前处在第几步。
-        let rest = rest.trim();
-        if let Some((step, name)) = rest.split_once(' ') {
-            if step.contains('/') {
-                stage = Some(format!("步骤 {}：{}", step, name.trim()));
-            } else {
-                stage = Some(format!("步骤：{}", name.trim()));
-            }
-        } else {
-            stage = Some(format!("步骤：{rest}"));
-        }
+        // 注意用 parse_step_marker 而不是 strip_prefix：真实日志行前面
+        // 带着方括号时间戳，只匹配行首会永远认不出步骤（2026-09-30 修的）。
+        stage = Some(format!("步骤 {index}/{total}：{name}"));
     }
     let percent = parse_percent(line);
     let detail = if line.trim().is_empty()
@@ -1453,8 +1575,11 @@ Possible values for VolumeName along with current mount points are:
         assert_eq!(stage.as_deref(), Some("步骤 2/4：捕获系统分区镜像"));
         assert_eq!(detail, None, "编号步骤行不应占详情框（已由阶段标题展示）");
 
+        // 没有 n/N 的 STEP 行**不**再当成编号步骤：进度窗口要回答"一共几步、
+        // 现在第几步"，认不出编号就无法定位，给它一个"步骤：xxx"的标题反而
+        // 会让用户以为它在步骤序列里。2026-09-30 收紧，真实日志都带编号。
         let (single, _, _) = classify_log_line("STEP 准备环境");
-        assert_eq!(single.as_deref(), Some("步骤：准备环境"));
+        assert_eq!(single, None);
     }
 
     #[test]
@@ -1724,6 +1849,106 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(bare_volume_guid(&format!("  {guid}  ")), Some(guid));
         assert_eq!(bare_volume_guid("C:"), None);
         assert_eq!(bare_volume_guid(""), None);
+    }
+
+    /// 步骤清单与总进度：PE 进度窗口靠它回答「一共几步 / 现在第几步 / 当前百分之几」。
+    ///
+    /// 2026-09-30 用户反馈 PE 里只显示一句「正在准备恢复环境…」，没有步骤也没有
+    /// 百分比。这三个函数就是为此加的，逻辑放在 macOS 也编译的 text_parsing，
+    /// 免得再犯「测试放在 #[cfg(windows)] 模块里所以一次都没跑」的老毛病。
+    /// 真实日志行带方括号时间戳，编号步骤必须仍能识别。
+    ///
+    /// 这条是 2026-09-30 的回归锁：此前用 `strip_prefix("STEP ")` 只匹配行首，
+    /// 而真实形态是 `[时间戳] STEP 1/4 …`，于是编号步骤从来没能被识别，
+    /// PE 进度窗口一直停在初始那句「正在准备恢复环境…」（用户实机反馈）。
+    #[test]
+    fn parse_step_marker_works_on_real_timestamped_log_lines() {
+        let real = "[2026-09-29T03:36:32.259862400+00:00] STEP 1/4 准备备份环境（挂载卷、校验、必要时代原恢复环境）";
+        let (index, total, name) = parse_step_marker(real).expect("必须能从真实日志行解析出步骤");
+        assert_eq!((index, total), (1, 4));
+        assert!(name.contains("准备备份环境"));
+
+        // 阶段标题也要能认出来，不只是步骤跟踪器。
+        let (stage, _percent, _detail) = classify_log_line(real);
+        assert_eq!(stage.as_deref(), Some("步骤 1/4：准备备份环境（挂载卷、校验、必要时代原恢复环境）"));
+    }
+
+    /// 认不出步骤标记时返回 None，不能 panic、不能猜。
+    #[test]
+    fn parse_step_marker_returns_none_for_non_step_lines() {
+        assert!(parse_step_marker("").is_none());
+        assert!(parse_step_marker("[ts] The operation completed successfully.").is_none());
+        assert!(parse_step_marker("[ts] STEP ").is_none());
+        assert!(parse_step_marker("[ts] STEP abc/def name").is_none());
+        assert!(parse_step_marker("[ts] STEP 9/4 impossible").is_none());
+        // 没有 name 也不算
+        assert!(parse_step_marker("[ts] STEP 1/4").is_none());
+    }
+
+    #[test]
+    fn step_progress_reads_numbered_steps_across_increments() {
+        let mut tracker = StepTracker::new();
+
+        // 第一批：只看到第 1 步
+        let first = tracker.feed(&["[stdout] STEP 1/4 准备备份环境（挂载卷、校验）"]);
+        assert_eq!(first.total, Some(4));
+        assert_eq!(first.current, Some(1));
+        assert_eq!(first.steps.len(), 1);
+        assert_eq!(first.steps[0].0, 1);
+        assert!(first.steps[0].1.contains("准备备份环境"));
+
+        // 第二批：第 2 步 + DISM 66%
+        let second = tracker.feed(&["STEP 2/4 捕获系统分区镜像（DISM）", "[stdout] [66.0%]"]);
+        assert_eq!(second.current, Some(2));
+        assert_eq!(second.steps.len(), 2, "步骤清单必须跨增量累积");
+
+        tracker.set_current_percent(Some(66));
+        let snap = tracker.snapshot();
+        // (1 + 0.66) / 4 = 41.5% → 42
+        assert_eq!(snap.overall_percent, Some(42));
+    }
+
+    /// 重复打同一步骤不能重复入列（续跑/重试会重打）。
+    #[test]
+    fn step_progress_deduplicates_repeated_steps() {
+        let mut tracker = StepTracker::new();
+        tracker.feed(&["STEP 1/4 准备备份环境"]);
+        let again = tracker.feed(&["STEP 1/4 准备备份环境", "STEP 2/4 捕获"]);
+        assert_eq!(again.steps.len(), 2);
+        assert_eq!(again.current, Some(2));
+    }
+
+    /// 畸形 STEP 行必须被忽略，不能把总数带偏。
+    #[test]
+    fn step_progress_ignores_malformed_step_lines() {
+        let mut tracker = StepTracker::new();
+        let none = tracker.feed(&["STEP ", "STEP abc", "STEP 0/4 bad", "STEP 5/4 bad", "not a step"]);
+        assert!(none.total.is_none());
+        assert!(none.steps.is_empty());
+        assert!(none.current.is_none());
+        assert!(none.overall_percent.is_none());
+    }
+
+    /// 没有编号步骤时（老格式日志）不能 panic，也不能算出百分比。
+    #[test]
+    fn step_progress_without_numbered_steps_reports_nothing() {
+        let mut tracker = StepTracker::new();
+        let progress = tracker.feed(&["[stdout] [100.0%]", "The operation completed successfully."]);
+        assert!(progress.total.is_none());
+        assert!(progress.current.is_none());
+        assert!(progress.overall_percent.is_none(), "没有 n/N 就不该编造总进度");
+    }
+
+    /// 当前步骤百分比要夹在 0–100，且总进度不超过 100。
+    #[test]
+    fn step_progress_clamps_percentages() {
+        let mut tracker = StepTracker::new();
+        tracker.feed(&["STEP 1/2 第一步"]);
+        tracker.set_current_percent(Some(250));
+        let snap = tracker.snapshot();
+        assert_eq!(snap.overall_percent, Some(50), "250% 应夹成 100% → 半程");
+        tracker.set_current_percent(Some(100));
+        assert_eq!(tracker.snapshot().overall_percent, Some(50));
     }
 
     #[test]

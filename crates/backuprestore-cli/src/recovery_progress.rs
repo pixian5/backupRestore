@@ -57,6 +57,10 @@ pub struct ProgressShared {
     /// 进度窗口句柄（窗口线程创建后回填；主线程执行完请求关闭用 usize 存，
     /// 避免 *mut c_void 不满足跨线程 Send）。
     pub hwnd: Mutex<Option<usize>>,
+    /// 编号步骤跟踪器。必须放这里而不是窗口线程的局部变量：
+    /// 窗口每次只读到日志**增量**，而「一共几步、已完成几步」要跨增量累积，
+    /// 否则两次刷新之间就会忘记自己走到哪。
+    pub steps: Mutex<crate::text_parsing::StepTracker>,
 }
 
 #[repr(C)]
@@ -212,7 +216,8 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let mut details: Vec<String> = Vec::new();
     // DISM 进度条用 \r 原地刷新（重定向到文件时不带 \n），先把整段按
     // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
-    for line in buffer.split(['\n', '\r']) {
+    let lines: Vec<&str> = buffer.split(['\n', '\r']).collect();
+    for line in &lines {
         let (stage, percent, detail) = classify_log_line(line);
         if let Some(value) = stage {
             latest_stage = Some(value);
@@ -227,16 +232,52 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             }
         }
     }
+    // 编号步骤跨增量累积，并算出总进度（已完成整步 + 当前步骤部分）。
+    let progress = {
+        let mut tracker = shared.steps.lock().unwrap();
+        tracker.feed(&lines);
+        tracker.set_current_percent(latest_percent);
+        tracker.snapshot()
+    };
     unsafe {
         if let Some(stage) = latest_stage {
             let wide: Vec<u16> = stage.encode_utf16().chain(std::iter::once(0)).collect();
             SetWindowTextW(GetDlgItem(hwnd, ID_STAGE), wide.as_ptr());
         }
-        if let Some(percent) = latest_percent {
+        // 进度条显示**总进度**：单看当前步骤的百分比会让人以为卡住
+        // （第 4 步的 90% 其实整体早就过了 70%）。
+        if let Some(overall) = progress.overall_percent {
+            SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, overall as usize, 0);
+        } else if let Some(percent) = latest_percent {
+            // 没有编号步骤（老格式日志）时退回用当前百分比，别让条子空着。
             SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, percent as usize, 0);
         }
-        if !details.is_empty() {
-            let text = details.join("\r\n");
+        // 详情区上面先画步骤清单，再跟日志尾部。清单用 ✓/▶/· 标出
+        // 已完成/进行中/未开始，一眼看清「到哪一步了」。
+        let mut body: Vec<String> = Vec::new();
+        if !progress.steps.is_empty() {
+            let current = progress.current.unwrap_or(0);
+            for (index, name) in &progress.steps {
+                let mark = if *index < current {
+                    "✓"
+                } else if *index == current {
+                    "▶"
+                } else {
+                    "·"
+                };
+                body.push(format!("{mark} {index}/{}{} {}", progress.total.unwrap_or(*index), ". ", name));
+            }
+            match (latest_percent, progress.overall_percent) {
+                (Some(step), Some(all)) => body.push(format!("—— 当前 {step}% · 总进度 {all}% ——")),
+                (Some(step), None) => body.push(format!("—— 当前 {step}% ——")),
+                (None, Some(all)) => body.push(format!("—— 总进度 {all}% ——")),
+                (None, None) => {}
+            }
+            body.push(String::new());
+        }
+        body.extend(details.iter().cloned());
+        if !body.is_empty() {
+            let text = body.join("\r\n");
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             SetWindowTextW(GetDlgItem(hwnd, ID_DETAIL), wide.as_ptr());
         }
@@ -263,7 +304,7 @@ unsafe extern "system" fn window_proc(
                 WS_CHILD | WS_VISIBLE,
                 32,
                 28,
-                756,
+                796,
                 48,
                 hwnd,
                 null_mut(),
@@ -282,7 +323,7 @@ unsafe extern "system" fn window_proc(
                 WS_CHILD | WS_VISIBLE | WS_BORDER,
                 32,
                 92,
-                756,
+                796,
                 36,
                 hwnd,
                 null_mut(),
@@ -301,8 +342,8 @@ unsafe extern "system" fn window_proc(
                 WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
                 32,
                 144,
-                756,
-                314,
+                796,
+                414,
                 hwnd,
                 null_mut(),
                 GetModuleHandleW(null()),
@@ -338,6 +379,7 @@ fn encode(text: &str) -> Vec<u16> {
 pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
     let shared = Arc::new(ProgressShared {
         log_path: Mutex::new(initial_log),
+        steps: Mutex::new(crate::text_parsing::StepTracker::new()),
         log_offset: Mutex::new(0),
         window_up: AtomicBool::new(false),
         hwnd: Mutex::new(None),
@@ -396,8 +438,8 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            820,
-            500,
+            860,
+            600,
             null_mut(),
             null_mut(),
             GetModuleHandleW(null()),

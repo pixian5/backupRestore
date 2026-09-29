@@ -749,7 +749,7 @@ fn prepare_payload(
     // 失败（报「指定的设备无效」，对象状态经 /enum 核验完全正确；换个进程立刻重试就成功）。
     // 而建条目只需要「镜像卷上有一个合法 WIM」——干净的注册 WIM 副本就够。
     // 一次性启动留到载荷注入并拷贝完成之后再武装（此时才允许人重启进来）。
-    let boot_entry = crate::boot_entry::create_entry(
+    let mut boot_entry = crate::boot_entry::create_entry(
         &staged,
         &re_staging.boot_sdi,
         &re_staging.volume,
@@ -826,6 +826,20 @@ fn prepare_payload(
         &staged,
         &re_staging.boot_sdi,
         &re_staging.volume,
+        log,
+    ) {
+        return Err(error);
+    }
+    // ★ 把簿记里的载荷哈希刷新成**注入后**的实际值。
+    // create_entry 在 DISM 注入之前就跑（顺序要点见上），那时的
+    // copy_into_staging 复制的是干净原件，记下的是它的哈希；注入后载荷
+    // WIM 被覆写成另一份，哈希随之改变。不刷新的话，rearm() 在断电续跑时
+    // 拿活载荷比对这份过期记录必然不符，整条续跑路被封死
+    // （2026-09-30 实机：stage 卡在 image-applied/75，日志
+    //  "payload WIM hash differs from the prepared one; refusing to re-arm"）。
+    if let Err(error) = crate::boot_entry::refresh_payload_hash(
+        &mut boot_entry,
+        task_dir.as_path(),
         log,
     ) {
         return Err(error);

@@ -71,7 +71,7 @@ impl ReBootEntry {
         read_json(path).map(Some)
     }
 
-    fn write(&self, task_dir: &Path) -> Result<(), TaskError> {
+    pub(crate) fn write(&self, task_dir: &Path) -> Result<(), TaskError> {
         write_json_atomic(Self::record_path(task_dir), self)
     }
 }
@@ -454,6 +454,39 @@ pub fn arm_one_shot(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         log,
         &format!("new boot channel: one-shot bootsequence armed at {loader}"),
     )
+}
+
+/// 把簿记里的载荷哈希刷新成**镜像卷上那份 WIM 的当前实际值**。
+///
+/// 为什么需要：`create_entry` 按设计在 DISM 注入**之前**运行
+/// （v1.7.11 顺序要点——建条目只需要"镜像卷上有一个合法 WIM"，干净的注册
+/// WIM 副本就够），所以它记下的是**注入前**干净原件的哈希。注入之后载荷
+/// WIM 被覆写成另一份，哈希随之改变，而薄记没跟着变。
+///
+/// 后果是致命的：断电续跑走 `rearm()`，它拿活载荷哈希比对这份过期记录，
+/// 必然不符，于是以 "payload WIM hash differs from the prepared one;
+/// refusing to re-arm" 放弃续跑，机器永久停在 75%
+/// （2026-09-30 实机抓到，任务 61a4fa45，stage 卡在 image-applied）。
+///
+/// 幂等：哈希没变就什么都不做，不重复写文件。
+pub(crate) fn refresh_payload_hash(
+    entry: &mut ReBootEntry,
+    task_dir: &Path,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let live = backuprestore_core::sha256_file(Path::new(&entry.wim_path))?;
+    if live.eq_ignore_ascii_case(&entry.wim_sha256) {
+        return Ok(());
+    }
+    crate::append_log(
+        log,
+        &format!(
+            "new boot channel: payload hash is now {live} (recorded {}); refreshing the boot entry",
+            entry.wim_sha256
+        ),
+    )?;
+    entry.wim_sha256 = live;
+    entry.write(task_dir)
 }
 
 /// 重武装：用于断电续跑（任务 resume 时重新把我们的条目设为一次性启动）。
