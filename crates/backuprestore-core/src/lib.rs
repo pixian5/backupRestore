@@ -168,6 +168,41 @@ impl VolumeIdentity {
                 .partition_guid
                 .eq_ignore_ascii_case(&other.partition_guid)
     }
+    /// 卷的 **verbatim 路径**（`\\?\Volume{GUID}\`），方案 A 的基石。
+    ///
+    /// 有了它，读写一个卷就**不需要分配盘符**：Rust 的 `std::fs` 走
+    /// `CreateFileW`/`CopyFileExW`，`bcdedit` / `dism` 这类 Win32 程序同样接受这种路径。
+    /// 2026-09-29 实机验证过四件事（见 `docs/202609292014` 第六·补节）：
+    /// 读路径字节等价（副本 SHA-256 与盘符方式完全相同）、写操作**不**做归一化
+    /// （`set` 后 `/enum` 输出 `fc /b` 逐字节无差异）、四个写动词全通过、
+    /// `Directory::GetFiles` 能直接枚举卷内文件。
+    ///
+    /// `volume_guid` 为空时返回 `None`——调用方必须退回盘符路径，绝不能拼出一个
+    /// 假路径（那会指到别的卷上去）。
+    pub fn volume_path(&self) -> Option<String> {
+        let guid = self.volume_guid.trim();
+        if guid.is_empty() {
+            return None;
+        }
+        // 只接受带花括号的 GUID 形态，避免把 "C:" 之类的脏值拼进路径。
+        if !(guid.starts_with('{') && guid.ends_with('}') && guid.len() == 38) {
+            return None;
+        }
+        // 拼接而非 format!：verbatim 路径里的反斜杠在字符串字面量里极难写对，
+        // 一律用 ASCII 码拼，逐个字符都说得清。
+        // 曾经的真实事故：`?` 后面少一个反斜杠，路径退化成 `\\?Volume{...}\`，
+        // Windows 直接不认（CreateFileW 报 161/123），而单测是照实现抄的所以没拦住。
+        const BACKSLASH: char = 92u8 as char;
+        let mut path = String::new();
+        path.push(BACKSLASH);
+        path.push(BACKSLASH);
+        path.push('?');
+        path.push(BACKSLASH);
+        path.push_str("Volume");
+        path.push_str(guid);
+        path.push(BACKSLASH);
+        Some(path)
+    }
     pub fn is_reserved_partition(&self) -> bool {
         let t = self.partition_type_guid.to_ascii_lowercase();
         matches!(
@@ -1414,6 +1449,55 @@ mod tests {
         });
         task
     }
+    /// 锁死方案 A 的基石：verbatim 卷路径的**精确形态**。
+    ///
+    /// 这里错一位，后面 `bcdedit /store <path>` 就指到别的卷上——而启动项写错地方
+    /// 是会把机器弄成不能启动的，所以断言到字符级。
+    ///
+    /// 测试用的期望值**独立构造**（不调 `volume_path`），否则就是"照实现抄"，
+    /// 实现错了测试也跟着错——2026-09-29 已经因此漏掉一个 `?` 后少反斜杠的 bug。
+    #[test]
+    fn volume_path_has_the_exact_verbatim_shape() {
+        let mut identity = VolumeIdentity::new("{disk}", "{part}");
+        identity.volume_guid = "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}".into();
+
+        let bs = 92u8 as char;
+        let mut want = String::new();
+        want.push(bs);
+        want.push(bs);
+        want.push('?');
+        want.push(bs);
+        want.push_str("Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}");
+        want.push(bs);
+
+        let got = identity.volume_path().expect("合法 GUID 必须给出路径");
+        assert_eq!(got, want, "verbatim 路径形态不对");
+
+        // 前缀四个字符单独验：反斜杠 反斜杠 问号 反斜杠。
+        let prefix: Vec<char> = vec![92u8 as char, 92u8 as char, '?', 92u8 as char];
+        assert_eq!(
+            got.chars().take(4).collect::<Vec<char>>(),
+            prefix,
+            "verbatim 前缀错了：{got}"
+        );
+        assert!(got.ends_with(bs), "结尾少反斜杠：{got}");
+    }
+
+    /// 没有 GUID 时**必须**返回 `None` 而不是拼一个假路径。
+    #[test]
+    fn volume_path_refuses_to_invent_a_guid() {
+        let mut identity = VolumeIdentity::new("{disk}", "{part}");
+        assert_eq!(identity.volume_path(), None, "空 volume_guid");
+        identity.volume_guid = "   ".into();
+        assert_eq!(identity.volume_path(), None, "纯空白");
+        identity.volume_guid = "d08d796f-f082-4402-bdbb-a4a6a09ac53f".into();
+        assert_eq!(identity.volume_path(), None, "没花括号");
+        identity.volume_guid = "{d08d796f}".into();
+        assert_eq!(identity.volume_path(), None, "不是 36 位 GUID");
+        identity.volume_guid = "C:".into();
+        assert_eq!(identity.volume_path(), None, "盘符不是卷 GUID");
+    }
+
     #[test]
     fn state_machine_accepts_recovery_paths() {
         assert!(Stage::Prepared.can_transition_to(Stage::BootRequested));

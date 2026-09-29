@@ -754,6 +754,118 @@ pub(crate) const ESP_CONTROL_FILES: [&str; 3] = ["pe-task.txt", "pe-task.txt.don
 /// 取证实录/日志在 ESP 上的路径。子目录不存在则顺带建好——调用方清一色是
 /// `let _ = std::fs::write(...)`，目录缺失会静默失败，2026-09-29 已为这类静默失败
 /// 付过好几轮排查代价。
+/// 卷路径 → 设备路径（方案 A 必须的一步转换）。
+///
+/// 两种路径**不是一回事**，混用会在实机上报 `CreateFileW` 161/162：
+/// - 卷路径 `\\?\Volume{GUID}\`：Win32 卷 API、`GetVolumeInformationW`、
+///   普通文件读写（`std::fs`、`bcdedit /store`）吃的这个；
+/// - 设备路径 `\\.\Volume{GUID}`：`CreateFileW` + `DeviceIoControl`
+///   （`IOCTL_STORAGE_GET_DEVICE_NUMBER`、`IOCTL_DISK_GET_PARTITION_INFO_EX`）吃的这个。
+///
+/// 输入不是卷路径时**原样返回**：调用方传进来的可能已经是 `\\.\C:` 这种设备名，
+/// 那时不需要转换。转换不出来（空 GUID）才算 `None`。
+pub(crate) fn volume_path_to_device_path(path: &str) -> Option<String> {
+    // 反斜杠一律用 ASCII 码拼：verbatim 路径里少一层就退化成普通路径，
+    // 会指到别的卷上去，而这种错在日志里看不出来。
+    const BACKSLASH: char = 92u8 as char;
+    let trimmed = path.trim();
+    let prefix = {
+        let mut prefix = String::new();
+        prefix.push(BACKSLASH);
+        prefix.push(BACKSLASH);
+        prefix.push('?');
+        prefix.push(BACKSLASH);
+        prefix.push_str("Volume");
+        prefix
+    };
+    let Some(guid) = trimmed.strip_prefix(&prefix) else {
+        return Some(path.to_string());
+    };
+    let guid = guid.trim_end_matches(BACKSLASH);
+    if guid.is_empty() {
+        return None;
+    }
+    let mut device = String::new();
+    device.push(BACKSLASH);
+    device.push(BACKSLASH);
+    device.push('.');
+    device.push(BACKSLASH);
+    device.push_str("Volume");
+    device.push_str(guid);
+    Some(device)
+}
+
+/// 从 `mountvol`（无参）输出里挑出**未挂载**的候选卷路径。
+///
+/// 方案 A（v1.8.2）的第一步筛选，判据只有一条：该卷没有任何挂载点
+/// （`mountvol` 打 `*** NO MOUNT POINTS ***`，固定串不随本地化变）。
+///
+/// 为什么偏好"未挂载"的：ESP 通常隐藏，而开发用的 ESP 往往已经挂了盘符；
+/// 顺带也就避开了"选中一个用户正在看的盘符"这种最坏情况。
+///
+/// 「是不是真的 ESP」**不在这里判**——`mountvol` 的输出里看不到卷内目录，
+/// 靠文本猜会把 `EFI` 这种字样误当成挂载点。真正的判定在
+/// `windows_prepare::esp_identity_without_drive_letter()`：分区类型 GUID 必须是
+/// `c12a7328-...`，且卷里必须真有 `EFI` + `Microsoft` + `Boot` + `BCD` 文件。
+/// 两层分开，文本层保持简单可测。
+///
+/// 放在本模块（而非 `native_gui.rs`）是为了让它在 macOS 的 `cargo test` 里也能跑——
+/// 那个模块在 macOS 上根本不编译， historically that blind spot is exactly where
+/// the expensive regressions came from.
+/// verbatim 卷路径的前缀 `\\?\Volume`，用 ASCII 码拼出来。
+///
+/// 单独一个函数是为了让「路径里到底有几个反斜杠」这件事只有一个地方说了算。
+/// 这一轮已经被这个坑了很多次：raw string 里的 `\` 有一个就是字面的一个，
+/// 而普通字符串字面量里要写两个才对——混用就会拼出指错卷的路径。
+pub(crate) fn esp_volume_prefix() -> String {
+    const BACKSLASH: char = 92u8 as char;
+    let mut prefix = String::new();
+    prefix.push(BACKSLASH);
+    prefix.push(BACKSLASH);
+    prefix.push('?');
+    prefix.push(BACKSLASH);
+    prefix.push_str("Volume");
+    prefix
+}
+
+pub(crate) fn esp_volume_from_listing(listing: &str) -> Option<String> {
+    let esp_prefix = esp_volume_prefix();
+    // 反斜杠一律用 ASCII 码拼：verbatim 路径里少一层就退化成普通路径，
+    // 会指到别的卷上去，而这种错在日志里看不出来。
+    const BACKSLASH: char = 92u8 as char;
+    let mut current: Option<String> = None;
+    for line in listing.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(guid) = trimmed
+            .strip_prefix(&esp_prefix)
+            .and_then(|rest| rest.strip_suffix('\\'))
+        {
+            // 收尾上一个候选：未挂载才算通过这一层。
+            if let Some(path) = current.take() {
+                return Some(path);
+            }
+            let mut path = String::new();
+            path.push(BACKSLASH);
+            path.push(BACKSLASH);
+            path.push('?');
+            path.push(BACKSLASH);
+            path.push_str("Volume");
+            path.push_str(guid);
+            path.push(BACKSLASH);
+            current = Some(path);
+            continue;
+        }
+        // 任何非空行（除了上面那个固定串）都说明这个卷有挂载点。
+        if current.is_some() && !trimmed.contains("NO MOUNT POINTS") {
+            current = None;
+        }
+    }
+    current
+}
+
 pub(crate) fn esp_log_path(name: &str) -> String {
     if ESP_CONTROL_FILES.contains(&name) {
         return format!("S:\\{name}");
@@ -1441,7 +1553,106 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// bcdedit 在标识符参数为空/不可解析时会静默作用于 `{default}`
     /// （真实事故：曾把 Windows 11 启动项 device 改成 ramdisk）。
     /// 锁死「挂载成功只能看 `/L`，不能看 `/S` 退出码」这条实测结论。
+    /// 卷路径 → 设备路径的转换（方案 A 的实机坑）。
+    ///
+    /// 2026-09-29 实机报 `CreateFileW failed while reading volume identity (Windows error 161)`
+    /// (=ERROR_BAD_PATHNAME)：拿 `\\?\Volume{GUID}\` 去 `CreateFileW` + `DeviceIoControl`
+    /// 是被拒的，卷 API 吃的路径和设备 API 吃的路径不是一回事。
     #[test]
+    fn volume_path_to_device_path_shape() {
+        let bs = 92u8 as char;
+        let mut volume = String::new();
+        volume.push(bs);
+        volume.push(bs);
+        volume.push('?');
+        volume.push(bs);
+        volume.push_str("Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}");
+        volume.push(bs);
+
+        assert_eq!(
+            volume_path_to_device_path(&volume).as_deref(),
+            Some(r"\\.\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}")
+        );
+        // 尾部多余的反斜杠要去掉，否则设备路径多个尾分隔符。
+        assert_eq!(
+            volume_path_to_device_path(&format!("{volume}{bs}")).as_deref(),
+            Some(r"\\.\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}")
+        );
+    }
+
+    /// 非卷路径原样返回（盘符形态的设备路径已经是 `\\.\C:`）。
+    #[test]
+    fn volume_path_to_device_path_passes_through_device_names() {
+        assert_eq!(
+            volume_path_to_device_path(r"\\.\C:").as_deref(),
+            Some(r"\\.\C:")
+        );
+        assert_eq!(
+            volume_path_to_device_path(r"\\.\PhysicalDrive0").as_deref(),
+            Some(r"\\.\PhysicalDrive0")
+        );
+    }    /// 方案 A 的第一层筛选：**只保留未挂载的卷**。
+    ///
+    /// 这不是洁癖：ESP 通常隐藏，而开发用的 ESP 往往已经挂了盘符；挑已挂载的那个，
+    /// 等于把用户正在看的盘符当成目标。真正的 ESP 判定（分区类型 GUID + BCD 文件）
+    /// 在 `esp_identity_without_drive_letter`，这里只管"没挂载"这一条。
+    #[test]
+    fn esp_volume_from_listing_ignores_already_mounted_volumes() {
+        let bs = 92u8 as char;
+        let mounted = volume_literal("{11111111-2222-3333-4444-555555555555}");
+        let hidden = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+        let listing = format!(
+            "    {mounted}\r\n        S:{bs}\r\n    {hidden}\r\n        *** NO MOUNT POINTS ***\r\n"
+        );
+        assert_eq!(
+            esp_volume_from_listing(&listing).as_deref(),
+            Some(hidden.as_str())
+        );
+    }
+
+    /// 未挂载 → 选中。
+    #[test]
+    fn esp_volume_from_listing_selects_the_unmounted_volume() {
+        let hidden = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+        let listing = format!("    {hidden}\r\n        *** NO MOUNT POINTS ***\r\n");
+        assert_eq!(
+            esp_volume_from_listing(&listing).as_deref(),
+            Some(hidden.as_str())
+        );
+    }
+
+    /// 目录挂载点（不是盘符）也算"已挂载"，必须排除。
+    #[test]
+    fn esp_volume_from_listing_treats_directory_mount_points_as_mounted() {
+        let bs = 92u8 as char;
+        let vol = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+        let listing = format!("    {vol}\r\n        \\\\?\\C:\\mount\\folder\r\n");
+        let _ = bs;
+        assert!(esp_volume_from_listing(&listing).is_none());
+    }
+
+    /// 空输出 / 没有未挂载卷 → `None`，绝不猜。
+    #[test]
+    fn esp_volume_from_listing_returns_none_when_nothing_is_unmounted() {
+        assert!(esp_volume_from_listing("").is_none());
+        let bs = 92u8 as char;
+        let vol = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+        assert!(esp_volume_from_listing(&format!("    {vol}\r\n        C:{bs}\r\n")).is_none());
+    }
+
+    /// 构造 `\\?\Volume{GUID}\` 字面量，测试里反复要用。
+    fn volume_literal(guid: &str) -> String {
+        let bs = 92u8 as char;
+        let mut path = String::new();
+        path.push(bs);
+        path.push(bs);
+        path.push('?');
+        path.push(bs);
+        path.push_str("Volume");
+        path.push_str(guid);
+        path.push(bs);
+        path
+    }    #[test]
     fn mountvol_listing_reports_volume_presence_from_l_not_s_exit_code() {
         // 实机抓到的形态：`/L` 输出一行卷路径；没挂上时输出空或只有 CRLF。
         let real = format!(

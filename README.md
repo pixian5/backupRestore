@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.1**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.2**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -208,6 +208,24 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
+### v1.8.2（2026-09-29 深夜）：**方案 A 落地，临时盘符挂载降到 0**
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| **一次准备任务的盘符挂载次数** | **3+ → 0** | 准备 backup T:→F: 前后盘符完全一致（`C D F H P T`），ESP 盘符一次都没分配 → 没有卷到达事件 → **不弹自动播放窗口、也不会有「不可访问」** |
+| ESP BCD 读写 | ✅ 零盘符 | 日志 `plan A: verbatim BCD store path = \\?\Volume{GUID}\EFI\Microsoft\Boot\BCD` → `Captured byte-for-byte EFI BCD snapshot` |
+| ramdisk_spec 修正 | ✅ 持续有效 | `readback device=ramdisk=[F:]\BackupRestoreRE\Winre.wim,{devopts}` |
+| 零盘符读卷身份 / 定位 ESP | ✅ | `volume_identity_at_path` + 三个 `_at`；`efi_identity` 先试零盘符，失败才走 mountvol 循环 |
+| 卷路径 → 设备路径 | ✅ | `volume_path_to_device_path()` —— 两者**不通用**，混用报 CreateFileW 161/123 |
+| GUI 两处写 pe-task.txt | ✅ 零盘符 | 不再 `mountvol S: /S` |
+| 清理与启动项终态 | ✅ | 自建条目已删、重启后残留 0、注册位仍是 `harddisk0\partition4` / `b69adf69`、`SYSTEMROOT=C:\Windows` |
+| 产物 | v1.8.2 = 1,790,464 B | SHA-256 `041008f9…351d8f9` |
+
+> 三个实机才暴露的坑（都加了独立期望值的单测）：**卷路径 ≠ 设备路径**（`\?\Volume{GUID}\` vs
+> `\\.\Volume{GUID}`）、`?` 后少一个反斜杠、raw string 多一层反斜杠。它们在线码里只表现为
+> `CreateFileW 161`，不给线索；`open_device` 报错现已带完整路径。
+> **PE 侧三处 `mountvol S: /S` 仍未改**（PE 启动最早期没有 GUI 那套辅助函数），是下一阶段。
+
 ### v1.8.1（2026-09-29 深夜）：方案 A 门槛通过，ESP 日志迁出根目录
 
 | 项 | 状态 | 证据 |

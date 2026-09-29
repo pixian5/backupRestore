@@ -861,14 +861,295 @@ fn prepare_payload(
     Ok(())
 }
 
+/// ESP 上 BCD 存储的路径，**优先零盘符**。
+///
+/// 方案 A（v1.8.2）的核心入口。返回 `(路径, 本次是否为此挂了盘符)`：
+/// 第二个元素是 `Some(letter)` 时，调用方用完必须把盘符卸掉，
+/// 否则「临时盘符」会变成新的污染源——那正是 S 盘反复出现的原因。
+///
+/// 为什么能零盘符：verbatim 卷路径下 `CreateFileW` / `CopyFileExW` /
+/// `bcdedit` / `dism` 全都接受。2026-09-29 实机验证（`docs/202609292014` 第六·补节）：
+///   - 读：两条路径 copy 出的 BCD 副本 SHA-256 相同
+///   - 写：`set {bootmgr} default` 后 `/enum` 输出 `fc /b` 逐字节无差异
+///   - 写：`/set` `/create` `/delete` 三个动词均成功
+///   - 枚举：卷路径可直接列出 ESP 全部文件
+///
+/// 卷 GUID 缺失（导入的旧任务、DiskPart 探测失败）时才退回挂盘符。
+fn efi_bcd_store_path(
+    efi: &VolumeIdentity,
+    preferred: char,
+    log: &Path,
+) -> Result<(PathBuf, Option<char>), TaskError> {
+    if let Some(volume) = efi.volume_path() {
+        let mut path = PathBuf::from(volume);
+        path.push("EFI");
+        path.push("Microsoft");
+        path.push("Boot");
+        path.push("BCD");
+        append_log(
+            log,
+            &format!("plan A: verbatim BCD store path = {}", path.display()),
+        )?;
+        return Ok((path, None));
+    }
+    let letter = ensure_volume_mounted(efi, preferred, log)?;
+    append_log(
+        log,
+        &format!("plan A: volume GUID absent; fell back to drive letter {letter}:"),
+    )?;
+    Ok((
+        PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD")),
+        Some(letter),
+    ))
+}
+
+/// 按**卷路径**读完整卷身份，**不分配盘符**（方案 A 的核心）。
+///
+/// 与 [`volume_identity`] 的差别只在"用哪个路径打开卷"：这里是 verbatim 卷路径，
+/// 那边是盘符路径。三个 Win32 调用（卷信息、存储设备号、GPT 分区信息）都经
+/// `CreateFileW`/`GetVolumeInformationW`，两者等价。
+///
+/// 2026-09-29 实机验证过等价性（`docs/202609292014` 第六·补节）：
+/// 通过盘符与通过卷路径拿到的 BCD 副本 SHA-256 完全相同，写操作也不做归一化。
+pub(crate) fn volume_identity_at_path(
+    path: &str,
+    volume_guid: String,
+) -> Result<VolumeIdentity, TaskError> {
+    // 两种路径形态都要用，别混：
+    //   - 卷路径（Win32 卷 API、GetVolumeInformationW、bcdedit /store）
+    //   - `\\.\Volume{GUID}`     设备路径（DeviceIoControl 查分区/磁盘）
+    // 卷路径 → 设备路径（转换本体在 text_parsing，有单测）。
+    // 2026-09-29 实机踩过：拿卷路径去 CreateFileW + DeviceIoControl 会报 161。
+    let device_path = crate::text_parsing::volume_path_to_device_path(path)
+        .ok_or_else(|| err("volume path has no GUID; cannot derive its device path"))?;
+    let (filesystem, volume_serial) = volume_information_at(path)?;
+    let disk_number = storage_device_number_at(&device_path)?;
+    let physical = physical_volume_identity_at(&device_path, disk_number)?;
+    Ok(VolumeIdentity {
+        disk_guid: physical.disk_guid,
+        partition_guid: physical.partition_guid,
+        volume_guid,
+        partition_type_guid: physical.partition_type_guid,
+        disk_number: Some(disk_number),
+        partition_number: Some(physical.partition_number),
+        partition_offset: physical.partition_offset,
+        partition_size: physical.partition_size,
+        filesystem,
+        volume_serial,
+        // 身份里**绝不**记盘符：它只是本次运行的临时挂载，重启后可能变成别的字母。
+        drive_letter: None,
+    })
+}
+
+/// 按**路径**取文件系统名与卷序列号。路径可以是盘符路径，也可以是 verbatim
+/// 卷路径——底下的 `GetVolumeInformationW` 两者都吃。
+/// 这是「零盘符读卷身份」的第一块砖。
+fn volume_information_at(path: &str) -> Result<(String, String), TaskError> {
+    let path = wide_null(path);
+    let mut volume_name = vec![0_u16; 256];
+    let mut filesystem = vec![0_u16; 64];
+    let mut serial = 0_u32;
+    let mut maximum_component_length = 0_u32;
+    let mut flags = 0_u32;
+    let ok = unsafe {
+        GetVolumeInformationW(
+            path.as_ptr(),
+            volume_name.as_mut_ptr(),
+            volume_name.len() as u32,
+            &mut serial,
+            &mut maximum_component_length,
+            &mut flags,
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
+    };
+    if ok == 0 {
+        let code = unsafe { GetLastError() };
+        let shown = String::from_utf16_lossy(&path);
+        return Err(err(&format!(
+            "GetVolumeInformationW failed for {shown} with Win32 error {code}"
+        )));
+    }
+    let length = filesystem
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(filesystem.len());
+    Ok((
+        String::from_utf16_lossy(&filesystem[..length]),
+        format!("{serial:08X}"),
+    ))
+}
+
+/// 按**卷路径**取物理磁盘号。盘符只是路径的一种写法；verbatim 卷路径同样能拿到。
+fn storage_device_number_at(path: &str) -> Result<u32, TaskError> {
+    let handle = open_device(&wide_null(path))?;
+    // STORAGE_DEVICE_NUMBER is three DWORDs: device type, device number and
+    // partition number. Only DeviceNumber is used here; the GPT partition
+    // number is read from PARTITION_INFORMATION_EX so both values come from
+    // the same native identity query family.
+    let mut number = [0_u8; 12];
+    let result = device_io_control(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER, &mut number)
+        .and_then(|_| read_u32(&number, 4));
+    unsafe { CloseHandle(handle) };
+    result
+}
+
+/// 按**卷路径**读 GPT 分区身份（方案 A 零盘符的关键一块）。
+///
+/// 盘符形态与 verbatim 卷路径都交给 `CreateFileW`，拿到的句柄对
+/// `IOCTL_STORAGE_GET_DEVICE_NUMBER` / `IOCTL_DISK_GET_PARTITION_INFO_EX`
+/// 一视同仁。这样连「这个卷是不是 ESP」（分区类型 GUID）都能在不分配盘符的
+/// 前提下判定。
+fn physical_volume_identity_at(
+    path: &str,
+    disk_number: u32,
+) -> Result<PhysicalVolumeIdentity, TaskError> {
+    let partition_handle = open_device(&wide_null(path))?;
+    let mut partition = vec![0_u8; 160];
+    let partition_query =
+        device_io_control(partition_handle, IOCTL_DISK_GET_PARTITION_INFO_EX, &mut partition)
+            .and_then(|_| {
+                let partition_offset = read_u64(&partition, 8)?;
+                let partition_size = read_u64(&partition, 16)?;
+                let partition_number = read_u32(&partition, 24)?;
+                let partition_type_guid = format_guid(&partition[32..48])?;
+                let partition_guid = format_guid(&partition[48..64])?;
+                Ok((
+                    partition_offset,
+                    partition_size,
+                    partition_number,
+                    partition_type_guid,
+                    partition_guid,
+                ))
+            });
+    let _ = unsafe { CloseHandle(partition_handle) };
+    let (partition_offset, partition_size, partition_number, partition_type_guid, partition_guid) =
+        partition_query?;
+    let disk_path = format!(r"\\.\PhysicalDrive{}", disk_number);
+    let disk_handle = open_device(&wide_null(&disk_path))?;
+    let mut layout = vec![0_u8; 65_536];
+    let layout_query =
+        device_io_control(disk_handle, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &mut layout).and_then(|_| {
+            if read_u32(&layout, 0)? != 1 {
+                return Err(err("selected disk is not GPT"));
+            }
+            format_guid(&layout[8..24])
+        });
+    let _ = unsafe { CloseHandle(disk_handle) };
+    let disk_guid = layout_query?;
+    Ok(PhysicalVolumeIdentity {
+        disk_guid,
+        partition_guid,
+        partition_type_guid,
+        partition_number,
+        partition_offset,
+        partition_size,
+    })
+}
+
+/// 发现**本机引导的 ESP** 的 verbatim 卷路径，供零盘符写文件（方案 A）。
+///
+/// 与 [`esp_identity_without_drive_letter`] 同一套判据，但只回路径：GUI 那两处
+/// （"重启进 PE" / "计划 PE 任务"）只需要写一个 `pe-task.txt`，不关心分区 GUID、
+/// 磁盘号这些身份字段。筛选逻辑在 `text_parsing::esp_volume_from_listing`（纯函数，
+/// macOS 也能测），这里只负责跑 `mountvol`。
+pub(crate) fn esp_volume_path_for_task() -> Option<String> {
+    let output = Command::new("mountvol.exe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    let text = crate::text_parsing::decode_bcdedit_bytes(&output.stdout);
+    crate::text_parsing::esp_volume_from_listing(&text)
+}
+
+/// **零盘符**定位本机引导的 ESP 并读它的身份。
+///
+/// 方案 A（v1.8.2）绕开 `mountvol X: /S` 的那一步。做法：
+/// 1. `mountvol`（无参数）列出系统里**所有**卷及其挂载点；
+/// 2. 只看**没有挂载点**的卷（`*** NO MOUNT POINTS ***` 是固定串，不随本地化变）——
+///    ESP 通常正是隐藏的，而开发用的 ESP 往往已经挂了盘符，这样天然把两者分开；
+/// 3. 按 verbatim 卷路径读身份，命中两条才算：分区类型 GUID 是 EFI
+///    （`c12a7328-...`），且卷里真有 `EFI` + `Microsoft` + `Boot` + `BCD`；
+/// 4. 命中多个绝不猜，报错让用户用 `--efi-drive` 指定。
+///
+/// 全程不分配盘符 → 没有卷到达事件 → 不弹自动播放窗口 → 也不会有"不可访问"。
+fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, TaskError> {
+    let output = Command::new("mountvol.exe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| err(&format!("mountvol (list all) failed to start: {error}")))?;
+    let text = crate::text_parsing::decode_bcdedit_bytes(&output.stdout);
+    let mut matches: Vec<VolumeIdentity> = Vec::new();
+    let mut last_error: Option<TaskError> = None;
+    for (volume_path, mounted) in crate::text_parsing::parse_mountvol_listing(&text) {
+        if !mounted.is_empty() {
+            continue;
+        }
+        // verbatim 路径形如 \\?\Volume{GUID}\，卷 GUID 取中段。
+        let Some(guid) = volume_path
+            .trim()
+                .strip_prefix("\\\\?\\Volume")
+            .and_then(|rest| rest.strip_suffix('\\'))
+        else {
+            continue;
+        };
+        match volume_identity_at_path(&volume_path, guid.to_string()) {
+            Ok(identity) => {
+                if !identity
+                    .partition_type_guid
+                    .eq_ignore_ascii_case(EFI_TYPE)
+                {
+                    continue;
+                }
+                let mut bcd = PathBuf::from(&volume_path);
+                bcd.push("EFI");
+                bcd.push("Microsoft");
+                bcd.push("Boot");
+                bcd.push("BCD");
+                if !bcd.is_file() {
+                    continue;
+                }
+                matches.push(identity);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match matches.len() {
+        0 => Err(last_error
+            .unwrap_or_else(|| err("no hidden GPT EFI system partition with a boot BCD was found"))),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let list = matches
+                .iter()
+                .map(|identity| {
+                    format!(
+                        "disk {} partition {}",
+                        identity.disk_number.unwrap_or_default(),
+                        identity.partition_number.unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(err(&format!(
+                "multiple EFI system partitions found ({list}); pass --efi-drive to choose one"
+            )))
+        }
+    }
+}
+
 fn snapshot_raw_bcd(
     efi: &VolumeIdentity,
     task_dir: &Path,
     log: &Path,
 ) -> Result<String, TaskError> {
-    let mounted_temporarily = efi.drive_letter.is_none();
-    let letter = ensure_volume_mounted(efi, 'S', log)?;
-    let source = PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD"));
+    // 方案 A（v1.8.2）：优先 verbatim 卷路径，不分配盘符。
+    let (source, letter) = efi_bcd_store_path(efi, 'S', log)?;
     let snapshot = task_dir.join("bcd-before-raw");
     let result = (|| {
         if !source.is_file() {
@@ -914,7 +1195,7 @@ fn snapshot_raw_bcd(
             Err(error) => Err(error.into()),
         }
     })();
-    if mounted_temporarily {
+    if let Some(letter) = letter {
         let _ = Command::new("mountvol.exe")
             .args([format!("{letter}:"), "/D".to_string()])
             .stdin(Stdio::null())
@@ -933,9 +1214,8 @@ fn rollback_boot_request(
 ) -> Result<(), TaskError> {
     let raw_snapshot = task_dir.join("bcd-before-raw");
     if raw_snapshot.is_file() {
-        let mounted_temporarily = efi.drive_letter.is_none();
-        let letter = ensure_volume_mounted(efi, 'S', log)?;
-        let store = PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD"));
+        // 同上：零盘符优先，读不到卷 GUID 才挂。
+        let (store, letter) = efi_bcd_store_path(efi, 'S', log)?;
         let result = (|| {
             let expected = sha256_file(&raw_snapshot)?;
             match fs::copy(&raw_snapshot, &store) {
@@ -958,7 +1238,7 @@ fn rollback_boot_request(
             }
             Ok(())
         })();
-        if mounted_temporarily {
+        if let Some(letter) = letter {
             let _ = Command::new("mountvol.exe")
                 .args([format!("{letter}:"), "/D".to_string()])
                 .stdin(Stdio::null())
@@ -1536,35 +1816,7 @@ fn disk_free_space(letter: char) -> Result<(u64, u64), TaskError> {
 }
 
 fn volume_information(letter: char) -> Result<(String, String), TaskError> {
-    let path = wide_null(&format!(r"{}:\", letter));
-    let mut volume_name = vec![0_u16; 256];
-    let mut filesystem = vec![0_u16; 64];
-    let mut serial = 0_u32;
-    let mut maximum_component_length = 0_u32;
-    let mut flags = 0_u32;
-    let ok = unsafe {
-        GetVolumeInformationW(
-            path.as_ptr(),
-            volume_name.as_mut_ptr(),
-            volume_name.len() as u32,
-            &mut serial,
-            &mut maximum_component_length,
-            &mut flags,
-            filesystem.as_mut_ptr(),
-            filesystem.len() as u32,
-        )
-    };
-    if ok == 0 {
-        return Err(err(&format!("GetVolumeInformationW failed for {letter}:")));
-    }
-    let length = filesystem
-        .iter()
-        .position(|value| *value == 0)
-        .unwrap_or(filesystem.len());
-    Ok((
-        String::from_utf16_lossy(&filesystem[..length]),
-        format!("{serial:08X}"),
-    ))
+    volume_information_at(&format!(r"{letter}:\\"))
 }
 
 fn wide_null(value: &str) -> Vec<u16> {
@@ -1584,51 +1836,11 @@ fn physical_volume_identity(
     letter: char,
     disk_number: u32,
 ) -> Result<PhysicalVolumeIdentity, TaskError> {
-    let partition_handle = open_device(&wide_null(&format!(r"\\.\{}:", letter)))?;
-    let mut partition = vec![0_u8; 160];
-    device_io_control(
-        partition_handle,
-        IOCTL_DISK_GET_PARTITION_INFO_EX,
-        &mut partition,
-    )?;
-    unsafe { CloseHandle(partition_handle) };
-    if read_u32(&partition, 0)? != 1 {
-        return Err(err("selected volume is not a GPT partition"));
-    }
-    let partition_offset = read_u64(&partition, 8)?;
-    let partition_size = read_u64(&partition, 16)?;
-    let partition_number = read_u32(&partition, 24)?;
-    let partition_type_guid = format_guid(&partition[32..48])?;
-    let partition_guid = format_guid(&partition[48..64])?;
-
-    let disk_handle = open_device(&wide_null(&format!(r"\\.\PhysicalDrive{}", disk_number)))?;
-    let mut layout = vec![0_u8; 65_536];
-    device_io_control(disk_handle, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &mut layout)?;
-    unsafe { CloseHandle(disk_handle) };
-    if read_u32(&layout, 0)? != 1 {
-        return Err(err("selected disk is not GPT"));
-    }
-    Ok(PhysicalVolumeIdentity {
-        disk_guid: format_guid(&layout[8..24])?,
-        partition_guid,
-        partition_type_guid,
-        partition_number,
-        partition_offset,
-        partition_size,
-    })
+    physical_volume_identity_at(&format!(r"\\.\{letter}:"), disk_number)
 }
 
 fn storage_device_number(letter: char) -> Result<u32, TaskError> {
-    let handle = open_device(&wide_null(&format!(r"\\.\{}:", letter)))?;
-    // STORAGE_DEVICE_NUMBER is three DWORDs: device type, device number and
-    // partition number. Only DeviceNumber is used here; the GPT partition
-    // number is read from PARTITION_INFORMATION_EX so both values come from
-    // the same native identity query family.
-    let mut number = [0_u8; 12];
-    let result = device_io_control(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER, &mut number)
-        .and_then(|_| read_u32(&number, 4));
-    unsafe { CloseHandle(handle) };
-    result
+    storage_device_number_at(&format!(r"\\.\{letter}:"))
 }
 
 fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {
@@ -1645,8 +1857,11 @@ fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {
     };
     if handle as isize == -1 {
         let error_code = unsafe { GetLastError() };
+        // path 一起报出来：2026-09-29 方案 A 实机栽在「卷路径 != 设备路径」上，
+        // 只有 CreateFileW 错误码而没有路径，等于没给线索。
+        let shown = String::from_utf16_lossy(path).trim_matches(char::from(0)).to_string();
         Err(err(&format!(
-            "CreateFileW failed while reading volume identity (Windows error {error_code})"
+            "CreateFileW failed on {shown} while reading volume identity (Windows error {error_code})"
         )))
     } else {
         Ok(handle)
@@ -1747,6 +1962,12 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
         if !identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) {
             return Err(err("specified EFI drive is not a GPT EFI system partition"));
         }
+        return Ok(identity);
+    }
+    // 方案 A（v1.8.2）：**先试零盘符**。
+    // 在「未挂载的隐藏卷」里找分区类型 GUID 为 EFI 且真有 Boot/BCD 的那一个，
+    // 全程不分配盘符。拿不到再退回下面这套 mountvol 循环——那是保底，不是首选。
+    if let Ok(identity) = esp_identity_without_drive_letter() {
         return Ok(identity);
     }
     // The system EFI partition is normally hidden and has no drive letter.
@@ -1901,10 +2122,8 @@ fn mountvol_letter_shows_volume(letter: char) -> bool {
     else {
         return false;
     };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .any(|line| !line.is_empty())
+    // 判据本体在 text_parsing（macOS 也编译、有单测），这里只是跑一下 mountvol。
+    crate::text_parsing::mountvol_listing_has_volume(&String::from_utf8_lossy(&output.stdout))
 }
 
 fn is_drive_letter_available(letter: char) -> bool {

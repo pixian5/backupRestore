@@ -3973,16 +3973,21 @@ unsafe fn pe_reboot_to_pe(state: &State) {
         return;
     };
     // 1. 写 PE 任务配置到 ESP（PE 启动按配置自动执行，无需用户操作）
-    let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-    append_gui_log(
-        state,
-        &format!("PE reboot to PE: mountvol S: code={mount_code}"),
-    );
+    // 方案 A（v1.8.2）：用 verbatim 卷路径写，**不挂 S:**。
+    // 挂盘符会触发一次「卷到达」→ 自动播放弹窗 → 用完卸载后已弹出的窗口显示
+    // 「不可访问」，这一整套在本通道里是不必要的。
     let task = "clean_bootsequence\nverify\nreboot\n";
-    let write_ok = std::fs::write(esp_log_path("pe-task.txt"), task).is_ok();
+    let write_ok = match crate::windows_prepare::esp_volume_path_for_task() {
+        Some(volume) => {
+            let mut path = std::path::PathBuf::from(volume);
+            path.push("pe-task.txt");
+            std::fs::write(path, task).is_ok()
+        }
+        None => false,
+    };
     append_gui_log(
         state,
-        &format!("PE reboot to PE: write pe-task.txt ok={write_ok}"),
+        &format!("PE reboot to PE: write pe-task.txt via volume path ok={write_ok}"),
     );
     // 2. 设置 bootsequence 引导进 PE
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
@@ -4686,11 +4691,7 @@ unsafe fn schedule_pe_task(
         );
         return;
     }
-    let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-    append_gui_log(
-        state,
-        &format!("schedule_pe_task: mountvol S: code={mount_code}"),
-    );
+    // 方案 A（v1.8.2）：同上一处，用 verbatim 卷路径写任务配置，不挂 S:。
     let task = if operation == "backup" {
         format!("backup {source_drive} \"{image_path}\"\nreboot\n")
     } else {
