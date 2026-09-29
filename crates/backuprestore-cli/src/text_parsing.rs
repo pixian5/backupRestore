@@ -836,6 +836,42 @@ pub(crate) fn esp_volume_prefix() -> String {
 /// 放在本模块（而非 `native_gui.rs`）是为了让它在 macOS 的 `cargo test` 里也能跑——
 /// 那个模块在 macOS 上根本不编译。2026-09-29 已经因为「测试放在 `#[cfg(windows)]`
 /// 模块里」漏掉过一个 `ramdisk=` 值畸形的 bug，代价是整整一轮。
+/// 把卷标识符归一成**裸 GUID**（`{xxxxxxxx-…}`）再比较。
+///
+/// 同一个卷在不同地方有不同写法，直接 `eq_ignore_ascii_case` 会把同一个卷判成两个：
+/// - `mountvol X: /L` 给完整路径 `\\?\Volume{GUID}\`
+/// - 任务 env / `VolumeIdentity.volume_guid` 存裸 GUID `{GUID}`
+/// - `GetVolumeNameForVolumeMountPointW` 给的又是带尾反斜杠的完整路径
+///
+/// 2026-09-30 实机栽在这上面：restore-existing 的 EFI 挂载，盘符**挂成功了**
+/// （`mountvol query Z: -> Mounted(\\?\Volume{…}\)`），但身份校验拿裸 GUID 比完整路径，
+/// 报「volume identity mismatch」→ 换下一个盘符 → 全部候选试完 → 整个任务失败。
+/// 日志看起来像"每个盘符都挂不上"，实际是"每次都挂上了但比输了"。
+///
+/// 返回 `None` 表示输入里找不到 GUID 形态，调用方必须**拒绝**而不是当成相等。
+pub(crate) fn bare_volume_guid(value: &str) -> Option<&str> {
+    let trimmed = value.trim().trim_end_matches('\\');
+    // 完整路径形态：\\?\Volume{GUID}
+    if let Some(rest) = trimmed.strip_prefix(r"\\?\Volume") {
+        return Some(rest.trim());
+    }
+    // 裸 GUID 形态：{GUID}
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed);
+    }
+    None
+}
+
+/// 两个卷标识符是否指向同一个卷（自动归一化形态差异）。
+pub(crate) fn same_volume(left: &str, right: &str) -> bool {
+    match (bare_volume_guid(left), bare_volume_guid(right)) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        // 任一侧解析不出 GUID 就不能算相等——宁可误判为"不同"而重试，
+        // 也不能把说不清的两个值当成同一个卷（那会写错启动项）。
+        _ => false,
+    }
+}
+
 pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
     // 退回盘符形态时不需要任何替换。
     if esp_root == r"S:\" {
@@ -1644,6 +1680,52 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// 曾踩过的坑：`H:\pe-wim1.wim` 这种路径里也带字母 S，无脑替换会把它也改掉，
     /// 然后 DISM 就去读一个不存在的路径。另一个坑是只换 `S` 不换 `:`，会留下
     /// 一个孤零零的冒号（`卷根\:`），路径立刻失效。
+    /// 卷标识符归一化：同一个卷的三种写法必须判为相等。
+    ///
+    /// 2026-09-30 实机事故的直接复现：restore-existing 的 EFI 挂载盘符挂成功了，
+    /// 但校验拿 `{GUID}` 比 `\\?\Volume{GUID}\` 判为不同，于是换盘符重试，
+    /// 把每个候选盘符都试一遍后整个任务失败。
+    #[test]
+    fn same_volume_treats_all_spellings_as_equal() {
+        let bare = "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}";
+        let full = r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\";
+        assert!(same_volume(bare, full));
+        assert!(same_volume(full, bare));
+        assert!(same_volume(bare, bare));
+        // 大小写不同仍是同一个卷
+        assert!(same_volume(
+            "{D08D796F-F082-4402-BDBB-A4A6A09AC53F}",
+            r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\"
+        ));
+    }
+
+    /// 说不清的输入必须判为"不同"，不能当成相等。
+    #[test]
+    fn same_volume_refuses_to_guess() {
+        assert!(!same_volume("", r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\"));
+        assert!(!same_volume("C:", "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}"));
+        assert!(!same_volume("garbage", "garbage"));
+        // 真的不同卷
+        assert!(!same_volume(
+            "{11111111-2222-3333-4444-555555555555}",
+            r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\"
+        ));
+    }
+
+    /// `bare_volume_guid` 要从三种写法里都取出 GUID。
+    #[test]
+    fn bare_volume_guid_extracts_from_every_spelling() {
+        let guid = "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}";
+        assert_eq!(bare_volume_guid(guid), Some(guid));
+        assert_eq!(
+            bare_volume_guid(r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\"),
+            Some(guid)
+        );
+        assert_eq!(bare_volume_guid(&format!("  {guid}  ")), Some(guid));
+        assert_eq!(bare_volume_guid("C:"), None);
+        assert_eq!(bare_volume_guid(""), None);
+    }
+
     #[test]
     fn rewrite_s_root_only_replaces_the_esp_drive_letter() {
         let bs = 92u8 as char;

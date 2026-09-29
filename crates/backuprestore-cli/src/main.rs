@@ -1347,7 +1347,7 @@ fn mount_env_volume(
     };
     if let Some((_, letters)) = listing
         .iter()
-        .find(|(guid, _)| guid.eq_ignore_ascii_case(&expected))
+        .find(|(guid, _)| crate::text_parsing::same_volume(guid, &expected))
     {
         if let Some(&existing) = letters.first() {
             verify_mounted_volume(existing, &expected, log)?;
@@ -1366,7 +1366,7 @@ fn mount_env_volume(
     for letter in mount_letter_candidates(letter, &listing, mounts) {
         match query_mounted_volume(letter, log)? {
             VolumeMountQuery::Mounted(actual) => {
-                if actual.eq_ignore_ascii_case(&expected) {
+                if crate::text_parsing::same_volume(&actual, &expected) {
                     verify_mounted_volume(letter, &expected, log)?;
                     verify_live_volume_identity(
                         letter,
@@ -1657,8 +1657,18 @@ fn verify_live_volume_identity(
         letter,
         env_required(values, &format!("{prefix}_VOLUME_GUID"))?,
     )?;
+    // 卷 GUID 单独比：env 里存的是裸 `{GUID}`，而读回来的是 `\\?\Volume{GUID}\`，
+    // 直接比会把同一个卷判成两个（2026-09-30 restore-existing 就这么整任务失败过）。
+    {
+        let expected = env_required(values, &format!("{prefix}_VOLUME_GUID"))?;
+        if !crate::text_parsing::same_volume(&live.volume_guid, &expected) {
+            return Err(err(&format!(
+                "{prefix} volume GUID differs after mounting: expected {expected}, got {}",
+                live.volume_guid
+            )));
+        }
+    }
     for (suffix, actual, label) in [
-        ("VOLUME_GUID", live.volume_guid.as_str(), "volume GUID"),
         ("DISK_GUID", live.disk_guid.as_str(), "disk GUID"),
         (
             "PARTITION_GUID",
@@ -1796,7 +1806,7 @@ fn verify_mounted_volume(letter: char, expected: &str, log: &Path) -> Result<(),
             )));
         }
     };
-    if !actual.eq_ignore_ascii_case(expected) {
+    if !crate::text_parsing::same_volume(&actual, expected) {
         return Err(err(&format!(
             "volume identity mismatch for {letter}: expected {expected}, got {actual}"
         )));

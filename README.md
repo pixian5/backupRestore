@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.3**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.4**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -208,6 +208,27 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
+### ✅ restore-existing 闭环也 PASS（2026-09-30 01:00，v1.8.4 实机）
+
+备份、还原两个方向都在新 PE 式通道里跑通了。
+
+| 项 | 结果 |
+|---|---|
+| 还原后 T: 总字节 | **31,457,301** —— 与 `dism /Get-WimInfo` 报告的镜像大小**逐字节一致** |
+| BCD 本项目残留 | ✅ 0 |
+| 暂存目录 | ✅ `F:\BackupRestoreRE` 已删 |
+| 注册位 | ✅ 未动（`harddisk0\partition4` / `b69adf69`） |
+| 任务状态 | ✅ `success` / `100` |
+
+本轮修掉的根因很值得记：**卷 GUID 有两种写法**（env 存裸 `{GUID}`，
+`mountvol` 给 `\\?\Volume{GUID}\`），`verify_mounted_volume` 直接字符串比较，
+于是**盘符挂成功了却判为"不是同一个卷"**，把所有候选盘符试一遍后任务失败。
+错误信息 `every candidate drive letter is unavailable` 极其误导——听起来像盘符不够，
+实际是每次都挂上了但比输了。修复用 `same_volume()` 先归一化再比较。
+
+> ⚠️ **仍未闭环**：容量/性能（两次都只用 T: 这个 5 GB 卷、实占 54 MB，DISM 都是 1 秒级）、
+> `create-secondary`（双系统）方向、断电续跑、BCDBoot（这次 target 无 SYSTEM hive 所以跳过）、
+> Secure Boot、以及**真正的系统卷还原**（T: 是数据卷，走的是 data-volume 分支）。
 ### ✅ 新 PE 式通道第一次完整备份闭环 PASS（2026-09-30 00:28，v1.8.3 实机）
 
 此前 11 个任务全停在 `prepared` 阶段——v1.7.11~v1.8.3 修的一直是**准备层**。
