@@ -117,3 +117,24 @@ brew unlink openssl@3 && brew link openssl@3.5
 - `~/.zshrc` 追加 `PKG_CONFIG_PATH` / `CMAKE_PREFIX_PATH` 指向 `openssl@3.5`（源码编译默认走 LTS）
 
 **边界（重要）**：homebrew 二进制（curl/python/ruby/uv 等 15 个包）编译时写死了 `/opt/homebrew/opt/openssl@3/lib`，仍跑 3.6.4，且 brew formula 写死 `depends_on "openssl@3"`，重编也不会改用 3.5。要它们全面切 3.5，只能等 2026-11 官方把 openssl@3 降版后 `brew upgrade` 自动处理；实测切 link 后这些包运行全部正常。
+
+## 修正：小样本测速失真（2026-09-29 追记）
+
+上一节“速率对比”的结论**部分推翻**：`curl -r 0-2MB` Range 小样本把握手+首字节时间摊进速率，
+且当时用户本机在下载别的占用带宽，导致“0.01-0.06 MB/s”系列数据全面失真。
+
+改用「持续下载窗口」（`--max-time 5` 掐断、真实 8-14MB 文件、每源 3 次）在空闲网络下复测：
+
+| 源 | 三次速率 | 中位数 |
+|---|---|---|
+| pip repo.huaweicloud.com | 8.70 / 8.80 / 8.77 | **8.8 MB/s（最稳）** |
+| pip mirrors.huaweicloud.com | 8.32 / 7.58 / 4.50 | 7.6（有一次掉速，波动大） |
+| pip mirrors.aliyun.com | 5.12 / 3.71 / 8.82 | 5.1 |
+| pypi.tuna | 4.68 / 6.20 / 5.20 | 5.2 |
+| npm repo.huaweicloud.com | 8.32 / 7.87 / 8.52 | **8.5 MB/s** |
+| npm mirrors.huaweicloud.com | 0.07 / 0.09 / 0.09 | **真的极慢（三次稳定复现）** |
+| cargo ustc | 6.26 / 8.30 / 6.08 | 6.3（tuna download API 已 404，rsproxy 3.2-7.3 波动） |
+
+修正结论：pip 用 repo 域**依然是对的**（8.8 最稳，理由从“mirrors 极慢”修正为“repo 更稳”）；
+npm 的 mirrors 域确实极慢，`~/.npmrc` 用 repo 域正确。**教训：测镜像源速率必须持续下载窗口
+（≥5s、MB 级文件、多次取中位），Range 小样本 + 有带宽占用时的数据不可用于决策。**
