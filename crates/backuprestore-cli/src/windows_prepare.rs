@@ -1760,21 +1760,24 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
         if !is_drive_letter_available(letter) {
             continue;
         }
-        let status = Command::new("mountvol.exe")
+        // ★ 2026-09-29 实机测量：**`mountvol X: /S` 的退出码不可信**。
+        // 提权会话里逐盘符实测（`.test-artifacts/elev-channel/mvwhy.txt`）：
+        //   Z: EXIT=1 → 但随后 `/L` 显示 ESP 已经挂在 Z: 上（成功却报失败）
+        //   Y: EXIT=0 → `/L` 显示的仍是同一个卷（ESP 已挂，重复 `/S` 无事可做）
+        // 原来的代码信退出码，于是把成功的那一次当失败跳过去、换下一个盘符
+        // 再挂一次同一个卷——这正是 S:/Z: 盘符反复出现、窗口"不可访问"的机制来源。
+        // 现在改成：发起 `/S` 之后**用 `/L` 确认真的挂上了**，只看结果不看退出码。
+        let _ = Command::new("mountvol.exe")
             .args([format!("{letter}:"), "/S".to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .status();
-        if !status
-            .as_ref()
-            .map(|value| value.success())
-            .unwrap_or(false)
-        {
-            if let Err(error) = status {
-                last_error = Some(TaskError::Io(error));
-            }
+        if !mountvol_letter_shows_volume(letter) {
+            last_error = Some(err(&format!(
+                "mountvol /S did not expose a volume at {letter}:; not the boot ESP?"
+            )));
             continue;
         }
         let identity = volume_identity(letter);
@@ -1882,6 +1885,26 @@ fn identity_drive_candidates(preferred: char) -> impl Iterator<Item = char> {
             letters
         })
         .into_iter()
+}
+
+/// `mountvol X: /L` 是否报告该盘符上**有**卷。
+///
+/// 这是挂载成功的唯一可靠判据：`/S` 的退出码在实机上会骗人（见
+/// `efi_identity` 里 2026-09-29 的测量记录），`/L` 的结果不会。
+#[cfg(windows)]
+fn mountvol_letter_shows_volume(letter: char) -> bool {
+    let Ok(output) = Command::new("mountvol.exe")
+        .args([format!("{letter}:"), "/L".to_string()])
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    else {
+        return false;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .any(|line| !line.is_empty())
 }
 
 fn is_drive_letter_available(letter: char) -> bool {

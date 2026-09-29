@@ -749,6 +749,17 @@ pub(crate) fn is_well_known_identifier(value: &str) -> bool {
 /// 之所以单独开这一个口子而不是散着判断：`boot_entry.rs` 整个模块是 `#[cfg(windows)]`，
 /// 那里的单测在 macOS 上一次都不编译（2026-09-29 `ramdisk=` 值畸形就是这么漏过去的）。
 /// 校验放本模块，单测就跟着 `cargo test` 在 macOS 上跑。
+/// `mountvol X: /L` 的输出是否说明该盘符上**有**卷。
+///
+/// 这是「ESP 挂载成功」的唯一可靠判据。2026-09-29 在提权会话里实测
+/// （`.test-artifacts/elev-channel/mvwhy.txt`）：`mountvol X: /S` 的退出码会骗人——
+/// 成功时可能返回 1，重复挂已挂载的卷时又返回 0。所以挂载后只能用 `/L` 确认。
+///
+/// 空输出（只有空白行）＝没挂上；有一行卷路径（`\\?\Volume{...}\`）＝挂上了。
+pub(crate) fn mountvol_listing_has_volume(listing: &str) -> bool {
+    listing.lines().map(str::trim).any(|line| !line.is_empty())
+}
+
 pub(crate) fn require_identifier(value: &str, what: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if is_well_known_identifier(trimmed) {
@@ -1407,6 +1418,23 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// 守门人不能被别名白名单连带废掉：`{default}` 之类**一律拒**。
     /// bcdedit 在标识符参数为空/不可解析时会静默作用于 `{default}`
     /// （真实事故：曾把 Windows 11 启动项 device 改成 ramdisk）。
+    /// 锁死「挂载成功只能看 `/L`，不能看 `/S` 退出码」这条实测结论。
+    #[test]
+    fn mountvol_listing_reports_volume_presence_from_l_not_s_exit_code() {
+        // 实机抓到的形态：`/L` 输出一行卷路径；没挂上时输出空或只有 CRLF。
+        let real = format!(
+            "\\?\\Volume{}",
+            "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\\"
+        );
+        assert!(mountvol_listing_has_volume(&real));
+        assert!(!mountvol_listing_has_volume(""));
+        assert!(!mountvol_listing_has_volume("\r\n"));
+        // 前后空白与 CRLF 都不该影响判断
+        assert!(mountvol_listing_has_volume(&format!("  \r\n{real}  \r\n")));
+        // 只有空白字符也等于没有卷
+        assert!(!mountvol_listing_has_volume("   \t  "));
+    }
+
     #[test]
     fn require_identifier_still_rejects_default_and_other_aliases() {
         for rejected in ["{default}", "{current}", "{ntldr}", "{fwbootmgr}", "{ramdiskoptions}"] {

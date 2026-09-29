@@ -6,7 +6,11 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.14**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.0**（`VERSION`、两个 `Cargo.toml` 同步）。
+
+> 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
+> 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
+> 历史上 `1.7.10`~`1.7.14` 是旧习惯记法，等价于 `1.8.0`~`1.8.4`；自 v1.8.0 起按规则进位。
 
 ---
 
@@ -204,6 +208,24 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
+### v1.8.0（2026-09-29 晚）：主路径首次在产品内完整跑通，`mountvol` 退出码坑修掉
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| **完整主路径 prepare（不带 `--test-efi-drive`）** | **PASS** | 任务 `ddce302b-…` 日志首行 `capturing bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD`——产品自己找到 ESP 并挂载/卸载；`readback device=ramdisk=[F:]\BackupRestoreRE\Winre.wim,{devopts}`；`Task prepared with --no-reboot; registered WinRE unchanged`；终态盘符只剩 `C D F H P T`，无残留 |
+| `mountvol X: /S` 退出码不可信 | ✅ 修复 | 实测 `Z:` 返回 1 但已挂上；`Y/X/W` 返回 0 但只是重复挂同一卷。**旧代码信这个码 → 每次换下一个盘符重挂 → 这就是"S 盘老是自动打开"的直接机制**。改用 `/L` 是否回显卷路径判定 |
+| PE 任务收尾统一卸载 S: | ✅ 修复 | `pe_task_execute()` 跑完 result 已落盘后 `mountvol S: /D`，消掉"不可访问"另一半症状 |
+| `letter as u8 as char` 静默截断 | ✅ 修复 | 改 `char::from_u32(...).filter(is_ascii_alphabetic)`，非法盘符记诊断而不是写错位置 |
+| 提权会话通道 | ✅ 打通 | 计划任务 `/rl highest /it`，用户 `x`（SID 1000，High Mandatory Level）——这是唯一能跑 `mountvol /S` 的通道 |
+| 清理与终态 | ✅ | BCD 残留 0、无 bootsequence、注册位仍是 `harddisk0\partition4` / `b69adf69`、重启回 `SYSTEMROOT=C:\Windows` |
+| 产物 | v1.8.0 = 1,771,520 B | SHA-256 `d61a3995…6b0bc6` |
+
+详见 [docs/202609292014-S盘自动打开问题定位与修复方案.md](docs/202609292014-S盘自动打开问题定位与修复方案.md)（含 21:0x 补测的退出码实证）。
+
+> ⚠️ 仍未闭环：S 盘弹窗本身（方案 A：卷 GUID 路径零盘符）因 5.2 写路径归一化风险**尚未实施**；
+> restore 方向、断电续跑、BCDBoot 交互、Secure Boot、还原目标 WinRE 注册语义也仍未验证。
+> **不要把 v1.8.0 用于实机备份/还原**，VM 内可用版本仍是 v1.7.10。
+
 ### v1.7.12 ~ v1.7.14（2026-09-29 晚）：ProcMon 抓出真因，prepare 首次在产品内跑通
 
 | 项 | 状态 | 证据 |

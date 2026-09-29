@@ -5800,7 +5800,17 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                     }
                 }
                 if let Some(letter) = mounted_letter {
-                    let bcd_path = format!("{}:\\EFI\\Microsoft\\Boot\\BCD", letter as u8 as char);
+                    // 盘符显式转换：`letter as u8 as char` 在 u16 >255 时会静默截断成
+                    // 错盘符（当前 'S'/'T'/'Z' 恰好 <256 是偶然正确）。转换不出来就
+                    // 给一个不可能存在的盘符，让下面的 GetFileAttributesW 自然失败，
+                    // 同时留诊断信息——本函数无返回值，不引入新的控制流。
+                    let letter_char = char::from_u32(u32::from(letter))
+                        .filter(|c| c.is_ascii_alphabetic())
+                        .unwrap_or('?');
+                    if letter_char == '?' {
+                        diag.push(format!("ESP letter {letter} is not an ASCII drive letter"));
+                    }
+                    let bcd_path = format!("{letter_char}:\\EFI\\Microsoft\\Boot\\BCD");
                     if GetFileAttributesW(wide(&bcd_path).as_ptr()) != u32::MAX {
                         diag.push("BCD file found".to_string());
                         esp_volume_path = Some(volume_path.clone());
@@ -5809,7 +5819,7 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                         // cannot be used here: inside PE it resolves to the PE
                         // entry, which does not exist in the store we edit.
                         let mut win_guid: Option<String> = None;
-                        let guid_path = format!("{}:\\pe-exit-guid.txt", letter as u8 as char);
+                        let guid_path = format!("{letter_char}:\\pe-exit-guid.txt");
                         if let Ok(text) = std::fs::read_to_string(&guid_path) {
                             let candidate = text.trim().to_string();
                             if !candidate.is_empty() {
@@ -7713,6 +7723,13 @@ fn pe_task_execute() -> bool {
     let _ = std::fs::write("S:\\pe-task-result.txt", &result);
     // 配置标记完成（防下次重复执行）
     let _ = std::fs::rename(task_file, "S:\\pe-task.txt.done");
+    // 2026-09-29：修掉「PE 挂上 S: 后从不卸载」。任务已跑完、结果已落盘，
+    // 再留着 S: 只会让 Windows 侧出现「刚自动打开的 S: 窗口内容突然不可访问」
+    // （自动播放弹窗是 Windows 启动后 explorer 起来的，窗口指向的盘符已不存在）。
+    // 卸载同样不看退出码——`mountvol /D` 的返回码在实机上同样不可信。
+    let unmount_code = run_cmd_to_file("mountvol.exe S: /D", None);
+    result = format!("{result}\n[UNMOUNT_ESP] mountvol S: /D code={unmount_code}\n");
+    let _ = std::fs::write("S:\\pe-task-result.txt", &result);
     reboot
 }
 
