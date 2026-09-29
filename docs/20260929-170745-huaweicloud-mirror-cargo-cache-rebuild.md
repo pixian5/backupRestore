@@ -95,3 +95,11 @@ cargo check --workspace
 | Cargo | ustc | 不变（华为云无 crates；tuna crates download API 已 404） |
 
 教训：`~/.npmrc` 早在用 repo 快域，而 pip 与 `~/.zshrc` 的 HOMEBREW_PIP_INDEX_URL 分居两个域——排查镜像源问题时要逐个文件核对，不能想当然。另 `~/.pip/pip.conf` 已不存在，pip 实际生效路径是 `~/.config/pip/pip.conf`。
+
+## 附：brew upgrade 执行记录（2026-09-29）
+
+13 个包全部升级成功，升级后 `brew doctor` 无异常、uv/openssl/cloudflared 运行验证正常。
+
+需留意：**openssl@3 将切版**——OpenSSL 3.6 仅支持到 2026-11-01，届时 homebrew 会把 `openssl@3` 降到 OpenSSL 3.5 LTS（编译依赖它的包时可能触发重编，属预期行为）。
+
+另清理了 `~/.zprofile:5` 失效的 mirrors 慢域配置：该行与 `~/.zshrc:200` 同名（`HOMEBREW_PIP_INDEX_URL`），zshrc 后加载会覆盖它，已统一改为 repo 快域并加注释。
