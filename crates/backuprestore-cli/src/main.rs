@@ -867,8 +867,18 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         }
 
         let efi_letter = if task.operation != Operation::Probe {
+            // SOURCE 与 TARGET 用同一条「已格式化则放过序列号」条件：
+            // restore-existing 要求 target == source（同一分区），restore 会格式化
+            // target，source 的序列号随之改变。若这里仍传 false，断电续跑到
+            // ImageApplied Stage 时会以 "SOURCE volume serial differs after mounting"
+            // 失败——卷 GUID 明明对得上、盘符也挂成功了，却卡在序列号
+            // （2026-09-30 实机：任务 b05006df）。
+            let reformatted_ok = matches!(
+                task.status,
+                Stage::TargetErased | Stage::ImageApplied | Stage::BootRepaired
+            );
             let source_letter =
-                mount_env_volume(&mut mounts, &values, "SOURCE", 'S', &early_log, false)?;
+                mount_env_volume(&mut mounts, &values, "SOURCE", 'S', &early_log, reformatted_ok)?;
             let image_letter =
                 mount_env_volume(&mut mounts, &values, "IMAGE", 'I', &early_log, false)?;
             if let Some(source) = task.source.as_mut() {
