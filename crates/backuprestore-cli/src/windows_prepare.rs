@@ -830,10 +830,12 @@ fn prepare_payload(
     ) {
         return Err(error);
     }
-    if let Err(error) = crate::boot_entry::rearm(&boot_entry, log) {
+    // 武装是「人可以重启了」的唯一开关，放在这一步：载荷已注入、已覆盖到镜像卷、
+    // 簿记已落盘。v1.7.14 之前它藏在 create_entry 里无条件执行，导致
+    // `--no-reboot` 也会改 bootmgr 的 bootsequence（实机证据见 boot_entry::arm_one_shot）。
+    if let Err(error) = crate::boot_entry::arm_one_shot(&boot_entry, log) {
         return Err(error);
     }
-    let _ = &boot_entry;
     if let Err(error) = store.write_transition(task, backuprestore_core::Stage::BootRequested) {
         return Err(error);
     }

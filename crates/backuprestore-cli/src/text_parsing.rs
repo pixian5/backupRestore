@@ -651,11 +651,45 @@ pub(crate) fn is_guid(value: &str) -> bool {
         && body.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// `device`/`osdevice` 的值形态（照抄实机可用形态）：
-/// `ramdisk=[F:\\BootupRestoreRE\\Winre.wim,{设备选项对象}` —— **开头一个 `[`，没有配对 `]`**。
-/// 多写一个 `]`（写成 `…Winre.wim],{…}`）bcdedit 会报「按规定设备无效」，这是实机踩过的坑。
+/// `device`/`osdevice` 的值形态（2026-09-29 用 ProcMon 抓到真实命令行后校准）：
+///
+/// ```text
+/// ramdisk=[F:]\BackupRestoreRE\Winre.wim,{设备选项对象}
+/// ```
+///
+/// **方括号里只包「卷」，`]` 紧跟在卷后面闭合**，随后才是卷内绝对路径，最后逗号接设备
+/// 选项对象。这一点此前连错两轮：先写成 `[整条路径],{…}`（`]` 在逗号前），bcdedit 报
+/// 「按规定设备无效」；然后误判成「没有配对 `]`」，改成 `[整条路径,{…}`，于是稳定报
+/// 「指定的设备无效」。真正的形态以 `bcdedit /enum` 回显为准（见 `bcd-final.txt`：
+/// `device ramdisk=[C:]\Recovery\WindowsRE\Winre.wim,{…}`）。
+///
+/// 曾经因为这个畸形串，整整一轮把失败归因成「产品进程上下文导致 bcdedit 拒绝 ramdisk」，
+/// 并为此加了子进程代跑、句柄不继承、wmic 等一堆绕路——全是白做的。教训写在
+/// `docs/20260929-193000-...` 里：**先抓真实 argv，再谈进程上下文**。
 pub(crate) fn ramdisk_spec(wim_path: &str, devopts: &str) -> String {
-    format!("ramdisk=[{wim_path},{devopts}")
+    let (volume, inside) = split_volume_and_path(wim_path);
+    format!("ramdisk=[{volume}]{inside},{devopts}")
+}
+
+/// 把 `F:\BackupRestoreRE\Winre.wim` 拆成 `("F:", "\\BackupRestoreRE\\Winre.wim")`。
+///
+/// 没有盘符前缀时退回 `("", 原串)`——调用方给的是卷内相对路径，补上开头反斜杠即可，
+/// 绝不自作主张猜一个盘符（猜错就是往别的卷上指启动项）。
+fn split_volume_and_path(wim_path: &str) -> (String, String) {
+    let bytes: Vec<char> = wim_path.chars().collect();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == ':' {
+        let volume: String = bytes[..2].iter().collect();
+        let mut inside: String = bytes[2..].iter().collect();
+        if !inside.starts_with('\\') {
+            inside.insert(0, '\\');
+        }
+        return (volume, inside);
+    }
+    let mut inside = wim_path.to_string();
+    if !inside.starts_with('\\') {
+        inside.insert(0, '\\');
+    }
+    (String::new(), inside)
 }
 
 /// 运行 bcdedit 并回读输出；退出码非 0 即失败（带上输出便于定位）。
@@ -697,6 +731,30 @@ pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
         return Err(format!("BCD {what}: not a valid GUID: {trimmed}"));
     }
     Ok(trimmed.to_string())
+}
+
+/// `bcdedit` 接受 `{bootmgr}` 这类**知名别名**（well-known identifier），它们不是
+/// 8-4-4-4-12 形态，过不了 [`require_guid`]。
+///
+/// 但**绝不**把 `require_guid` 整个放宽成接受任意别名：那条守门人是为「标识符参数为空时
+/// bcdedit 静默作用于 `{default}`」立的（真实事故：曾把 Windows 11 启动项 device 改成
+/// ramdisk）。放任别名进去，`{default}` 就从同一个口子混进来了。所以这里只认白名单里的
+/// 一个，且白名单里**故意不放 `{default}`/`{current}`/`{ntldr}` 这些指向用户启动项的东西**。
+pub(crate) fn is_well_known_identifier(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("{bootmgr}")
+}
+
+/// BCD 标识符校验：GUID，或白名单里的知名别名（当前只有 `{bootmgr}`）。
+///
+/// 之所以单独开这一个口子而不是散着判断：`boot_entry.rs` 整个模块是 `#[cfg(windows)]`，
+/// 那里的单测在 macOS 上一次都不编译（2026-09-29 `ramdisk=` 值畸形就是这么漏过去的）。
+/// 校验放本模块，单测就跟着 `cargo test` 在 macOS 上跑。
+pub(crate) fn require_identifier(value: &str, what: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if is_well_known_identifier(trimmed) {
+        return Ok(trimmed.to_string());
+    }
+    require_guid(trimmed, what)
 }
 
 #[cfg(test)]
@@ -1299,5 +1357,66 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     fn staging_sdi_path_always_starts_with_a_backslash() {
         assert_eq!(staging_sdi_path("BackupRestoreRE"), r"\BackupRestoreRE\boot.sdi");
         assert_eq!(staging_sdi_path(r"\BackupRestoreRE"), r"\BackupRestoreRE\boot.sdi");
+    }
+
+    /// 这条断言直接照抄实机 `bcdedit /enum` 回显：方括号只包卷，`]` 紧跟卷后闭合。
+    /// 参照物是当前注册的 WinRE 条目：
+    /// `device ramdisk=[C:]\Recovery\WindowsRE\Winre.wim,{b69adf6a-…}`。
+    #[test]
+    fn ramdisk_spec_closes_the_bracket_right_after_the_volume() {
+        let spec = ramdisk_spec(
+            r"F:\BackupRestoreRE\Winre.wim",
+            "{11111111-2222-3333-4444-555555555555}",
+        );
+        assert_eq!(
+            spec,
+            r"ramdisk=[F:]\BackupRestoreRE\Winre.wim,{11111111-2222-3333-4444-555555555555}"
+        );
+        assert_eq!(spec.matches('[').count(), 1);
+        assert_eq!(spec.matches(']').count(), 1);
+    }
+
+    /// 两种历史畸形形态都必须不再出现：
+    /// * `[整条路径],{…}`  —— bcdedit 报「按规定设备无效」
+    /// * `[整条路径,{…}`   —— bcdedit 报「指定的设备无效」（2026-09-29 ProcMon 实锤）
+    #[test]
+    fn ramdisk_spec_rejects_both_historical_malformed_shapes() {
+        let spec = ramdisk_spec(r"F:\BackupRestoreRE\Winre.wim", "{dead0000-0000-0000-0000-000000000000}");
+        assert!(!spec.contains(r"[F:\"), "方括号里不能出现路径：{spec}");
+        assert!(spec.contains("[F:]"), "方括号里必须正好是卷：{spec}");
+        assert!(!spec.contains("],{"), "`]` 不能落在逗号前：{spec}");
+    }
+
+    /// 卷内相对路径（没有盘符）时不许瞎猜盘符，只补开头反斜杠。
+    #[test]
+    fn ramdisk_spec_without_a_drive_letter_keeps_the_volume_empty() {
+        assert_eq!(
+            ramdisk_spec(r"BackupRestoreRE\Winre.wim", "{1-1}"),
+            r"ramdisk=[]\BackupRestoreRE\Winre.wim,{1-1}"
+        );
+    }
+
+    /// 锁死「`{bootmgr}` 是知名别名、不是 GUID」这条实测结论（2026-09-29 实机报错：
+    /// `BCD enum: not a valid GUID: {bootmgr}`，卡在 v1.7.12 第一次 verify）。
+    #[test]
+    fn require_identifier_accepts_the_bootmgr_alias() {
+        assert_eq!(require_identifier("{bootmgr}", "enum").unwrap(), "{bootmgr}");
+        assert_eq!(require_identifier(" {BOOTMGR} ", "enum").unwrap(), "{BOOTMGR}");
+    }
+
+    /// 守门人不能被别名白名单连带废掉：`{default}` 之类**一律拒**。
+    /// bcdedit 在标识符参数为空/不可解析时会静默作用于 `{default}`
+    /// （真实事故：曾把 Windows 11 启动项 device 改成 ramdisk）。
+    #[test]
+    fn require_identifier_still_rejects_default_and_other_aliases() {
+        for rejected in ["{default}", "{current}", "{ntldr}", "{fwbootmgr}", "{ramdiskoptions}"] {
+            assert!(
+                require_identifier(rejected, "enum").is_err(),
+                "{rejected} 必须被拒，否则可能误伤用户启动项"
+            );
+        }
+        assert!(require_identifier("", "enum").is_err());
+        assert!(require_identifier("  ", "enum").is_err());
+        assert!(require_guid("{bootmgr}", "enum").is_err(), "旧入口仍然只认 GUID");
     }
 }

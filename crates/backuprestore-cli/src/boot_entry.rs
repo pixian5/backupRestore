@@ -22,8 +22,6 @@
 //! 6. `reagentc /disable`+`/enable` 会**删掉并重建** WinRE BCD 条目，模板 GUID 每次都要现读。
 
 use backuprestore_core::{TaskError, VolumeIdentity, read_json, write_json_atomic};
-#[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
@@ -101,35 +99,15 @@ fn bcd(args: &[&str]) -> Result<String, TaskError> {
     Ok(text)
 }
 
-/// 写操作（`/set`、`/copy`、`/delete`、`/bootsequence`）——**由本程序的子进程代跑**。
+/// 写操作（`/set`、`/copy`、`/delete`、`/bootsequence`）：直接调 bcdedit，判退出码。
 ///
-/// 为什么必须绕一圈：2026-09-29 实机用诊断电池逐条记录后确认，同一串 argv 在父进程里
-/// 只有 `device ramdisk=…` 被 bcdedit 拒绝（`description`、`path`、`device partition=…`
-/// 全都正常，文件也能被独占打开），而**换成一个新进程就一次成功**——父进程自身状态会
-/// 影响 bcdedit 对 ramdisk 设备的校验。所以写入统一交给 `BackupRestore.exe bcd-set`
-/// 这个短生命周期子进程，父进程这边只判退出码。
+/// 这里一度绕过一圈「交给 `BackupRestore.exe bcd-set` 子进程代跑」，理由是以为
+/// 「产品进程上下文会让 bcdedit 拒绝 ramdisk 设备」。2026-09-29 用 ProcMon 抓到真实
+/// 命令行后证明那是误判：失败的从来不是进程，而是 `ramdisk=` 的值本身写畸形了
+/// （见 `text_parsing::ramdisk_spec`）。绕路已全部拆掉，留这段注释防止再绕回去。
 #[cfg(windows)]
 fn bcd_write_once(args: &[&str]) -> Result<(), TaskError> {
-    let executable = std::env::current_exe().map_err(|error| {
-        crate::err(&format!("cannot locate our own executable: {error}"))
-    })?;
-    let mut child_args: Vec<String> = vec!["bcd-set".to_string()];
-    child_args.extend(args.iter().map(|arg| arg.to_string()));
-    let output = Command::new(&executable)
-        .args(&child_args)
-        .creation_flags(crate::CREATE_NO_WINDOW)
-        .output()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    if !output.status.success() {
-        return Err(crate::err(&format!(
-            "bcd-set {} failed with {}: {}",
-            args.join(" "),
-            output.status,
-            text.trim()
-        )));
-    }
-    Ok(())
+    bcd(args).map(|_| ())
 }
 
 /// 写操作 + 重试（先试 `.status()` 形态；个别环境里无父控制台可继承时退回 `.output()`）。
@@ -157,185 +135,6 @@ fn bcd_write(args: &[&str], log: &Path) -> Result<(), TaskError> {
     Err(last.unwrap_or_else(|| crate::err("bcdedit write failed")))
 }
 
-/// 诊断电池：在**同一个进程里**按顺序跑一串 bcdedit 调用，逐步记录退出码与完整输出。
-///
-/// 为什么需要它：2026-09-29 出现「同一串 argv、同一对 BCD 对象，在产品进程里失败、
-/// 从任何 shell 里立刻重试就成功」的怪事。靠猜（DISM、cwd、调用形态、程序名）都试过，
-/// 全部排除。所以改成把每一步的事实记录下来：哪个元素能写、哪个不能、重试是否也一样、
-/// `.output()` 与 `.status()` 是否不同。日志落在 prepare.log 里，`DIAG` 前缀可 grep。
-#[cfg(windows)]
-fn diag_battery(loader: &str, devopts: &str, spec: &str, wim_path: &Path, log: &Path) {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let probe = |label: &str, args: &[&str], use_status: bool| {
-        let mut command = Command::new(r"C:\Windows\System32\bcdedit.exe");
-        command.args(args);
-        command.creation_flags(crate::CREATE_NO_WINDOW);
-        let (code, text) = if use_status {
-            match command.status() {
-                Ok(status) => (status.code().unwrap_or(-1), String::new()),
-                Err(error) => (-99, format!("spawn error: {error}")),
-            }
-        } else {
-            command.stdin(Stdio::null());
-            match command.output() {
-                Ok(output) => (
-                    output.status.code().unwrap_or(-1),
-                    format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    ),
-                ),
-                Err(error) => (-99, format!("spawn error: {error}")),
-            }
-        };
-        let note = format!(
-            "DIAG[{stamp}] {label} rc={code} args={} :: {}",
-            args.join(" "),
-            text.trim()
-        );
-        crate::append_log(log, &note).ok();
-    };
-    probe("read-loader", &["/enum", loader, "/v"], false);
-    probe("write-devolpts-description", &["/set", devopts, "description", "BR-DIAG"], false);
-    probe("write-loader-description", &["/set", loader, "description", "BR-DIAG"], false);
-    probe("write-loader-path", &["/set", loader, "path", r"\windows\system32\winload.efi"], false);
-    probe("write-device-partition", &["/set", loader, "device", "partition=C:"], false);
-    probe("read-device-after-partition", &["/enum", loader, "/v"], false);
-    probe(
-        "write-device-ramdisk-wellknown",
-        &["/set", loader, "device", "ramdisk=[F:\\BackupRestoreRE\\Winre.wim,{ramdiskoptions}"],
-        false,
-    );
-    probe("write-device-output", &["/set", loader, "device", spec], false);
-    probe("write-device-status", &["/set", loader, "device", spec], true);
-    probe("write-device-output-again", &["/set", loader, "device", spec], false);
-    // WMI 创建的进程由 WMI 服务拉起，**不继承调用进程的句柄**——用来验证
-    // 「父进程句柄 inherited 导致 bcdedit 拒绝 ramdisk 设备」这个假设。
-    let wmic_cmd = format!("bcdedit.exe /set {loader} device {spec}");
-    if let Ok(output) = Command::new("cmd.exe")
-        .args([
-            "/d",
-            "/c",
-            &format!("wmic process call create \"{wmic_cmd}\""),
-        ])
-        .creation_flags(crate::CREATE_NO_WINDOW)
-        .output()
-    {
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        crate::append_log(
-            log,
-            &format!(
-                "DIAG[{stamp}] write-device-via-wmic rc={} :: {}",
-                output.status.code().unwrap_or(-1),
-                text.trim()
-            ),
-        )
-        .ok();
-    }
-    let cmdline = format!(
-        "bcdedit.exe /set {loader} device {spec}"
-    );
-    let mut command = Command::new("cmd.exe");
-    command.args(["/d", "/c", &cmdline]);
-    command.creation_flags(crate::CREATE_NO_WINDOW);
-    match command.output() {
-        Ok(output) => {
-            let note = format!(
-                "DIAG[{stamp}] write-device-via-cmd rc={} :: {}{}",
-                output.status.code().unwrap_or(-1),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            crate::append_log(log, &note).ok();
-        }
-        Err(error) => {
-            crate::append_log(
-                log,
-                &format!("DIAG[{stamp}] write-device-via-cmd spawn error: {error}"),
-            )
-            .ok();
-        }
-    }
-    // 试探：本进程能否「独占」打开镜像卷上的 WIM / SDI。若失败 → 有别人持着句柄，
-    // 那 bcdedit 打不开同一文件就会报「指定的设备无效」。
-    // Windows 上独占打开要走 std::os::windows::fs::OpenOptionsExt::share_mode(0)。
-    for candidate in [
-        wim_path.to_path_buf(),
-        wim_path
-            .parent()
-            .map(|parent| parent.join("boot.sdi"))
-            .unwrap_or_default(),
-    ] {
-        let label = candidate
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let opened = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .open(&candidate);
-        match opened {
-            Ok(_) => crate::append_log(log, &format!("DIAG[{stamp}] exclusive-open {label}: OK")).ok(),
-            Err(error) => crate::append_log(
-                log,
-                &format!(
-                    "DIAG[{stamp}] exclusive-open {label}: FAILED {error} (kind={:?})",
-                    error.kind()
-                ),
-            )
-            .ok(),
-        };
-    }
-    // 把当前进程的环境与 PATH 解析结果也记下来，便于和外部 shell 对比
-    for (label, args) in [
-        ("env-dump", vec!["/d", "/c", "set"]),
-        ("which-bcdedit", vec!["/d", "/c", "where bcdedit"]),
-    ] {
-        if let Ok(output) = Command::new("cmd.exe")
-            .args(&args)
-            .creation_flags(crate::CREATE_NO_WINDOW)
-            .output()
-        {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let lines: Vec<&str> = text.lines().take(30).collect();
-            crate::append_log(
-                log,
-                &format!("DIAG[{stamp}] {label} :: {}", lines.join(" || ")),
-            )
-            .ok();
-        }
-    }
-    // 顺手记录进程上下文事实
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".into());
-    crate::append_log(
-        log,
-        &format!(
-            "DIAG[{stamp}] context pid={} cwd={} exe={}",
-            std::process::id(),
-            cwd,
-            std::env::current_exe()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "<unknown>".into())
-        ),
-    )
-    .ok();
-}
-
 /// 建后即验：对象必须真的可枚举，否则后面所有 `/set` 都会落空。
 #[cfg(windows)]
 fn bcd_object_exists(guid: &str, log: &Path) -> Result<(), TaskError> {
@@ -353,9 +152,15 @@ fn bcd_object_exists(guid: &str, log: &Path) -> Result<(), TaskError> {
     }
 }
 
+/// BCD 标识符校验：要么是 GUID，要么是**源码常量 `{bootmgr}` 这个知名别名**。
+///
+/// 校验函数在 `text_parsing` 里，不在本模块：本模块整个是 `#[cfg(windows)]`，
+/// 放在这里的单测在 macOS 上一次都不会编译——上次 `ramdisk=` 值畸形就是这么漏过去的。
+
 /// `bcdedit /enum <guid> /v` 的某个字段值。
 fn bcd_field(guid: &str, field: &str) -> Result<String, TaskError> {
-    let guid = crate::text_parsing::require_guid(guid, "enum").map_err(|message| crate::err(&message))?;
+    let guid = crate::text_parsing::require_identifier(guid, "enum")
+        .map_err(|message| crate::err(&message))?;
     let text = bcd(&["/enum", &guid, "/v"])?;
     let prefix = format!("{field} ");
     for line in text.lines() {
@@ -476,10 +281,16 @@ pub fn copy_into_staging(
     Ok((absolute, sha))
 }
 
-/// 建条目 + 武装一次性启动。**任何一步失败都不留半成品**（尽力回删已建对象）。
-#[cfg(windows)]
-/// 只建条目，不武装。返回时 `boot-entry.json` 已落盘、BCD 对象已就位，
+/// 只建条目，**不武装**。返回时 `boot-entry.json` 已落盘、BCD 对象已就位，
 /// 但 `bootsequence` 尚未设置——载荷 WIM 还没注入完成，不能让人这时重启进来。
+///
+/// **v1.7.14 起武装由调用方显式决定**（见 [`arm_one_shot`]）。此前端条目里就
+/// 无条件 `/bootsequence`，于是 `prepare --no-reboot`（本意「只准备、别动启动状态」）
+/// 也会改 bootmgr 的 bootsequence，下一次重启就直接进 PE 了。2026-09-29 实机抓到：
+/// BCD 回显 `bootsequence {c0c8debb-…}` 正是当次 `--no-reboot` 新建的条目。
+///
+/// 任何一步失败都不留半成品（尽力回删已建对象）。
+#[cfg(windows)]
 pub fn create_entry(
     staged_wim: &Path,
     sdi_source: &Path,
@@ -544,17 +355,15 @@ pub fn create_entry(
         if bcd_field(&devopts, "ramdisksdipath")? != sdi {
             return Err(crate::err("device options ramdisksdipath did not stick"));
         }
-        // 诊断电池：把同一进程里每一步的退出码与完整输出记进日志（见 diag_battery 注释）
-        diag_battery(&loader, &devopts, &spec, Path::new(&wim_path), log);
         bcd_write(&["/set", &loader, "device", &spec], log)?;
         bcd_write(&["/set", &loader, "osdevice", &spec], log)?;
         bcd_write(&["/set", &loader, "description", ENTRY_DESCRIPTION], log)?;
         Ok(())
     };
 
-    // 整个「改字段」块带退避重试。实测失败诱因之一是**刚落盘的 700MB 载荷 WIM 会被短暂
-    // 占用/扫描，bcdedit 打不开它就报「指定的设备无效」**——手工脚本里文件已放置几分钟，
-    // 所以一次成功；产品在同一次 prepare 里拷完立刻改字段，于是稳定失败。
+    // 整个「改字段」块带退避重试，纯粹为了扛住偶发的 BCD 存储占用。
+    // 注意：这里的重试**不是**用来掩盖参数写错的——`ramdisk=` 值畸形时重试一万次也一样
+    // 报「指定的设备无效」，2026-09-29 就是这么被误导了一整轮。
     let mut last_error: Option<TaskError> = None;
     for (attempt, delay_secs) in [1_u64, 2, 3, 4].into_iter().zip([2_u64, 6, 15, 30]) {
         if attempt > 1 {
@@ -609,7 +418,29 @@ pub fn create_entry(
         return Err(crate::err("new boot entry is not marked winpe=yes"));
     }
 
-    // 4) 武装一次性启动（只动 bootmgr 的 bootsequence）
+    let entry = ReBootEntry {
+        loader_guid: loader,
+        devopts_guid: devopts,
+        wim_volume: wim_volume.clone(),
+        wim_path,
+        wim_sha256,
+        created: chrono::Utc::now().to_rfc3339(),
+    };
+    entry.write(task_dir)?;
+    Ok(entry)
+}
+
+/// 武装一次性启动：只动 bootmgr 的 `bootsequence`，指向我们的 osloader。
+///
+/// **这里是人「可以重启进任务环境」的唯一开关**，所以必须由调用方在载荷注入、
+/// 拷贝、簿记全部完成之后显式调用；`prepare --no-reboot` 时不该调它。
+/// 校验失败即回删条目——绝不留一个「指向我们条目、却没真的挂上 bootmgr」的状态。
+#[cfg(windows)]
+pub fn arm_one_shot(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
+    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "arm loader")
+        .map_err(|message| crate::err(&message))?;
+    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "arm device options")
+        .map_err(|message| crate::err(&message))?;
     bcd(&["/bootsequence", &loader])?;
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed != loader {
@@ -622,18 +453,7 @@ pub fn create_entry(
     crate::append_log(
         log,
         &format!("new boot channel: one-shot bootsequence armed at {loader}"),
-    )?;
-
-    let entry = ReBootEntry {
-        loader_guid: loader,
-        devopts_guid: devopts,
-        wim_volume: wim_volume.clone(),
-        wim_path,
-        wim_sha256,
-        created: chrono::Utc::now().to_rfc3339(),
-    };
-    entry.write(task_dir)?;
-    Ok(entry)
+    )
 }
 
 /// 重武装：用于断电续跑（任务 resume 时重新把我们的条目设为一次性启动）。
@@ -718,16 +538,3 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ramdisk_spec_has_no_trailing_bracket() {
-        let spec = crate::text_parsing::ramdisk_spec(r"F:\BootRestoreRE\Winre.wim", "{11111111-2222-3333-4444-555555555555}");
-        assert_eq!(spec, r"ramdisk=[F:\BootRestoreRE\Winre.wim],{11111111-2222-3333-4444-555555555555}");
-        assert!(!spec.ends_with('}') || spec.contains("],{"));
-        assert_eq!(spec.matches('[').count(), 1);
-        assert_eq!(spec.matches(']').count(), 1);
-    }
-}

@@ -199,13 +199,6 @@ fn main() {
             .next()
             .ok_or_else(|| err("RecoveryTask.env is required"))
             .and_then(recover_env),
-        // v1.7.11：BCD 写操作由「本程序的短生命周期子进程」代跑。
-        // 实机结论：同一串 argv 在父进程里调 bcdedit 会被拒（`device ramdisk=…` 报
-        // 「指定的设备无效」，而 `description`/`path`/`partition=` 都正常；换个进程立刻成功）。
-        // 所以任何 BCD 写入都走这条通道，见 boot_entry::bcd_write。
-        // bcd_set 本体是 Windows-only（见下文定义），macOS 侧本就不该有这个子命令。
-        #[cfg(windows)]
-        Some("bcd-set") => bcd_set(args.collect()),
         Some("run-command") => {
             let program = args.next().ok_or_else(|| err("program is required"));
             program.and_then(|p| run_command(&p, args.collect()))
@@ -3044,61 +3037,6 @@ fn stream_to_log<R: Read>(
                 saw_cr = false;
             }
         }
-    }
-    Ok(())
-}
-
-/// `BackupRestore.exe bcd-set <bcdedit 参数...>`：在新进程里执行 bcdedit 写操作。
-/// 退出码原样返回给父进程；stderr 一并转出，便于父进程记日志。
-#[cfg(windows)]
-fn bcd_set(args: Vec<String>) -> Result<(), TaskError> {
-    // 诊断：同一命令分别用「默认标志」和「DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB」
-    // 跑一遍，两个结果都打到 stderr，由调用方记入日志。
-    const DETACHED: u32 = 0x0000_0008;
-    const BREAKAWAY: u32 = 0x0100_0000;
-    let mut results: Vec<String> = Vec::new();
-    for (label, flags) in [("plain", 0_u32), ("detached-breakaway", DETACHED | BREAKAWAY)] {
-        let mut command = Command::new("bcdedit.exe");
-        command.args(&args);
-        if flags != 0 {
-            command.creation_flags(flags);
-        }
-        let output = command.output()?;
-        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
-        results.push(format!(
-            "[{label} rc={} {}]",
-            output.status.code().unwrap_or(-1),
-            text.trim()
-        ));
-        if output.status.success() {
-            return Ok(());
-        }
-    }
-    return Err(err(&format!(
-        "bcdedit {} failed: {}",
-        args.join(" "),
-        results.join(" ")
-    )));
-}
-
-#[cfg(windows)]
-fn bcd_set_legacy(args: Vec<String>) -> Result<(), TaskError> {
-    let mut command = Command::new("bcdedit.exe");
-    command.args(&args);
-    command.creation_flags(CREATE_NO_WINDOW);
-    let output = command.output()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    if !text.trim().is_empty() {
-        eprintln!("{}", text.trim());
-    }
-    if !output.status.success() {
-        return Err(err(&format!(
-            "bcdedit {} failed with {}",
-            args.join(" "),
-            output.status
-        )));
     }
     Ok(())
 }

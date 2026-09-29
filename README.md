@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.7.11**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.7.14**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 ---
 
@@ -204,19 +204,26 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
-### ⚠️ v1.7.11 PE 式自建启动通道：**代码已落地但实机阻塞，暂不可用**
+### v1.7.12 ~ v1.7.14（2026-09-29 晚）：ProcMon 抓出真因，prepare 首次在产品内跑通
 
-| 项 | 状态 |
-|---|---|
-| 改造内容 | 载荷 WIM/SDI 放镜像卷 `BackupRestoreRE\`、`/copy` 注册 WinRE 条目及其设备选项对象改指镜像卷、一次性 `bootsequence`、`boot-entry.json` 簿记、rearm/disarm；同时删掉旧通道的迁出 / `WINRE_HOME_*` / 待回家收尾 / Plan D / F1·F3 / servicing 竞态那一整套 |
-| 编译与单测 | ✅ macOS + aarch64-pc-windows-msvc 双目标通过，69 单测全绿 |
-| **实机** | ❌ **阻塞**：产品进程内 `bcdedit /set <loader> device ramdisk=…` 稳定报「指定的设备无效」，而同一条命令从 cmd/PowerShell 手工执行立刻成功 |
-| 排查证据 | 见 [docs/20260929-173000-pe-channel-bcdedit-device-ramdisk-blocker.md](docs/20260929-173000-pe-channel-bcdedit-device-ramdisk-blocker.md)（诊断电池 8 条结果 + 10 项已排除假设 + 4 条下一步） |
-| 当前可用版本 | **v1.7.10**（VM 内 `H:\brwork\BackupRestore.exe` 即该构建；注册位在 C:、WinRE 正常） |
+| 项 | 状态 | 证据 |
+|---|---|---|
+| v1.7.11 阻塞真因 | ✅ **定位并修复：不是进程上下文，是 `ramdisk=` 值畸形** | 正确形态 `ramdisk=[F:]\BackupRestoreRE\Winre.wim,{devopts}`（`[` 只包「卷」、`]` 紧跟卷闭合）。ProcMon `Process Create` 的 `Command line` 给出真实 argv；案例 A 一份 trace 同时含成功与失败，比原计划的 A/B 对照更严格 |
+| v1.7.13 `{bootmgr}` 别名 | ✅ 修复 | 知名别名不是 GUID 形态，过不了 `require_guid`；改用白名单式 `require_identifier`（只有 `{bootmgr}`，仍拒 `{default}`/`{current}`/`{ntldr}`） |
+| v1.7.14 `--no-reboot` 不再武装 | ✅ 修复 | 原来 `create_entry` 无条件 `/bootsequence`，`--no-reboot` 也会改 bootmgr；抽成显式 `arm_one_shot()` 由 `windows_prepare` 在载荷就绪后调用 |
+| 单测位置修正 | ✅ | 原先断言错形态的单测在 **`#[cfg(windows)]` 模块里，macOS 上一次都不编译**；现已全部搬到 `text_parsing.rs`，`cargo test --workspace` 74 passed |
+| **实机 prepare（`--operation backup --source-drive T --no-reboot --test-efi-drive Y`）** | **PASS** | `PREPARE_EXIT=0`、`boot-entry.json` 落盘、BCD 回读 `device`/`osdevice` 正好等于 `ramdisk_spec` 期望值；`--no-reboot` 时 `/enum {bootmgr}` 无 `bootsequence` |
+| 清理与启动项终态 | ✅ 干净 | 本项目自建 BCD 对象全删（重启后复核残留 0）、注册位未动（`harddisk0\partition4` / `b69adf69`）、临时盘符 Y: 已移除、重启回 `SYSTEMROOT=C:\Windows` |
+| 产物 | v1.7.14 = 1,769,472 B | SHA-256 `e34cde4c…a1d55d` |
 
-> 解决阻塞前，**不要把 v1.7.11 用于任何实机备份/还原**。PoC 机制本身已验证可用
-> （见 [docs/20260929-130000](docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md)：
-> 手工建条目即可启动并跑通完整任务闭环），差的只是「让产品自己完成这条 bcdedit 写入」。
+完整过程、三次快照 ID、宿主磁盘/通道差异见
+[docs/20260929-204000-ramdisk-spec-root-cause-and-no-reboot-armed.md](docs/20260929-204000-ramdisk-spec-root-cause-and-no-reboot-armed.md)。
+
+> ⚠️ 本次 prepare 走的是 `--test-efi-drive Y`（绕开 SYSTEM 通道会挂起的 `mountvol /S`），
+> **尚未验证产品自己跑完整 `mountvol /S` → ESP 定位的主路径**；restore 方向、断电续跑、
+> BCDBoot 交互、Secure Boot、还原目标 WinRE 注册语义仍未闭环。**不要把 v1.7.14 用于实机
+> 备份/还原**——VM 内可用版本仍是 v1.7.10（`H:\brwork\BackupRestore.exe`）。
+> PoC 机制本身已验证可用（[docs/20260929-130000](docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md)）。
 
 ### 尚未闭环（按严重度）
 
