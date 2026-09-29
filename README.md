@@ -126,6 +126,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 - 操作 VM 键鼠（自动化点击/按键/截图）→ [`docs/vm-input-control-guide.md`](docs/vm-input-control-guide.md)
 - ARM64 构建规则 → [`docs/windows-build.md`](docs/windows-build.md)
 - WinRE 引导 / PD27 固件回归证明 → [`docs/winre-boot-failure-parallels27-2026-09-25.md`](docs/winre-boot-failure-parallels27-2026-09-25.md)
+- S 盘反复弹窗/unmount 竞态根因与卷路径改造方案 → [`docs/202609292014-S盘自动打开问题定位与修复方案.md`](docs/202609292014-S盘自动打开问题定位与修复方案.md)
 - 下一步开发路线图 → [`docs/development-roadmap-2026-09-26.md`](docs/development-roadmap-2026-09-26.md)
 - 完整需求原文 → [`Windows 一键系统备份还原 V1——完整开发需求.md`](Windows%20一键系统备份还原%20V1——完整开发需求.md)
 
@@ -235,6 +236,16 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 4. **PE 载荷未同步** —— VM 内 `T:\petest\boot.wim` 是 2026-09-13 实验残留，
    宿主 `artifacts/BackupRestorePE.wim` 是另一条产物线。按已定路线（保持 WinRE 任务通道）
    **本阶段不需要动 PE**；先用户裁定「以哪个为准」再一次性同步。
+
+### S 盘反复弹窗且「不可访问」（2026-09-29 已定位，修复方案待实施）
+
+| 项 | 状态 |
+|---|---|
+| 现象 | 每次准备任务都弹出 `S:\` 文件夹窗口，随后提示无法访问/不可用 |
+| 根因 | `mountvol S: /S` 给 ESP 分配盘符 → Windows 自动播放 `UnknownContentOnArrival → MSOpenFolder`（`InvokeVerb=open`）弹窗 → 程序用完 `mountvol S: /D` 撤销盘符 → 已打开的窗口失效 |
+| 修复方向 | 改用卷 GUID 路径 `\\?\Volume{GUID}\EFI\Microsoft\Boot\BCD`，一次准备任务的临时盘符挂载降至 0 次（`bcdedit /store` 卷路径已在实机验证可读） |
+| 阻塞门槛 | `/store` 写操作下 `device` 字段是否被归一化改写，需实机实验确认 |
+| 详细证据与分阶段方案 | [docs/202609292014-S盘自动打开问题定位与修复方案.md](docs/202609292014-S盘自动打开问题定位与修复方案.md) |
 
 ### 其他已知限制
 

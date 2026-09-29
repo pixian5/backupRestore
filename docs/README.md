@@ -90,6 +90,7 @@
 |---|---|
 | [pitfalls-build-env-2026-09-25.md](pitfalls-build-env-2026-09-25.md) | 构建环境两个坑：镜像源与 `target` 所有权——都表现为「代码没动突然构建不了」，都不是代码问题 |
 | [pitfalls-static-crt-2026-09-25.md](pitfalls-static-crt-2026-09-25.md) | 动态 CRT 导致程序在 WinRE / 精简 Windows 上无法加载（v1.6.7） |
+| [202609292014-S盘自动打开问题定位与修复方案.md](202609292014-S盘自动打开问题定位与修复方案.md) | S 盘反复弹窗且「不可访问」根因（自动播放 `UnknownContentOnArrival→MSOpenFolder` + mountvol 挂/卸竞态）、全部盘符挂载点清单、卷 GUID 路径改造方案与前置实验 |
 
 ---
 
