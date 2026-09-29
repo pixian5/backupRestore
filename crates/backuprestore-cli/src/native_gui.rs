@@ -17,8 +17,8 @@ use std::process::Command;
 use std::ptr::{null, null_mut};
 
 use crate::text_parsing::{
-    WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, first_braced_guid, format_bytes,
-    json_text, parse_wim_images, quote_argument,
+    WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, esp_log_path, first_braced_guid,
+    format_bytes, json_text, parse_wim_images, quote_argument,
 };
 use backuprestore_core::PROGRAM_VERSION;
 
@@ -3979,7 +3979,7 @@ unsafe fn pe_reboot_to_pe(state: &State) {
         &format!("PE reboot to PE: mountvol S: code={mount_code}"),
     );
     let task = "clean_bootsequence\nverify\nreboot\n";
-    let write_ok = std::fs::write("S:\\pe-task.txt", task).is_ok();
+    let write_ok = std::fs::write(esp_log_path("pe-task.txt"), task).is_ok();
     append_gui_log(
         state,
         &format!("PE reboot to PE: write pe-task.txt ok={write_ok}"),
@@ -4696,7 +4696,7 @@ unsafe fn schedule_pe_task(
     } else {
         format!("restore \"{image_path}\" {target_drive}\nreboot\n")
     };
-    let write_ok = std::fs::write("S:\\pe-task.txt", &task).is_ok();
+    let write_ok = std::fs::write(esp_log_path("pe-task.txt"), &task).is_ok();
     append_gui_log(
         state,
         &format!("schedule_pe_task: write pe-task.txt ok={write_ok} task={task}"),
@@ -5665,7 +5665,7 @@ fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<S
         full.push_str("exit-pe.log");
         paths.push(full);
     }
-    paths.push("S:\\exit-pe.log".to_string());
+    paths.push(crate::text_parsing::esp_log_path("exit-pe.log").to_string());
     paths.push("X:\\exit-pe.log".to_string());
     for path in paths {
         let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
@@ -6623,7 +6623,7 @@ unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
         }
         let wim = resolve_pe_wim_path(&params[1], &src);
         execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
-        let _ = std::fs::write("S:\\pe-gui-backup.txt", &result);
+        let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-backup.txt"), &result);
         exit_pe_to_windows(hwnd);
         return;
     }
@@ -6661,7 +6661,7 @@ unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
     result.clear();
     execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
     // 5. 日志落 ESP（重启后可读回验证）
-    let _ = std::fs::write("S:\\pe-gui-backup.txt", &result);
+    let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-backup.txt"), &result);
     // 6. 结果展示
     show_message(
         hwnd,
@@ -6703,7 +6703,7 @@ unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
         );
         execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
         execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
-        let _ = std::fs::write("S:\\pe-gui-restore.txt", &result);
+        let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-restore.txt"), &result);
         exit_pe_to_windows(hwnd);
         return;
     }
@@ -6756,7 +6756,7 @@ unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
     execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
     // 3. 修复引导（目标是系统卷时执行 bcdboot）
     execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
-    let _ = std::fs::write("S:\\pe-gui-restore.txt", &result);
+    let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-restore.txt"), &result);
     show_message(
         hwnd,
         &pe_result_preview(&result),
@@ -6802,7 +6802,7 @@ unsafe fn pe_secondary_from_desktop(hwnd: Hwnd) {
             &mut result,
             &mut reboot,
         );
-        let _ = std::fs::write("S:\\pe-gui-secondary.txt", &result);
+        let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-secondary.txt"), &result);
         exit_pe_to_windows(hwnd);
         return;
     }
@@ -6856,7 +6856,7 @@ unsafe fn pe_secondary_from_desktop(hwnd: Hwnd) {
         &mut result,
         &mut reboot,
     );
-    let _ = std::fs::write("S:\\pe-gui-secondary.txt", &result);
+    let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-secondary.txt"), &result);
     show_message(
         hwnd,
         &pe_result_preview(&result),
@@ -7144,7 +7144,7 @@ unsafe extern "system" fn window_proc_pe(
 /// 通过枚举 marker.txt 所在盘符得到）。
 fn resolve_drive(drive: &str) -> String {
     if drive.eq_ignore_ascii_case("AUTO") {
-        std::fs::read_to_string("S:\\pe-drive.txt")
+        std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-drive.txt"))
             .unwrap_or_default()
             .trim()
             .to_string()
@@ -7197,7 +7197,7 @@ fn find_pe_source_drive(exclude: &str) -> String {
 /// 该机制让「Win11 配置 → 重启进 PE → 自动点击按钮（与鼠标点击同路径）
 /// → 自动执行 → 自动回 Win11」全链路无需任何人工操作。
 fn read_pe_click_config() -> Option<(&'static str, Vec<String>)> {
-    let config = std::fs::read_to_string("S:\\pe-click.txt").ok()?;
+    let config = std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-click.txt")).ok()?;
     let mut parts = config.split_whitespace();
     let action = parts.next()?;
     let params: Vec<String> = parts.map(|s| s.to_string()).collect();
@@ -7217,7 +7217,7 @@ fn read_pe_click_config() -> Option<(&'static str, Vec<String>)> {
 /// 注意：handler 运行时 `S:\pe-click.txt` 已被启动流程改名 `.done`
 /// （防止重复触发），因此这里读 `.done` 才能拿到本次点击的参数。
 fn pe_click_params(action: &str) -> Option<Vec<String>> {
-    let config = std::fs::read_to_string("S:\\pe-click.txt.done").ok()?;
+    let config = std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-click.txt.done")).ok()?;
     let mut parts = config.split_whitespace();
     let config_action = parts.next()?;
     if config_action != action {
@@ -7255,17 +7255,17 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1",
                 None,
             );
-            match std::fs::read_to_string("S:\\verify-bcd-enum.txt") {
+            match std::fs::read_to_string(crate::text_parsing::esp_log_path("verify-bcd-enum.txt")) {
                 Ok(text) => result.push_str(&format!("[ENUM_BOOTMGR]\n{text}\n")),
                 Err(_) => result.push_str("[ENUM_BOOTMGR] read failed\n"),
             }
             // 取证 B：ESP 根目录文件列表
             run_cmd_to_file("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", None);
-            if let Ok(text) = std::fs::read_to_string("S:\\verify-dir.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("verify-dir.txt")) {
                 result.push_str(&format!("[DIR_S]\n{text}\n"));
             }
             // 取证 C：结果日志读回（确认已落盘）
-            match std::fs::read_to_string("S:\\pe-task-result.txt") {
+            match std::fs::read_to_string(esp_log_path("pe-task-result.txt")) {
                 Ok(text) => result.push_str(&format!("[RESULT_READBACK]\n{text}\n")),
                 Err(_) => result.push_str("[RESULT_READBACK] not yet written\n"),
             }
@@ -7280,7 +7280,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 .rsplit('/')
                 .next()
                 .unwrap_or(vhd);
-            let find_out = "S:\\find-vhd.txt";
+            let find_out = crate::text_parsing::esp_log_path("find-vhd.txt");
             run_cmd_to_file(
                 &format!(
                     "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{file} echo %d > {find_out}"
@@ -7307,7 +7307,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             result.push_str(&format!("attach-vhd {real_vhd}: code={code}\n"));
-            if let Ok(text) = std::fs::read_to_string("S:\\attach-vhd-out.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("attach-vhd-out.txt")) {
                 result.push_str(&format!("[ATTACH_VHD]\n{text}\n"));
             }
             // 枚举 marker.txt 所在盘符（VHD 卷自动分配的盘符）
@@ -7316,10 +7316,10 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             let mut actual = String::new();
-            if let Ok(text) = std::fs::read_to_string("S:\\find-marker.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("find-marker.txt")) {
                 actual = text.lines().next().unwrap_or("").trim().to_string();
             }
-            let _ = std::fs::write("S:\\pe-drive.txt", &actual);
+            let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-drive.txt"), &actual);
             result.push_str(&format!("attach-vhd: actual drive = {actual}\n"));
             // 诊断：attach 后实际盘符卷内容
             if !actual.is_empty() {
@@ -7327,7 +7327,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                     &format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"),
                     None,
                 );
-                if let Ok(text) = std::fs::read_to_string("S:\\dir-attached.txt") {
+                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("dir-attached.txt")) {
                     result.push_str(&format!("[DIR_ATTACHED {actual}:]\n{text}\n"));
                 }
             }
@@ -7337,10 +7337,10 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             // 目标 WIM 已存在时 dism 会追加索引，先删除保证单索引
             let d = resolve_drive(drive);
             let _ = std::fs::remove_file(wim);
-            let out = "S:\\backup-out.txt";
+            let out = crate::text_parsing::esp_log_path("backup-out.txt");
             // 备份进度 GUI：后台窗口线程读 DISM 输出文件实时刷新，
             // 不弹 cmd 黑窗、不阻塞界面（见 recovery_progress.rs）。
-            let progress = crate::recovery_progress::spawn(PathBuf::from(out));
+            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()));
             // 生成 DISM 排除配置（Parallels 卷根占位符/临时目录/回收站/浏览器缓存），
             // 写到 PE 的 X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
             // 路径拼进 cmd 字符串，可能含空格，必须加引号。
@@ -7369,7 +7369,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
         ["delete-file", path] => {
             // 删除文件（还原验证：删掉后 restore 应恢复它）
             let p = resolve_path(path);
-            let out = "S:\\delete-out.txt";
+            let out = crate::text_parsing::esp_log_path("delete-out.txt");
             run_cmd_to_file(&format!("cmd /c del /q {p} > {out} 2>&1"), None);
             if let Ok(text) = std::fs::read_to_string(out) {
                 result.push_str(&format!("[DELETE_FILE {p}]\n{text}\n"));
@@ -7387,17 +7387,17 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             let mut actual = String::new();
-            if let Ok(text) = std::fs::read_to_string("S:\\find-drive.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("find-drive.txt")) {
                 actual = text.lines().next().unwrap_or("").trim().to_string();
             }
-            let _ = std::fs::write("S:\\pe-drive.txt", &actual);
+            let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-drive.txt"), &actual);
             result.push_str(&format!("find-drive {marker}: actual drive = {actual}\n"));
             if !actual.is_empty() {
                 run_cmd_to_file(
                     &format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"),
                     None,
                 );
-                if let Ok(text) = std::fs::read_to_string("S:\\dir-attached.txt") {
+                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("dir-attached.txt")) {
                     result.push_str(&format!("[DIR_ATTACHED {actual}:]\n{text}\n"));
                 }
             }
@@ -7424,10 +7424,10 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             ];
             for (label, command) in cases {
                 let out = match label.chars().nth(1) {
-                    Some('1') => "S:\\diag1.txt",
-                    Some('2') => "S:\\diag2.txt",
-                    Some('3') => "S:\\diag3.txt",
-                    _ => "S:\\diag4.txt",
+                    Some('1') => crate::text_parsing::esp_log_path("diag1.txt"),
+                    Some('2') => crate::text_parsing::esp_log_path("diag2.txt"),
+                    Some('3') => crate::text_parsing::esp_log_path("diag3.txt"),
+                    _ => crate::text_parsing::esp_log_path("diag4.txt"),
                 };
                 run_cmd_to_file(command, None);
                 result.push_str(&format!("[{label}]\n"));
@@ -7442,9 +7442,9 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
         ["restore", wim, drive] => {
             // dism 应用 WIM 到卷
             let d = resolve_drive(drive);
-            let out = "S:\\restore-out.txt";
+            let out = crate::text_parsing::esp_log_path("restore-out.txt");
             // 还原进度 GUI（同备份：后台窗口线程读 DISM 输出实时刷新）。
-            let progress = crate::recovery_progress::spawn(PathBuf::from(out));
+            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()));
             run_cmd_to_file_timeout(
                 &format!(
                     "cmd /c dism.exe /Apply-Image /ImageFile:{wim} /Index:1 /ApplyDir:{d}:\\ > {out} 2>&1"
@@ -7462,7 +7462,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
         ["verify-file", path] => {
             // 检查文件是否存在（PE 精简版无 PowerShell，用 cmd if exist）
             let p = resolve_path(path);
-            let out = "S:\\verify-file-out.txt";
+            let out = crate::text_parsing::esp_log_path("verify-file-out.txt");
             run_cmd_to_file(
                 &format!("cmd /c if exist {p} (echo FOUND) else (echo MISSING) > {out} 2>&1"),
                 None,
@@ -7480,10 +7480,10 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             let mut actual = String::new();
-            if let Ok(text) = std::fs::read_to_string("S:\\find-system.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("find-system.txt")) {
                 actual = text.lines().next().unwrap_or("").trim().to_string();
             }
-            let _ = std::fs::write("S:\\pe-drive.txt", &actual);
+            let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-drive.txt"), &actual);
             result.push_str(&format!("find-system-drive: system drive = {actual}\n"));
         }
         ["format", drive] | ["format", drive, "--allow-system"] => {
@@ -7502,7 +7502,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                     None,
                 );
                 let mut is_system = false;
-                if let Ok(text) = std::fs::read_to_string("S:\\format-check.txt") {
+                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("format-check.txt")) {
                     is_system = text.contains("SYS");
                 }
                 if is_system && !allow_system {
@@ -7520,7 +7520,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                         300000,
                     );
                     result.push_str(&format!("format {d_upper}: code={code}\n"));
-                    if let Ok(text) = std::fs::read_to_string("S:\\format-out.txt") {
+                    if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("format-out.txt")) {
                         result.push_str(&format!("[FORMAT {d_upper}]\n{text}\n"));
                     }
                 }
@@ -7541,7 +7541,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             let mut is_system = false;
-            if let Ok(text) = std::fs::read_to_string("S:\\bcdboot-check.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-check.txt")) {
                 is_system = text.contains("SYS");
             }
             if is_system {
@@ -7553,7 +7553,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                     None,
                 );
                 let mut old_partition = String::new();
-                if let Ok(text) = std::fs::read_to_string("S:\\bcdboot-def-before.txt") {
+                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-def-before.txt")) {
                     for line in text.lines() {
                         let t = line.trim();
                         if let Some(rest) = t.strip_prefix("device") {
@@ -7577,7 +7577,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                     300000,
                 );
                 result.push_str(&format!("bcdboot {d}: /s {esp_letter}: code={code}\n"));
-                if let Ok(text) = std::fs::read_to_string("S:\\bcdboot-out.txt") {
+                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-out.txt")) {
                     result.push_str(&format!("[BCDBOOT {d}]\n{text}\n"));
                 }
                 // 恢复 default 与菜单顺序：按原默认卷在 BCD 中找回真实条目并设回默认/第一
@@ -7588,7 +7588,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                     );
                     let mut real_guid = String::new();
                     let mut cur_guid = String::new();
-                    if let Ok(text) = std::fs::read_to_string("S:\\bcdboot-after.txt") {
+                    if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-after.txt")) {
                         for line in text.lines() {
                             let t = line.trim();
                             // bcdedit 语言：中文系统输出"标识符"，英文系统输出"identifier"
@@ -7627,7 +7627,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                             ),
                             None,
                         );
-                        if let Ok(text) = std::fs::read_to_string("S:\\bcdboot-restore.txt") {
+                        if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-restore.txt")) {
                             result.push_str(&format!("[DEFAULT_RESTORE {real_guid}] {text}\n"));
                         }
                     } else {
@@ -7656,7 +7656,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 None,
             );
             let mut guid = String::new();
-            if let Ok(text) = std::fs::read_to_string("S:\\pe-addsec-create.txt") {
+            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-addsec-create.txt")) {
                 result.push_str(&format!("[ADD_SECONDARY_CREATE]\n{text}\n"));
                 // 提取 {guid}（bcdedit 输出 "The entry {xxxx-...} was successfully created."）
                 if let Some(start) = text.find('{')
@@ -7710,8 +7710,8 @@ fn pe_task_execute() -> bool {
     // 0. 先挂载 ESP 到 S:——任务配置就存在 S:\pe-task.txt，PE 启动时
     //    S: 尚未挂载，必须先挂载才能读到配置。
     let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-    let task_file = "S:\\pe-task.txt";
-    let Ok(config) = std::fs::read_to_string(task_file) else {
+    let task_file = esp_log_path("pe-task.txt");
+    let Ok(config) = std::fs::read_to_string(task_file.as_str()) else {
         return false; // 无配置：正常显示 PE 桌面
     };
     let mut reboot = false;
@@ -7720,16 +7720,16 @@ fn pe_task_execute() -> bool {
         let action = line.trim();
         execute_pe_task_line(action, &mut result, &mut reboot);
     }
-    let _ = std::fs::write("S:\\pe-task-result.txt", &result);
+    let _ = std::fs::write(esp_log_path("pe-task-result.txt"), &result);
     // 配置标记完成（防下次重复执行）
-    let _ = std::fs::rename(task_file, "S:\\pe-task.txt.done");
+    let _ = std::fs::rename(task_file, esp_log_path("pe-task.txt.done"));
     // 2026-09-29：修掉「PE 挂上 S: 后从不卸载」。任务已跑完、结果已落盘，
     // 再留着 S: 只会让 Windows 侧出现「刚自动打开的 S: 窗口内容突然不可访问」
     // （自动播放弹窗是 Windows 启动后 explorer 起来的，窗口指向的盘符已不存在）。
     // 卸载同样不看退出码——`mountvol /D` 的返回码在实机上同样不可信。
     let unmount_code = run_cmd_to_file("mountvol.exe S: /D", None);
     result = format!("{result}\n[UNMOUNT_ESP] mountvol S: /D code={unmount_code}\n");
-    let _ = std::fs::write("S:\\pe-task-result.txt", &result);
+    let _ = std::fs::write(esp_log_path("pe-task-result.txt"), &result);
     reboot
 }
 
@@ -7814,7 +7814,7 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
         };
         if let Some(btn_id) = auto_click_id {
             PE_AUTO_CLICK.store(true, std::sync::atomic::Ordering::SeqCst);
-            let _ = std::fs::rename("S:\\pe-click.txt", "S:\\pe-click.txt.done");
+            let _ = std::fs::rename(crate::text_parsing::esp_log_path("pe-click.txt"), crate::text_parsing::esp_log_path("pe-click.txt.done"));
             PostMessageW(window, WM_COMMAND, btn_id as WParam, 0);
         }
         let mut message = Msg {

@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.0**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.1**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -208,6 +208,21 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
+### v1.8.1（2026-09-29 深夜）：方案 A 门槛通过，ESP 日志迁出根目录
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| **方案 A（卷 GUID 路径、零临时盘符）能否实施** | ✅ **能，阻塞已排除** | E3：两条路径 BCD 副本 SHA-256 完全相同 `976951da…`；E1：`set {bootmgr} default` 后 `/enum` 输出 `fc /b` 逐字节无差异（**写操作不做归一化**）；E2：`/set` `/create` `/delete` 全通过；E4：verbatim 卷路径可直接枚举 ESP 文件 |
+| ESP 根 38 个日志的来源 | ✅ 查清 | 产品 `run_cmd_to_file(...) > S:\xxx.txt` 取证输出 + 我的探针；必须留根的只有 `pe-task.txt`/`.done`/`pe-task-result.txt` 三个控制通道 |
+| 日志迁移 | ✅ | `text_parsing::esp_log_path()`：控制通道留 `S:\` 根，其余 47 处迁到 `S:\BackupRestore\logs\`；单测锁约定 |
+| ESP 既有残留清理 | ✅ | 38 个 `.txt`/`.log` 全删（用 verbatim 卷路径，`del` 不吃这种路径）；复核 ESP 根只剩 `pe-exit-guid.txt` + `EFI\` + `System Volume Information`，`BCD_OK=True` |
+| 快照合理清理 | ✅ | 7 → 2（用户授权），宿主可用 152 → 180 GiB |
+| 产物 | v1.8.1 = 1,779,200 B | SHA-256 `605c32a0…760f1f16` |
+
+> 一度像风险信号的"写后文件哈希不同"已定性：差异全在偏移 `0x30` 起的固件描述/路径缓存区，
+> 属显示层缓存而非语义字段。`device` 显示 `partition=\Device\HarddiskVolume2` 只是因为
+> 当时没挂盘符，同一次运行里挂着 S: 时两种路径都显示 `partition=S:`。
+
 ### v1.8.0（2026-09-29 晚）：主路径首次在产品内完整跑通，`mountvol` 退出码坑修掉
 
 | 项 | 状态 | 证据 |

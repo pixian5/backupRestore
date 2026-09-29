@@ -740,6 +740,28 @@ pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
 /// bcdedit 静默作用于 `{default}`」立的（真实事故：曾把 Windows 11 启动项 device 改成
 /// ramdisk）。放任别名进去，`{default}` 就从同一个口子混进来了。所以这里只认白名单里的
 /// 一个，且白名单里**故意不放 `{default}`/`{current}`/`{ntldr}` 这些指向用户启动项的东西**。
+/// ESP 上本项目**取证/日志**文件的目录。
+///
+/// 2026-09-29 实测：`S:\` 根目录堆了 38 个 `.txt`/`.log`（约 93 KB，跨度 09-11~09-26）。
+/// ESP 是引导分区、容量百 MB 级，根目录还混着 `EFI\`；固件每次枚举根目录都要扫过它们。
+/// 这些文件**没有一个是控制通道**：PE 启动时真正需要固定路径的只有
+/// `pe-task.txt`/`.done`/`pe-task-result.txt`（见 [`ESP_CONTROL_FILES`]）。
+pub(crate) const ESP_LOG_DIR: &str = "S:\\BackupRestore\\logs";
+
+/// 必须留在 `S:\` 根的控制通道文件名（PE 启动最早期按固定路径读取）。
+pub(crate) const ESP_CONTROL_FILES: [&str; 3] = ["pe-task.txt", "pe-task.txt.done", "pe-task-result.txt"];
+
+/// 取证实录/日志在 ESP 上的路径。子目录不存在则顺带建好——调用方清一色是
+/// `let _ = std::fs::write(...)`，目录缺失会静默失败，2026-09-29 已为这类静默失败
+/// 付过好几轮排查代价。
+pub(crate) fn esp_log_path(name: &str) -> String {
+    if ESP_CONTROL_FILES.contains(&name) {
+        return format!("S:\\{name}");
+    }
+    let _ = std::fs::create_dir_all(ESP_LOG_DIR);
+    format!("{ESP_LOG_DIR}\\{name}")
+}
+
 pub(crate) fn is_well_known_identifier(value: &str) -> bool {
     value.trim().eq_ignore_ascii_case("{bootmgr}")
 }
@@ -1433,6 +1455,22 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert!(mountvol_listing_has_volume(&format!("  \r\n{real}  \r\n")));
         // 只有空白字符也等于没有卷
         assert!(!mountvol_listing_has_volume("   \t  "));
+    }
+
+    /// 锁住「控制通道留 ESP 根、其余日志进子目录」这条约定。
+    /// 这条不是美观问题：PE 启动最早期按固定路径读 S:\pe-task.txt，改目录会让
+    /// 整个自动执行链断掉；而 ESP 是引导分区，根目录堆日志会拖慢固件枚举。
+    /// （2026-09-29 实测根目录已堆了 38 个 txt/log，约 93 KB。）
+    #[test]
+    fn esp_log_path_keeps_control_channel_at_the_root() {
+        for control in ["pe-task.txt", "pe-task.txt.done", "pe-task-result.txt"] {
+            let p = esp_log_path(control);
+            assert_eq!(p, format!("S:\\{control}"));
+        }
+        for log in ["diag1.txt", "bcd-all.txt", "exit-pe.log"] {
+            let p = esp_log_path(log);
+            assert!(p.starts_with("S:\\BackupRestore\\logs\\"), "{p} 应在子目录");
+        }
     }
 
     #[test]
