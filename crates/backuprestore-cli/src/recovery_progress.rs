@@ -44,6 +44,10 @@ const ID_STAGE: i32 = 1;
 const ID_BAR: i32 = 2;
 const ID_DETAIL: i32 = 3;
 const TIMER_ID: usize = 1;
+const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
+const FW_BOLD: i32 = 700;
+const DEFAULT_CHARSET: u32 = 1;
+const CLEARTYPE_QUALITY: u32 = 5;
 
 /// 与窗口线程共享的进度状态：当前活动日志路径（主线程切换日志时更新）。
 pub struct ProgressShared {
@@ -128,6 +132,49 @@ const ICC_PROGRESS_CLASS: u32 = 0x0000_0020;
 
 const IDC_ARROW: *const u16 = 32512u16 as *const u16;
 
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn CreateFontW(
+        height: i32,
+        width: i32,
+        escapement: i32,
+        orientation: i32,
+        weight: i32,
+        italic: u32,
+        underline: u32,
+        strike_out: u32,
+        char_set: u32,
+        output_precision: u32,
+        clipping_precision: u32,
+        quality: u32,
+        pitch_and_family: u32,
+        face_name: *const u16,
+    ) -> Hwnd;
+}
+
+/// 创建大号中文字体（负高度 = 字符高度；微软雅黑优先，缺失时系统回退）。
+fn create_font(height: i32, bold: bool) -> Hwnd {
+    let face = encode("Microsoft YaHei");
+    unsafe {
+        CreateFontW(
+            height,
+            0,
+            0,
+            0,
+            if bold { FW_BOLD } else { 0 },
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            0,
+            0,
+            CLEARTYPE_QUALITY,
+            0,
+            face.as_ptr(),
+        )
+    }
+}
+
 /// 读取日志增量新行并分类更新窗口控件。返回（阶段、百分比、详情）。
 fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let path = shared.log_path.lock().unwrap().clone();
@@ -150,13 +197,15 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         *offset = 0;
         return;
     }
-    let mut buffer = String::new();
-    if file.read_to_string(&mut buffer).is_err() {
-        // 可能为 UTF-16 或正在写入，回退到读原始字节后按字节过滤。
+    let mut raw = Vec::new();
+    if file.read_to_end(&mut raw).is_err() {
         return;
     }
     *offset = size;
     drop(file);
+    // 中文 Windows 的 DISM 输出是 GBK 编码，不是合法 UTF-8。必须用有损解码，
+    // 否则 read_to_string 一旦遇到非 UTF-8 字节就整体失败，窗口永远冻结在初始态。
+    let buffer = String::from_utf8_lossy(&raw);
 
     let mut latest_stage: Option<String> = None;
     let mut latest_percent: Option<u32> = None;
@@ -202,24 +251,28 @@ unsafe extern "system" fn window_proc(
 ) -> LResult {
     match message {
         WM_CREATE => unsafe {
-            // 阶段文本
+            // 大号字体：阶段标题加粗醒目，详情保持可读。
+            let stage_font = create_font(-30, true);
+            let detail_font = create_font(-20, false);
+            let gui_font = GetStockObject(DEFAULT_GUI_FONT);
+            // 阶段文本（大号加粗）
             let stage = CreateWindowExW(
                 0,
                 encode("Static").as_ptr(),
                 encode("正在准备恢复环境…").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                16,
-                16,
-                640,
-                30,
+                32,
+                28,
+                756,
+                48,
                 hwnd,
                 null_mut(),
                 GetModuleHandleW(null()),
                 null_mut(),
             );
-            let font = GetStockObject(DEFAULT_GUI_FONT);
+            let _ = gui_font;
             if !stage.is_null() {
-                SendMessageW(stage, WM_SETFONT, font as usize, 1);
+                SendMessageW(stage, WM_SETFONT, stage_font as usize, 1);
             }
             // 进度条
             let bar = CreateWindowExW(
@@ -227,10 +280,10 @@ unsafe extern "system" fn window_proc(
                 encode("msctls_progress32").as_ptr(),
                 null(),
                 WS_CHILD | WS_VISIBLE | WS_BORDER,
-                16,
-                56,
-                640,
-                26,
+                32,
+                92,
+                756,
+                36,
                 hwnd,
                 null_mut(),
                 GetModuleHandleW(null()),
@@ -240,25 +293,25 @@ unsafe extern "system" fn window_proc(
                 SendMessageW(bar, PBM_SETRANGE32, 0, 100);
                 SendMessageW(bar, PBM_SETPOS, 0, 0);
             }
-            // 详情（多行只读）
+            // 详情（多行只读，大区域）
             let detail = CreateWindowExW(
                 0,
                 encode("Edit").as_ptr(),
                 null(),
                 WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                16,
-                94,
-                640,
-                180,
+                32,
+                144,
+                756,
+                314,
                 hwnd,
                 null_mut(),
                 GetModuleHandleW(null()),
                 null_mut(),
             );
             if !detail.is_null() {
-                SendMessageW(detail, WM_SETFONT, font as usize, 1);
+                SendMessageW(detail, WM_SETFONT, detail_font as usize, 1);
             }
-            SetTimer(hwnd, TIMER_ID, 500, None);
+            SetTimer(hwnd, TIMER_ID, 2000, None);
             0
         },
         WM_TIMER => unsafe {
@@ -341,10 +394,10 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             class_name.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            30,
-            30,
-            680,
-            300,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            820,
+            500,
             null_mut(),
             null_mut(),
             GetModuleHandleW(null()),

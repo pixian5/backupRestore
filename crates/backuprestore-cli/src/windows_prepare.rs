@@ -542,6 +542,32 @@ fn prepare_task(
             return Err(err(conflict.message()));
         }
     }
+    // RE 暂存卷（迁移目标）：默认 = 镜像卷，用户可用 --re-scratch-drive 改选。
+    // 必须在 payload 构建之前确定：env 里的 RECOVERY_* 与 WINRE_EVACUATED 要先于
+    // DISM 注入烘焙进 Winre.wim，否则 WinRE 读到旧 env 会在执行层被 F1 二次拒绝
+    // （2026-09-29 实机踩坑：迁出曾放在 prepare_payload 之后，既赶不上关机也改不进 WIM）。
+    let scratch = if evacuation_required {
+        let candidate = match options.re_scratch_drive {
+            Some(letter) => volume_identity(letter)?,
+            None => image_volume.clone(),
+        };
+        // 暂存卷不能与「被迁出的卷」同分区：备份=源卷，还原=目标卷。
+        let forbidden = match options.operation {
+            Operation::Backup => source.clone(),
+            _ => target.clone(),
+        };
+        if candidate.same_partition(&forbidden) {
+            let message = if options.operation == Operation::Backup {
+                "RE 暂存卷不能与备份源为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
+            } else {
+                "RE 暂存卷不能与还原目标为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
+            };
+            return Err(err(message));
+        }
+        Some(candidate)
+    } else {
+        None
+    };
     validate_operation_inputs(
         &source,
         &target,
@@ -655,6 +681,7 @@ fn prepare_task(
         &options,
         &prepare_log,
         &bootstrap_bcd,
+        scratch.as_ref(),
     );
     let _ = fs::remove_file(&bootstrap_bcd);
     if let Err(error) = result {
@@ -663,27 +690,6 @@ fn prepare_task(
             let _ = append_log(&prepare_log, &format!("Preparation failed: {error}"));
         }
         return Err(error);
-    }
-    // F1/F3 迁出：备份源或还原目标承载注册 WinRE 时，把「续跑启动源」迁到 RE 暂存卷。
-    // 默认选镜像卷（WIM 所在卷），用户可用 --re-scratch-drive 改选任意持久可写且 ≠ 源/目标的卷。
-    if evacuation_required {
-        let scratch = match options.re_scratch_drive {
-            Some(letter) => volume_identity(letter)?,
-            None => image_volume.clone(),
-        };
-        // 暂存卷不能与「被迁出的卷」同分区：备份=源卷，还原=目标卷。
-        let forbidden = match options.operation {
-            Operation::Backup => source.clone(),
-            _ => target.clone(),
-        };
-        if scratch.same_partition(&forbidden) {
-            return Err(err(if options.operation == Operation::Backup {
-                "RE 暂存卷不能与备份源为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
-            } else {
-                "RE 暂存卷不能与还原目标为同一分区；请通过 --re-scratch-drive 另选一个持久可写卷"
-            }));
-        }
-        crate::evacuate_registered_winre(&scratch, &task_dir, &prepare_log)?;
     }
     // recoveryLog 指向镜像同目录（如 E:\Recovery.log），与 WIM 并排便于查看；
     // GUI「刷新任务状态」据此显示。备份/还原都会把日志写到镜像同目录。
@@ -725,6 +731,7 @@ fn prepare_payload(
     options: &PrepareOptions,
     log: &Path,
     bootstrap_bcd: &Path,
+    scratch: Option<&VolumeIdentity>,
 ) -> Result<(), TaskError> {
     let task_dir = store.task_dir(&task.task_id)?;
     let payload = task_dir.join("payload");
@@ -765,7 +772,10 @@ fn prepare_payload(
     winre_payload::stage_static_payload(executable_dir, &payload)?;
 
     let env_path = payload.join("RecoveryTask.env");
-    write_recovery_env(&env_path, executable_dir, task, recovery, efi, options)?;
+    // 迁出任务：env 的 RECOVERY_* 直接指向 RE 暂存卷（先于注入烘焙进 WIM），
+    // WinRE 侧据此挂载暂存卷、执行层 F1 放宽也据此放行。
+    let env_recovery = scratch.unwrap_or(recovery);
+    write_recovery_env(&env_path, executable_dir, task, env_recovery, efi, options)?;
     fs::copy(store.task_path(&task.task_id)?, payload.join("task.json"))?;
     let recovery_hash = sha256_file(payload.join("Recovery.exe"))?;
     let task_hash = sha256_file(payload.join("task.json"))?;
@@ -773,6 +783,9 @@ fn prepare_payload(
         &env_path,
         &[("ORIGINAL_WINRE_SHA256", original_hash.as_str())],
     )?;
+    if scratch.is_some() {
+        append_env(&env_path, &[("WINRE_EVACUATED", "1")])?;
+    }
 
     let staged = stage.join("Winre.wim");
     fs::copy(&registered_wim, &staged)?;
@@ -844,7 +857,15 @@ fn prepare_payload(
         )?;
         Ok(())
     };
-    if let Err(error) = (|| {
+    if let Some(scratch) = scratch {
+        // 迁出：把注入后的 payload 部署到 RE 暂存卷并把注册指向它（disable →
+        // setreimage 暂存卷 → enable）。注册卷（备份源/还原目标）的 Winre.wim
+        // 全程保持干净原件、不再被注入件替换（docs/20260928-233000 §2.1 v2 修订）。
+        if let Err(error) = crate::evacuate_registered_winre(scratch, task_dir.as_path(), log) {
+            let _ = restore_registered();
+            return Err(error);
+        }
+    } else if let Err(error) = (|| {
         fs::copy(&staged, &registered_wim)?;
         backuprestore_core::verify_sha256(&registered_wim, &staged_hash)
     })() {

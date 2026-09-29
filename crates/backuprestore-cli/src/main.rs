@@ -2057,6 +2057,10 @@ fn ensure_registered_is_payload(
         append_log(log, "Registered WinRE already hosts this task's payload")?;
         return Ok(());
     }
+    // 暂存卷（镜像卷等）通常没有 Recovery\WindowsRE 目录，先建父目录再复制。
+    if let Some(parent) = registered.parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::copy(&staged, &registered)?;
     backuprestore_core::verify_sha256(&registered, &manifest.staged_winre_sha256)?;
     append_log(log, "Task payload re-registered as WinRE for resumption")?;
@@ -2143,29 +2147,25 @@ pub(crate) fn evacuate_registered_winre(
     // 把注入后的 payload 复制到 RE 暂存卷的注册位置（复用既有 ensure_registered_is_payload）。
     ensure_registered_is_payload(scratch, task_dir, &manifest, log)?;
     run_logged("reagentc.exe", &["/disable"], log)?;
-    run_logged(
+    // setreimage/enable 失败时必须重新 /enable 恢复注册，否则系统停在
+    // 「WinRE 已禁用」态，后续所有 prepare 都会被拒（2026-09-29 实机踩坑）。
+    let rearm = run_logged(
         "reagentc.exe",
-        &["/setreimage", &format!("/path{}:\\Recovery\\WindowsRE", letter)],
+        &[
+            "/setreimage",
+            "/path",
+            &format!("{}:\\Recovery\\WindowsRE", letter),
+        ],
         log,
-    )?;
-    run_logged("reagentc.exe", &["/enable"], log)?;
-    // 把 env 的 RECOVERY_* 改写指向暂存卷，并标记已迁出。
-    let env_path = task_dir.join("payload").join("RecoveryTask.env");
-    let mut values = read_env_file(&env_path)?;
-    for key in [
-        "RECOVERY_VOLUME_GUID",
-        "RECOVERY_DISK_GUID",
-        "RECOVERY_PARTITION_GUID",
-        "RECOVERY_DISK_NUMBER",
-        "RECOVERY_PARTITION_NUMBER",
-        "RECOVERY_PARTITION_OFFSET",
-        "RECOVERY_PARTITION_SIZE",
-    ] {
-        values.remove(key);
+    )
+    .and_then(|_| run_logged("reagentc.exe", &["/enable"], log));
+    if let Err(error) = rearm {
+        let _ = run_logged("reagentc.exe", &["/enable"], log);
+        return Err(error);
     }
-    crate::windows_prepare::insert_identity(&mut values, "RECOVERY", scratch);
-    values.insert("WINRE_EVACUATED".to_string(), "1".to_string());
-    write_env_values(&env_path, &values)?;
+    // 注意：不要在这里改写 env——env 的 RECOVERY_*/WINRE_EVACUATED 已在注入前烘焙，
+    // manifest 也记录了当时的哈希；事后重写会让 WinRE 侧哈希校验失配
+    // （2026-09-29 实机踩坑：sha256 mismatch → 任务被拒）。
     append_log(
         log,
         &format!(
@@ -2229,48 +2229,48 @@ pub(crate) fn finalize_evacuated_winre(
         }
     }
     // 把 OS 的 WinRE 注册指回它自己的干净原件，再回收暂存卷。
+    // 备份=源卷、还原=目标卷，逻辑一致：镜像/原件里的 ReAgent.xml 已指向自身，
+    // 但 BCD 的 recoverysequence 仍指向 RE 暂存卷，必须用「离线目标自带的全路径
+    // reagentc」把注册指回自身（WinRE 里没有裸 reagentc.exe，2026-09-27 实机验证）。
     let mut scratch_cleaned = false;
-    match operation {
-        backuprestore_core::Operation::Backup => {
-            // 备份 finalize 仍在 WinRE 内、源卷离线：用离线 reagentc 把源 Windows 指回自身
-            // 干净 WinRE。/disable 在 WinRE 内对离线目标可能不被支持，忽略其错误即可。
-            let wletter = crate::windows_prepare::ensure_volume_mounted(registered, 'W', log)?;
-            let win_dir = format!(r"{}:\Windows", wletter);
-            let winre_dir = format!(r"{}:\Recovery\WindowsRE", wletter);
-            let _ = run_logged(
-                "reagentc.exe",
-                &["/disable", &format!("/target{win_dir}")],
-                log,
-            );
-            if let Err(error) = run_logged(
-                "reagentc.exe",
-                &[
-                    "/setreimage",
-                    &format!("/path{winre_dir}"),
-                    &format!("/target{win_dir}"),
-                ],
+    if matches!(
+        operation,
+        backuprestore_core::Operation::Backup
+            | backuprestore_core::Operation::RestoreExisting
+            | backuprestore_core::Operation::CreateSecondary
+    ) {
+        let wletter = crate::windows_prepare::ensure_volume_mounted(registered, 'W', log)?;
+        let win_dir = format!(r"{}:\Windows", wletter);
+        let winre_dir = format!(r"{}:\Recovery\WindowsRE", wletter);
+        let offline_reagentc = format!(r"{}:\Windows\System32\reagentc.exe", wletter);
+        // /disable 在 WinRE 内对离线目标可能不被支持（rc=50），忽略其错误即可。
+        let _ = run_logged(
+            &offline_reagentc,
+            &["/disable", "/target", &win_dir],
+            log,
+        );
+        if let Err(error) = run_logged(
+            &offline_reagentc,
+            &["/setreimage", "/path", &winre_dir, "/target", &win_dir],
+            log,
+        )
+        .and_then(|_| {
+            run_logged(
+                &offline_reagentc,
+                &["/enable", "/target", &win_dir],
                 log,
             )
-            .and_then(|_| {
-                run_logged("reagentc.exe", &["/enable", &format!("/target{win_dir}")], log)
-            }) {
-                append_log(
-                    log,
-                    &format!(
-                        "WinRE finalize: offline re-registration failed ({error}); \
-                         keeping scratch volume so WinRE still boots from it"
-                    ),
-                )?;
-            } else {
-                scratch_cleaned = true;
-            }
-        }
-        backuprestore_core::Operation::RestoreExisting
-        | backuprestore_core::Operation::CreateSecondary => {
-            // 还原目标离线，镜像自带 ReAgent.xml 已指向自身；注册由镜像承担，无需离线 reagentc。
+        }) {
+            append_log(
+                log,
+                &format!(
+                    "WinRE finalize: offline re-registration failed ({error}); \
+                     keeping scratch volume so WinRE still boots from it"
+                ),
+            )?;
+        } else {
             scratch_cleaned = true;
         }
-        backuprestore_core::Operation::Probe => {}
     }
     // 回收 RE 暂存卷上的临时 WinRE（任务目录里的 stage/original 保留作审计）。
     if scratch_cleaned {
