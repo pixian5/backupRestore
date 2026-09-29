@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.4**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.7**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -208,7 +208,32 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
-### ✅ restore-existing 闭环也 PASS（2026-09-30 01:00，v1.8.4 实机）
+### ✅ 断电续跑闭环也 PASS（2026-09-30 03:16，v1.8.7 实机）
+
+备份、还原、断电续跑三条都在新 PE 式通道里跑通了。
+
+| 阶段 | 结果 |
+|---|---|
+| 故障点 | `power-loss-image-applied`（镜像灌完、启动项未修的最深断电点） |
+| 中断落盘 | `stage=image-applied` / `progress=75`（不清理，模拟真实断电） |
+| GUI 检测 | `Detected durable interrupted task … resuming` |
+| 重武装 | `one-shot bootsequence re-armed for resumption` |
+| 续跑完成 | `Boot entry cleaned; task marked successful` |
+| 内容一致 | T: 还原后 **31,457,301 字节与镜像逐字节一致**，marker 全消失 |
+| 终态 | BCD 无本项目对象、无 `bootsequence`、暂存目录已清空、注册位未动 |
+
+这条路上连抓两个真缺陷：
+
+1. **v1.8.5**：`create_entry` 按设计在 DISM 注入前跑，`boot-entry.json` 记的是注入前
+   哈希，`rearm()` 永远拒绝重武装——**续跑此前对所有任务都是死的**。
+2. **v1.8.7**：`restore-existing` 的 source 与 target 是**同一个分区**，被格式化后
+   source 序列号也变，而 TARGET 早为此放行、SOURCE 却一直传 `false`。同一个分区
+   两种标准，自相矛盾。
+
+> ⚠️ **仍未闭环**：容量/性能（T: 5 GB 实占 54 MB，DISM 都是秒级）、
+> `create-secondary`（双系统）、Secure Boot、新进度窗口（v1.8.5）还没在 PE 里实看、
+> `power-loss-target-erased` / `power-loss-boot-repaired` 另两个断电点。
+
 
 备份、还原两个方向都在新 PE 式通道里跑通了。
 
