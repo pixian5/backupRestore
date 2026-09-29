@@ -203,6 +203,20 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
+### ⚠️ v1.7.11 PE 式自建启动通道：**代码已落地但实机阻塞，暂不可用**
+
+| 项 | 状态 |
+|---|---|
+| 改造内容 | 载荷 WIM/SDI 放镜像卷 `BackupRestoreRE\`、`/copy` 注册 WinRE 条目及其设备选项对象改指镜像卷、一次性 `bootsequence`、`boot-entry.json` 簿记、rearm/disarm；同时删掉旧通道的迁出 / `WINRE_HOME_*` / 待回家收尾 / Plan D / F1·F3 / servicing 竞态那一整套 |
+| 编译与单测 | ✅ macOS + aarch64-pc-windows-msvc 双目标通过，69 单测全绿 |
+| **实机** | ❌ **阻塞**：产品进程内 `bcdedit /set <loader> device ramdisk=…` 稳定报「指定的设备无效」，而同一条命令从 cmd/PowerShell 手工执行立刻成功 |
+| 排查证据 | 见 [docs/20260929-173000-pe-channel-bcdedit-device-ramdisk-blocker.md](docs/20260929-173000-pe-channel-bcdedit-device-ramdisk-blocker.md)（诊断电池 8 条结果 + 10 项已排除假设 + 4 条下一步） |
+| 当前可用版本 | **v1.7.10**（VM 内 `H:\brwork\BackupRestore.exe` 即该构建；注册位在 C:、WinRE 正常） |
+
+> 解决阻塞前，**不要把 v1.7.11 用于任何实机备份/还原**。PoC 机制本身已验证可用
+> （见 [docs/20260929-130000](docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md)：
+> 手工建条目即可启动并跑通完整任务闭环），差的只是「让产品自己完成这条 bcdedit 写入」。
+
 ### 尚未闭环（按严重度）
 
 0. **待用户裁定的两点**（详见 [docs/20260929-103500](docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md) §6）：
