@@ -208,6 +208,34 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
 | 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
+### ✅ 新 PE 式通道第一次完整备份闭环 PASS（2026-09-30 00:28，v1.8.3 实机）
+
+此前 11 个任务全停在 `prepared` 阶段——v1.7.11~v1.8.3 修的一直是**准备层**。
+本轮第一次跑不带 `--no-reboot` 的 prepare，PE 内四步全完成：
+
+```text
+STEP 1/4 准备备份环境（挂载卷、校验）
+STEP 2/4 捕获系统分区镜像（DISM）→ The operation completed successfully
+STEP 3/4 校验镜像并计算哈希、写入元数据
+Boot entry cleaned; task marked successful        ← 新通道特征（旧通道是 WinRE cleanup）
+running wpeutil.exe reboot
+```
+
+| 终态核验 | 结果 |
+|---|---|
+| 镜像可用 | ✅ `F:\brimg\loop-t.wim` 258,200 B，`dism /Get-WimInfo` 可读，索引 1 |
+| 元数据 | ✅ `imageSha256=6a3ee294…`、`capturedUsedBytes=54,374,400`、`programVersion=1.8.3` |
+| BCD：bootsequence | ✅ 已清 |
+| BCD：本项目条目 | ✅ 已删（`/enum all` 无 `BackupRestore` 字样） |
+| 注册位 | ✅ **未动** —— `harddisk0\partition4` / `b69adf69` / Enabled |
+| 回桌面 | ✅ `SYSTEMROOT=C:\Windows` |
+| 任务状态 | ✅ `stage=success` / `progress=100` |
+
+> ⚠️ **这次测得很轻，别当成容量/性能验证**：备份源 T: 是 5 GB 卷但实占仅 54 MB，
+> 镜像 258 KB、DISM 一步 1 秒完成。**未验证**：大容量（v1.7.7 那次是 18.9 GB）、
+> `restore-existing` / `create-secondary` 方向、断电续跑、BCDBoot、Secure Boot，
+> 以及把镜像还原回去做内容比对。
+
 ### v1.8.3（2026-09-30 凌晨）：PE 侧也改零盘符 + 详细日志，方案 A 收尾
 
 | 项 | 状态 |
