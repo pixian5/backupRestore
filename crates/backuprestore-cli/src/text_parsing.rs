@@ -828,6 +828,49 @@ pub(crate) fn esp_volume_prefix() -> String {
     prefix
 }
 
+/// 把命令串里的 `S:` 前缀换成 ESP 根（方案 A 的零盘符改造）。
+///
+/// 只替换**盘符后紧跟反斜杠或字符串结尾**的 `S:`，不动命令里别处的字母 S。
+/// PE 里 `S:` 是本项目自己分配给 ESP 的（`X:` 是 RAM 盘），所以这个替换是安全的。
+///
+/// 放在本模块（而非 `native_gui.rs`）是为了让它在 macOS 的 `cargo test` 里也能跑——
+/// 那个模块在 macOS 上根本不编译。2026-09-29 已经因为「测试放在 `#[cfg(windows)]`
+/// 模块里」漏掉过一个 `ramdisk=` 值畸形的 bug，代价是整整一轮。
+pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
+    // 退回盘符形态时不需要任何替换。
+    if esp_root == r"S:\" {
+        return command.to_string();
+    }
+    let bytes = command.as_bytes();
+    let mut out = String::with_capacity(command.len() + esp_root.len());
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        // 只看「S 后面紧跟冒号」这一种形态，且前后都必须像盘符边界。
+        let is_drive = bytes[index] == b'S'
+            && index + 1 < bytes.len()
+            && bytes[index + 1] == b':'
+            // 前一个字符是分隔符：否则 H:\pe-wim1.wim 里的 S 也会被误换。
+            && (index == 0
+                || matches!(
+                    bytes[index - 1],
+                    b' ' | b'>' | b'(' | b'=' | 0x22 | b'<'
+                ))
+            // 后一个字符是反斜杠或结尾：System32 里的 S 后面跟 y，不算盘符。
+            && (index + 2 >= bytes.len() || bytes[index + 2] == b'\\');
+        if is_drive {
+            // `S:\` 是三个字符（S、冒号、反斜杠），esp_root 自带尾部反斜杠，
+            // 所以三个都要吃掉。少吃掉一个就会留下 `卷根\\` 或 `卷根\:`，
+            // 路径立刻失效（2026-09-29 实测两种都踩到过）。
+            out.push_str(esp_root);
+            index += if index + 2 < bytes.len() && bytes[index + 2] == 92_u8 { 3 } else { 2 };
+            continue;
+        }
+        out.push(bytes[index] as char);
+        index += 1;
+    }
+    out
+}
+
 pub(crate) fn esp_volume_from_listing(listing: &str) -> Option<String> {
     let esp_prefix = esp_volume_prefix();
     // 反斜杠一律用 ASCII 码拼：verbatim 路径里少一层就退化成普通路径，
@@ -1596,6 +1639,49 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// 这不是洁癖：ESP 通常隐藏，而开发用的 ESP 往往已经挂了盘符；挑已挂载的那个，
     /// 等于把用户正在看的盘符当成目标。真正的 ESP 判定（分区类型 GUID + BCD 文件）
     /// 在 `esp_identity_without_drive_letter`，这里只管"没挂载"这一条。
+    /// 方案 A 的命令串改写：只换 ESP 盘符，别处出现字母 S 一律不动。
+    ///
+    /// 曾踩过的坑：`H:\pe-wim1.wim` 这种路径里也带字母 S，无脑替换会把它也改掉，
+    /// 然后 DISM 就去读一个不存在的路径。另一个坑是只换 `S` 不换 `:`，会留下
+    /// 一个孤零零的冒号（`卷根\:`），路径立刻失效。
+    #[test]
+    fn rewrite_s_root_only_replaces_the_esp_drive_letter() {
+        let bs = 92u8 as char;
+        let mut root = String::new();
+        root.push(bs);
+        root.push(bs);
+        root.push('?');
+        root.push(bs);
+        root.push_str("Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}");
+        root.push(bs);
+
+        assert_eq!(
+            rewrite_s_root(r"cmd /c dir S:\ > S:\out.txt 2>&1", &root),
+            format!("cmd /c dir {root} > {root}out.txt 2>&1")
+        );
+        // 别的盘符路径里的 S 不能被碰。
+        assert_eq!(
+            rewrite_s_root(
+                r"cmd /c dism /ImageFile:H:\pe-wim1.wim > S:\diag1.txt 2>&1",
+                &root
+            ),
+            format!("cmd /c dism /ImageFile:H:\\pe-wim1.wim > {root}diag1.txt 2>&1")
+        );
+        // 退回盘符形态时原样返回。
+        assert_eq!(
+            rewrite_s_root(r"cmd /c dir S:\ > S:\out.txt", r"S:\"),
+            r"cmd /c dir S:\ > S:\out.txt"
+        );
+        // S 出现在词中间（如 System32）不能动。
+        assert_eq!(
+            rewrite_s_root(
+                r"cmd /c if exist C:\Windows\System32\Config\SYSTEM echo S > S:\c.txt",
+                &root
+            ),
+            format!("cmd /c if exist C:\\Windows\\System32\\Config\\SYSTEM echo S > {root}c.txt")
+        );
+    }
+
     #[test]
     fn esp_volume_from_listing_ignores_already_mounted_volumes() {
         let bs = 92u8 as char;

@@ -7235,25 +7235,116 @@ fn pe_click_params(action: &str) -> Option<Vec<String>> {
 /// - `restore <wim路径> <盘符>`：dism 应用 WIM 到卷
 /// - `verify-file <路径>`：检查文件是否存在（测试验证）
 /// - `reboot`：全部执行完后自动重启回 Windows
+/// PE 侧拿 ESP 卷路径，**优先零盘符**；拿不到才退回挂 S:。
+///
+/// 返回 `(ESP 的 verbatim 卷路径或 None, 本次是否挂了 S:, 诊断日志)`。
+/// 第三个元素是要并进 PE 任务结果里的明细——2026-09-29 用户的明确要求：
+/// 「增加详细日志帮助发现问题」。这三种失败形态在线码里长得一模一样
+/// （都是后面某一步报错），只有日志能区分：
+///   1. 一次计划任务都没跑成   → 收集器根本没起来
+///   2. 收集器跑命令失败       → 非零退出码
+///   3. 跑成但结果错           → 命令写错
+/// PE 是离线环境、看不到桌面，日志是唯一线索，所以这里把每条分支都说清楚。
+#[cfg(windows)]
+fn esp_store_path_for_pe(detail: &mut String) -> (Option<String>, bool) {
+    if let Some(volume) = crate::windows_prepare::esp_volume_path_for_task() {
+        let mut store = std::path::PathBuf::from(volume);
+        store.push("EFI");
+        store.push("Microsoft");
+        store.push("Boot");
+        store.push("BCD");
+        detail.push_str(&format!(
+            "[ESP] zero drive letter: {}\n",
+            store.display()
+        ));
+        return (Some(store.to_string_lossy().into_owned()), false);
+    }
+    detail.push_str("[ESP] volume GUID not found; falling back to mountvol S: /S\n");
+    let code = run_cmd_to_file("mountvol.exe S: /S", None);
+    if code != 0 {
+        detail.push_str(&format!(
+            "[ESP] mountvol S: /S FAILED with exit code {code}\n"
+        ));
+        return (None, true);
+    }
+    (Some(r"S:\EFI\Microsoft\Boot\BCD".to_string()), true)
+}
+
+/// 把命令串里的 `S:` 前缀换成 ESP 根（方案 A 的零盘符改造）。
+///
+/// 只替换**盘符后紧跟反斜杠或冒号结尾**的 `S:`，不动命令里别处可能出现的字母 S。
+/// PE 里 `S:` 是本项目自己分配给 ESP 的（`X:` 是 RAM 盘），所以这个替换是安全的。
+fn rewrite_s_root(command: &str, esp_root: &str) -> String {
+    if esp_root == "S:\\" {
+        return command.to_string();
+    }
+    let bytes = command.as_bytes();
+    let mut out = String::with_capacity(command.len() + esp_root.len());
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'S' && index + 1 < bytes.len() && bytes[index + 1] == b':' {
+            // 前一个字符不能是盘符/路径的一部分（例如 H:\pe-wim1.wim 里的 S 不算）
+            let prev_is_sep = index == 0 || bytes[index - 1] == b' ' || bytes[index - 1] == b'>'
+                || bytes[index - 1] == b'(' || bytes[index - 1] == b'=';
+            let next_ok = index + 2 >= bytes.len() || bytes[index + 2] == b'\\';
+            if prev_is_sep && next_ok {
+                out.push_str(esp_root);
+                continue;
+            }
+        }
+        out.push(*byte as char);
+    }
+    out
+}
+
 fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
+    // 方案 A（v1.8.3）：整个函数里对 ESP 的访问都走这一个根。
+    // 零盘符时是 verbatim 卷路径，挂载失败才退回 S:。
+    //  computed once: 一个任务行里可能有多次 ESP 访问，每次重算既慢又可能不一致。
+    let mut esp_detail = String::new();
+    let (esp_store, _esp_mounted) = esp_store_path_for_pe(&mut esp_detail);
+    if !esp_detail.is_empty() {
+        result.push_str(&esp_detail);
+    }
+    // 卷根：store 指到 ...\Boot\BCD，回退四级就是卷根。
+    let esp_root = match &esp_store {
+        Some(store) => {
+            let mut path = std::path::PathBuf::from(store);
+            for _ in 0..4 {
+                path.pop();
+            }
+            path.to_string_lossy().into_owned()
+        }
+        None => "S:\\".to_string(),
+    };
     let parts: Vec<&str> = action.split_whitespace().collect();
     match parts.as_slice() {
         [] => {}
         ["reboot"] => *reboot = true,
         ["clean_bootsequence"] => {
-            let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-            let clean_code = run_cmd_to_file(
-                "bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /deletevalue {bootmgr} bootsequence",
-                None,
-            );
+            // 方案 A（v1.8.3）：零盘符优先。PE 里同样不必为了删一个值就分配盘符。
+            let mut detail = String::new();
+            let (store, _mounted) = esp_store_path_for_pe(&mut detail);
+            let clean_code = match &store {
+                Some(store) => run_cmd_to_file(
+                    &format!(
+                        "bcdedit.exe /store \"{store}\" /deletevalue {{bootmgr}} bootsequence"
+                    ),
+                    None,
+                ),
+                None => {
+                    detail.push_str("[clean_bootsequence] no ESP path; skipped\n");
+                    u32::MAX
+                }
+            };
+            result.push_str(&detail);
             result.push_str(&format!(
-                "clean_bootsequence: mountvol={mount_code}, clean={clean_code}\n"
+                "clean_bootsequence: clean={clean_code}\n"
             ));
         }
         ["verify"] => {
             // 取证 A：bootmgr 条目当前状态（确认 bootsequence 已清除）
             run_cmd_to_file(
-                "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1",
+                &rewrite_s_root("cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1", &esp_root),
                 None,
             );
             match std::fs::read_to_string(crate::text_parsing::esp_log_path("verify-bcd-enum.txt")) {
@@ -7261,7 +7352,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 Err(_) => result.push_str("[ENUM_BOOTMGR] read failed\n"),
             }
             // 取证 B：ESP 根目录文件列表
-            run_cmd_to_file("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", None);
+            run_cmd_to_file(&rewrite_s_root("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", &esp_root), None);
             if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("verify-dir.txt")) {
                 result.push_str(&format!("[DIR_S]\n{text}\n"));
             }
@@ -7304,7 +7395,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             let script_file = "X:\\attach-vhd.txt";
             let _ = std::fs::write(script_file, &script);
             let code = run_cmd_to_file(
-                &format!("cmd /c diskpart /s {script_file} > S:\\attach-vhd-out.txt 2>&1"),
+                &rewrite_s_root(&format!("cmd /c diskpart /s {script_file} > S:\\attach-vhd-out.txt 2>&1"), &esp_root),
                 None,
             );
             result.push_str(&format!("attach-vhd {real_vhd}: code={code}\n"));
@@ -7313,7 +7404,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             }
             // 枚举 marker.txt 所在盘符（VHD 卷自动分配的盘符）
             run_cmd_to_file(
-                "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\marker.txt echo %d > S:\\find-marker.txt",
+                &rewrite_s_root("cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\marker.txt echo %d > S:\\find-marker.txt", &esp_root),
                 None,
             );
             let mut actual = String::new();
@@ -7325,7 +7416,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             // 诊断：attach 后实际盘符卷内容
             if !actual.is_empty() {
                 run_cmd_to_file(
-                    &format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"),
+                    &rewrite_s_root(&format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"), &esp_root),
                     None,
                 );
                 if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("dir-attached.txt")) {
@@ -7382,9 +7473,9 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             // 枚举含标记文件的盘符（真实分区在 PE 里盘符可能变化，
             // 物理分区会自动挂载，只需找到实际盘符）
             run_cmd_to_file(
-                &format!(
+                &rewrite_s_root(&format!(
                     "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{marker} echo %d > S:\\find-drive.txt"
-                ),
+                ), &esp_root),
                 None,
             );
             let mut actual = String::new();
@@ -7395,7 +7486,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             result.push_str(&format!("find-drive {marker}: actual drive = {actual}\n"));
             if !actual.is_empty() {
                 run_cmd_to_file(
-                    &format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"),
+                    &rewrite_s_root(&format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"), &esp_root),
                     None,
                 );
                 if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("dir-attached.txt")) {
@@ -7477,7 +7568,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
         ["find-system-drive"] => {
             // 枚举含 Windows 的卷（PE 里系统分区盘符会变），写入 S:\pe-drive.txt
             run_cmd_to_file(
-                "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\Windows\\System32\\Config\\SYSTEM echo %d > S:\\find-system.txt",
+                &rewrite_s_root("cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\Windows\\System32\\Config\\SYSTEM echo %d > S:\\find-system.txt", &esp_root),
                 None,
             );
             let mut actual = String::new();
@@ -7497,9 +7588,9 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             } else {
                 // 保护 2：含 Windows 的卷默认拒绝，仅 --allow-system 放行（还原系统场景）
                 run_cmd_to_file(
-                    &format!(
+                    &rewrite_s_root(&format!(
                         "cmd /c if exist {d_upper}:\\Windows\\System32\\Config\\SYSTEM (echo SYS) else (echo NOSYS) > S:\\format-check.txt"
-                    ),
+                    ), &esp_root),
                     None,
                 );
                 let mut is_system = false;
@@ -7536,9 +7627,9 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             };
             // 仅当目标是系统卷（SYSTEM hive + winload.efi 双条件）才执行 bcdboot 重建引导
             run_cmd_to_file(
-                &format!(
+                &rewrite_s_root(&format!(
                     "cmd /c if exist {d}:\\Windows\\System32\\Config\\SYSTEM (if exist {d}:\\Windows\\system32\\winload.efi (echo SYS) else (echo NOSYS)) else (echo NOSYS) > S:\\bcdboot-check.txt"
-                ),
+                ), &esp_root),
                 None,
             );
             let mut is_system = false;
@@ -7550,7 +7641,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 // 注意：default 字段可能是 {default} 别名，bcdboot 执行后该别名会
                 // 重新绑定到新条目，所以必须按「原默认卷」找回真实条目 GUID 再恢复。
                 run_cmd_to_file(
-                    "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {default} > S:\\bcdboot-def-before.txt 2>&1",
+                    &rewrite_s_root("cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {default} > S:\\bcdboot-def-before.txt 2>&1", &esp_root),
                     None,
                 );
                 let mut old_partition = String::new();
@@ -7584,7 +7675,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 // 恢复 default 与菜单顺序：按原默认卷在 BCD 中找回真实条目并设回默认/第一
                 if !old_partition.is_empty() {
                     run_cmd_to_file(
-                        "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum > S:\\bcdboot-after.txt 2>&1",
+                        &rewrite_s_root("cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum > S:\\bcdboot-after.txt 2>&1", &esp_root),
                         None,
                     );
                     let mut real_guid = String::new();
@@ -7617,15 +7708,15 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                     }
                     if !real_guid.is_empty() {
                         run_cmd_to_file(
-                            &format!(
+                            &rewrite_s_root(&format!(
                                 "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /set {{bootmgr}} default {real_guid} > S:\\bcdboot-restore.txt 2>&1"
-                            ),
+                            ), &esp_root),
                             None,
                         );
                         run_cmd_to_file(
-                            &format!(
+                            &rewrite_s_root(&format!(
                                 "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /displayorder {real_guid} /addfirst > S:\\bcdboot-order.txt 2>&1"
-                            ),
+                            ), &esp_root),
                             None,
                         );
                         if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-restore.txt")) {
@@ -7648,12 +7739,11 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
         ["add-secondary-entry", drive, ..] => {
             let d = resolve_drive(drive);
             let name = parts[2..].join(" ");
-            run_cmd_to_file("mountvol.exe S: /S", None);
             // 创建 osloader 条目（完整字段避免 0xc0000225）
             run_cmd_to_file(
-                &format!(
+                &rewrite_s_root(&format!(
                     "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /create /d \"{name}\" /application osloader > S:\\pe-addsec-create.txt 2>&1"
-                ),
+                ), &esp_root),
                 None,
             );
             let mut guid = String::new();
@@ -7680,17 +7770,17 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 ];
                 for (field, value) in steps {
                     let code = run_cmd_to_file(
-                        &format!(
+                        &rewrite_s_root(&format!(
                             "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /set {guid} {field} {value} > S:\\pe-addsec-set.txt 2>&1"
-                        ),
+                        ), &esp_root),
                         None,
                     );
                     result.push_str(&format!("add-secondary-entry set {field}: code={code}\n"));
                 }
                 let code = run_cmd_to_file(
-                    &format!(
+                    &rewrite_s_root(&format!(
                         "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /displayorder {guid} /addlast > S:\\pe-addsec-order.txt 2>&1"
-                    ),
+                    ), &esp_root),
                     None,
                 );
                 result.push_str(&format!("add-secondary-entry displayorder: code={code}\n"));
@@ -7708,28 +7798,69 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
 /// 返回 `true` 表示配置要求执行后自动重启（调用方自动重启，无需用户
 /// 操作）；无配置返回 `false`（正常显示 PE 恢复桌面）。
 fn pe_task_execute() -> bool {
-    // 0. 先挂载 ESP 到 S:——任务配置就存在 S:\pe-task.txt，PE 启动时
-    //    S: 尚未挂载，必须先挂载才能读到配置。
-    let mount_code = run_cmd_to_file("mountvol.exe S: /S", None);
-    let task_file = esp_log_path("pe-task.txt");
-    let Ok(config) = std::fs::read_to_string(task_file.as_str()) else {
-        return false; // 无配置：正常显示 PE 桌面
+    // 0. 拿 ESP 路径——任务配置就在卷根的 pe-task.txt。
+    //    方案 A（v1.8.3）：先试零盘符，失败才挂 S:。
+    let mut detail = String::new();
+    let (store, mounted) = esp_store_path_for_pe(&mut detail);
+    let task_file = match &store {
+        Some(store) => {
+            let mut path = std::path::PathBuf::from(store);
+            // 回到卷根（store 指到 ...\Boot\BCD，配置在卷根）
+            for _ in 0..4 {
+                path.pop();
+            }
+            path.push("pe-task.txt");
+            path.to_string_lossy().into_owned()
+        }
+        None => String::new(),
     };
+
     let mut reboot = false;
-    let mut result = format!("PE task execute start, mountvol={mount_code}\n");
+    let Ok(config) = std::fs::read_to_string(task_file.as_str()) else {
+        // 读不到配置也要留痕：PE 是离线环境，静默 return 等于现场被抹掉。
+        let _ = std::fs::write(
+            esp_log_path("pe-task-result.txt"),
+            format!("PE task execute: no config at {task_file}\n{detail}"),
+        );
+        return false;
+    };
+    let mut result = format!("PE task execute start\n{detail}");
     for line in config.lines() {
         let action = line.trim();
         execute_pe_task_line(action, &mut result, &mut reboot);
     }
     let _ = std::fs::write(esp_log_path("pe-task-result.txt"), &result);
     // 配置标记完成（防下次重复执行）
-    let _ = std::fs::rename(task_file, esp_log_path("pe-task.txt.done"));
+    // .done 与 task_file 同卷：零盘符时 task_file 是卷路径，target 也必须
+    // 是同一个卷路径，否则跨"卷路径→盘符" rename 会失败。
+    let done_file = if let Some(store) = &store {
+        let mut path = std::path::PathBuf::from(store);
+        for _ in 0..4 {
+            path.pop();
+        }
+        path.push("pe-task.txt.done");
+        path.to_string_lossy().into_owned()
+    } else {
+        esp_log_path("pe-task.txt.done")
+    };
+    let renamed = std::fs::rename(&task_file, &done_file);
+    if renamed.is_err() {
+        // 改不了名只能在 result 里写一笔，至少别让下一轮重复执行同一个任务。
+        result.push_str(&format!("[WARN] rename to .done failed: {renamed:?}\n"));
+    }
     // 2026-09-29：修掉「PE 挂上 S: 后从不卸载」。任务已跑完、结果已落盘，
     // 再留着 S: 只会让 Windows 侧出现「刚自动打开的 S: 窗口内容突然不可访问」
     // （自动播放弹窗是 Windows 启动后 explorer 起来的，窗口指向的盘符已不存在）。
     // 卸载同样不看退出码——`mountvol /D` 的返回码在实机上同样不可信。
-    let unmount_code = run_cmd_to_file("mountvol.exe S: /D", None);
-    result = format!("{result}\n[UNMOUNT_ESP] mountvol S: /D code={unmount_code}\n");
+    if mounted {
+        // 真的挂了 S: 才卸。零盘符路径下这句是无意义操作，还可能卸掉别人挂的卷。
+        // 退出码仍然只记录、不当判据——mountvol 返回码在实机上不可信
+        // （v1.8.0 实测过：失败时返回 0、成功时反而返回 1）。
+        let unmount_code = run_cmd_to_file("mountvol.exe S: /D", None);
+        result = format!("{result}\n[UNMOUNT_ESP] mountvol S: /D code={unmount_code}\n");
+    } else {
+        result.push_str("[UNMOUNT_ESP] not needed: zero drive letter path was used\n");
+    }
     let _ = std::fs::write(esp_log_path("pe-task-result.txt"), &result);
     reboot
 }
