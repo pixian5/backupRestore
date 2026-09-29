@@ -131,7 +131,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ---
 
-## 七、当前进度（截至 2026-09-27）
+## 七、当前进度（截至 2026-09-29）
 
 ### 已实机验证（测试卷 T:，非系统卷，在线路径）
 
@@ -169,7 +169,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 注册 WinRE 状态机（不循环 + 断电续跑 + 幂等） | 已落地（2026-09-28） | 会话期间注册位**保持注入件**；仅 DISM 捕获前翻干净（唯一权威纯净闸门）；新增 `ensure_registered_is_payload()` 在 resume 重武装之前确保注册位=注入件（已是则跳过，幂等）；续跑被压制分支恢复干净。设计见 [docs/20260928-074516-registered-winre-policy-and-resume-design.md](docs/20260928-074516-registered-winre-policy-and-resume-design.md) |
 | 交叉编译 + 单测 | 通过 | Windows `aarch64-pc-windows-msvc` 构建通过（仅 LNK4099 缺 PDB 警告）；`cargo test -p backuprestore-core` 28 全绿。**VM 实机闭环（含断电续跑场景）尚未验证** |
 | 执行层二次闸 `winre_role_conflict_at_execution` 随开关放开 F3 | 已落地 | `main.rs:1170`，`false` 可一键回退到旧拒绝 |
-| 构建（macOS 交叉编译 ARM64） | v1.7.9 产物 `BackupRestore.exe` = 1,715,712B | `build-win.sh` 构建通过（仅 LNK4099 缺 PDB 警告，无害） |
+| 构建（macOS 交叉编译 ARM64） | v1.7.10 产物 `BackupRestore.exe` = 1,763,840B | `build-win.sh` 构建通过（仅 LNK4099 缺 PDB 警告，无害） |
 | **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **已通过（2026-09-28 实机闭环）** | 详见 [阶段2 文档 9.5.2.1](docs/winre-task-wim-phase2-2026-09-27.md)：P: 作承载 RE 的卷，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检 `\Recovery\WindowsRE\Winre.wim` 哈希 = `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原 |
 
 > 方案 D 让「离线备份承载 WinRE 的卷」不再被拒，结合 1.7.6 的 F1/F3 第一段逻辑，**产品主场景（系统盘离线备份/还原）在代码层面已解锁**；该解锁已于 2026-09-28 在 VM 内对「备份源 == 承载注册 WinRE 的卷」这一最坏组合实机闭环验证通过。
@@ -184,8 +184,22 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 > 构造死局」完成**断电续跑场景实机闭环验证 PASS**（修复→重武装→WinRE 自动跑完→success→终态还原干净）。
 > 详见 [docs/20260928-093132-v179-fix-resume-mount-and-verify.md](docs/20260928-093132-v179-fix-resume-mount-and-verify.md)。
 
+### v1.7.10（2026-09-29）：修复「日志宣称注册位已还原、实机注册位目录却是空的」
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 根因定位（迁出任务终态把干净原件写到了 RE 暂存卷，家卷自 `reagentc /disable` 后无人再写；`finalize_evacuated_winre` 被 `finalize_success` 挡成死代码；PE 内做不了 reagentc 重注册） | **已定位（代码 + 实机日志双证据）** | 见 [docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md](docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md) |
+| 修复：`WINRE_HOME_*` 家卷身份 + WinRE 内写回家卷并落「待回家」标记 + 桌面 `reagentc` 重注册并用 `/info` 的 `harddiskN\partitionM` 复核 + 回收暂存卷 | 已落地 | `windows_prepare.rs` `write_recovery_env`；`main.rs` `restore_original_winre_at` / `finalize_winre_after_task` / `finalize_evacuated_winre` / `finish_pending_winre_rehome`；`text_parsing.rs` `reagentc_info_location` |
+| 新增 CLI `winre-rehome`（桌面手动收尾，GUI 启动时自动跑同一逻辑） | 已落地 | `main.rs` `winre_rehome()` |
+| 交叉编译 + 单测 | 通过 | `./build-win.sh` 产物 1,763,840B，SHA-256 `9077e5e5…a2bd`；`cargo test --workspace` 73 passed / 0 failed |
+| 测试卷实机闭环（P: 承载注册 WinRE + 还原触发迁出 + 桌面重注册） | **PASS** | 家卷终态 `Winre.wim` 712,111,529B / `1060a552…`；`/info` 位置搬回 P:；暂存卷 `F:\Recovery` 已回收；幂等；非迁出任务行为无变化。证据 `.test-artifacts/winre-finalize-v10710/evidence.md`（未入库） |
+
 ### 尚未闭环（按严重度）
 
+0. **待用户裁定的两点**（详见 [docs/20260929-103500](docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md) §6）：
+   ① 备份方向的「WinRE 迁出」闸门因方案 D 压制 F3 冲突而成为死代码——是否让备份也走迁出；
+   ② 迁出态备份抓到的镜像里 `ReAgent.xml` 指向暂存卷、`\Recovery\WindowsRE` 是空目录——是否在终态
+   一并校验/改写。
 1. **C: 完整系统备份/还原仍未实机测试** —— 它是产品主场景，但按用户长期约束，开发/测试一律在
    测试盘进行，C: 只在最终验收时做一次。v1.7.7 方案 D 已对「备份源 == 承载注册 WinRE 的卷」这一
    最坏组合在 VM 内实机闭环验证通过（用的是 P: 测试卷作承载 RE 的卷，逻辑与备份 C: 完全相同），

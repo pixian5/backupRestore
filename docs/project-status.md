@@ -1,7 +1,9 @@
 # BackupRestore 当前进度与决策记录
 
-更新时间：2026-09-28
-当前开发版本：**`1.7.10`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,762,304B）
+更新时间：2026-09-29
+当前开发版本：**`1.7.10`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,763,840B）
+
+> - **v1.7.10（2026-09-29）：WinRE 终态写回目标修错 + 桌面重注册收尾，测试卷实机闭环 PASS**——根因：迁出任务的 `RECOVERY_*` 指向 RE 暂存卷，终态把干净原件写到了暂存卷，而家卷（注册位真正所在）自 `reagentc /disable` 后再没有代码写文件 → 日志打印成功、目录却空着；且 `finalize_evacuated_winre` 被 `if finalize_success` 挡住（真实 WinRE 入口该参数恒为 false）成死代码。修复=新增 `WINRE_HOME_*` 家卷身份 + WinRE 内写回家卷并落「待回家」标记 + 桌面 `reagentc` 重注册（用 `/info` 的 `harddiskN\partitionM` 复核）+ 暂存卷回收 + 新 CLI `winre-rehome`。产物 1,763,840B / `9077e5e5…a2bd`，73 单测全绿。详见 docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md。
 
 > **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) + [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >

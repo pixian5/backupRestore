@@ -1179,7 +1179,7 @@ fn write_recovery_env(
     // RECOVERY_* = 本次任务「注册位当前所在的卷」（迁出任务 = RE 暂存卷）；
     // WINRE_HOME_* = 「注册位原本的家」（迁出前 reagentc 指向的卷，通常 C:）。
     // 两者必须分开记：终态要把干净原件写回**家卷**，写回暂存卷等于家卷一直空着
-    // （v1.7.11 修复的根因，见 docs/20260929-*-winre-finalize-wrote-to-scratch-volume.md）。
+    // （v1.7.10 修复的根因，见 docs/20260929-*-winre-finalize-wrote-to-scratch-volume.md）。
     insert_identity(&mut values, "WINRE_HOME", winre_home);
     insert_identity(&mut values, "SOURCE", source);
     if options.test_fault.as_deref() == Some("identity-env-mismatch") {

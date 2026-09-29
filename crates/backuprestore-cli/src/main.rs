@@ -198,6 +198,11 @@ fn main() {
             .next()
             .ok_or_else(|| err("RecoveryTask.env is required"))
             .and_then(recover_env),
+        // v1.7.10：桌面侧手动完成「待回家」的 WinRE 注册搬回。正常 Windows 才能做
+        // reagentc 重注册；GUI 启动时 resume_pending_boot_task 会自动跑同一逻辑，
+        // 这条命令用于「只跑 CLI / 想立刻收尾而不开 GUI」的场景。
+        #[cfg(windows)]
+        Some("winre-rehome") => winre_rehome(),
         Some("run-command") => {
             let program = args.next().ok_or_else(|| err("program is required"));
             program.and_then(|p| run_command(&p, args.collect()))
@@ -492,6 +497,29 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         "Restart requested to resume pending task in Windows RE",
     )?;
     Ok(true)
+}
+/// CLI 入口：`BackupRestore.exe winre-rehome`。
+///
+/// 扫描 exe 所在 workspace 的 `tasks` 目录，逐个处置「待回家」标记：
+/// reagentc 重注册回 WINRE_HOME、用 `/info` 复核、回收 RE 暂存卷、删标记。
+/// 任一步失败都保留标记，下次再跑即可（幂等，不会留半截 WIM）。
+#[cfg(windows)]
+fn winre_rehome() -> Result<(), TaskError> {
+    let executable = env::current_exe()?;
+    let workspace = executable
+        .parent()
+        .ok_or_else(|| err("executable has no workspace directory"))?;
+    let log = workspace.join("logs").join("winre-rehome.log");
+    finish_pending_winre_rehomes(&workspace.join("tasks"), &log)?;
+    let pending = fs::read_dir(workspace.join("tasks"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().join(WINRE_REHOME_MARKER).is_file())
+        .count();
+    println!("WINRE_REHOME_PENDING={pending}");
+    println!("LOG={}", log.display());
+    Ok(())
 }
 
 /// A prepared task may be a deliberate `--no-reboot` diagnostic and must not
@@ -1008,7 +1036,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         }
     }
     // 终态收尾：非迁出任务写 RECOVERY 卷（与旧版逐字一致）；迁出任务写**家卷**
-    // 并留下「待回家」标记给桌面重注册（v1.7.11）。
+    // 并留下「待回家」标记给桌面重注册（v1.7.10）。
     let cleanup = finalize_winre_after_task(
         &values,
         &task_dir,
@@ -1234,7 +1262,7 @@ fn recovery_volume_from_env(
 }
 
 /// 「注册位原本的家卷」身份：迁出前 reagentc 指向的那个卷（真实场景里就是 C:）。
-/// v1.7.11 起由 prepare 写入 `WINRE_HOME_*`；更早的任务没有这组键 → `None`。
+/// v1.7.10 起由 prepare 写入 `WINRE_HOME_*`；更早的任务没有这组键 → `None`。
 #[cfg(windows)]
 fn winre_home_volume_from_env(
     values: &BTreeMap<String, String>,
@@ -2067,7 +2095,7 @@ fn restore_original_winre_at(
 /// 迁出任务写**家卷**（`WINRE_HOME_*`），非迁出任务写 `RECOVERY_*` 卷。
 /// 供 WinRE 兜底守卫的 `Drop` 与桌面「放弃续跑」路径共用：早期 `restore_original_winre`
 /// 用调用方的盘符，而调用方盘符在迁出任务里是暂存卷，于是把干净原件写到了暂存卷
-/// （家卷仍然空着）——v1.7.11 修复的一部分。
+/// （家卷仍然空着）——v1.7.10 修复的一部分。
 #[cfg(windows)]
 fn restore_original_winre_for_task(
     values: &BTreeMap<String, String>,
@@ -2183,7 +2211,7 @@ fn finish_pending_winre_rehome(task_dir: &Path, log: &Path) -> Result<(), TaskEr
         append_log(
             log,
             "WinRE rehome impossible: task environment has no WINRE_HOME identity \
-             (prepared before v1.7.11); manual repair is required",
+             (prepared before v1.7.10); manual repair is required",
         )?;
         return Ok(());
     };
@@ -2333,7 +2361,7 @@ fn write_winre_rehome_marker(task_dir: &Path, log: &Path) -> Result<(), TaskErro
     Ok(())
 }
 
-/// 任务终态的注册位收尾（v1.7.11 修复「日志宣称成功、注册位文件却没了」）。
+/// 任务终态的注册位收尾（v1.7.10 修复「日志宣称成功、注册位文件却没了」）。
 ///
 /// 非迁出任务：注册位就在 `RECOVERY_*` 卷上，行为与旧版逐字一致。
 ///
@@ -2372,7 +2400,7 @@ fn finalize_winre_after_task(
     } else {
         append_log(
             log,
-            "WinRE finalize: evacuated task has no WINRE_HOME identity (prepared before v1.7.11); \
+            "WinRE finalize: evacuated task has no WINRE_HOME identity (prepared before v1.7.10); \
              falling back to the RECOVERY volume - the home slot still needs manual repair",
         )?;
         recovery_letter
@@ -2592,7 +2620,7 @@ pub(crate) fn evacuate_registered_winre(
     Ok(())
 }
 
-/// v2 终态（docs/20260928-233000-winre-hosted-restore-solution.md §2.3，v1.7.11 修订 §7）。
+/// v2 终态（docs/20260928-233000-winre-hosted-restore-solution.md §2.3，v1.7.10 修订 §7）。
 ///
 /// 迁出任务在**写 Success 之前**调用（以前只在 `finalize_success=true` 的手工 `recover`
 /// 路径里跑，真实 WinRE 路径 `finalize_success=false` 完全不走它 —— 这正是
@@ -2634,7 +2662,7 @@ pub(crate) fn finalize_evacuated_winre(
     if !home_is_recorded {
         append_log(
             log,
-            "WinRE finalize: no WINRE_HOME identity recorded (prepared before v1.7.11); \
+            "WinRE finalize: no WINRE_HOME identity recorded (prepared before v1.7.10); \
              using the source/target volume as a best-effort home",
         )?;
     }
@@ -3164,7 +3192,7 @@ fn recover_windows(
             }
             if let Some(source) = task.source.clone() {
                 // v2 终态：备份源曾承载注册 WinRE 的任务，把干净原件写回源卷注册位并留下
-                // 「待回家」标记给桌面重注册（v1.7.11：以前这段被 finalize_success 挡住，
+                // 「待回家」标记给桌面重注册（v1.7.10：以前这段被 finalize_success 挡住，
                 // 真实 WinRE 路径一次都没跑过）。**必须在写 Success 之前执行**：
                 // 磁盘动作已经完成，注册位却是坏的就说明任务不算成功。
                 finalize_evacuated_winre(
@@ -3324,7 +3352,7 @@ fn recover_windows(
                     )?;
                 }
                 // v2 终态：还原目标曾承载注册 WinRE 的任务，把干净原件写回目标注册位并留下
-                // 「待回家」标记（v1.7.11：同样不再被 finalize_success 挡住）。
+                // 「待回家」标记（v1.7.10：同样不再被 finalize_success 挡住）。
                 finalize_evacuated_winre(
                     &store.task_dir(&task.task_id)?,
                     task.operation,

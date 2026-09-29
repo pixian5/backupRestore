@@ -1,6 +1,7 @@
 # v1.7.10 修复：「日志宣称注册位已还原，实机 `C:\Recovery\WindowsRE` 却是空目录」
 
-> 状态：**已修复（代码 + 单测 + Windows ARM64 构建通过）**；测试卷实机复现/回归验证见 §7。
+> 状态：**已修复并实机验证通过（代码 + 单测 + Windows ARM64 构建 + 测试卷闭环）**。
+> 证据：`.test-artifacts/winre-finalize-v10710/evidence.md`（本文 §5/§7）。
 > 关联交接单：上任 AI 交接文档第二章「未决 bug」。基线：`49606d0 / v1.7.9`。
 
 ## 1. 症状
@@ -135,30 +136,43 @@ TARGET_PARTITION_NUMBER=4       # 还原目标 = C:，真正的注册位
   在 prepare 内计算，前后仍自洽（`WINRE_HOME_*` 由 `write_recovery_env` 一次性写入，
   与 `ORIGINAL_WINRE_SHA256`/`WINRE_EVACUATED` 的 append 顺序不变）。
 
-## 5. 验证
+## 5. 验证（截至 v1.7.10，全部通过）
 
 - `cargo test --workspace`：**73 passed / 0 failed**（core 28 + cli 45，新增
   `reagentc_info_location_ignores_localized_labels` 覆盖中英文 `/info`、Disabled、空输出、
   残缺输出四类输入）。
-- `./build-win.sh`（aarch64-pc-windows-msvc）：**通过**，产物 1,762,304 B，
-  SHA-256 `31be93f7563b3441640a0b27025c868ca9ebfc3356d797ed789fb7f4df130994`（仅 LNK4099 缺 PDB 警告）。
+- `./build-win.sh`（aarch64-pc-windows-msvc）：**通过**，产物 1,763,840 B，
+  SHA-256 `9077e5e5030c276012f616c1167d6aff22f83fcba4c3dac6730b430fd864a2bd`
+  （仅 LNK4099 缺 PDB 警告）；部署后 VM 内 `H:\brwork\BackupRestore.exe` 哈希一致。
+- **测试卷实机闭环 PASS**（详见 §7）：迁出任务的家卷注册位终态哈希 == `ORIGINAL_WINRE_SHA256`；
+  桌面重注册把 `/info` 位置搬回家卷、回收暂存卷、删标记；幂等；非迁出任务行为无变化。
+- 快照：`{e74b0f10-e929-4366-965c-ef2b59973891}`（改注册位/载荷前由 `tools/vm-snapshot.sh` 创建并核验）。
 
-## 6. 顺带发现的实机状态问题（需按用户指令处置）
+## 6. 顺带发现（需用户裁定的三点）
 
-以下都不是本次代码问题，但会影响后续验收，记在这里备忘：
+1. **备份方向的迁出闸门目前是死代码**：`prepare` 的 `evacuation_required` 判据是
+   「`validate_volume_roles` 返回 `BackupSourceOnRegisteredWinre`」，而方案 D
+   （`PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE=true`）让备份方向**根本不返回这个冲突**
+   → 备份永远走「非迁出」路径。这与
+   [20260928-233000-winre-hosted-restore-solution.md](20260928-233000-winre-hosted-restore-solution.md) §6.2
+   「备份同样走迁出、C: 注册位全程干净」的描述**不一致**；实际是「备份照旧把载荷注入注册位，
+   靠捕获前翻回干净原件保证镜像干净」（= 方案 D 的原始设计）。
+   本次实测的任务 `af2b11cd` 证实了这一点：`WINRE_EVACUATED` 未写入，`RECOVERY_*`=源卷。
+   **要不要让备份也走迁出**（改判据：备份源 == 注册卷就迁出，与 Plan D 开关解耦）请用户裁定；
+   本次不改，只记录。
+2. **迁出态备份会把 C: 抓成「`\Recovery\WindowsRE` 空目录 + `ReAgent.xml` 指向暂存卷」的镜像**
+   （注册位迁走后源卷上只剩空目录）。这样的镜像还原出来的系统，WinRE 注册指向一个
+   已不存在的卷 → 需靠终态重注册兜底。是否在终态一并校验/改写 `ReAgent.xml`，请用户裁定。
+3. **镜像卷是 `F:\`（BRIMG 375G），不是历史文档记的 `E:\brimg`**；`P:\Recovery\WindowsRE\t.txt`
+   是更早的测试残留（非本机用户数据，但也没动它）。
 
-1. **VM 内现在整个机器没有任何 `Winre.wim`**（`C:\Recovery\WindowsRE` 空、
-   `C:\Windows\System32\Recovery` 也没有）→ WinRE 已不可启动。恢复办法见 §7 步骤 0。
-2. **镜像卷是 `F:\`（BRIMG 350G），不是交接单/MEMORY 记的 `E:\brimg`**；
-   `P:\Recovery\WindowsRE\t.txt`、空的 `F:\Recovery` 是历史残留。
-3. **迁出态备份会把 C: 抓成「`\Recovery\WindowsRE` 空目录 + `ReAgent.xml` 指向暂存卷」
-   的镜像**（因为注册位迁走了）。这样的镜像将来还原出来的系统，WinRE 注册指向的是一个
-   已不存在的卷 → **建议在终态把 `ReAgent.xml` 的路径一并改写/校验**，或验收时明确接受
-   「还原后由 `finish_pending_winre_rehome` 重注册」这一兜底。是否纳入本次范围由用户裁定。
+> 另：本次开始时 VM 内 `C:\Recovery\WindowsRE\Winre.wim` 已是干净原版
+> （712,111,529 B / `1060a552…`，实测 WIM 内无 `Recovery.exe`/`winpeshl.ini`/`RecoveryTask.env`，
+> 即**未被注入**），因此不必额外修复「机器没有 Winre.wim」；收尾时已把注册搬回 C: 并复核。
 
-## 7. 测试卷复现/回归方案（下一步实机验证）
+## 7. 测试卷实机验证过程与结果（已跑完，全通过）
 
-先建快照（`tools/vm-snapshot.sh winre-finalize-v1-7-10`），再按顺序：
+按顺序执行如下（快照 `{e74b0f10…}` 已在动手前建好并核验）：
 
 0. **修好可启动底座**：`reagentc /disable` → 把干净 `Winre.wim`（712,111,529 B /
    `1060a552…`）放回 `C:\Recovery\WindowsRE` → `/setreimage /path C:\Recovery\WindowsRE`
@@ -181,4 +195,11 @@ TARGET_PARTITION_NUMBER=4       # 还原目标 = C:，真正的注册位
    `BackupSourceOnRegisteredWinre`，重复核对 2 的各项。
 4. **搬回 C:**（收尾必须做，否则机器没有 WinRE）：
    `reagentc /disable` → `/setreimage /path C:\Recovery\WindowsRE` → `/enable` → `/info` 复核。
-5. 幂等性抽验：同一任务重复进 WinRE、以及标记存在时多次启动 GUI，均不得报错、不得留半截 WIM。
+5. 幂等性抽验：再跑一次 `winre-rehome`，应返回 `WINRE_REHOME_PENDING=0` 且无副作用。
+
+**实际结果**：还原任务 `5fb37148` 命中 F1 并迁出；终态
+`Original registered WinRE restored and verified (WinRE home volume E:)`
+（E: 即 WinRE 里的 P:），`P:\Recovery\WindowsRE\Winre.wim` = 712,111,529 B / `1060a552…`；
+桌面 `winre-rehome` 后 `/info` 位置回到 `harddisk1\partition2`、`F:\Recovery` 被回收、
+标记删除、再跑一次无副作用。备份任务 `af2b11cd` 走非迁出路径，行为与旧版一致
+（日志仅多一个落点标注）。全程未把 C: 当程序的备份/还原源或目标。
