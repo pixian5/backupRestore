@@ -596,6 +596,34 @@ pub(crate) fn format_system_info_report(
     .join("\n")
 }
 
+/// 从 `reagentc /info` 输出里解析「Windows RE 位置」的磁盘号/分区号。
+///
+/// 状态与标签是本地化的（中文版写「Windows RE 状态 / 位置」），但位置**值**永远是
+/// 与语言无关的设备路径：`\\?\GLOBALROOT\device\harddisk0\partition4\Recovery\WindowsRE`。
+/// 因此只解析其中的 `harddiskN\partitionM`，不依赖任何本地化标签。
+/// 返回 `(磁盘号, 分区号)`；WinRE 已禁用/输出里没有位置时返回 `None`。
+pub(crate) fn reagentc_info_location(text: &str) -> Option<(u32, u32)> {
+    let lower = text.to_ascii_lowercase();
+    let disk_at = lower.find("harddisk")? + "harddisk".len();
+    let disk_digits: String = lower[disk_at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if disk_digits.is_empty() {
+        return None;
+    }
+    let rest = &lower[disk_at + disk_digits.len()..];
+    let part_at = rest.find("partition")? + "partition".len();
+    let part_digits: String = rest[part_at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if part_digits.is_empty() {
+        return None;
+    }
+    Some((disk_digits.parse().ok()?, part_digits.parse().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,5 +1183,24 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert!(kept.contains("Total Physical Memory:"));
         assert!(!kept.contains("Hotfix"));
         assert_eq!(systeminfo_cpu_memory(""), "");
+    }
+    #[test]
+    fn reagentc_info_location_ignores_localized_labels() {
+        let english = "\
+Windows Recovery Environment (Windows RE) and system reset configuration
+Information:
+
+    Windows RE status:         Enabled
+    Windows RE location:       \\\\?\\GLOBALROOT\\device\\harddisk0\\partition4\\Recovery\\WindowsRE
+    Boot Configuration Data (BCD) identifier: {b2c1e3d4-0000-0000-0000-000000000001}
+";
+        assert_eq!(reagentc_info_location(english), Some((0, 4)));
+        let chinese =
+            "    Windows RE \u{4f4d}\u{7f6e}: \\\\?\\GLOBALROOT\\device\\harddisk2\\partition2\\Recovery\\WindowsRE\r\n";
+        assert_eq!(reagentc_info_location(chinese), Some((2, 2)));
+        // 已禁用时 /info 不打印位置；空输出同理 —— 绝不能猜一个分区出来。
+        assert_eq!(reagentc_info_location("Windows RE status: Disabled"), None);
+        assert_eq!(reagentc_info_location(""), None);
+        assert_eq!(reagentc_info_location("harddisk1\\Recovery"), None);
     }
 }

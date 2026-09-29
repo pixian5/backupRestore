@@ -1,7 +1,7 @@
 # BackupRestore 当前进度与决策记录
 
 更新时间：2026-09-28
-当前开发版本：**`1.7.9`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,715,712B）
+当前开发版本：**`1.7.10`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,762,304B）
 
 > **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [winre-task-wim-phase2-2026-09-27.md](winre-task-wim-phase2-2026-09-27.md) + [winre-payload-and-p0-fix-2026-09-27.md](winre-payload-and-p0-fix-2026-09-27.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >
