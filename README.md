@@ -194,6 +194,15 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 交叉编译 + 单测 | 通过 | `./build-win.sh` 产物 1,763,840B，SHA-256 `9077e5e5…a2bd`；`cargo test --workspace` 73 passed / 0 failed |
 | 测试卷实机闭环（P: 承载注册 WinRE + 还原触发迁出 + 桌面重注册） | **PASS** | 家卷终态 `Winre.wim` 712,111,529B / `1060a552…`；`/info` 位置搬回 P:；暂存卷 `F:\Recovery` 已回收；幂等；非迁出任务行为无变化。证据 `.test-artifacts/winre-finalize-v10710/evidence.md`（未入库） |
 
+### v1.7.10 + PoC（2026-09-29 下午）：「PE 式自建 BCD 条目」通道 PoC 通过
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| PoC 命题：把原 `Winre.wim` 副本注入载荷放镜像卷、用**自建 BCD 条目**（独占设备选项对象 + 独占 osloader + 一次性 `bootsequence`）启动，全程不碰系统注册 WinRE | **通过** | 实机进 PE（`SYSTEMROOT=X:\windows`）、载荷钩子拉起、`Recovery.exe` 在 PE 内 RC=0；`C:\Recovery` 与 BCD 零改动。见 [docs/20260929-130000](docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md)，证据 `.test-artifacts/pe-channel-poc/` |
+| **修正旧结论**：拦住绕法的不是「启动 ramdisk 路径 == ReAgent 注册位置」，而是「**ReAgent 登记的那个 BCD 对象 + `reagentc /boottore` 的 bootstatus**」 | 已用 A/C1 对照实验证明 | 实验 A：直接 `bootsequence` 系统自带 WinRE 条目 → 8 秒被丢弃；实验 C1：复制该条目改指镜像卷副本 → 成功进 PE |
+| 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
+| 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
+| 尚未验证 | 5 项 | 断电续跑 / BCDBoot 影响 / Secure Boot / 目标系统 WinRE 语义 / 纯 PE 形态（§3.3）——**待用户裁定后再开工** |
 ### 尚未闭环（按严重度）
 
 0. **待用户裁定的两点**（详见 [docs/20260929-103500](docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md) §6）：
