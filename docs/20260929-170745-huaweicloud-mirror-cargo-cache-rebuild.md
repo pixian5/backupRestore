@@ -72,3 +72,26 @@ cargo check --workspace
 
 同时 `git -C /opt/homebrew remote set-url origin <tuna brew.git>`。`brew update` 实测通过。
 （注意：另一个终端若在用 tuna 跑 brew update 会占锁且在命令末尾把 remote 改回去，改完 remote 后要复验。）
+
+## 关键结论三：镜像源实测速率对比与最终版图（2026-09-29 追加）
+
+统一测法：`curl -r 0-2MB` 小样本，不消耗多少流量。**同一厂商不同域名速率差巨大**：
+
+| 源 | 对象 | 速率 | 结论 |
+|---|---|---|---|
+| `repo.huaweicloud.com` | pip whl / npm tgz | 0.18–0.34 MB/s | **快域** |
+| `mirrors.huaweicloud.com` | 同上 | 0.01–0.06 MB/s | **慢域，勿用** |
+| `mirrors.aliyun.com` | pip whl | 0.12 MB/s | 次选 |
+| tuna / ustc | brew api | 100–400 KB/s | 打平 |
+| ustc | cargo crate | 0.08 MB/s | 唯一好用 |
+
+各工具最终配置：
+
+| 工具 | 源 | 处理 |
+|---|---|---|
+| pip | `repo.huaweicloud.com/repository/pypi/simple/` | **已从 mirrors 域改到 repo 域**（配置在 `~/.config/pip/pip.conf`，不是 `~/.pip/pip.conf`） |
+| npm | `repo.huaweicloud.com/repository/npm/` | 不变（已是快域） |
+| Homebrew | 清华 tuna 全套 | 不变（华为云已无 brew 镜像） |
+| Cargo | ustc | 不变（华为云无 crates；tuna crates download API 已 404） |
+
+教训：`~/.npmrc` 早在用 repo 快域，而 pip 与 `~/.zshrc` 的 HOMEBREW_PIP_INDEX_URL 分居两个域——排查镜像源问题时要逐个文件核对，不能想当然。另 `~/.pip/pip.conf` 已不存在，pip 实际生效路径是 `~/.config/pip/pip.conf`。
