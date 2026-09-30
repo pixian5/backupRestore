@@ -28,6 +28,9 @@ const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 #[cfg(windows)]
 const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
 
+pub mod image_metadata;
+pub mod operation_safety;
+
 pub const TASK_VERSION: u32 = 1;
 pub const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Keep a small amount of terminal history for diagnostics without allowing

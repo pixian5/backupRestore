@@ -372,20 +372,7 @@ unsafe extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn CloseHandle(handle: Handle) -> i32;
     fn Sleep(milliseconds: u32);
-    // Console tools in WinRE write in the OEM code page (GBK on zh-CN images),
-    // so their captured bytes need a real code-page conversion instead of a
-    // UTF-8 guess. CP_OEMCP asks the system which page the console used.
-    fn MultiByteToWideChar(
-        code_page: u32,
-        flags: u32,
-        multi_byte: *const i8,
-        multi_byte_count: i32,
-        wide_char: *mut u16,
-        wide_char_count: i32,
-    ) -> i32;
 }
-
-const CP_OEMCP: u32 = 1;
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -508,20 +495,6 @@ unsafe extern "system" {
         total_bytes: *mut u64,
         total_free_bytes: *mut u64,
     ) -> i32;
-    fn CreateProcessW(
-        app_name: *const u16,
-        command_line: *mut u16,
-        process_attributes: *mut c_void,
-        thread_attributes: *mut c_void,
-        inherit_handles: i32,
-        creation_flags: u32,
-        environment: *mut c_void,
-        current_directory: *const u16,
-        startup_info: *mut StartupInfoW,
-        process_information: *mut ProcessInformation,
-    ) -> i32;
-    fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
-    fn GetExitCodeProcess(process: Handle, exit_code: *mut u32) -> i32;
     fn GetLastError() -> u32;
     fn CreateFileW(
         file_name: *const u16,
@@ -3115,57 +3088,19 @@ unsafe fn browse_pe_dir(state: &State) {
     );
 }
 
-/// Run `bcdedit.exe` (or any command) synchronously via a visible-free cmd
-/// wrapper and return its exit code. Output is redirected to `out_file`
-/// (optional) so GUID-returning commands can be parsed afterwards.
-fn run_cmd_to_file(command: &str, out_file: Option<&std::path::Path>) -> u32 {
+// 通用命令保留历史解释器语法；涉及用户输入的在线 DISM 走独立参数接口。
+use crate::windows_command::{CmdOutcome, GetExitCodeProcess, WaitForSingleObject};
+fn run_cmd_to_file(command: &str, out_file: Option<&Path>) -> CmdOutcome {
     run_cmd_to_file_timeout(command, out_file, 30000)
 }
-
-/// 同 `run_cmd_to_file`，但等待超时可指定（毫秒）。PE 内备份/还原/格式化
-/// 等 DISM/DiskPart 操作可能超过默认 30 秒，必须用长超时版本。
-fn run_cmd_to_file_timeout(
-    command: &str,
-    out_file: Option<&std::path::Path>,
-    timeout_ms: u32,
-) -> u32 {
-    let mut full = String::from("cmd.exe /c ");
-    full.push_str(command);
+fn run_cmd_to_file_timeout(command: &str, out_file: Option<&Path>, timeout_ms: u32) -> CmdOutcome {
+    // 历史调用方依赖覆盖文件；在线多阶段日志则由 run_program 追加。
     if let Some(path) = out_file {
-        let quoted = format!("\"{}\"", path.to_string_lossy());
-        full.push_str(" > ");
-        full.push_str(&quoted);
-        full.push_str(" 2>&1");
+        if let Err(error) = std::fs::write(path, []) {
+            return CmdOutcome::SpawnFailed(error.raw_os_error().unwrap_or(1) as u32);
+        }
     }
-    let mut command_line: Vec<u16> = full.encode_utf16().chain(Some(0)).collect();
-    let mut startup: StartupInfoW = unsafe { std::mem::zeroed() };
-    startup.cb = size_of::<StartupInfoW>() as u32;
-    let mut process: ProcessInformation = unsafe { std::mem::zeroed() };
-    let created = unsafe {
-        CreateProcessW(
-            null(),
-            command_line.as_mut_ptr(),
-            null_mut(),
-            null_mut(),
-            0,
-            CREATE_NO_WINDOW,
-            null_mut(),
-            null_mut(),
-            &mut startup,
-            &mut process,
-        )
-    };
-    if created == 0 {
-        return u32::MAX;
-    }
-    unsafe {
-        WaitForSingleObject(process.process, timeout_ms);
-        let mut code: u32 = 0;
-        GetExitCodeProcess(process.process, &mut code);
-        CloseHandle(process.thread);
-        CloseHandle(process.process);
-        code
-    }
+    crate::windows_command::run_shell(command, out_file, timeout_ms)
 }
 
 /// PE 恢复安装入口：按启动方式单选分派到 RAM disk（目录，不占分区）
@@ -3577,7 +3512,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
             &format!("bcdedit.exe /create /d \"{entry_name}\" /application osloader"),
             Some(std::path::Path::new(&guid_out)),
         );
-        if code != 0 {
+        if !code.is_success() {
             append_gui_log(
                 state,
                 &format!("PE install failed: bcdedit create osloader code={code}"),
@@ -3642,7 +3577,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
     for step in &steps {
         let code = run_cmd_to_file(step, None);
         append_gui_log(state, &format!("PE install bcdedit: {step} -> {code}"));
-        if code != 0 {
+        if !code.is_success() {
             failed_step = Some(step.clone());
             break;
         }
@@ -3874,42 +3809,28 @@ unsafe fn install_pe_harddisk(state: &State) {
         state,
         &format!("PE hard disk install started: wim={image_path} partition={drive_char}:"),
     );
-    // 1. 格式化目标分区（diskpart，快速 NTFS）
-    let script = format!("select volume {drive_char}\nformat fs=ntfs quick\n");
-    let script_file = state
-        .executable_dir
-        .join("_pe-format.txt")
-        .to_string_lossy()
-        .to_string();
-    let _ = std::fs::write(&script_file, &script);
-    let format_code = run_cmd_to_file_timeout(
-        // script_file 是程序所在目录下的临时脚本，程序装在含空格目录
-        // （如 C:\Users\张三\My Apps\）时路径必须加引号，否则 cmd 会把
-        // 路径拆成两个参数导致 diskpart 找不到脚本（与 exit=87 同类问题）。
-        &format!("cmd /c diskpart /s \"{script_file}\" > NUL 2>&1"),
-        None,
-        300000,
-    );
-    let _ = std::fs::remove_file(&script_file);
-    if format_code != 0 {
-        append_gui_log(
-            state,
-            &format!("PE hard disk install failed: format code={format_code}"),
-        );
-        show_message(
-            state.root,
-            &if language == Language::English {
-                format!("Failed to format partition {drive_char}: (code {format_code}).")
-            } else {
-                format!("格式化分区 {drive_char}: 失败（退出码 {format_code}）。")
-            },
-            if language == Language::English {
-                "PE install failed"
-            } else {
-                "安装失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
+    // 不能仅依赖 diskpart 退出码：按物理分区选择、保存输出，并核对新文件系统序列号。
+    let format_log = state.executable_dir.join("pe-format.log");
+    let format_result = (|| -> Result<(), backuprestore_core::TaskError> {
+        let before = crate::windows_prepare::volume_identity(drive_char)?;
+        if before.volume_serial.is_empty() { return Err(crate::err("cannot verify format without original volume serial")); }
+        let script = crate::diskpart_format_script(before.disk_number, before.partition_number)?;
+        let script_file = state.executable_dir.join("_pe-format.txt");
+        std::fs::write(&script_file, &script)?;
+        crate::append_log(&format_log, &format!("PE 格式化前身份：{before:?}；脚本：{script}"))?;
+        let result = crate::windows_command::run_program("diskpart.exe", &["/s".into(),script_file.to_string_lossy().into_owned()], Some(&format_log), 300000);
+        crate::append_log(&format_log,&format!("diskpart 执行结果：{result}"))?;
+        if !result.is_success() { return Err(crate::err(&format!("diskpart failed: {result}"))); }
+        let after = crate::windows_prepare::volume_identity(drive_char)?;
+        crate::append_log(&format_log,&format!("PE 格式化后身份：{after:?}"))?;
+        backuprestore_core::operation_safety::verify_formatted_volume(&before, &after)?;
+        if !Path::new(&format!("{drive_char}:\\")).is_dir() { return Err(crate::err("formatted volume root inaccessible")); }
+        std::fs::remove_file(script_file)?;
+        crate::append_log(&format_log,"格式化身份、NTFS 文件系统与新卷序列号已回读验证")
+    })();
+    if let Err(error)=format_result {
+        append_gui_log(state,&format!("PE format failed; refusing apply: {error}; log={}",format_log.display()));
+        show_message(state.root,&format!("无法确认格式化成功，已停止展开镜像。\n{error}\n日志：{}",format_log.display()),"安装失败",MB_OK|MB_ICONERROR);
         return;
     }
     // 2. Apply PE WIM（索引 1 = WinPE）到分区
@@ -3918,9 +3839,9 @@ unsafe fn install_pe_harddisk(state: &State) {
             "dism /Apply-Image /ImageFile:\"{image_path}\" /Index:1 /ApplyDir:{drive_char}:\\"
         ),
         None,
-        600000,
+        crate::windows_command::INFINITE,
     );
-    if apply_code != 0 {
+    if !apply_code.is_success() {
         append_gui_log(
             state,
             &format!("PE hard disk install failed: dism apply code={apply_code}"),
@@ -3953,7 +3874,7 @@ unsafe fn install_pe_harddisk(state: &State) {
             &format!("bcdedit.exe /create /d \"{entry_name}\" /application osloader"),
             Some(std::path::Path::new(&guid_out)),
         );
-        if code != 0 {
+        if !code.is_success() {
             append_gui_log(
                 state,
                 &format!("PE hard disk install failed: bcdedit create code={code}"),
@@ -4011,7 +3932,7 @@ unsafe fn install_pe_harddisk(state: &State) {
     for step in &steps {
         let code = run_cmd_to_file(step, None);
         append_gui_log(state, &format!("PE hard disk bcdedit: {step} -> {code}"));
-        if code != 0 {
+        if !code.is_success() {
             failed_step = Some(step.clone());
             break;
         }
@@ -4240,7 +4161,7 @@ unsafe fn pe_reboot_to_pe(state: &State) {
     append_gui_log(state, &format!("PE reboot to PE: {command}"));
     let code = run_cmd_to_file(&command, None);
     append_gui_log(state, &format!("PE reboot to PE: exit code={code}"));
-    if code == 0 && write_ok {
+    if code.is_success() && write_ok {
         // 配置成功：立即自动重启进入 PE（无需用户手动重启）
         append_gui_log(state, "PE reboot to PE: bootsequence set, auto reboot now");
         if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
@@ -4252,7 +4173,7 @@ unsafe fn pe_reboot_to_pe(state: &State) {
                     "PE reboot to PE: ExitWindowsEx failed, shutdown.exe fallback code={fallback}"
                 ),
             );
-            if fallback != 0 {
+            if !fallback.is_success() {
                 // 两条路都失败：提示用户手动重启
                 show_message(
                     state.root,
@@ -4323,7 +4244,7 @@ pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
     };
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
     let code = run_cmd_to_file(&command, None);
-    if code == 0 {
+    if code.is_success() {
         let text = wide(
             "已设置一次性启动项。重启后自动进入 PE 恢复桌面；PE 启动时会自动清除该启动项，之后重启正常回到 Windows。\n\nBoot sequence set. Reboot to enter the PE recovery desktop automatically.",
         );
@@ -4360,6 +4281,10 @@ fn read_latest_launcher_error(executable_dir: &std::path::Path) -> Option<String
 }
 
 unsafe fn create_task(state: &mut State) {
+    if ONLINE_BUSY.is_busy() {
+        show_message(state.root,"已有在线任务正在执行，请等待完成。","任务运行中",MB_OK|MB_ICONWARNING);
+        return;
+    }
     let language = selected_language(state);
     let operation = selected_operation(state).to_string();
     append_gui_log(
@@ -5087,7 +5012,7 @@ unsafe fn schedule_pe_task(
         state,
         &format!("schedule_pe_task: bcdedit exit code={code}"),
     );
-    if code == 0 && write_ok {
+    if code.is_success() && write_ok {
         append_gui_log(state, "schedule_pe_task: bootsequence set, auto reboot now");
         if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
             let fallback = run_cmd_to_file("shutdown.exe /r /t 0 /f", None);
@@ -5095,7 +5020,7 @@ unsafe fn schedule_pe_task(
                 state,
                 &format!("schedule_pe_task: shutdown.exe fallback code={fallback}"),
             );
-            if fallback != 0 {
+            if !fallback.is_success() {
                 show_message(
                     state.root,
                     if language == Language::English {
@@ -5134,163 +5059,37 @@ unsafe fn schedule_pe_task(
     }
 }
 
-/// 在线备份/还原的后台参数（线程内只读，避免跨线程借用 State）。
-struct OnlineOpParams {
-    operation: String,
-    source_drive: String,
-    target_drive: String,
-    image_path: String,
-    index: String,
-    compress: String,
-    image_name: String,
-    keep_indexes: Option<u32>,
-}
+use crate::online_operation::{OnlineOpParams, OnlineResult};
+static ONLINE_RESULT: std::sync::Mutex<Option<OnlineResult>> = std::sync::Mutex::new(None);
+static ONLINE_BUSY: backuprestore_core::operation_safety::OperationGate = backuprestore_core::operation_safety::OperationGate::new();
 
-/// 在线执行结果（后台线程写完，主窗口 WM_APP_ONLINE_DONE 读取显示）。
-static ONLINE_RESULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-/// 后台执行 DISM 在线备份/还原（数据盘/非活动系统），完成后回主窗口消息。
-/// 备份：镜像不存在 → /Capture-Image；存在 → /Append-Image 追加新索引；
-/// 成功后按保留策略删除最旧索引。还原：dism /Apply-Image。
-fn execute_online(params: &OnlineOpParams) -> String {
-    let out = std::env::temp_dir().join("br-online-op.txt");
-    // 捕获必须带排除配置：漏掉它会把 Parallels 的卷根占位符 `\Mac disk` 装进镜像，
-    // 还原时 `/Apply-Image` 重建这个被独占的文件，在 72% 报 0x80070020。
-    // 与 CLI/PE 备份共用 core 的实现，避免再有入口漏接 /ConfigFile。
-    // 路径拼进 cmd 字符串，可能含空格，必须加引号。
-    let mut exclude_arg = String::new();
-    let mut exclusion_warning = String::new();
-    if params.operation == "backup" {
-        let source_root = format!("{}:\\", params.source_drive);
-        match backuprestore_core::write_capture_exclusion_config(Path::new(&source_root)) {
-            Ok(config_path) => exclude_arg = format!(" /ConfigFile:\"{}\"", config_path.display()),
-            Err(error) => {
-                exclusion_warning = format!(
-                    "[WARN] 排除配置生成失败，本次捕获不含排除规则（可能撞上被独占的卷根占位符）: {error}\n"
-                );
-            }
-        }
-    }
-    let command = if params.operation == "backup" {
-        let name = if params.image_name.is_empty() {
-            "Windows Backup".to_string()
-        } else {
-            params.image_name.clone()
-        };
-        // 索引名可能带空格（默认是"2026-09-13 20:43"这类时间），
-        // 命令是拼成字符串交给 cmd 执行的，/Name 必须加引号，
-        // 否则 DISM 把带空格的名称拆成两个参数报 87（参数错误）。
-        if std::path::Path::new(&params.image_path).is_file() {
-            format!(
-                "dism.exe /Append-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\"{}",
-                params.image_path, params.source_drive, name, exclude_arg
-            )
-        } else {
-            format!(
-                "dism.exe /Capture-Image /ImageFile:\"{}\" /CaptureDir:{}:\\ /Name:\"{}\" /Compress:{}{}",
-                params.image_path, params.source_drive, name, params.compress, exclude_arg
-            )
-        }
-    } else {
-        format!(
-            "dism.exe /Apply-Image /ImageFile:\"{}\" /Index:{} /ApplyDir:{}:\\",
-            params.image_path, params.index, params.target_drive
-        )
-    };
-    let code = run_cmd_to_file_timeout(&command, Some(&out), 600000);
-    let mut summary = exclusion_warning;
-    summary.push_str(&format!("[ONLINE {}] exit={}\n", params.operation, code));
-    if let Ok(text) = std::fs::read_to_string(&out) {
-        summary.push_str(&text);
-    } else {
-        summary.push_str("(no output captured)\n");
-    }
-    // 保留最近 N 个索引：备份追加成功后连续删除最旧索引（Index 1）直至剩余 N 个。
-    if code == 0 && params.operation == "backup" && params.keep_indexes.is_some() {
-        let keep = params.keep_indexes.unwrap_or(0).max(1);
-        let mut removed = 0_u32;
-        for _ in 0..64 {
-            let count = rust_cli_output(&["wim-info", &params.image_path])
-                .ok()
-                .and_then(|output| parse_wim_images(&output).ok())
-                .map(|images| images.len())
-                .unwrap_or(0);
-            if count <= keep as usize {
-                break;
-            }
-            let del_out = std::env::temp_dir().join("br-online-del.txt");
-            let del = format!(
-                "dism.exe /English /Delete-Image /ImageFile:\"{}\" /Index:1",
-                params.image_path
-            );
-            let del_code = run_cmd_to_file_timeout(&del, Some(&del_out), 120000);
-            if del_code != 0 {
-                summary.push_str(&format!(
-                    "[keep] deleting oldest index failed: exit={del_code}\n"
-                ));
-                break;
-            }
-            removed += 1;
-        }
-        if removed > 0 {
-            summary.push_str(&format!(
-                "[keep] removed {removed} older index(es), kept latest {keep}\n"
-            ));
-        }
-    }
-    summary
-}
-
-/// 启动在线备份/还原后台线程（非当前活动系统的卷可直接在线处理）。
-// The caller owns each UI field separately; collapsing them would obscure
-// which potentially destructive input is copied into the background task.
 #[allow(clippy::too_many_arguments)]
-unsafe fn run_online_operation(
-    state: &State,
-    operation: &str,
-    source_drive: &str,
-    target_drive: &str,
-    image_path: &str,
-    index: &str,
-    compress: &str,
-    image_name: &str,
-    keep_indexes: Option<u32>,
-) {
-    let language = selected_language(state);
-    let params = OnlineOpParams {
-        operation: operation.to_string(),
-        source_drive: source_drive.to_string(),
-        target_drive: target_drive.to_string(),
-        image_path: image_path.to_string(),
-        index: index.to_string(),
-        compress: compress.to_string(),
-        image_name: image_name.to_string(),
-        keep_indexes,
-    };
-    let root = state.root as usize;
-    // 清掉上次结果，避免读到旧内容
-    *ONLINE_RESULT.lock().unwrap() = None;
-    std::thread::spawn(move || {
-        let result = execute_online(&params);
-        *ONLINE_RESULT.lock().unwrap() = Some(result);
-        unsafe {
-            PostMessageW(root as Hwnd, WM_APP_ONLINE_DONE, 0, 0);
-        }
+unsafe fn run_online_operation(state: &State, operation: &str, source_drive: &str, target_drive: &str,
+    image_path: &str, index: &str, compress: &str, image_name: &str, keep_indexes: Option<u32>) {
+    if !ONLINE_BUSY.try_start() {
+        show_message(state.root, "已有在线任务正在执行或结果尚未处理，请等待完成。", "任务运行中", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    let params=OnlineOpParams { operation:operation.into(), source_drive:source_drive.into(), target_drive:target_drive.into(), image_path:image_path.into(), index:index.into(), compress:compress.into(), image_name:image_name.into(), keep_indexes };
+    let root=state.root as usize;
+    EnableWindow(GetDlgItem(state.root, ID_CREATE_TASK as i32), 0);
+    // 忙标志一直保持到主窗口取走结果；旧结果不会被新任务清空。
+    let spawn=std::thread::Builder::new().name("online-operation".into()).spawn(move || {
+        let result=std::panic::catch_unwind(|| crate::online_operation::execute(&params))
+            .unwrap_or_else(|_| OnlineResult { success:false, detail:"在线执行线程异常退出，请检查本轮日志和候选目录；不能判定为成功。".into() });
+        *ONLINE_RESULT.lock().unwrap_or_else(|e|e.into_inner())=Some(result);
+        unsafe { PostMessageW(root as Hwnd, WM_APP_ONLINE_DONE, 0, 0); }
     });
-    set_text(
-        state.controls.status,
-        if language == Language::English {
-            "Online backup/restore started in the background. A result dialog will appear when it finishes."
-        } else {
-            "已启动在线备份/还原（后台执行），完成后会弹出结果。"
-        },
-    );
-    append_gui_log(
-        state,
-        &format!(
-            "online operation started: op={operation} source={source_drive} target={target_drive}"
-        ),
-    );
+    if let Err(error)=spawn {
+        ONLINE_BUSY.finish();
+        EnableWindow(GetDlgItem(state.root, ID_CREATE_TASK as i32), 1);
+        show_message(state.root,&format!("无法启动在线线程：{error}"),"启动失败",MB_OK|MB_ICONERROR);
+        return;
+    }
+    // 消息投递失败时由定时器兜底；结果存在则处理一次，不通过文本猜测是否成功。
+    SetTimer(state.root, 9002, 1000, None);
+    set_text(state.controls.status,"在线任务执行中；请勿关闭程序。进度窗口显示当前阶段，完成后报告结果。");
+    append_gui_log(state,&format!("online started: op={operation} source={source_drive} target={target_drive}"));
 }
 
 unsafe extern "system" fn window_proc(
@@ -5793,46 +5592,17 @@ unsafe extern "system" fn window_proc(
             create_task(state);
             return 0;
         }
-        if message == WM_APP_ONLINE_DONE {
-            // 在线备份/还原后台线程完成：读取结果并弹窗展示
-            let result = ONLINE_RESULT.lock().unwrap().take().unwrap_or_default();
-            let language = selected_language(state);
-            let success = result.contains("exit=0")
-                || result.contains("The operation completed successfully");
-            let (text, caption, flags) = if success {
-                (
-                    if language == Language::English {
-                        format!("Online backup/restore completed successfully.\n\n{result}")
-                    } else {
-                        format!("在线备份/还原执行成功。\n\n{result}")
-                    },
-                    if language == Language::English {
-                        "Completed"
-                    } else {
-                        "执行成功"
-                    },
-                    MB_OK | MB_ICONINFORMATION,
-                )
-            } else {
-                (
-                    if language == Language::English {
-                        format!("Online backup/restore finished with errors.\n\n{result}")
-                    } else {
-                        format!("在线备份/还原执行结束，但可能存在问题。\n\n{result}")
-                    },
-                    if language == Language::English {
-                        "Finished with errors"
-                    } else {
-                        "执行结束（可能存在问题）"
-                    },
-                    MB_OK | MB_ICONWARNING,
-                )
-            };
-            append_gui_log(
-                state,
-                &format!("online operation finished: success={success}"),
-            );
-            show_message(state.root, &text, caption, flags);
+        if message == WM_APP_ONLINE_DONE || (message == WM_TIMER && w_param == 9002) {
+            let result=ONLINE_RESULT.lock().unwrap_or_else(|e|e.into_inner()).take();
+            if let Some(result)=result {
+                KillTimer(state.root,9002);
+                // 弹窗期间继续保持忙状态，避免模态消息循环重入创建任务。
+                append_gui_log(state,&format!("online completed: success={}\n{}",result.success,result.detail));
+                set_text(state.controls.status,if result.success { "在线任务已完成并通过校验" } else { "在线任务失败，请检查日志；不要将部分产物视为成功" });
+                show_message(state.root,&result.detail,if result.success { "执行完成" } else { "执行失败" },MB_OK|if result.success { MB_ICONINFORMATION } else { MB_ICONERROR });
+                ONLINE_BUSY.finish();
+                EnableWindow(GetDlgItem(state.root,ID_CREATE_TASK as i32),1);
+            }
             return 0;
         }
         if message == WM_KEYDOWN {
@@ -5902,7 +5672,11 @@ unsafe extern "system" fn window_proc(
                 ID_PE_DIR_BROWSE => browse_pe_dir(state),
                 ID_CREATE_TASK => create_task(state),
                 ID_REFRESH_TASK => refresh_task_status(state),
-                ID_PE_REBOOT_MAIN => pe_reboot_to_pe(state),
+                ID_PE_REBOOT_MAIN => {
+                    if ONLINE_BUSY.is_busy() {
+                        show_message(state.root,"在线任务运行中，禁止重启或更改启动项。","任务运行中",MB_OK|MB_ICONWARNING);
+                    } else { pe_reboot_to_pe(state); }
+                },
                 ID_PE_SHORTCUT => pe_create_shortcut(state),
                 ID_PE_MODE_RAM | ID_PE_MODE_DISK => {
                     // 切换启动方式：刷新目录行显隐与布局；
@@ -5932,6 +5706,10 @@ unsafe extern "system" fn window_proc(
         }
     }
     if message == WM_CLOSE {
+        if ONLINE_BUSY.is_busy() {
+            show_message(hwnd,"在线任务尚未完成。为避免中断写入，请等待结果后再关闭。","任务运行中",MB_OK|MB_ICONWARNING);
+            return 0;
+        }
         DestroyWindow(hwnd);
         return 0;
     }
@@ -5958,38 +5736,6 @@ static PE_EXIT_TAB: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUs
 /// Guard so a double click on "返回 Windows" cannot run two BCD rewrites at
 /// once while the window stays alive during the exit sequence.
 static PE_EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Minimal Win32 structs used by `exit_pe_to_windows` to run `bcdedit.exe`
-/// synchronously and capture its exit code instead of a silent ShellExecuteW.
-#[repr(C)]
-struct StartupInfoW {
-    cb: u32,
-    reserved: *mut u16,
-    desktop: *mut u16,
-    title: *mut u16,
-    x: u32,
-    y: u32,
-    x_size: u32,
-    y_size: u32,
-    x_count_chars: u32,
-    y_count_chars: u32,
-    fill_attribute: u32,
-    flags: u32,
-    show_window: u16,
-    cb_reserved2: u16,
-    reserved2: *mut u8,
-    std_input: Handle,
-    std_output: Handle,
-    std_error: Handle,
-}
-
-#[repr(C)]
-struct ProcessInformation {
-    process: Handle,
-    thread: Handle,
-    process_id: u32,
-    thread_id: u32,
-}
 
 unsafe fn update_pe_clock(state: &PeDesktopState) {
     let mut time = SystemTime {
@@ -6247,7 +5993,7 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                             diag.push(format!(
                                 "verify bootsequence: enum exit={enum_code}, present={bootsequence_present}"
                             ));
-                            if set_code == 0 && enum_code == 0 && !bootsequence_present {
+                            if set_code.is_success() && enum_code.is_success() && !bootsequence_present {
                                 found_bcd = true;
                             } else {
                                 diag.push("BCD restore verification failed".to_string());
@@ -6660,35 +6406,7 @@ unsafe fn pe_dialog(
 /// valid UTF-8, i.e. GBK/CP437 output from `diskpart`, `ipconfig`, `reg`,
 /// `manage-bde` or `systeminfo` on a localized WinRE image.
 fn sysinfo_oem_to_string(bytes: &[u8]) -> Option<String> {
-    if bytes.is_empty() {
-        return None;
-    }
-    unsafe {
-        let count = MultiByteToWideChar(
-            CP_OEMCP,
-            0,
-            bytes.as_ptr() as *const i8,
-            bytes.len() as i32,
-            null_mut(),
-            0,
-        );
-        if count <= 0 {
-            return None;
-        }
-        let mut buffer = vec![0u16; count as usize];
-        let written = MultiByteToWideChar(
-            CP_OEMCP,
-            0,
-            bytes.as_ptr() as *const i8,
-            bytes.len() as i32,
-            buffer.as_mut_ptr(),
-            count,
-        );
-        if written <= 0 {
-            return None;
-        }
-        Some(String::from_utf16_lossy(&buffer[..written as usize]))
-    }
+    crate::text_parsing::decode_code_page(bytes, 1)
 }
 
 /// Decode one probe's bytes: UTF-16LE, then strict UTF-8, then the console OEM
@@ -6718,7 +6436,7 @@ fn sysinfo_probe(command: &str, out_dir: &std::path::Path, name: &str) -> String
         Err(_) => return String::new(),
     };
     let _ = std::fs::remove_file(&out_file);
-    if code == u32::MAX && bytes.is_empty() {
+    if matches!(code, CmdOutcome::SpawnFailed(_)) && bytes.is_empty() {
         return String::new();
     }
     let text = decode_console_bytes(&bytes);
@@ -7646,7 +7364,7 @@ fn esp_store_path_for_pe(detail: &mut String) -> (Option<String>, bool) {
     }
     detail.push_str("[ESP] volume GUID not found; falling back to mountvol S: /S\n");
     let code = run_cmd_to_file("mountvol.exe S: /S", None);
-    if code != 0 {
+    if !code.is_success() {
         detail.push_str(&format!(
             "[ESP] mountvol S: /S FAILED with exit code {code}\n"
         ));
@@ -7718,7 +7436,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
                 ),
                 None => {
                     detail.push_str("[clean_bootsequence] no ESP path; skipped\n");
-                    u32::MAX
+                    CmdOutcome::Skipped
                 }
             };
             result.push_str(&detail);

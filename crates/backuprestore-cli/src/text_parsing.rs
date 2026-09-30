@@ -587,9 +587,10 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         stage = Some("正在还原系统分区…".to_string());
     } else if line.contains("Backup capture finished") {
         stage = Some("备份完成，正在校验镜像…".to_string());
-    } else if line.contains("The operation completed successfully")
-        || line.contains("Recovery completed")
-    {
+    } else if line.contains("The operation completed successfully") {
+        // DISM 的一条命令成功，不代表哈希、副档和清理已完成。
+        stage = Some("当前命令完成，等待后续校验".to_string());
+    } else if line.contains("Recovery completed") || line.contains("操作完成：命令、回读和副档簿记均已通过") {
         stage = Some("操作完成".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {
         stage = Some("正在准备恢复环境…".to_string());
@@ -621,52 +622,28 @@ pub(crate) fn decode_windows_bytes(bytes: &[u8]) -> String {
         return s.to_string();
     }
     #[cfg(windows)]
-    {
-        use std::ffi::c_int;
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn MultiByteToWideChar(
-                code_page: u32,
-                flags: u32,
-                multi_byte_str: *const u8,
-                multi_byte_len: c_int,
-                wide_char_str: *mut u16,
-                wide_char_len: c_int,
-            ) -> c_int;
-        }
-        const CP_OEMCP: u32 = 1;
-        const CP_ACP: u32 = 0;
-
-        for &cp in &[CP_OEMCP, CP_ACP] {
-            let len = unsafe {
-                MultiByteToWideChar(
-                    cp,
-                    0,
-                    bytes.as_ptr(),
-                    bytes.len() as c_int,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            if len > 0 {
-                let mut wide = vec![0u16; len as usize];
-                let res = unsafe {
-                    MultiByteToWideChar(
-                        cp,
-                        0,
-                        bytes.as_ptr(),
-                        bytes.len() as c_int,
-                        wide.as_mut_ptr(),
-                        len,
-                    )
-                };
-                if res > 0 {
-                    return String::from_utf16_lossy(&wide);
-                }
-            }
-        }
+    for cp in [1, 0] {
+        if let Some(value) = decode_code_page(bytes, cp) { return value; }
     }
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// 控制台代码页解码只保留这一份 ABI 声明；GUI 与日志解析器共用。
+#[cfg(windows)]
+pub(crate) fn decode_code_page(bytes: &[u8], code_page: u32) -> Option<String> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MultiByteToWideChar(cp: u32, flags: u32, bytes: *const u8, length: i32, out: *mut u16, capacity: i32) -> i32;
+    }
+    let length = i32::try_from(bytes.len()).ok()?;
+    if length == 0 { return None; }
+    unsafe {
+        let count=MultiByteToWideChar(code_page,0,bytes.as_ptr(),length,std::ptr::null_mut(),0);
+        if count <= 0 { return None; }
+        let mut out=vec![0u16;count as usize];
+        let written=MultiByteToWideChar(code_page,0,bytes.as_ptr(),length,out.as_mut_ptr(),count);
+        (written > 0).then(|| String::from_utf16_lossy(&out[..written as usize]))
+    }
 }
 
 /// Keep only the `systeminfo` lines that describe CPU and memory, so the
@@ -1659,6 +1636,12 @@ Possible values for VolumeName along with current mount points are:
         assert_eq!(parse_percent("no percent sign"), None);
         assert_eq!(parse_percent("[999%]"), None);
         assert_eq!(parse_percent("[abc%]"), None);
+    }
+
+    #[test]
+    fn dism_success_does_not_finish_the_whole_transaction() {
+        assert_ne!(classify_log_line("The operation completed successfully.").0.as_deref(), Some("操作完成"));
+        assert_eq!(classify_log_line("操作完成：命令、回读和副档簿记均已通过").0.as_deref(), Some("操作完成"));
     }
 
     #[test]

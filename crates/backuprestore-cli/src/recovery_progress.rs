@@ -56,6 +56,8 @@ pub struct ProgressShared {
     pub log_path: Mutex<PathBuf>,
     pub log_offset: Mutex<u64>,
     pub window_up: AtomicBool,
+    // 窗口尚未创建时收到关闭请求也要记住，避免快速失败留下孤立进度窗。
+    close_requested: AtomicBool,
     /// 任务开始时间戳，用于计算已用时间与预估剩余时间。
     pub start_time: Mutex<std::time::Instant>,
     /// 进度窗口句柄（窗口线程创建后回填；主线程执行完请求关闭用 usize 存，
@@ -316,11 +318,12 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
 
         // 详情区预填 4 阶段骨架清单，再跟日志尾部。清单用 ✓/▶/· 标出
         // 已完成/进行中/未开始；正文每个已开始阶段后面附上时间戳（时分秒）[HH:MM:SS]。
+        let online = shared.operation.lock().unwrap().as_deref().is_some_and(|s| s.starts_with("ONLINE_"));
         let is_backup = {
             let op_guard = shared.operation.lock().unwrap();
             op_guard
                 .as_deref()
-                .map(|s| s.eq_ignore_ascii_case("BACKUP"))
+                .map(|s| s.eq_ignore_ascii_case("BACKUP") || s.eq_ignore_ascii_case("ONLINE_BACKUP"))
                 .unwrap_or(false)
         };
         let step2_default = if is_backup {
@@ -332,7 +335,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             (1, "挂载卷、校验"),
             (2, step2_default),
             (3, "校验"),
-            (4, "清理re启动项/配置"),
+            (4, if online { "发布副档/完成在线操作" } else { "清理re启动项/配置" }),
         ];
 
         let total_steps = progress.total.unwrap_or(4);
@@ -499,6 +502,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         steps: Mutex::new(crate::text_parsing::StepTracker::new()),
         log_offset: Mutex::new(0),
         window_up: AtomicBool::new(false),
+        close_requested: AtomicBool::new(false),
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
         operation: Mutex::new(operation.map(|s| s.to_string())),
@@ -513,6 +517,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
 
 /// 请求关闭进度窗口（主线程操作执行完毕后调用，避免窗口残留在前台）。
 pub fn request_close(shared: &ProgressShared) {
+    shared.close_requested.store(true, Ordering::SeqCst);
     if let Some(hwnd) = *shared.hwnd.lock().unwrap()
         && hwnd != 0
     {
@@ -576,8 +581,12 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
     *shared.hwnd.lock().unwrap() = Some(hwnd as usize);
     shared.window_up.store(true, Ordering::SeqCst);
     unsafe {
-        ShowWindow(hwnd, 1); // SW_SHOWNORMAL
-        UpdateWindow(hwnd);
+        if shared.close_requested.load(Ordering::SeqCst) {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        } else {
+            ShowWindow(hwnd, 1);
+            UpdateWindow(hwnd);
+        }
     }
 
     let mut msg = std::mem::MaybeUninit::<Msg>::uninit();
@@ -591,6 +600,8 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             DispatchMessageW(msg.as_ptr());
         }
     }
+    *shared.hwnd.lock().unwrap() = None;
+    shared.window_up.store(false, Ordering::SeqCst);
     // 释放 GWL_USERDATA 持有的 Arc（窗口销毁后）
     let _ = unsafe { Arc::from_raw(raw as *const ProgressShared) };
 }

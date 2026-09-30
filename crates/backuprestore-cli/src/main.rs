@@ -44,6 +44,10 @@ mod boot_entry;
 #[cfg(windows)]
 mod native_gui;
 #[cfg(windows)]
+mod windows_command;
+#[cfg(windows)]
+mod online_operation;
+#[cfg(windows)]
 mod recovery_progress;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
@@ -530,21 +534,16 @@ pub(crate) fn err(message: &str) -> TaskError {
 /// target-size and source identity of earlier indexes ambiguous.  The legacy
 /// directory-level `metadata.json` remains a read fallback for images made by
 /// older releases.
+// sidecar（副档）簿记统一在 core 里实现，CLI / WinRE / GUI 三个入口共用同一套，
+// 避免「哪个入口备份的镜像」在元数据上产生差异（v2.0.1 修 P1-1）。
 #[cfg(windows)]
 fn index_metadata_path(image: &Path, index: u32) -> Result<PathBuf, TaskError> {
-    let name = image
-        .file_name()
-        .ok_or_else(|| err("image path has no file name"))?
-        .to_string_lossy();
-    Ok(image.with_file_name(format!("{name}.index-{index}.metadata.json")))
+    backuprestore_core::image_metadata::index_metadata_path(image, index)
 }
 
 #[cfg(windows)]
 fn legacy_metadata_path(image: &Path) -> Result<PathBuf, TaskError> {
-    image
-        .parent()
-        .map(|parent| parent.join("metadata.json"))
-        .ok_or_else(|| err("image path has no parent"))
+    backuprestore_core::image_metadata::legacy_metadata_path(image)
 }
 
 #[cfg(windows)]
@@ -552,29 +551,10 @@ fn read_index_metadata(
     image: &Path,
     index: u32,
 ) -> Result<backuprestore_core::BackupMetadata, TaskError> {
-    let sidecar = index_metadata_path(image, index)?;
-    let metadata: backuprestore_core::BackupMetadata = if sidecar.is_file() {
-        read_json(sidecar)?
-    } else {
-        read_json(legacy_metadata_path(image)?)?
-    };
-    if metadata.wim_index != index {
-        return Err(err(&format!(
-            "backup metadata is for WIM index {}, not selected index {index}",
-            metadata.wim_index
-        )));
-    }
-    Ok(metadata)
+    backuprestore_core::image_metadata::read_index_metadata(image, index)
 }
 
-/// Parse the workspace-relative task path written into `RecoveryTask.env`.
-///
-/// The value is deliberately relative to the root of the workspace volume,
-/// for example `Tools\\BackupRestore\\tasks\\<task-id>`.  We split at the
-/// *last* `\\tasks\\` marker so a perfectly valid program directory such as
-/// `D:\\tasks` or `D:\\Tools\\tasks\\BackupRestore` is not confused with the
-/// task-store suffix.  The old implementation rejected `store_rel == "tasks"`,
-/// which made `D:\\tasks` unusable even though it is an ordinary directory.
+/// 解析卷内工作区相对路径；从最后一个 tasks 分隔符切分，允许上层目录也叫 tasks。
 #[cfg(any(windows, test))]
 fn split_workspace_root_rel(value: &str, task_id: &str) -> Result<String, TaskError> {
     backuprestore_core::validate_relative_path(value)?;
@@ -2053,14 +2033,7 @@ fn recover_windows(
             } else {
                 Vec::new()
             };
-            let mut previous_metadata = BTreeMap::new();
-            for index in &previous_indexes {
-                // 部分历史 WIM（如旧版在线备份产物）没有 sidecar 元数据，
-                // 缺失时跳过即可；追加不需要旧索引的元数据。
-                if let Ok(metadata) = read_index_metadata(&destination_path, *index) {
-                    previous_metadata.insert(*index, metadata);
-                }
-            }
+            let mut previous_metadata = backuprestore_core::image_metadata::load_sidecars(&destination_path, &previous_indexes)?;
             let legacy_path = legacy_metadata_path(&destination_path)?;
             let legacy_metadata: Option<BackupMetadata> = legacy_path
                 .is_file()
@@ -2068,6 +2041,12 @@ fn recover_windows(
                 .transpose()
                 .ok()
                 .flatten();
+
+            if let Some(value) = legacy_metadata.as_ref() {
+                if previous_indexes.contains(&value.wim_index) && previous_hash.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(&value.image_sha256)) {
+                    previous_metadata.entry(value.wim_index).or_insert_with(|| value.clone());
+                }
+            }
 
             // 生成 DISM 排除配置（Parallels 卷根占位符/回收站/临时目录/更新缓存/
             // 各用户浏览器缓存），WinRE 的 TEMP 位于 X: RAM 盘，配置文件不会落在
@@ -2172,12 +2151,6 @@ fn recover_windows(
                     .and_then(|values| env_optional_u64(values, key))
                     .unwrap_or(fallback)
             };
-            for (index, metadata) in &mut previous_metadata {
-                metadata.wim_index = *index;
-                metadata.image_sha256 = image_sha256.clone();
-                metadata.image_size = image_size;
-                write_json_atomic(index_metadata_path(&destination_path, *index)?, metadata)?;
-            }
             let metadata = BackupMetadata {
                 version: 3,
                 image_type: "wim".into(),
@@ -2199,10 +2172,8 @@ fn recover_windows(
                 volume_serial: source_volume_serial,
                 program_version: PROGRAM_VERSION.into(),
             };
-            write_json_atomic(
-                index_metadata_path(&destination_path, new_index)?,
-                &metadata,
-            )?;
+            previous_metadata.insert(new_index, metadata.clone());
+            backuprestore_core::image_metadata::write_sidecars(&destination_path, &previous_metadata, &image_sha256, image_size, 0)?;
 
             // Retain a single legacy sidecar only when it clearly belongs to
             // this image.  New code always reads index-specific metadata;
@@ -2218,86 +2189,38 @@ fn recover_windows(
                 })
             };
             if legacy_belongs_to_image {
-                let legacy = previous_metadata
-                    .get(&1)
-                    .cloned()
-                    .unwrap_or_else(|| metadata.clone());
-                write_json_atomic(&legacy_path, &legacy)?;
+                let first_path = index_metadata_path(&destination_path, 1)?;
+                if first_path.try_exists()? {
+                    let legacy: BackupMetadata = read_json(first_path)?;
+                    write_json_atomic(&legacy_path, &legacy)?;
+                }
             }
             append_log(
                 log,
                 &format!("Backup metadata written for WIM index {new_index}"),
             )?;
-            // 保留最近 N 个索引：从最旧（Index 1）连续删除直至剩余 N 个。
-            // DISM 删除后剩余索引编号会重排（原 k+1..=total → 新 1..=N），
-            // 因此把所有 sidecar 先删除、再按新编号从 previous_metadata 重写。
-            let keep_cleaned = if let Some(keep) = task.keep_indexes {
-                let keep = keep.max(1);
-                if new_index > keep {
-                    let remove_count = new_index - keep;
-                    for _ in 0..remove_count {
-                        run_logged(
-                            "dism.exe",
-                            &[
-                                "/English",
-                                "/Delete-Image",
-                                &format!("/ImageFile:{}", destination_path.display()),
-                                "/Index:1",
-                            ],
-                            log,
-                        )?;
+            // 删除后立即回读索引，再使用共用快照重编号，任何读写错误都使任务失败。
+            if let Some(keep) = task.keep_indexes.filter(|n| *n > 0) {
+                let keep = keep.max(1).min(new_index);
+                for remaining in (keep + 1..=new_index).rev() {
+                    run_logged("dism.exe", &["/English", "/Delete-Image", &format!("/ImageFile:{}", destination_path.display()), "/Index:1"], log)?;
+                    if wim_indexes(&destination_path, log)? != (1..remaining).collect::<Vec<_>>() {
+                        return Err(err("WIM retention index read-back mismatch"));
                     }
-                    for old_idx in 1..=new_index {
-                        let _ = fs::remove_file(index_metadata_path(&destination_path, old_idx)?);
-                    }
-                    for new_idx in 1..=keep {
-                        let old_idx = new_idx + remove_count;
-                        if let Some(existing) = previous_metadata.get(&old_idx) {
-                            let mut updated = existing.clone();
-                            updated.wim_index = new_idx;
-                            updated.image_sha256 = image_sha256.clone();
-                            updated.image_size = image_size;
-                            write_json_atomic(
-                                index_metadata_path(&destination_path, new_idx)?,
-                                &updated,
-                            )?;
+                }
+                if keep < new_index {
+                    backuprestore_core::image_metadata::renumber_sidecars(&destination_path,new_index,new_index-keep)?;
+                    if legacy_belongs_to_image {
+                        let path = index_metadata_path(&destination_path,1)?;
+                        if path.try_exists()? {
+                            let first: BackupMetadata = read_json(path)?;
+                            write_json_atomic(&legacy_path, &first)?;
+                        } else if legacy_path.try_exists()? {
+                            fs::remove_file(&legacy_path)?;
                         }
                     }
-                    // 新追加的索引在清理后编号为 keep，重写其 sidecar。
-                    let mut current = metadata.clone();
-                    current.wim_index = keep;
-                    write_json_atomic(index_metadata_path(&destination_path, keep)?, &current)?;
-                    append_log(
-                        log,
-                        &format!("Kept latest {keep} WIM indexes; removed {remove_count} older"),
-                    )?;
-                    true
-                } else {
-                    false
+                    append_log(log,&format!("Kept latest {keep} WIM indexes; sidecars renumbered and verified"))?;
                 }
-            } else {
-                false
-            };
-            if keep_cleaned {
-                // 清理后最旧索引变为新编号 1，同步更新旧版兼容 sidecar。
-                // keep 删除索引后 WIM 文件本身已变化，需重新计算哈希，
-                // 并把剩余所有 sidecar 的 sha256/大小同步为最终形态，
-                // 否则后续 prepare 还原校验会报 hash mismatch。
-                let final_hash = backuprestore_core::sha256_file(&destination_path)?;
-                let final_size = fs::metadata(&destination_path)?.len();
-                for new_idx in 1..=task.keep_indexes.unwrap_or(1).max(1) {
-                    if let Ok(mut sidecar) = read_index_metadata(&destination_path, new_idx) {
-                        sidecar.image_sha256 = final_hash.clone();
-                        sidecar.image_size = final_size;
-                        write_json_atomic(
-                            index_metadata_path(&destination_path, new_idx)?,
-                            &sidecar,
-                        )?;
-                    }
-                }
-                let first =
-                    read_index_metadata(&destination_path, 1).unwrap_or_else(|_| metadata.clone());
-                write_json_atomic(legacy_path, &first)?;
             }
             if finalize_success {
                 append_log(log, "STEP 4/4 清理re启动项/配置")?;

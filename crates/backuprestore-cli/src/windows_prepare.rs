@@ -975,10 +975,18 @@ fn prepare_payload(
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
         // 重启请求失败：撤销这条一次性启动与自建条目，别把机器留在
         // 「下次开机进任务 RE，但没有人会来跑」的状态。
-        if let Some(entry) = crate::boot_entry::ReBootEntry::read(task_dir.as_path())? {
-            let _ = crate::boot_entry::disarm(&entry, log);
+        match crate::boot_entry::ReBootEntry::read(task_dir.as_path()) {
+            Ok(Some(entry)) => {
+                if let Err(cleanup_error) = crate::boot_entry::disarm(&entry, log) {
+                    append_log(log, &format!("[ERROR] shutdown failed: {error}; RE rollback failed: {cleanup_error}; staged files or BCD objects may remain"))?;
+                }
+            }
+            Ok(None) => append_log(log, "[WARN] shutdown rollback: RE entry record missing; cleanup cannot be verified")?,
+            Err(read_error) => append_log(log, &format!("[ERROR] shutdown rollback: cannot read RE entry: {read_error}"))?,
         }
-        let _ = rollback_boot_request(&task_dir, efi, log);
+        if let Err(rollback_error) = rollback_boot_request(&task_dir, efi, log) {
+            append_log(log, &format!("[ERROR] shutdown failed: {error}; boot request rollback failed: {rollback_error}"))?;
+        }
         return Err(error);
     }
     Ok(())
@@ -1932,7 +1940,7 @@ fn volume_free_bytes(letter: char) -> Result<u64, TaskError> {
     disk_free_space(letter).map(|(_, free)| free)
 }
 
-fn disk_free_space(letter: char) -> Result<(u64, u64), TaskError> {
+pub(crate) fn disk_free_space(letter: char) -> Result<(u64, u64), TaskError> {
     let path = wide_null(&format!(r"{}:\", letter));
     let mut available = 0_u64;
     let mut total = 0_u64;
