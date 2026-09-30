@@ -930,7 +930,7 @@ fn prepare_payload(
     // 注入后的载荷 WIM 覆盖到镜像卷的 BackupRestoreRE\，然后武装我们自建的那条
     // BCD 条目（条目本身在 DISM 之前就建好了，见上面的顺序要点）。
     // 注册位全程只是只读资产来源，因此迁出 / WINRE_HOME / 待回家收尾 / Plan D / F1·F3 全部不需要。
-    // 依据：docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md
+    // 依据：docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md
     if let Err(error) = crate::boot_entry::copy_into_staging(
         &staged,
         &re_staging.boot_sdi,
@@ -999,7 +999,7 @@ fn prepare_payload(
 /// 否则「临时盘符」会变成新的污染源——那正是 S 盘反复出现的原因。
 ///
 /// 为什么能零盘符：verbatim 卷路径下 `CreateFileW` / `CopyFileExW` /
-/// `bcdedit` / `dism` 全都接受。2026-09-29 实机验证（`docs/202609292014` 第六·补节）：
+/// `bcdedit` / `dism` 全都接受。2026-09-29 实机验证（`docs/20260929-2014-S盘自动打开问题定位与修复方案.md` 第六·补节）：
 ///   - 读：两条路径 copy 出的 BCD 副本 SHA-256 相同
 ///   - 写：`set {bootmgr} default` 后 `/enum` 输出 `fc /b` 逐字节无差异
 ///   - 写：`/set` `/create` `/delete` 三个动词均成功
@@ -1040,7 +1040,7 @@ fn efi_bcd_store_path(
 /// 那边是盘符路径。三个 Win32 调用（卷信息、存储设备号、GPT 分区信息）都经
 /// `CreateFileW`/`GetVolumeInformationW`，两者等价。
 ///
-/// 2026-09-29 实机验证过等价性（`docs/202609292014` 第六·补节）：
+/// 2026-09-29 实机验证过等价性（`docs/20260929-2014-S盘自动打开问题定位与修复方案.md` 第六·补节）：
 /// 通过盘符与通过卷路径拿到的 BCD 副本 SHA-256 完全相同，写操作也不做归一化。
 pub(crate) fn volume_identity_at_path(
     path: &str,

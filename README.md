@@ -6,13 +6,13 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 自动拉起 `Recovery.exe` 离线捕获/应用 WIM → 系统还原时修复引导 → 清理临时启动配置 → 重启回 Windows。
 非当前系统卷由界面在线执行；预装 PE 是另一条简化路径，能力差异见完整流程文档。
 
-当前版本 **2.0.1**（版本文件、两个包清单及锁文件同步；修复在线执行安全、跨入口副档一致性与错误反馈）。
+当前版本 **2.0.2**（本轮为 `docs/` 文件名统一日期前缀与引用同步，产品行为未变）。
 
 > **文档导航**：
 > - 完整文档目录与各文档说明请参阅根目录 [文档索引.md](文档索引.md)。
 > - 【完整流程】：[备份、还原的实际链路、三条路径差异与失败边界](docs/20260930-1925-备份还原完整流程-GPT-6.md)。
-> - 【当前开发进度】：本轮审计十项已修；本地 122 项、Windows 常规 135 项及真实小镜像集成测试通过，详见 [当前开发进度](docs/20260930-2130-当前开发进度-GPT-6.md)。
-> - 【下一步待实现】：补 GUI（图形界面）与整系统验收，统一三条入口执行策略及发布恢复机制，详见 [下一步待实现](docs/20260930-2130-下一步待实现-GPT-6.md)。
+> - 【当前开发进度】：`docs/` 文件名全量统一为 `年月日-时分-` 前缀（82 个改名、300+ 处引用同步），产品状态与 v2.0.1 一致，详见 [当前开发进度](docs/20260930-2232-当前开发进度-DeepSeek-V4.1-Flash.md)。
+> - 【下一步待实现】：产品侧补 GUI（图形界面）与整系统验收、统一三条入口执行策略；文档侧抽查索引条目，详见 [下一步待实现](docs/20260930-2232-下一步待实现-DeepSeek-V4.1-Flash.md)。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -96,7 +96,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 （增加 `--deploy` 才会部署到客体包目录及 `H:\brwork\`，分别更新
 `BackupRestore.exe` 和 `Recovery.exe`，并逐一核对 SHA-256）。
 
-构建规则、静态 CRT、Windows SDK 路径等细节见 `docs/windows-build.md`。
+构建规则、静态 CRT、Windows SDK 路径等细节见 `docs/20260819-2245-windows-build.md`。
 
 ---
 
@@ -140,24 +140,24 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 文档 | 作用 |
 |---|---|
 | [备份还原完整流程](docs/20260930-1925-备份还原完整流程-GPT-6.md) | 当前代码链路、入口差异、失败边界与历史实测记录 |
-| [当前开发进度](docs/20260930-2130-当前开发进度-GPT-6.md) | 本轮结果与验证范围 |
-| [`docs/verification-matrix.md`](docs/verification-matrix.md) | 历史验证矩阵；结合最新记录判断覆盖范围 |
+| [当前开发进度](docs/20260930-2232-当前开发进度-DeepSeek-V4.1-Flash.md) | 本轮结果与验证范围 |
+| [`docs/20260821-1528-verification-matrix.md`](docs/20260821-1528-verification-matrix.md) | 历史验证矩阵；结合最新记录判断覆盖范围 |
 
 高频入口：
 
-- 操作 VM 键鼠（自动化点击/按键/截图）→ [`docs/vm-input-control-guide.md`](docs/vm-input-control-guide.md)
-- ARM64 构建规则 → [`docs/windows-build.md`](docs/windows-build.md)
-- WinRE 引导 / PD27 固件回归证明 → [`docs/winre-boot-failure-parallels27-2026-09-25.md`](docs/winre-boot-failure-parallels27-2026-09-25.md)
-- S 盘反复弹窗/unmount 竞态根因与卷路径改造方案 → [`docs/202609292014-S盘自动打开问题定位与修复方案.md`](docs/202609292014-S盘自动打开问题定位与修复方案.md)
-- 下一步开发路线图 → [`docs/development-roadmap-2026-09-26.md`](docs/development-roadmap-2026-09-26.md)
+- 操作 VM 键鼠（自动化点击/按键/截图）→ [`docs/20260927-0016-vm-input-control-guide.md`](docs/20260927-0016-vm-input-control-guide.md)
+- ARM64 构建规则 → [`docs/20260819-2245-windows-build.md`](docs/20260819-2245-windows-build.md)
+- WinRE 引导 / PD27 固件回归证明 → [`docs/20260925-0025-winre-boot-failure-parallels27.md`](docs/20260925-0025-winre-boot-failure-parallels27.md)
+- S 盘反复弹窗/unmount 竞态根因与卷路径改造方案 → [`docs/20260929-2014-S盘自动打开问题定位与修复方案.md`](docs/20260929-2014-S盘自动打开问题定位与修复方案.md)
+- 下一步开发路线图 → [`docs/20260926-2337-development-roadmap.md`](docs/20260926-2337-development-roadmap.md)
 - 完整需求原文 → [`Windows 一键系统备份还原 V1——完整开发需求.md`](Windows%20一键系统备份还原%20V1——完整开发需求.md)
 
 ---
 
 ## 七、当前进度（截至 2026-09-30）
 
-截至 2026-09-30 21:30 的实现与验收状态见 [当前开发进度](docs/20260930-2130-当前开发进度-GPT-6.md)，后续安排见
-[下一步待实现](docs/20260930-2130-下一步待实现-GPT-6.md)。下列内容是历史开发记录，其中注册 WinRE 注入、迁出和写回机制已被独立副本通道替代；不要按旧记录操作当前版本。
+截至 2026-09-30 22:32 的实现与验收状态见 [当前开发进度](docs/20260930-2232-当前开发进度-DeepSeek-V4.1-Flash.md)，后续安排见
+[下一步待实现](docs/20260930-2232-下一步待实现-DeepSeek-V4.1-Flash.md)。下列内容是历史开发记录，其中注册 WinRE 注入、迁出和写回机制已被独立副本通道替代；不要按旧记录操作当前版本。
 
 ### v1.8.11→v1.8.14（2026-09-30）：GUI 离线环境选择按钮修复 + 实机双分支复验 PASS
 
@@ -175,7 +175,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 构建/部署 | v1.8.14 SHA-256 `71a157d0…abab06`，本地与 `H:\brwork` 一致 |
 | **实机复验** | ✅ **用真实 `WM_COMMAND` 注入（非 `--test-hook`）**：RE 分支 `choice=2` 正确捕获、PE 分支 `choice=1` 正确捕获，进程全程存活，确认框可取消回主界面 |
 
-> ✅ 该项已闭环，详见 [docs/20260930-085630-gui-system-drive-choice-button-verified.md](docs/20260930-085630-gui-system-drive-choice-button-verified.md)。**已补验**：「点『是』→ 真实重启进 RE → 备份 → 回 Windows」整段已于 2026-09-30 实机 PASS（真实系统卷 C:，87GB），见 [docs/20260930-100300-re-full-backup-passed.md](docs/20260930-100300-re-full-backup-passed.md)。
+> ✅ 该项已闭环，详见 [docs/20260930-0856-gui-system-drive-choice-button-verified.md](docs/20260930-0856-gui-system-drive-choice-button-verified.md)。**已补验**：「点『是』→ 真实重启进 RE → 备份 → 回 Windows」整段已于 2026-09-30 实机 PASS（真实系统卷 C:，87GB），见 [docs/20260930-1003-re-full-backup-passed.md](docs/20260930-1003-re-full-backup-passed.md)。
 
 ### ✅ RE 分支完整备份闭环 PASS（2026-09-30 约 09:44，v1.8.14 实机）
 
@@ -190,7 +190,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 注册 WinRE | ✅ 未动 / `Enabled`（`reagentc /info` 位置 `harddisk0\partition4`，标识符 `f530b9e0`） |
 | 本轮自建 BCD 条目 `{29662687}` | ✅ 已删（`disarm()` 生效） |
 
-> ⚠️ **发现历史孤儿 BCD 条目**：`bcdedit /enum all` 仍有一对 `{76ead7a9}/{76ead7a8}`（description "BackupRestore task RE"，ramdisk=`F:\BackupRestoreRE\Winre.wim`），来自**更早**测试轮次（本轮 GUID 为 `{29662687}` 已正确清理，二者不同）。不在 bootsequence/displayorder，不影响启动；建议建快照后用 `bcdedit /delete` 清理，并删已空的 `F:\BackupRestoreRE`。详见 [docs/20260930-100300-re-full-backup-passed.md](docs/20260930-100300-re-full-backup-passed.md)。
+> ⚠️ **发现历史孤儿 BCD 条目**：`bcdedit /enum all` 仍有一对 `{76ead7a9}/{76ead7a8}`（description "BackupRestore task RE"，ramdisk=`F:\BackupRestoreRE\Winre.wim`），来自**更早**测试轮次（本轮 GUID 为 `{29662687}` 已正确清理，二者不同）。不在 bootsequence/displayorder，不影响启动；建议建快照后用 `bcdedit /delete` 清理，并删已空的 `F:\BackupRestoreRE`。详见 [docs/20260930-1003-re-full-backup-passed.md](docs/20260930-1003-re-full-backup-passed.md)。
 
 ### 已实机验证（测试卷 T:，非系统卷，在线路径）
 
@@ -211,7 +211,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | F3（离线备份源 == WinRE 宿主卷） | 准备层拒绝（收紧到 `--no-reboot` 之外的离线路径）+ 捕获前二次闸 | T2 拒绝 / T3 在线放行 / T4 正常通过 |
 | 完整离线链路（桌面 prepare → WinRE 捕获 → 回桌面） | 测试卷 T: → E: 实跑成功 | `E:\brimg\t.wim` 367,990,173 B，日志 `WinRE cleanup completed` |
 
-详见 [`docs/winre-payload-and-p0-fix-2026-09-27.md`](docs/winre-payload-and-p0-fix-2026-09-27.md)。
+详见 [`docs/20260927-1047-winre-payload-and-p0-fix.md`](docs/20260927-1047-winre-payload-and-p0-fix.md)。
 
 ### v1.7.7（2026-09-27 晚）：方案 D「捕获前换回干净原件」落地，F1/F3 两个根因彻底解锁
 
@@ -224,12 +224,12 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 核心改动：`validate_volume_roles` 扩展 5 参数 + `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` 开关 | 已落地 | `core` 28 单测全绿（新增 `plan_d_opens_f3_when_source_hosts_registered_winre` 锁定「开关开→F3 放开、关→恢复拒绝」） |
 | 准备层 F3 放开（离线备份源 == WinRE 宿主不再被拒） | 已落地 | `windows_prepare.rs:509` 传 `PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE` |
 | 执行层 `restore_clean_winre_before_capture` | 已落地 | `main.rs:1213`，捕获前覆写源卷注册 WIM 为干净原件并校验哈希；**失败即硬失败终止任务**，绝不静默产脏镜像 |
-| 执行层入口提前还原 | **已回退（2026-09-28，不再采用）** | 曾把还原挪到 WinRE 入口，但因**与断电续跑冲突**而撤销：续跑隐式依赖「注册位=注入件」自动拉起 Recovery.exe，入口即换干净件会让续跑落进微软原版 WinRE。详见 [docs/20260928-073809-resume-vs-clean-winre-conflict.md](docs/20260928-073809-resume-vs-clean-winre-conflict.md) |
-| 注册 WinRE 状态机（不循环 + 断电续跑 + 幂等） | 已落地（2026-09-28） | 会话期间注册位**保持注入件**；仅 DISM 捕获前翻干净（唯一权威纯净闸门）；新增 `ensure_registered_is_payload()` 在 resume 重武装之前确保注册位=注入件（已是则跳过，幂等）；续跑被压制分支恢复干净。设计见 [docs/20260928-074516-registered-winre-policy-and-resume-design.md](docs/20260928-074516-registered-winre-policy-and-resume-design.md) |
+| 执行层入口提前还原 | **已回退（2026-09-28，不再采用）** | 曾把还原挪到 WinRE 入口，但因**与断电续跑冲突**而撤销：续跑隐式依赖「注册位=注入件」自动拉起 Recovery.exe，入口即换干净件会让续跑落进微软原版 WinRE。详见 [docs/20260928-0738-resume-vs-clean-winre-conflict.md](docs/20260928-0738-resume-vs-clean-winre-conflict.md) |
+| 注册 WinRE 状态机（不循环 + 断电续跑 + 幂等） | 已落地（2026-09-28） | 会话期间注册位**保持注入件**；仅 DISM 捕获前翻干净（唯一权威纯净闸门）；新增 `ensure_registered_is_payload()` 在 resume 重武装之前确保注册位=注入件（已是则跳过，幂等）；续跑被压制分支恢复干净。设计见 [docs/20260928-0745-registered-winre-policy-and-resume-design.md](docs/20260928-0745-registered-winre-policy-and-resume-design.md) |
 | 交叉编译 + 单测 | 通过 | Windows `aarch64-pc-windows-msvc` 构建通过（仅 LNK4099 缺 PDB 警告）；`cargo test -p backuprestore-core` 28 全绿。**VM 实机闭环（含断电续跑场景）尚未验证** |
 | 执行层二次闸 `winre_role_conflict_at_execution` 随开关放开 F3 | 已落地 | `main.rs:1170`，`false` 可一键回退到旧拒绝 |
 | 构建（macOS 交叉编译 ARM64） | v1.7.10 产物 `BackupRestore.exe` = 1,763,840B | `build-win.sh` 构建通过（仅 LNK4099 缺 PDB 警告，无害） |
-| **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **已通过（2026-09-28 实机闭环）** | 详见 [阶段2 文档 9.5.2.1](docs/winre-task-wim-phase2-2026-09-27.md)：P: 作承载 RE 的卷，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检 `\Recovery\WindowsRE\Winre.wim` 哈希 = `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原 |
+| **VM 端到端验证（离线备份承载 RE 的卷 + 抽检镜像 WIM 哈希 + 迁回复原）** | **已通过（2026-09-28 实机闭环）** | 详见 [阶段2 文档 9.5.2.1](docs/20260927-2015-winre-task-wim-phase2.md)：P: 作承载 RE 的卷，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检 `\Recovery\WindowsRE\Winre.wim` 哈希 = `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原 |
 
 > 方案 D 让「离线备份承载 WinRE 的卷」不再被拒，结合 1.7.6 的 F1/F3 第一段逻辑，**产品主场景（系统盘离线备份/还原）在代码层面已解锁**；该解锁已于 2026-09-28 在 VM 内对「备份源 == 承载注册 WinRE 的卷」这一最坏组合实机闭环验证通过。
 
@@ -241,13 +241,13 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 > **v1.7.9（2026-09-28）**：修复 v1.7.8 实机验证抓到的续跑挂载 BUG（`volume has no disk number`，
 > 根因=读取端丢弃 env 字段 + 挂载端单路依赖 DiskPart），并以「power-loss-window 注入 + original 覆写
 > 构造死局」完成**断电续跑场景实机闭环验证 PASS**（修复→重武装→WinRE 自动跑完→success→终态还原干净）。
-> 详见 [docs/20260928-093132-v179-fix-resume-mount-and-verify.md](docs/20260928-093132-v179-fix-resume-mount-and-verify.md)。
+> 详见 [docs/20260928-0931-v179-fix-resume-mount-and-verify.md](docs/20260928-0931-v179-fix-resume-mount-and-verify.md)。
 
 ### v1.7.10（2026-09-29）：修复「日志宣称注册位已还原、实机注册位目录却是空的」
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| 根因定位（迁出任务终态把干净原件写到了 RE 暂存卷，家卷自 `reagentc /disable` 后无人再写；`finalize_evacuated_winre` 被 `finalize_success` 挡成死代码；PE 内做不了 reagentc 重注册） | **已定位（代码 + 实机日志双证据）** | 见 [docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md](docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md) |
+| 根因定位（迁出任务终态把干净原件写到了 RE 暂存卷，家卷自 `reagentc /disable` 后无人再写；`finalize_evacuated_winre` 被 `finalize_success` 挡成死代码；PE 内做不了 reagentc 重注册） | **已定位（代码 + 实机日志双证据）** | 见 [docs/20260929-1035-winre-finalize-wrote-to-scratch-not-home.md](docs/20260929-1035-winre-finalize-wrote-to-scratch-not-home.md) |
 | 修复：`WINRE_HOME_*` 家卷身份 + WinRE 内写回家卷并落「待回家」标记 + 桌面 `reagentc` 重注册并用 `/info` 的 `harddiskN\partitionM` 复核 + 回收暂存卷 | 已落地 | `windows_prepare.rs` `write_recovery_env`；`main.rs` `restore_original_winre_at` / `finalize_winre_after_task` / `finalize_evacuated_winre` / `finish_pending_winre_rehome`；`text_parsing.rs` `reagentc_info_location` |
 | 新增 CLI `winre-rehome`（桌面手动收尾，GUI 启动时自动跑同一逻辑） | 已落地 | `main.rs` `winre_rehome()` |
 | 交叉编译 + 单测 | 通过 | `./build-win.sh` 产物 1,763,840B，SHA-256 `9077e5e5…a2bd`；`cargo test --workspace` 73 passed / 0 failed |
@@ -257,7 +257,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| PoC 命题：把原 `Winre.wim` 副本注入载荷放镜像卷、用**自建 BCD 条目**（独占设备选项对象 + 独占 osloader + 一次性 `bootsequence`）启动，全程不碰系统注册 WinRE | **通过** | 实机进 PE（`SYSTEMROOT=X:\windows`）、载荷钩子拉起、`Recovery.exe` 在 PE 内 RC=0；`C:\Recovery` 与 BCD 零改动。见 [docs/20260929-130000](docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md)，证据 `.test-artifacts/pe-channel-poc/` |
+| PoC 命题：把原 `Winre.wim` 副本注入载荷放镜像卷、用**自建 BCD 条目**（独占设备选项对象 + 独占 osloader + 一次性 `bootsequence`）启动，全程不碰系统注册 WinRE | **通过** | 实机进 PE（`SYSTEMROOT=X:\windows`）、载荷钩子拉起、`Recovery.exe` 在 PE 内 RC=0；`C:\Recovery` 与 BCD 零改动。见 [docs/20260929-130000](docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md)，证据 `.test-artifacts/pe-channel-poc/` |
 | **修正旧结论**：拦住绕法的不是「启动 ramdisk 路径 == ReAgent 注册位置」，而是「**ReAgent 登记的那个 BCD 对象 + `reagentc /boottore` 的 bootstatus**」 | 已用 A/C1 对照实验证明 | 实验 A：直接 `bootsequence` 系统自带 WinRE 条目 → 8 秒被丢弃；实验 C1：复制该条目改指镜像卷副本 → 成功进 PE |
 | 若改走新通道可整体删除的机制 | 已列清单 | 迁出 / `WINRE_HOME_*` / 待回家标记与桌面收尾 / Plan D / F1·F3 两道闸 / servicing 竞态（§3.1） |
 | 改走新通道仍需自建的部分 | 已列清单 | BCD 条目生命周期、按卷 GUID 定位（PE 盘符会重排）、镜像卷 700MB、验收自动化（PE 内 `prlctl exec` 不可用）（§3.2） |
@@ -396,7 +396,7 @@ running wpeutil.exe reboot
 | 清理与终态 | ✅ | BCD 残留 0、无 bootsequence、注册位仍是 `harddisk0\partition4` / `b69adf69`、重启回 `SYSTEMROOT=C:\Windows` |
 | 产物 | v1.8.0 = 1,771,520 B | SHA-256 `d61a3995…6b0bc6` |
 
-详见 [docs/202609292014-S盘自动打开问题定位与修复方案.md](docs/202609292014-S盘自动打开问题定位与修复方案.md)（含 21:0x 补测的退出码实证）。
+详见 [docs/20260929-2014-S盘自动打开问题定位与修复方案.md](docs/20260929-2014-S盘自动打开问题定位与修复方案.md)（含 21:0x 补测的退出码实证）。
 
 > ⚠️ 仍未闭环：S 盘弹窗本身（方案 A：卷 GUID 路径零盘符）因 5.2 写路径归一化风险**尚未实施**；
 > restore 方向、断电续跑、BCDBoot 交互、Secure Boot、还原目标 WinRE 注册语义也仍未验证。
@@ -415,17 +415,17 @@ running wpeutil.exe reboot
 | 产物 | v1.7.14 = 1,769,472 B | SHA-256 `e34cde4c…a1d55d` |
 
 完整过程、三次快照 ID、宿主磁盘/通道差异见
-[docs/20260929-204000-ramdisk-spec-root-cause-and-no-reboot-armed.md](docs/20260929-204000-ramdisk-spec-root-cause-and-no-reboot-armed.md)。
+[docs/20260929-2040-ramdisk-spec-root-cause-and-no-reboot-armed.md](docs/20260929-2040-ramdisk-spec-root-cause-and-no-reboot-armed.md)。
 
 > ⚠️ 本次 prepare 走的是 `--test-efi-drive Y`（绕开 SYSTEM 通道会挂起的 `mountvol /S`），
 > **尚未验证产品自己跑完整 `mountvol /S` → ESP 定位的主路径**；restore 方向、断电续跑、
 > BCDBoot 交互、Secure Boot、还原目标 WinRE 注册语义仍未闭环。**不要把 v1.7.14 用于实机
 > 备份/还原**——VM 内可用版本仍是 v1.7.10（`H:\brwork\BackupRestore.exe`）。
-> PoC 机制本身已验证可用（[docs/20260929-130000](docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md)）。
+> PoC 机制本身已验证可用（[docs/20260929-130000](docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md)）。
 
 ### 尚未闭环（按严重度）
 
-0. **待用户裁定的两点**（详见 [docs/20260929-103500](docs/20260929-103500-winre-finalize-wrote-to-scratch-not-home.md) §6）：
+0. **待用户裁定的两点**（详见 [docs/20260929-103500](docs/20260929-1035-winre-finalize-wrote-to-scratch-not-home.md) §6）：
    ① 备份方向的「WinRE 迁出」闸门因方案 D 压制 F3 冲突而成为死代码——是否让备份也走迁出；
    ② 迁出态备份抓到的镜像里 `ReAgent.xml` 指向暂存卷、`\Recovery\WindowsRE` 是空目录——是否在终态
    一并校验/改写。
@@ -450,7 +450,7 @@ running wpeutil.exe reboot
 | 根因 | `mountvol S: /S` 给 ESP 分配盘符 → Windows 自动播放 `UnknownContentOnArrival → MSOpenFolder`（`InvokeVerb=open`）弹窗 → 程序用完 `mountvol S: /D` 撤销盘符 → 已打开的窗口失效 |
 | 修复方向 | 改用卷 GUID 路径 `\\?\Volume{GUID}\EFI\Microsoft\Boot\BCD`，一次准备任务的临时盘符挂载降至 0 次（`bcdedit /store` 卷路径已在实机验证可读） |
 | 阻塞门槛 | `/store` 写操作下 `device` 字段是否被归一化改写，需实机实验确认 |
-| 详细证据与分阶段方案 | [docs/202609292014-S盘自动打开问题定位与修复方案.md](docs/202609292014-S盘自动打开问题定位与修复方案.md) |
+| 详细证据与分阶段方案 | [docs/20260929-2014-S盘自动打开问题定位与修复方案.md](docs/20260929-2014-S盘自动打开问题定位与修复方案.md) |
 
 ### 其他已知限制
 
@@ -459,12 +459,12 @@ running wpeutil.exe reboot
   开发验证目前留在 **PD 26.4.2** 上做，注意关闭自动更新。
 
 > 提醒：README 里的流程图描述的是**目标链路**，不是当前已验证链路。判断「做到了哪一步」
-> 请以 `docs/verification-matrix.md` 的实机证据为准。
+> 请以 `docs/20260821-1528-verification-matrix.md` 的实机证据为准。
 
 ### 文档基线脱节（待修）
 
-`docs/project-status.md` 停留在 **2026-09-24 / v1.6.6**，落后当前 1.7.6 六个版本；
-`docs/current-status-2026-09-16.md` 更早。用它们判断当前进度会得出错误结论，
+`docs/20260821-1528-project-status.md` 停留在 **2026-09-24 / v1.6.6**，落后当前 1.7.6 六个版本；
+`docs/20260916-2105-current-status.md` 更早。用它们判断当前进度会得出错误结论，
 当前版本以 `VERSION` 和 `git log` 为准。
 
 仓库：https://github.com/pixian5/backupRestore

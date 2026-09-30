@@ -2,7 +2,7 @@
 # BackupRestore macOS 交叉编译 Windows ARM64 一键构建脚本
 # 用法：./build-win.sh [--deploy]
 #   --deploy  构建后复制到 VM 部署目录（C:\Users\Public\backupRestore-package\BackupRestore.exe）
-# 依赖（见 docs/backuprestore-pe.md 踩坑 23）：
+# 依赖（见 docs/20260825-2309-backuprestore-pe.md 踩坑 23）：
 #   - rustup target add aarch64-pc-windows-msvc（rust-std）
 #   - ~/win-sdk-arm64/{um,ucrt,vc}/arm64（从 VM 复制的 Windows SDK + VC import libs）
 set -e

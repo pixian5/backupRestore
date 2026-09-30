@@ -1,6 +1,6 @@
 //! v1.7.11 新启动通道：**不碰系统注册 WinRE**，用「镜像卷上的载荷 WIM + 自建 BCD 条目」启动。
 //!
-//! 背景与实机依据：`docs/20260929-130000-pe-channel-poc-winre-wim-boots-from-image-volume.md`。
+//! 背景与实机依据：`docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md`。
 //! 旧通道要把注入写回 `X:\Recovery\WindowsRE\Winre.wim`（注册位），于是衍生出一整批机制：
 //! 迁出（`reagentc /disable`→`/setreimage`→`/enable`）、`WINRE_HOME_*`、待回家标记与桌面收尾、
 //! Plan D 捕获前翻回干净件、F1/F3 两道闸、以及与 Windows servicing 的竞态。

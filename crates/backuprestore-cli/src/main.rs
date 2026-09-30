@@ -786,7 +786,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // 第二宿主位置绕开（WinRE 强校验启动路径 == ReAgent 注册位置），因此只能按时间
     // 分片：任务存活期保持注入件，只在 DISM 捕获前那一刻翻成干净原件
     // （见 `restore_clean_winre_before_capture`），任务终结时再还原一次。
-    // 完整设计与场景矩阵：docs/20260928-074516-registered-winre-policy-and-resume-design.md
+    // 完整设计与场景矩阵：docs/20260928-0745-registered-winre-policy-and-resume-design.md
     // 主日志默认在任务目录；挂载镜像卷后（见下）切换到镜像同目录 Recovery.log，
     // 方便用户在 WIM 旁直接查看。workspace_log 保留给 GUI 状态报告读取。
     let workspace_log = store.log_path(&task_id)?;

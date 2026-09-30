@@ -48,4 +48,4 @@ Get-Volume | Where-Object DriveLetter | Format-Table DriveLetter,FileSystemLabel
   若需手动验证 bootmgr 引导链，可先把主系统盘 ESP（磁盘 0 分区 2）的
   `\EFI\Microsoft\Boot` 结构复制过来再测试。
 - 清理历史目录（C:\Users\Public\backupRestore-src*、backupRestore-package-v1~v11）见
-  docs/backuprestore-pe.md「v1.5.3 之后：清理开发残留」。
+  docs/20260825-2309-backuprestore-pe.md「v1.5.3 之后：清理开发残留」。
