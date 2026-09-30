@@ -757,8 +757,9 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // available.  Switch to the task directory immediately after mounting;
     // all task/recovery logs that survive WinRE are stored there.
     let mut early_log = PathBuf::from(r"X:\BackupRestore-Recovery-early.log");
+    let operation_hint = values.get("OPERATION").map(|s| s.as_str());
     // WinRE 恢复进度窗口（失败静默降级，非关键）：GUI 显示阶段/DISM 进度/日志尾部。
-    let progress = recovery_progress::spawn(early_log.clone());
+    let progress = recovery_progress::spawn(early_log.clone(), operation_hint);
     // One registry for every role mounted in this WinRE session, so two roles
     // that resolve to the same volume share its letter instead of stealing it
     // from each other.

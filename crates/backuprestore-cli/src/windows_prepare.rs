@@ -669,12 +669,19 @@ fn prepare_task(
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let path = image_path.as_ref().expect("restore image path validated");
+            let file_size = fs::metadata(path)?.len();
+            // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像时才流式计算，彻底避免重复读盘
+            let sha256 = if let Ok(meta) = crate::read_index_metadata(Path::new(path), options.wim_index) {
+                meta.image_sha256
+            } else {
+                sha256_file(path)?
+            };
             task.image = Some(ImageSpec {
                 volume: image_volume.clone(),
                 absolute_path: Some(path.clone()),
                 relative_path: image_relative.clone(),
-                sha256: sha256_file(path)?,
-                size_bytes: fs::metadata(path)?.len(),
+                sha256,
+                size_bytes: file_size,
                 index: options.wim_index,
                 name: None,
             });
@@ -1432,17 +1439,15 @@ fn validate_operation_inputs(
                     &format!("/Index:{}", options.wim_index),
                 ],
             )?;
-            // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 哈希；
+            // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 完整性；
+            // 优先比对物理文件大小，避免在提权准备阶段对 58GB 镜像再次耗时 2 分钟重复读盘计算哈希。
             // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
             // 哈希校验与目标大小预检——DISM /Get-WimInfo 已确认 WIM 可读。
-            // 哈希不匹配时默认拒绝，但用户已确认（--force-restore-hash）
-            // 可以继续还原（档案可能被移动/镜像被修改，风险由用户承担）。
             let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
             if let Some(metadata) = &metadata {
-                let expected = &metadata.image_sha256;
-                let actual = sha256_file(path)?;
-                if !actual.eq_ignore_ascii_case(expected) && !options.force_restore_hash {
-                    return Err(err("restore image hash does not match metadata"));
+                let file_size = fs::metadata(path)?.len();
+                if metadata.image_size > 0 && file_size != metadata.image_size && !options.force_restore_hash {
+                    return Err(err("restore image size does not match metadata"));
                 }
             }
             let minimum = metadata

@@ -65,6 +65,8 @@ pub struct ProgressShared {
     /// 窗口每次只读到日志**增量**，而「一共几步、已完成几步」要跨增量累积，
     /// 否则两次刷新之间就会忘记自己走到哪。
     pub steps: Mutex<crate::text_parsing::StepTracker>,
+    /// 操作类型（如 BACKUP / RESTORE_EXISTING），用于未打出步骤前预填骨架标题。
+    pub operation: Mutex<Option<String>>,
 }
 
 impl ProgressShared {
@@ -269,7 +271,23 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         tracker.snapshot()
     };
     unsafe {
-        if let Some(stage) = latest_stage {
+        // 用户要求：阶段大标题保持精简（如 "1/4 挂载卷、校验"、"2/4 还原镜像（时间长）"），
+        // 且绝对不能被 DISM 控制台的 "正在还原系统分区…" 过程日志覆盖。
+        let current_step_title = if let Some(current_idx) = progress.current {
+            progress
+                .steps
+                .iter()
+                .find(|(idx, _, _)| *idx == current_idx)
+                .map(|(_, name, _)| format!("{current_idx}/{} {name}", progress.total.unwrap_or(4)))
+        } else {
+            None
+        };
+        let final_stage = if latest_stage.as_deref() == Some("操作完成") {
+            latest_stage.clone()
+        } else {
+            current_step_title.or_else(|| latest_stage.clone())
+        };
+        if let Some(stage) = final_stage {
             let wide: Vec<u16> = stage.encode_utf16().chain(std::iter::once(0)).collect();
             SetWindowTextW(GetDlgItem(hwnd, ID_STAGE), wide.as_ptr());
         }
@@ -296,31 +314,59 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         let time_wide = encode(&time_text);
         SetWindowTextW(GetDlgItem(hwnd, ID_TIME_INFO), time_wide.as_ptr());
 
-        // 详情区上面先画步骤清单，再跟日志尾部。清单用 ✓/▶/· 标出
-        // 已完成/进行中/未开始；正文每个阶段后面附上时间戳（时分秒）[HH:MM:SS]。
+        // 详情区预填 4 阶段骨架清单，再跟日志尾部。清单用 ✓/▶/· 标出
+        // 已完成/进行中/未开始；正文每个已开始阶段后面附上时间戳（时分秒）[HH:MM:SS]。
+        let is_backup = {
+            let op_guard = shared.operation.lock().unwrap();
+            op_guard
+                .as_deref()
+                .map(|s| s.eq_ignore_ascii_case("BACKUP"))
+                .unwrap_or(false)
+        };
+        let step2_default = if is_backup {
+            "捕获镜像（时间长）"
+        } else {
+            "还原镜像（时间长）"
+        };
+        let default_stages = [
+            (1, "挂载卷、校验"),
+            (2, step2_default),
+            (3, "校验"),
+            (4, "清理re启动项/配置"),
+        ];
+
+        let total_steps = progress.total.unwrap_or(4);
+        let current = progress.current.unwrap_or(0);
+        let all_done = latest_stage.as_deref() == Some("操作完成")
+            || (current == total_steps && pos >= 100);
+
         let mut body: Vec<String> = Vec::new();
-        if !progress.steps.is_empty() {
-            let current = progress.current.unwrap_or(0);
-            for (index, name, ts) in &progress.steps {
-                let mark = if *index < current {
-                    "✓"
-                } else if *index == current {
-                    "▶"
-                } else {
-                    "·"
-                };
-                let time_str = match ts {
-                    Some(t) => format!(" [{t}]"),
-                    None => String::new(),
-                };
-                body.push(format!("{mark} {index}/{} {}{time_str}", progress.total.unwrap_or(*index), name));
+        for (idx, default_name) in default_stages {
+            if idx > total_steps {
+                continue;
             }
-            // 移除总进度，只保留当前进度
-            if let Some(step) = latest_percent {
-                body.push(format!("—— 当前进度 {step}% ——"));
-            }
-            body.push(String::new());
+            let recorded = progress.steps.iter().find(|(i, _, _)| *i == idx);
+            let name = recorded.map(|(_, n, _)| n.as_str()).unwrap_or(default_name);
+            let ts = recorded.and_then(|(_, _, t)| t.as_deref());
+
+            let mark = if all_done || idx < current {
+                "✓"
+            } else if idx == current {
+                "▶"
+            } else {
+                "·"
+            };
+            let time_str = match ts {
+                Some(t) => format!(" [{t}]"),
+                None => String::new(),
+            };
+            body.push(format!("{mark} {idx}/{total_steps} {name}{time_str}"));
         }
+        // 移除总进度，只保留当前进度
+        if let Some(step) = latest_percent {
+            body.push(format!("—— 当前进度 {step}% ——"));
+        }
+        body.push(String::new());
         body.extend(details.iter().cloned());
         if !body.is_empty() {
             let text = body.join("\r\n");
@@ -441,7 +487,7 @@ fn encode(text: &str) -> Vec<u16> {
 }
 
 /// 启动恢复进度窗口线程，返回共享状态句柄（主线程用于切换日志路径）。
-pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
+pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShared> {
     let shared = Arc::new(ProgressShared {
         log_path: Mutex::new(initial_log),
         steps: Mutex::new(crate::text_parsing::StepTracker::new()),
@@ -449,6 +495,7 @@ pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
         window_up: AtomicBool::new(false),
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
+        operation: Mutex::new(operation.map(|s| s.to_string())),
     });
     let thread_shared = Arc::clone(&shared);
     let _ = thread::spawn(move || {

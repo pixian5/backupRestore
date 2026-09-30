@@ -595,10 +595,8 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         stage = Some("正在准备恢复环境…".to_string());
     } else if let Some((index, total, name)) = parse_step_marker(line) {
         // 备份/还原流程打的编号步骤标记，形如 "STEP 2/4 捕获系统分区镜像"。
-        // 进度窗口据此显示「步骤 n/N：<名称>」，让用户看清当前处在第几步。
-        // 注意用 parse_step_marker 而不是 strip_prefix：真实日志行前面
-        // 带着方括号时间戳，只匹配行首会永远认不出步骤（2026-09-30 修的）。
-        stage = Some(format!("步骤 {index}/{total}：{name}"));
+        // 进度窗口据此显示「n/N <名称>」，让用户看清当前处在第几步。
+        stage = Some(format!("{index}/{total} {name}"));
     }
     let percent = parse_percent(line);
     let trimmed = line.trim();
@@ -1702,7 +1700,7 @@ Possible values for VolumeName along with current mount points are:
     #[test]
     fn step_markers_render_as_numbered_stage_and_stay_out_of_detail() {
         let (stage, _percent, detail) = classify_log_line("STEP 2/4 捕获系统分区镜像");
-        assert_eq!(stage.as_deref(), Some("步骤 2/4：捕获系统分区镜像"));
+        assert_eq!(stage.as_deref(), Some("2/4 捕获系统分区镜像"));
         assert_eq!(detail, None, "编号步骤行不应占详情框（已由阶段标题展示）");
 
         // 没有 n/N 的 STEP 行**不**再当成编号步骤：进度窗口要回答"一共几步、
@@ -2000,7 +1998,7 @@ Hotfix(s):                 1 Hotfix(s) Installed.
 
         // 阶段标题也要能认出来，不只是步骤跟踪器。
         let (stage, _percent, _detail) = classify_log_line(real);
-        assert_eq!(stage.as_deref(), Some("步骤 1/4：准备备份环境（挂载卷、校验、必要时还原恢复环境）"));
+        assert_eq!(stage.as_deref(), Some("1/4 准备备份环境（挂载卷、校验、必要时还原恢复环境）"));
     }
 
     /// 认不出步骤标记时返回 None，不能 panic、不能猜。
@@ -2105,6 +2103,25 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(progress.steps[0].0, 2);
         assert_eq!(progress.steps[0].1, "捕获系统分区镜像");
         assert!(progress.steps[0].2.is_some());
+    }
+
+    /// 验证还原的四阶段简化标题格式正确，不带多余前缀与符号。
+    #[test]
+    fn step_markers_restore_stages_match_clean_format() {
+        let lines = [
+            "STEP 1/4 挂载卷、校验",
+            "STEP 2/4 还原镜像（时间长）",
+            "STEP 3/4 校验",
+            "STEP 4/4 清理re启动项/配置",
+        ];
+        for line in lines {
+            let (stage, _, _) = classify_log_line(line);
+            assert!(stage.is_some());
+            let title = stage.unwrap();
+            assert!(!title.contains("步骤"));
+            assert!(!title.contains('：'));
+            assert!(title.starts_with("1/4 ") || title.starts_with("2/4 ") || title.starts_with("3/4 ") || title.starts_with("4/4 "));
+        }
     }
 
     /// 纯 [stdout] / [stderr] 空标签行不占详情。

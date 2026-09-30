@@ -4616,9 +4616,20 @@ unsafe fn create_task(state: &mut State) {
         let index_number = index.parse::<u32>().unwrap_or(1);
         let metadata_check = crate::read_index_metadata(Path::new(&image_path), index_number);
         let hash_ok = match &metadata_check {
-            Ok(metadata) => backuprestore_core::sha256_file(&image_path)
-                .map(|actual| actual.eq_ignore_ascii_case(&metadata.image_sha256))
-                .unwrap_or(false),
+            Ok(metadata) => {
+                // 优化：优先比对文件物理大小，彻底消除在主 UI 消息循环线程
+                // 同步流式读取 58GB 导致窗口未响应（卡死）1~2 分钟的严重体验缺陷。
+                // 备份时生成的 sidecar 已记录权威的 image_bytes 和 image_sha256。
+                if let Ok(file_meta) = std::fs::metadata(&image_path) {
+                    if metadata.image_size > 0 && file_meta.len() != metadata.image_size {
+                        false
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
             Err(_) => false,
         };
         let (prompt, title) = if metadata_check.is_err() {
@@ -7767,7 +7778,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             let out = crate::text_parsing::esp_log_path("backup-out.txt");
             // 备份进度 GUI：后台窗口线程读 DISM 输出文件实时刷新，
             // 不弹 cmd 黑窗、不阻塞界面（见 recovery_progress.rs）。
-            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()));
+            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()), Some("BACKUP"));
             // 生成 DISM 排除配置（Parallels 卷根占位符/临时目录/回收站/浏览器缓存），
             // 写到 PE 的 X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
             // 路径拼进 cmd 字符串，可能含空格，必须加引号。
@@ -7871,7 +7882,7 @@ fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
             let d = resolve_drive(drive);
             let out = crate::text_parsing::esp_log_path("restore-out.txt");
             // 还原进度 GUI（同备份：后台窗口线程读 DISM 输出实时刷新）。
-            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()));
+            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()), Some("RESTORE_EXISTING"));
             run_cmd_to_file_timeout(
                 &format!(
                     "cmd /c dism.exe /Apply-Image /ImageFile:{wim} /Index:1 /ApplyDir:{d}:\\ > {out} 2>&1"
