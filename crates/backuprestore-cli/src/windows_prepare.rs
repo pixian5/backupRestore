@@ -114,6 +114,8 @@ pub(crate) struct PrepareOptions {
     compress: Option<String>,
     /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
     force_restore_hash: bool,
+    /// 还原时严格校验镜像哈希（GUI 勾选了对比哈希，默认未勾选仅对比大小）。
+    verify_hash: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -390,6 +392,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut no_reboot = false;
     let mut compress = None;
     let mut force_restore_hash = false;
+    let mut verify_hash = false;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
         let value = |name: &str, args: &mut std::vec::IntoIter<String>| {
@@ -465,6 +468,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                 compress = Some(level.to_string());
             }
             "--force-restore-hash" => force_restore_hash = true,
+            "--verify-hash" => verify_hash = true,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
         }
     }
@@ -527,6 +531,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         image_name,
         keep_indexes,
         force_restore_hash,
+        verify_hash,
     })
 }
 
@@ -1448,6 +1453,14 @@ fn validate_operation_inputs(
                 let file_size = fs::metadata(path)?.len();
                 if metadata.image_size > 0 && file_size != metadata.image_size && !options.force_restore_hash {
                     return Err(err("restore image size does not match metadata"));
+                }
+                // 用户要求：增加一个校验选项框，不勾选时仅对比大小，勾选时对比哈希
+                if options.verify_hash {
+                    let expected = &metadata.image_sha256;
+                    let actual = sha256_file(path)?;
+                    if !actual.eq_ignore_ascii_case(expected) && !options.force_restore_hash {
+                        return Err(err("restore image hash does not match metadata"));
+                    }
                 }
             }
             let minimum = metadata

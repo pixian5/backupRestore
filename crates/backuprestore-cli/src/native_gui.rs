@@ -120,6 +120,9 @@ const ID_MENU: usize = 1207;
 const ID_COMPRESS: usize = 1208;
 const ID_INDEX_NAME_EDIT: usize = 1209;
 const ID_KEEP_EDIT: usize = 1210;
+const ID_VERIFY_HASH: usize = 1211;
+const BS_AUTOCHECKBOX: u32 = 0x00000003;
+const BM_GETCHECK: u32 = 0x00F0;
 const ID_STATUS: usize = 1300;
 const ID_LANGUAGE_LABEL: usize = 2009;
 const ID_SOURCE_DETAILS: usize = 2012;
@@ -586,6 +589,8 @@ struct Controls {
     keep: Hwnd,
     source_details: Hwnd,
     target_details: Hwnd,
+    /// 还原校验选项框：勾选时对比哈希，不勾选仅对比大小。
+    verify_hash: Hwnd,
     status: Hwnd,
 }
 
@@ -655,6 +660,7 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.compress, "compress"),
         (state.controls.index_name, "index_name"),
         (state.controls.keep, "keep"),
+        (state.controls.verify_hash, "verify_hash"),
         (GetDlgItem(state.root, ID_REFRESH as i32), "refresh"),
         (GetDlgItem(state.root, ID_READ_IMAGE as i32), "read_image"),
         (GetDlgItem(state.root, ID_CREATE_TASK as i32), "create_task"),
@@ -715,6 +721,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "keep") => {
             "保留最近 N 个索引：备份追加成功后自动删除更旧的索引（0=不清理）。删除不可恢复，请谨慎设置。"
         }
+        (Language::Chinese, "verify_hash") => {
+            "勾选时全量计算镜像 SHA-256 哈希比对；不勾选时仅对比文件物理大小（毫秒级极速，推荐）。"
+        }
         (Language::Chinese, "refresh") => "刷新 Windows、WinRE 和可用卷信息。",
         (Language::Chinese, "read_image") => "只读解析 WIM 索引、哈希和元数据。",
         (Language::Chinese, "create_task") => "创建任务；还原操作会先显示确认对话框。",
@@ -772,6 +781,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "keep") => {
             "Keep latest N indexes: after a successful append, older indexes are deleted (0 = keep all). Deletion is irreversible; set with care."
+        }
+        (Language::English, "verify_hash") => {
+            "When checked, computes full SHA-256 hash before restoring (slower). When unchecked, compares file size only (fast, recommended)."
         }
         (Language::English, "refresh") => "Refresh Windows, WinRE and eligible volume information.",
         (Language::English, "read_image") => {
@@ -842,6 +854,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "compress") => "压缩率",
         (Language::Chinese, "index_name") => "索引名",
         (Language::Chinese, "keep") => "保留最近 N 个",
+        (Language::Chinese, "verify_hash") => "严格对比哈希（默认仅对比大小）",
         (Language::Chinese, "language") => "语言",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
@@ -904,6 +917,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "compress") => "Compression",
         (Language::English, "index_name") => "Image name",
         (Language::English, "keep") => "Keep latest N",
+        (Language::English, "verify_hash") => "Verify hash (default: size only)",
         (Language::English, "language") => "Language",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
@@ -1186,6 +1200,7 @@ unsafe fn set_operation_visibility(state: &State) {
     set_child_visible(2004, show_image);
 
     set_visible(state.controls.index, show_index);
+    set_visible(state.controls.verify_hash, show_index);
     set_child_visible(2007, show_index);
     set_visible(state.controls.menu, show_menu);
     set_child_visible(2008, show_menu);
@@ -1491,14 +1506,14 @@ unsafe fn layout_operation(state: &State) {
         80,
         24,
     );
-    // 「新增第二系统」tab 的 WIM 索引下拉框：宽度 380，右端到 field_x+380=560，
-    // 避免与右侧「第二系统名称」标签（2008，x=570 起）重叠（历史布局 440 会遮住下拉框右缘）。
-    let index_width = if selected_operation(state) == "create-secondary" {
-        380
+    // 「单系统还原」与「新增第二系统」tab 的 WIM 索引与校验复选框布局：
+    let (index_width, verify_hash_x, verify_hash_y) = if selected_operation(state) == "create-secondary" {
+        (380, field_x, secondary_y + 32)
     } else {
-        field_width
+        (field_width - 320, field_x + field_width - 300, secondary_y + 2)
     };
     reposition(state.controls.index, field_x, secondary_y, index_width, 220);
+    reposition(state.controls.verify_hash, verify_hash_x, verify_hash_y, 300, 24);
     reposition(
         state.controls.menu,
         field_x + 500,
@@ -2091,6 +2106,7 @@ unsafe fn apply_language(state: &mut State) {
         (2014, "compress"),
         (2015, "index_name"),
         (2016, "keep"),
+        (ID_VERIFY_HASH, "verify_hash"),
         (ID_LANGUAGE_LABEL, "language"),
     ] {
         set_child_text(state.root, id, ui_text(language, key));
@@ -4610,19 +4626,27 @@ unsafe fn create_task(state: &mut State) {
     // 弹窗提示，用户确认后仍可还原（传 --force-restore-hash 跳过校验）=====
     // 档案丢失不阻止还原：用户可能移动/删除了 wim 旁的档案文件。
     let mut force_restore_hash = false;
+    let mut verify_hash_enabled = false;
     if matches!(operation.as_str(), "restore-existing" | "create-secondary")
         && PathBuf::from(&image_path).is_file()
     {
+        let verify_hash = unsafe {
+            SendMessageW(state.controls.verify_hash, BM_GETCHECK, 0, 0) == BST_CHECKED as isize
+        };
+        verify_hash_enabled = verify_hash;
         let index_number = index.parse::<u32>().unwrap_or(1);
         let metadata_check = crate::read_index_metadata(Path::new(&image_path), index_number);
         let hash_ok = match &metadata_check {
             Ok(metadata) => {
-                // 优化：优先比对文件物理大小，彻底消除在主 UI 消息循环线程
-                // 同步流式读取 58GB 导致窗口未响应（卡死）1~2 分钟的严重体验缺陷。
-                // 备份时生成的 sidecar 已记录权威的 image_bytes 和 image_sha256。
+                // 优化：优先比对文件物理大小；如果用户勾选了“严格对比哈希”，才流式计算大文件 SHA-256
+                // 彻底消除默认情况下在主 UI 消息循环线程同步流式读取 58GB 导致窗口未响应（卡死）1~2 分钟的问题。
                 if let Ok(file_meta) = std::fs::metadata(&image_path) {
                     if metadata.image_size > 0 && file_meta.len() != metadata.image_size {
                         false
+                    } else if verify_hash {
+                        backuprestore_core::sha256_file(&image_path)
+                            .map(|actual| actual.eq_ignore_ascii_case(&metadata.image_sha256))
+                            .unwrap_or(false)
                     } else {
                         true
                     }
@@ -4860,6 +4884,9 @@ unsafe fn create_task(state: &mut State) {
         // 档案缺失/哈希不匹配且用户已确认 → 跳过哈希校验。
         if force_restore_hash {
             arguments.push("--force-restore-hash".to_string());
+        }
+        if verify_hash_enabled {
+            arguments.push("--verify-hash".to_string());
         }
     }
     if operation == "probe" {
@@ -5452,6 +5479,17 @@ unsafe extern "system" fn window_proc(
                 70,
                 ID_TARGET_DETAILS,
             ),
+            verify_hash: create_control(
+                hwnd,
+                "BUTTON",
+                "严格对比哈希（默认仅对比大小）",
+                BS_AUTOCHECKBOX | WS_TABSTOP,
+                500,
+                585,
+                300,
+                24,
+                ID_VERIFY_HASH,
+            ),
             status: create_control(
                 hwnd,
                 "EDIT",
@@ -5473,6 +5511,7 @@ unsafe extern "system" fn window_proc(
             add_combo_item(controls.compress, label);
         }
         SendMessageW(controls.compress, CB_SETCURSEL, 0, 0);
+        SendMessageW(controls.verify_hash, BM_SETCHECK, BST_UNCHECKED, 0);
         // 备份索引名默认值 = 程序启动时间（本地），用户可修改。
         let mut now = SystemTime {
             year: 0,
