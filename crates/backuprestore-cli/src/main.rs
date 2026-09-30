@@ -54,7 +54,7 @@ mod winre_payload;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim>\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -185,10 +185,18 @@ fn main() {
         #[cfg(windows)]
         Some("inspect-environment") => windows_prepare::inspect_environment(),
         #[cfg(windows)]
-        Some("wim-info") => args
-            .next()
-            .ok_or_else(|| err("WIM image path is required"))
-            .and_then(windows_prepare::wim_info),
+        Some("wim-info") => {
+            // 解析 wim-info 的参数：<absolute-wim> [--skip-hash]
+            // 注意：main() 返回 ()，不能用 ?；把剩余参数收集后检测 --skip-hash
+            let remaining: Vec<String> = args.collect();
+            let skip_hash = remaining.iter().any(|a| a == "--skip-hash");
+            // 第一个参数（非标志）为 WIM 路径
+            remaining
+                .into_iter()
+                .find(|a| !a.starts_with("--"))
+                .ok_or_else(|| err("WIM image path is required"))
+                .and_then(|image_path| windows_prepare::wim_info(image_path, skip_hash))
+        }
         Some("recover") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));

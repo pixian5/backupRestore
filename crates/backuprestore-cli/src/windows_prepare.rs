@@ -258,12 +258,84 @@ mod environment_tests {
     }
 }
 
-pub(crate) fn wim_info(image_path: String) -> Result<(), TaskError> {
+pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskError> {
+    use backuprestore_core::read_json;
+
     validate_absolute_path(&image_path)?;
     let path = PathBuf::from(&image_path);
     if !path.is_file() {
         return Err(err(&format!("WIM image does not exist: {image_path}")));
     }
+
+    // ── 优先尝试读取同目录 sidecar 元数据（*.metadata.json） ──────────────────
+    // 命名规则：<wim文件名>.index-<N>.metadata.json
+    // 若存在任意一个，直接反序列化呈现，跳过 DISM 解析和哈希计算（毫秒级）。
+    if let Some(parent) = path.parent() {
+        let wim_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // 扫描同目录所有 .index-N.metadata.json 文件，按索引号排序
+        let mut sidecar_entries: Vec<(u32, backuprestore_core::BackupMetadata)> = Vec::new();
+        if let Ok(dir) = std::fs::read_dir(parent) {
+            let prefix = format!("{wim_name}.index-");
+            let suffix = ".metadata.json";
+            for entry in dir.flatten() {
+                let fname = entry.file_name();
+                let fname_str = fname.to_string_lossy();
+                if fname_str.starts_with(&prefix) && fname_str.ends_with(suffix) {
+                    // 提取索引号
+                    let mid = &fname_str[prefix.len()..fname_str.len() - suffix.len()];
+                    if let Ok(idx) = mid.parse::<u32>() {
+                        if let Ok(meta) = read_json::<backuprestore_core::BackupMetadata>(entry.path()) {
+                            sidecar_entries.push((idx, meta));
+                        }
+                    }
+                }
+            }
+        }
+        if !sidecar_entries.is_empty() {
+            // 按索引号升序排列
+            sidecar_entries.sort_by_key(|(idx, _)| *idx);
+            // 用 sidecar 数据直接输出，无需启动 DISM 或读取 WIM
+            let images: Vec<serde_json::Value> = sidecar_entries
+                .iter()
+                .map(|(idx, meta)| {
+                    json!({
+                        "index": idx,
+                        "name": format!("Windows Backup (index {})", idx),
+                        // sidecar 里已有准确的字节数和 sha256
+                        "imageSize": meta.image_size,
+                        "sha256": meta.image_sha256,
+                        "createdAt": meta.created,
+                        "computer": meta.computer,
+                        "windowsEdition": meta.windows_edition,
+                        "architecture": meta.architecture,
+                        "windowsBuild": meta.windows_build,
+                        "capturedUsedBytes": meta.captured_used_bytes,
+                        "minimumTargetSize": meta.minimum_target_size,
+                        "programVersion": meta.program_version,
+                        // 来源标记
+                        "source": "sidecar",
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "image": image_path,
+                    // sidecar 内已记录完整 sha256，输出第一个索引的作为整包标识
+                    // （多索引时各自 sha256 不同，这里仅做兼容展示）
+                    "sha256": sidecar_entries.first().map(|(_, m)| m.image_sha256.as_str()).unwrap_or(""),
+                    "images": images,
+                    "source": "sidecar",  // 标记数据来源
+                }))?
+            );
+            return Ok(());
+        }
+    }
+
+    // ── 无 sidecar：回退到 DISM 解析 ─────────────────────────────────────────
     let output = capture(
         "dism.exe",
         &[
@@ -273,16 +345,27 @@ pub(crate) fn wim_info(image_path: String) -> Result<(), TaskError> {
         ],
     )?;
     let images = parse_dism_images(&output)?;
+
+    // sha256 计算：若调用方传入 --skip-hash，则跳过耗时的流式哈希
+    let sha256 = if skip_hash {
+        // 跳过整包哈希计算（适合快速预览；还原时应去掉 --skip-hash 以严格校验）
+        "skipped".to_string()
+    } else {
+        sha256_file(&path)?
+    };
+
     println!(
         "{}",
         serde_json::to_string(&json!({
             "image": image_path,
-            "sha256": sha256_file(&path)?,
+            "sha256": sha256,
             "images": images,
+            "source": "dism",  // 标记数据来源
         }))?
     );
     Ok(())
 }
+
 
 pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskError> {
     let mut operation = None;
