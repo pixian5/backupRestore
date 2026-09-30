@@ -120,3 +120,7 @@ tools/win-clicker/br-watchdog-prl-tools.ps1
 # 本机指令文件（含本机凭据，绝不可入库）
 AGENTS.md
 CLAUDE.md
+tools/win-clicker/_verify-post-winre.ps1
+tools/win-clicker/_list-tasks.ps1
+tools/win-clicker/_list-tasks-full.ps1
+tools/win-clicker/_probe-winre-artifacts.ps1

@@ -37,6 +37,8 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[cfg(any(windows, test))]
+mod boot_cleanup;
 #[cfg(windows)]
 mod boot_entry;
 #[cfg(windows)]
@@ -767,8 +769,8 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
-    // 早期日志切到任务目录后，进度窗口跟随新日志。
-    *progress.log_path.lock().unwrap() = early_log.clone();
+    // 早期日志切到任务目录后，进度窗口跟随新日志并重置读取偏移。
+    progress.switch_log_path(early_log.clone(), 0);
     // Mount Recovery before loading/validating the task so the emergency
     // guard always uses the Recovery volume letter, never the workspace
     // letter. The old ordering could attempt restoration under T:\Recovery.
@@ -912,11 +914,12 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 if !candidate.exists() && workspace_log.exists() {
                     let _ = fs::copy(&workspace_log, &candidate);
                 }
+                let candidate_offset = fs::metadata(&candidate).map(|m| m.len()).unwrap_or(0);
                 match append_log(&candidate, "Recovery log continued in image directory") {
                     Ok(_) => {
                         log = candidate;
-                        // 主日志切到镜像同目录（如 E:\Recovery.log）后，进度窗口跟随。
-                        *progress.log_path.lock().unwrap() = log.clone();
+                        // 主日志切到镜像同目录（如 E:\Recovery.log）后，进度窗口跟随追加点。
+                        progress.switch_log_path(log.clone(), candidate_offset);
                     }
                     Err(error) => {
                         let _ = append_log(

@@ -15,7 +15,7 @@ keycode() {
     g) echo 42;; h) echo 43;; j) echo 44;; k) echo 45;; l) echo 46;;
     z) echo 52;; x) echo 53;; c) echo 54;; v) echo 55;; b) echo 56;; n) echo 57;; m) echo 58;;
     space) echo 65;; f1) echo 59;; f2) echo 60;; f3) echo 61;; f4) echo 62;; f5) echo 63;;
-    f6) echo 64;; f7) echo 65;; f8) echo 66;; f9) echo 67;; f10) echo 68;;
+    f6) echo 64;; f7) echo 66;; f8) echo 67;; f9) echo 68;; f10) echo 76;;
     f11) echo 87;; f12) echo 88;; home) echo 97;; up) echo 98;; pgup) echo 99;;
     left) echo 100;; right) echo 102;; end) echo 103;; down) echo 104;; pgdn) echo 105;;
     insert) echo 106;; delete) echo 107;; ctrl) echo 37;; alt) echo 64;; shift) echo 50;; win) echo 115;;

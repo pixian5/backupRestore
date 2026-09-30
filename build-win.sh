@@ -50,7 +50,7 @@ prl_exec_retry() {
   # 混入 prlctl 自己的诊断文本会让 SHA 比对以一条看不懂的消息失败。
   err=$(mktemp)
   while :; do
-    out=$(prlctl exec "$@" 2>"$err"); rc=$?
+    if out=$(prlctl exec "$@" 2>"$err"); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ] || ! grep -q 'Invalid argument' "$err"; then
       cat "$err" >&2
       rm -f "$err"
@@ -78,10 +78,14 @@ if [ "$1" = "--deploy" ]; then
   # 共享文件夹虚拟通道本身只在客体有登录会话时才建立，所以共享盘能否用仍取决于
   # 是否登录（本机已登录，故可用）。真正的成功判据只有下面的 DEPLOYED 标记和
   # SHA-256 比对，重试不会放过真实失败。
+  # 实机踩过的坑（2026-09-30）：部署只更新包目录，真正的运行目录 H:\brwork
+  # 里的 Recovery.exe 还是旧件，于是 WinRE 载荷被烘进旧代码，唯一症状是镜像
+  # 元数据里的 programVersion 偏低，静态检查看不出来。因此部署必须把两个目录、
+  # 两个文件名（BackupRestore.exe / Recovery.exe）全部刷新并逐个比对哈希。
   # 清理步骤的失败都是良性的（进程本来没在跑、文件本来不存在），
   # 用 exit /b 0 收尾，避免良性退出码在 set -e 下中断部署。
-  prl_exec_retry "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe >nul 2>nul & taskkill /f /im Recovery.exe >nul 2>nul & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd 2>nul & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini 2>nul & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd 2>nul & exit /b 0"
-  DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe >nul && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe >nul && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini >nul && echo DEPLOYED")
+  prl_exec_retry "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe & taskkill /f /im Recovery.exe & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & if not exist H:\\brwork\\NUL mkdir H:\\brwork & del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd & exit /b 0"
+  DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\Recovery.exe && echo DEPLOYED")
   if ! echo "$DEPLOY_OUTPUT" | grep -q '^DEPLOYED'; then
     echo "部署失败：客体未返回 DEPLOYED 成功标记" >&2
     echo "$DEPLOY_OUTPUT" >&2
@@ -90,10 +94,16 @@ if [ "$1" = "--deploy" ]; then
   HOST_SHA=$(shasum -a 256 target/aarch64-pc-windows-msvc/release/BackupRestore.exe | awk '{print $1}')
   GUEST_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe').Hash.ToLowerInvariant()" | tr -d '\r')
   RECOVERY_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\Recovery.exe').Hash.ToLowerInvariant()" | tr -d '\r')
-  if [ "$GUEST_SHA" != "$HOST_SHA" ] || [ "$RECOVERY_SHA" != "$HOST_SHA" ]; then
-    echo "部署失败：客体可执行文件 SHA-256 与本机构建不一致" >&2
-    exit 1
-  fi
+  WORK_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\BackupRestore.exe').Hash.ToLowerInvariant()" | tr -d '\r')
+  WORK_RECOVERY_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\Recovery.exe').Hash.ToLowerInvariant()" | tr -d '\r')
+  for pair in "包目录 BackupRestore.exe:$GUEST_SHA" "包目录 Recovery.exe:$RECOVERY_SHA" "运行目录 BackupRestore.exe:$WORK_SHA" "运行目录 Recovery.exe:$WORK_RECOVERY_SHA"; do
+    name=${pair%%:*}
+    sha=${pair##*:}
+    if [ "$sha" != "$HOST_SHA" ]; then
+      echo "部署失败：$name 的 SHA-256 与本机构建不一致（客体=$sha 本机=$HOST_SHA）" >&2
+      exit 1
+    fi
+  done
   echo ">> DEPLOYED SHA256=$HOST_SHA"
 fi
 echo ">> 完成"

@@ -31,7 +31,7 @@ use std::process::{Command, Stdio};
 use crate::windows_prepare::ensure_volume_mounted;
 
 /// 镜像卷上存放载荷 RE 的子目录名（不占卷根，避免与用户文件混在一起）。
-pub const RE_STAGING_DIR: &str = r"BackupRestoreRE";
+use crate::boot_cleanup::RE_STAGING_DIR;
 /// 任务目录里记录「本次自建启动项」的簿记文件名。
 const ENTRY_RECORD: &str = "boot-entry.json";
 /// 一次性 `bootsequence` 只设在 bootmgr 上；绝不写 default / displayorder / timeout。
@@ -549,25 +549,35 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
             &format!("new boot channel: bootsequence belongs to {armed}; left untouched"),
         )?;
     }
-    let _ = bcd(&["/delete", &loader, "/f"]);
-    let _ = bcd(&["/delete", &devopts, "/f"]);
-    crate::append_log(log, "new boot channel: BCD objects removed")?;
-    match ensure_volume_mounted(&entry.wim_volume, 'R', log) {
-        Ok(letter) => {
-            let dir = PathBuf::from(format!(r"{letter}:\{RE_STAGING_DIR}"));
-            let _ = fs::remove_file(dir.join("Winre.wim"));
-            let _ = fs::remove_file(dir.join("boot.sdi"));
-            let _ = fs::remove_dir(&dir);
-            crate::append_log(
-                log,
-                &format!("new boot channel: staging directory {} removed", dir.display()),
-            )?;
+    for guid in [&loader, &devopts] {
+        if let Err(error) = bcd(&["/delete", guid, "/f"]) {
+            // 已删除的对象再次清理可能报错；是否成功以枚举回读为准。
+            crate::append_log(log, &format!("new boot channel: delete {guid}: {error}"))?;
         }
-        Err(error) => crate::append_log(
-            log,
-            &format!("new boot channel: staging volume unreachable ({error}); only the WIM stays behind"),
-        )?,
     }
+    let remaining = bcd(&["/enum", "all", "/v"])?.to_ascii_lowercase();
+    if remaining.contains(&loader.to_ascii_lowercase())
+        || remaining.contains(&devopts.to_ascii_lowercase())
+    {
+        return Err(crate::err("RE BCD objects still exist after cleanup"));
+    }
+    crate::append_log(log, "new boot channel: BCD objects removed and verified")?;
+
+    // 启动簿记仍保存桌面盘符，不能传给优先信任缓存盘符的 ensure_volume_mounted。
+    // 先用卷 GUID 路径核验磁盘/分区身份，再仅删除此卷上的项目载荷。
+    let root = crate::boot_cleanup::staging_volume_root(&entry.wim_volume)?;
+    let actual = crate::windows_prepare::volume_identity_at_path(
+        &root.to_string_lossy(), entry.wim_volume.volume_guid.clone(),
+    )?;
+    if !actual.same_partition(&entry.wim_volume)
+        || actual.partition_offset != entry.wim_volume.partition_offset
+        || actual.partition_size != entry.wim_volume.partition_size
+    {
+        return Err(crate::err("RE staging volume identity mismatch; refusing cleanup"));
+    }
+    crate::append_log(log, &format!("new boot channel: cleanup volume={} recorded_letter={:?}", root.display(), entry.wim_volume.drive_letter))?;
+    let dir = crate::boot_cleanup::remove_staging(&root)?;
+    crate::append_log(log, &format!("new boot channel: staging directory {} removed and verified", dir.display()))?;
     Ok(())
 }
 

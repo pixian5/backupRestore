@@ -63,6 +63,16 @@ pub struct ProgressShared {
     pub steps: Mutex<crate::text_parsing::StepTracker>,
 }
 
+impl ProgressShared {
+    /// 切换监控的日志文件路径，并指定起始偏移（例如 0，或者累积日志的追加点）。
+    pub fn switch_log_path(&self, new_path: PathBuf, initial_offset: u64) {
+        let mut path_guard = self.log_path.lock().unwrap();
+        *path_guard = new_path;
+        let mut offset_guard = self.log_offset.lock().unwrap();
+        *offset_guard = initial_offset;
+    }
+}
+
 #[repr(C)]
 struct WndClassExW {
     cb_size: u32,
@@ -307,7 +317,7 @@ unsafe extern "system" fn window_proc(
                 796,
                 48,
                 hwnd,
-                null_mut(),
+                ID_STAGE as usize as Hwnd,
                 GetModuleHandleW(null()),
                 null_mut(),
             );
@@ -326,7 +336,7 @@ unsafe extern "system" fn window_proc(
                 796,
                 36,
                 hwnd,
-                null_mut(),
+                ID_BAR as usize as Hwnd,
                 GetModuleHandleW(null()),
                 null_mut(),
             );
@@ -345,7 +355,7 @@ unsafe extern "system" fn window_proc(
                 796,
                 414,
                 hwnd,
-                null_mut(),
+                ID_DETAIL as usize as Hwnd,
                 GetModuleHandleW(null()),
                 null_mut(),
             );
