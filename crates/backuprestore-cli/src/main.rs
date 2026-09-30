@@ -1993,7 +1993,7 @@ fn recover_windows(
         }
         Operation::Backup => {
             use backuprestore_core::{BackupMetadata, PROGRAM_VERSION, write_json_atomic};
-            append_log(log, "STEP 1/4 准备备份环境（挂载卷、校验、必要时还原恢复环境）")?;
+            append_log(log, "STEP 1/4 挂载卷、校验")?;
             let source = task.source.clone().ok_or_else(|| err("missing source"))?;
             let destination = task
                 .destination
@@ -2074,7 +2074,7 @@ fn recover_windows(
             // original remains recoverable until the candidate has passed
             // DISM inspection and is renamed into place.
             let _ = fs::remove_file(&partial);
-            append_log(log, "STEP 2/4 捕获系统分区镜像（DISM，百分比见进度条）")?;
+            append_log(log, "STEP 2/4 捕获镜像（时间长）")?;
             let new_index = if existing {
                 let candidate = PathBuf::from(format!(
                     "{}.{}.append-candidate.wim",
@@ -2149,7 +2149,7 @@ fn recover_windows(
                     image_size,
                 ),
             )?;
-            append_log(log, "STEP 3/4 校验镜像并计算哈希、写入元数据")?;
+            append_log(log, "STEP 3/4 校验")?;
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
             let source_volume_serial = source.volume_serial.clone();
             let source_partition_size = source.partition_size;
@@ -2291,7 +2291,7 @@ fn recover_windows(
                 write_json_atomic(legacy_path, &first)?;
             }
             if finalize_success {
-                append_log(log, "STEP 4/4 完成（自建启动项/载荷的清理在 WinRE 出口统一做）")?;
+                append_log(log, "STEP 4/4 清理re启动项/配置")?;
                 store.write_transition(task, Stage::Success)?;
             }
         }
@@ -2308,6 +2308,7 @@ fn recover_windows(
             }
             let image_path = image_path.ok_or_else(|| err("missing image"))?;
             let target_root = resolve_volume_root(&target.volume)?;
+            append_log(log, "STEP 1/4 挂载卷、校验")?;
             // TargetErased is deliberately persisted before formatting.  If
             // power fails after that write, formatting and applying the WIM
             // are safe to repeat on the explicitly selected target.  Older
@@ -2335,6 +2336,7 @@ fn recover_windows(
                 }
             }
             if matches!(task.status, Stage::TargetErased | Stage::ImageApplied) {
+                append_log(log, "STEP 2/4 还原镜像（时间长）")?;
                 let entering_image_applied = task.status == Stage::TargetErased;
                 run_logged(
                     "dism.exe",
@@ -2365,6 +2367,7 @@ fn recover_windows(
                     .join("System32\\config\\SYSTEM")
                     .is_file()
             {
+                append_log(log, "STEP 3/4 校验")?;
                 let efi = find_efi_root(efi_root)?;
                 let entering_boot_repaired = task.status == Stage::ImageApplied;
                 // BootRepaired is recorded immediately before BCDBoot so a
@@ -2429,6 +2432,7 @@ fn recover_windows(
                     )?;
                 }
                 if finalize_success {
+                    append_log(log, "STEP 4/4 清理re启动项/配置")?;
                     store.write_transition(task, Stage::Success)?;
                 }
             } else if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {

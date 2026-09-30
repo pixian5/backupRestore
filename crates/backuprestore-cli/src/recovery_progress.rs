@@ -43,6 +43,8 @@ const DEFAULT_GUI_FONT: i32 = 17;
 const ID_STAGE: i32 = 1;
 const ID_BAR: i32 = 2;
 const ID_DETAIL: i32 = 3;
+const ID_TIME_INFO: i32 = 4;
+const SS_RIGHT: u32 = 0x0000_0002;
 const TIMER_ID: usize = 1;
 const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
 const FW_BOLD: i32 = 700;
@@ -54,6 +56,8 @@ pub struct ProgressShared {
     pub log_path: Mutex<PathBuf>,
     pub log_offset: Mutex<u64>,
     pub window_up: AtomicBool,
+    /// 任务开始时间戳，用于计算已用时间与预估剩余时间。
+    pub start_time: Mutex<std::time::Instant>,
     /// 进度窗口句柄（窗口线程创建后回填；主线程执行完请求关闭用 usize 存，
     /// 避免 *mut c_void 不满足跨线程 Send）。
     pub hwnd: Mutex<Option<usize>>,
@@ -192,6 +196,18 @@ fn create_font(height: i32, bold: bool) -> Hwnd {
     }
 }
 
+/// 格式化秒数为 hh:mm:ss 或 mm:ss。
+fn format_hms(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
+
 /// 读取日志增量新行并分类更新窗口控件。返回（阶段、百分比、详情）。
 fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let path = shared.log_path.lock().unwrap().clone();
@@ -264,12 +280,28 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             .or(latest_percent)
             .unwrap_or(0);
         SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, pos as usize, 0);
+
+        // 标题右侧增加一块显示已用时间/剩余时间、当前时间，靠右显示。
+        let elapsed = shared.start_time.lock().unwrap().elapsed().as_secs();
+        let elapsed_str = format_hms(elapsed);
+        let remaining_str = if pos > 0 && pos < 100 {
+            let total_est = elapsed * 100 / (pos as u64);
+            let rem = total_est.saturating_sub(elapsed);
+            format_hms(rem)
+        } else {
+            "--:--".to_string()
+        };
+        let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
+        let time_text = format!("已用: {elapsed_str}  剩余: {remaining_str}\r\n当前时间: {now_str}");
+        let time_wide = encode(&time_text);
+        SetWindowTextW(GetDlgItem(hwnd, ID_TIME_INFO), time_wide.as_ptr());
+
         // 详情区上面先画步骤清单，再跟日志尾部。清单用 ✓/▶/· 标出
-        // 已完成/进行中/未开始，一眼看清「到哪一步了」。
+        // 已完成/进行中/未开始；正文每个阶段后面附上时间戳（时分秒）[HH:MM:SS]。
         let mut body: Vec<String> = Vec::new();
         if !progress.steps.is_empty() {
             let current = progress.current.unwrap_or(0);
-            for (index, name) in &progress.steps {
+            for (index, name, ts) in &progress.steps {
                 let mark = if *index < current {
                     "✓"
                 } else if *index == current {
@@ -277,13 +309,15 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
                 } else {
                     "·"
                 };
-                body.push(format!("{mark} {index}/{}{} {}", progress.total.unwrap_or(*index), ". ", name));
+                let time_str = match ts {
+                    Some(t) => format!(" [{t}]"),
+                    None => String::new(),
+                };
+                body.push(format!("{mark} {index}/{} {}{time_str}", progress.total.unwrap_or(*index), name));
             }
-            match (latest_percent, progress.overall_percent) {
-                (Some(step), Some(all)) => body.push(format!("—— 当前 {step}% · 总进度 {all}% ——")),
-                (Some(step), None) => body.push(format!("—— 当前 {step}% ——")),
-                (None, Some(all)) => body.push(format!("—— 总进度 {all}% ——")),
-                (None, None) => {}
+            // 移除总进度，只保留当前进度
+            if let Some(step) = latest_percent {
+                body.push(format!("—— 当前进度 {step}% ——"));
             }
             body.push(String::new());
         }
@@ -308,7 +342,7 @@ unsafe extern "system" fn window_proc(
             let stage_font = create_font(-30, true);
             let detail_font = create_font(-20, false);
             let gui_font = GetStockObject(DEFAULT_GUI_FONT);
-            // 阶段文本（大号加粗）
+            // 阶段文本（大号加粗，左侧）
             let stage = CreateWindowExW(
                 0,
                 encode("Static").as_ptr(),
@@ -316,7 +350,7 @@ unsafe extern "system" fn window_proc(
                 WS_CHILD | WS_VISIBLE,
                 32,
                 28,
-                796,
+                440,
                 48,
                 hwnd,
                 ID_STAGE as usize as Hwnd,
@@ -326,6 +360,25 @@ unsafe extern "system" fn window_proc(
             let _ = gui_font;
             if !stage.is_null() {
                 SendMessageW(stage, WM_SETFONT, stage_font as usize, 1);
+            }
+            // 时间信息（靠右显示：已用/剩余/当前时间）
+            let time_font = create_font(-18, false);
+            let time_info = CreateWindowExW(
+                0,
+                encode("Static").as_ptr(),
+                null(),
+                WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                480,
+                28,
+                348,
+                48,
+                hwnd,
+                ID_TIME_INFO as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !time_info.is_null() {
+                SendMessageW(time_info, WM_SETFONT, time_font as usize, 1);
             }
             // 进度条
             let bar = CreateWindowExW(
@@ -364,7 +417,7 @@ unsafe extern "system" fn window_proc(
             if !detail.is_null() {
                 SendMessageW(detail, WM_SETFONT, detail_font as usize, 1);
             }
-            SetTimer(hwnd, TIMER_ID, 2000, None);
+            SetTimer(hwnd, TIMER_ID, 1000, None);
             0
         },
         WM_TIMER => unsafe {
@@ -394,6 +447,7 @@ pub fn spawn(initial_log: PathBuf) -> Arc<ProgressShared> {
         steps: Mutex::new(crate::text_parsing::StepTracker::new()),
         log_offset: Mutex::new(0),
         window_up: AtomicBool::new(false),
+        start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);

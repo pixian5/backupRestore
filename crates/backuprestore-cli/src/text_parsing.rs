@@ -378,8 +378,8 @@ pub(crate) fn parse_percent(line: &str) -> Option<u32> {
 /// **一共几步、现在第几步、当前这一步到百分之几**——所以把这三件事算清楚。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct StepProgress {
-    /// 已出现的步骤，按编号升序、去重：`(编号, 名称)`。
-    pub steps: Vec<(u32, String)>,
+    /// 已出现的步骤，按编号升序、去重：`(编号, 名称, 时分秒时间戳)`。
+    pub steps: Vec<(u32, String, Option<String>)>,
     /// 总步骤数（`N`），从任一步骤的 `n/N` 里取；取不到就是 `None`。
     pub total: Option<u32>,
     /// 当前步骤号 = 已出现的最大编号。
@@ -388,6 +388,29 @@ pub(crate) struct StepProgress {
     pub current_percent: Option<u32>,
     /// 总进度百分比：已完成整步 + 当前步骤的部分进度。
     pub overall_percent: Option<u32>,
+}
+
+/// 从日志行行首提取时分秒时间戳 `HH:MM:SS`。
+pub(crate) fn extract_timestamp_hms(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('[') {
+        if let Some(end) = trimmed.find(']') {
+            let inside = &trimmed[1..end];
+            // 尝试解析 RFC3339 / ISO-8601 形如 "2026-09-30T08:18:08.054361500+00:00"
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(inside) {
+                let local: chrono::DateTime<chrono::Local> = dt.into();
+                return Some(local.format("%H:%M:%S").to_string());
+            }
+            // 尝试匹配尾部的 HH:MM:SS（例如 "2026-09-30 16:18:08" 或 "16:18:08"）
+            if inside.len() >= 8 {
+                let tail = &inside[inside.len() - 8..];
+                if tail.chars().filter(|c| *c == ':').count() == 2 {
+                    return Some(tail.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 从一段日志文本里算出步骤进度。
@@ -402,14 +425,15 @@ pub(crate) fn step_progress_of_new_lines(lines: &[&str]) -> StepProgress {
             continue;
         };
         progress.total = Some(total);
-        if progress.steps.iter().any(|(seen, _)| *seen == index) {
+        if progress.steps.iter().any(|(seen, _, _)| *seen == index) {
             // 同一步骤可能被重打（续跑、重试），保留第一次的名字即可。
             continue;
         }
-        progress.steps.push((index, name));
+        let ts = extract_timestamp_hms(line);
+        progress.steps.push((index, name, ts));
     }
-    progress.steps.sort_by_key(|(index, _)| *index);
-    progress.current = progress.steps.last().map(|(index, _)| *index);
+    progress.steps.sort_by_key(|(index, _, _)| *index);
+    progress.current = progress.steps.last().map(|(index, _, _)| *index);
     progress
 }
 
@@ -433,14 +457,19 @@ impl StepTracker {
         if let Some(total) = fresh.total {
             self.inner.total = Some(total);
         }
-        for (index, name) in fresh.steps {
-            if !self.inner.steps.iter().any(|(seen, _)| *seen == index) {
-                self.inner.steps.push((index, name));
+        for (index, name, ts) in fresh.steps {
+            if let Some(existing) = self.inner.steps.iter_mut().find(|(seen, _, _)| *seen == index) {
+                if existing.2.is_none() && ts.is_some() {
+                    existing.2 = ts;
+                }
+            } else {
+                let timestamp = ts.or_else(|| Some(chrono::Local::now().format("%H:%M:%S").to_string()));
+                self.inner.steps.push((index, name, timestamp));
             }
         }
-        self.inner.steps.sort_by_key(|(index, _)| *index);
+        self.inner.steps.sort_by_key(|(index, _, _)| *index);
         let previous_current = self.inner.current;
-        self.inner.current = self.inner.steps.last().map(|(index, _)| *index);
+        self.inner.current = self.inner.steps.last().map(|(index, _, _)| *index);
         if self.inner.current != previous_current {
             self.inner.current_percent = fresh.current_percent;
         } else {
@@ -502,7 +531,14 @@ pub(crate) fn parse_step_marker(line: &str) -> Option<(u32, u32, String)> {
     if index == 0 || total == 0 || index > total {
         return None;
     }
-    Some((index, total, name.trim().to_string()))
+    let mut clean_name = name.trim().to_string();
+    // 移除括号说明废话（如“（DISM，百分比见进度条）”）
+    if let Some(idx) = clean_name.find("（DISM") {
+        clean_name = clean_name[..idx].trim().to_string();
+    } else if let Some(idx) = clean_name.find("(DISM") {
+        clean_name = clean_name[..idx].trim().to_string();
+    }
+    Some((index, total, clean_name))
 }
 
 pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Option<String>) {
@@ -2027,6 +2063,18 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         let second = tracker.feed(&["STEP 2/4 捕获镜像"]);
         assert_eq!(second.current, Some(2));
         assert_eq!(second.current_percent, None);
+    }
+
+    /// 提取时间戳并清理括号内的冗余废话（如“（DISM，百分比见进度条）”）。
+    #[test]
+    fn step_progress_extracts_timestamp_and_cleans_remarks() {
+        let mut tracker = StepTracker::new();
+        let log = "[2026-09-30T08:18:08.054361500+00:00] STEP 2/4 捕获系统分区镜像（DISM，百分比见进度条）";
+        let progress = tracker.feed(&[log]);
+        assert_eq!(progress.steps.len(), 1);
+        assert_eq!(progress.steps[0].0, 2);
+        assert_eq!(progress.steps[0].1, "捕获系统分区镜像");
+        assert!(progress.steps[0].2.is_some());
     }
 
     /// 纯 [stdout] / [stderr] 空标签行不占详情。

@@ -2399,6 +2399,171 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
     result
 }
 
+const ID_CHOICE_CHOOSE_LOCATION: usize = 3001;
+const ID_CHOICE_PATH_CANCEL: usize = 3002;
+static INVALID_PATH_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+unsafe extern "system" fn window_proc_invalid_path_choice(
+    hwnd: Hwnd,
+    message: u32,
+    w_param: WParam,
+    l_param: LParam,
+) -> LResult {
+    if message == WM_CREATE {
+        let english = INVALID_PATH_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+        let font = GetStockObject(DEFAULT_GUI_FONT) as Handle;
+        let body = create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "The image absolute path is invalid or has not been specified.\n\nPlease click [Choose image location] to select a file, or [Cancel] to return."
+            } else {
+                "镜像绝对路径无效或尚未指定。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。"
+            },
+            0,
+            30,
+            24,
+            400,
+            64,
+            0,
+        );
+        let btn_choose = create_control(
+            hwnd,
+            "BUTTON",
+            if english {
+                "Choose image location"
+            } else {
+                "选择镜像位置"
+            },
+            WS_TABSTOP | BS_DEFPUSHBUTTON,
+            30,
+            104,
+            400,
+            42,
+            ID_CHOICE_CHOOSE_LOCATION,
+        );
+        let btn_cancel = create_control(
+            hwnd,
+            "BUTTON",
+            if english { "Cancel" } else { "取消" },
+            WS_TABSTOP,
+            30,
+            156,
+            400,
+            42,
+            ID_CHOICE_PATH_CANCEL,
+        );
+        SendMessageW(body, WM_SETFONT, font as WParam, 1);
+        SendMessageW(btn_choose, WM_SETFONT, font as WParam, 1);
+        SendMessageW(btn_cancel, WM_SETFONT, font as WParam, 1);
+        return 0;
+    }
+    if message == WM_KEYDOWN && w_param as u32 == VK_ESCAPE {
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
+        if !state_ptr.is_null() {
+            *state_ptr = 0;
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+    }
+    if message == WM_CLOSE {
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    if message == WM_COMMAND {
+        let control_id = w_param & 0xffff;
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
+        if !state_ptr.is_null() {
+            let result = match control_id {
+                ID_CHOICE_CHOOSE_LOCATION => 1,
+                ID_CHOICE_PATH_CANCEL => 0,
+                _ => -1,
+            };
+            if result >= 0 {
+                *state_ptr = result;
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return 0;
+            }
+        }
+    }
+    DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+/// 路径不合法时弹出的模态对话框，提供【选择镜像位置】与【取消】两个按钮。
+/// 返回 1=选择镜像位置，0=取消。
+unsafe fn ask_invalid_image_path(hwnd: Hwnd, language: Language) -> i32 {
+    let instance = GetModuleHandleW(null());
+    let class_name = wide("BackupRestoreInvalidPathChoice");
+    let class = WndClassExW {
+        cb_size: size_of::<WndClassExW>() as u32,
+        style: 0,
+        wnd_proc: Some(window_proc_invalid_path_choice),
+        cb_cls_extra: 0,
+        cb_wnd_extra: 0,
+        h_instance: instance,
+        h_icon: null_mut(),
+        h_cursor: null_mut(),
+        h_brush: null_mut(),
+        menu_name: null(),
+        class_name: class_name.as_ptr(),
+        h_icon_sm: null_mut(),
+    };
+    if RegisterClassExW(&class) == 0 && GetLastError() != 1410 {
+        return 0;
+    }
+    INVALID_PATH_LANGUAGE.store(
+        if language == Language::English { 1 } else { 0 },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let caption = wide(if language == Language::English {
+        "Invalid image path"
+    } else {
+        "镜像路径无效"
+    });
+    let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
+    let dialog = CreateWindowExW(
+        0,
+        class_name.as_ptr(),
+        caption.as_ptr(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        (screen_w - 460) / 2,
+        (screen_h - 260) / 2,
+        460,
+        260,
+        hwnd,
+        null_mut(),
+        instance,
+        null_mut(),
+    );
+    if dialog.is_null() {
+        return 0;
+    }
+    let result_box = Box::into_raw(Box::new(0i32));
+    SetWindowLongPtrW(dialog, GWLP_USERDATA, result_box as isize);
+    EnableWindow(hwnd, 0);
+    ShowWindow(dialog, SW_SHOW);
+    let mut message = Msg {
+        hwnd: null_mut(),
+        message: 0,
+        w_param: 0,
+        l_param: 0,
+        time: 0,
+        point: Point { x: 0, y: 0 },
+    };
+    while IsWindow(dialog) != 0 && GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+        if IsDialogMessageW(dialog, &message) == 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    let result = unsafe { *result_box };
+    drop(unsafe { Box::from_raw(result_box) });
+    EnableWindow(hwnd, 1);
+    SetForegroundWindow(hwnd);
+    result
+}
+
 unsafe fn is_elevated() -> bool {
     let mut token = null_mut();
     if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 || token.is_null() {
@@ -4302,6 +4467,7 @@ unsafe fn create_task(state: &State) {
         return;
     }
     let image_path = get_text(state.controls.image).trim().to_string();
+    let btn_task = GetDlgItem(state.root, ID_CREATE_TASK as i32);
     if operation != "probe"
         && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
     {
@@ -4309,22 +4475,33 @@ unsafe fn create_task(state: &State) {
             state,
             &format!("GUI action blocked: invalid image path: {error}"),
         );
-        show_message(
-            state.root,
-            &if language == Language::English {
-                format!("Invalid image absolute path: {error}")
-            } else {
-                format!("镜像绝对路径无效：{error}")
-            },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
+        let choice = ask_invalid_image_path(state.root, language);
+        if choice == 1 {
+            // 用户点击【选择镜像位置】：立即弹出文件浏览窗口
+            browse_image(state);
+            let updated = get_text(state.controls.image).trim().to_string();
+            if backuprestore_core::validate_absolute_path(&updated).is_ok() {
+                set_text(
+                    btn_task,
+                    if language == Language::English { "Create task" } else { "创建任务" },
+                );
+            }
+            SetFocus(state.controls.image);
+        } else {
+            // 用户点击【取消】：将主界面【创建任务】按钮文本修改为【选择镜像位置】
+            set_text(
+                btn_task,
+                if language == Language::English { "Choose image location" } else { "选择镜像位置" },
+            );
+            SetFocus(state.controls.image);
+        }
         return;
     }
+    // 路径合法时确保按钮文本为【创建任务】
+    set_text(
+        btn_task,
+        if language == Language::English { "Create task" } else { "创建任务" },
+    );
     let backup_will_append = operation == "backup" && PathBuf::from(&image_path).is_file();
     let image_drive = image_path
         .chars()
