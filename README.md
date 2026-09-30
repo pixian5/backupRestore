@@ -2,16 +2,17 @@
 
 Windows 一键系统备份还原工具（**开发测试版**）。
 
-在正常 Windows 里点「备份」或「还原」，程序自动准备恢复任务 → 重启进入 WinRE → WinRE 自动拉起
-`Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
-进 BIOS、手动选 WinRE，也不需要敲命令。
+当前系统卷选择「进入 Windows RE」后，程序准备独立恢复镜像副本与任务启动项 → 重启进入 WinRE →
+自动拉起 `Recovery.exe` 离线捕获/应用 WIM → 系统还原时修复引导 → 清理临时启动配置 → 重启回 Windows。
+非当前系统卷由界面在线执行；预装 PE 是另一条简化路径，能力差异见完整流程文档。
 
-当前版本 **1.9.9**（`VERSION`、两个 `Cargo.toml`、`Cargo.lock` 同步）。
+当前版本 **2.0.0**（`VERSION`、两个 `Cargo.toml`、`Cargo.lock` 同步；本轮文档梳理按满十规则递增版本，未改变执行逻辑）。
 
 > **文档导航**：
 > - 完整文档目录与各文档说明请参阅根目录 [文档索引.md](文档索引.md)。
-> - 【当前开发进度】：增加还原校验选项框（不勾选仅对比大小毫秒级启动，勾选严格对比哈希），详见 [docs/20260930-1920-当前开发进度-Gemini.md](docs/20260930-1920-当前开发进度-Gemini.md)。
-> - 【下一步待实现】：测试机验证还原校验选项框交互、默认毫秒级启动与严格校验行为，详见 [docs/20260930-1920-下一步待实现-Gemini.md](docs/20260930-1920-下一步待实现-Gemini.md)。
+> - 【完整流程】：[备份、还原的实际链路、三条路径差异与失败边界](docs/20260930-1925-备份还原完整流程-GPT-6.md)。
+> - 【当前开发进度】：完成流程代码梳理；确认校验选项尚未覆盖完整链路，在线/预装 PE 与 WinRE 存在执行差异，详见 [当前开发进度](docs/20260930-1925-当前开发进度-GPT-6.md)。
+> - 【下一步待实现】：统一执行策略，打通校验选项，补足准备回滚与测试卷验证，详见 [下一步待实现](docs/20260930-1925-下一步待实现-GPT-6.md)。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -24,13 +25,18 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 ```text
 正常 Windows
   └─ 打开 BackupRestore.exe，点「系统备份」/「系统还原」
-       └─ prepare：校验环境 + 注入载荷到任务专用 WinRE + reagentc /boottore
-            └─ 重启
-                 └─ WinRE 自动启动 Recovery.exe
-                      └─ 离线执行 DISM 捕获/应用 WIM
-                           └─ BCDBoot 修复启动项 → 恢复原 WinRE → 重启
-                                └─ 正常 Windows
+       └─ 当前系统卷选择「进入 Windows RE」
+            └─ prepare：校验 + 保存 BCD 副本 + 注入独立 WinRE 副本
+                 └─ 镜像卷 BackupRestoreRE + 临时 BCD 条目 + 一次性启动
+                      └─ 重启 → WinRE 自动启动 Recovery.exe
+                           └─ 离线执行 DISM 捕获/应用 WIM
+                                └─ 系统还原时 BCDBoot 修复引导
+                                     └─ 清理任务启动项和临时副本
+                                          └─ 重启回正常 Windows
 ```
+
+当前准备流程只读系统注册的 WinRE，不再执行 `reagentc /boottore` 或终态“恢复原 WinRE”。
+在线还原仅应用镜像、预装 PE 自动还原固定索引 1，均不能等同上面的完整任务链；详见[完整流程](docs/20260930-1925-备份还原完整流程-GPT-6.md)。
 
 ### V1 支持的四种任务
 
@@ -82,8 +88,8 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 ```
 
 产物：`target/aarch64-pc-windows-msvc/release/BackupRestore.exe`
-（脚本会把它同时部署为客体 `C:\Users\Public\backupRestore-package\` 下的
-`BackupRestore.exe` 和 `Recovery.exe`，并核对 SHA-256）。
+（增加 `--deploy` 才会部署到客体包目录及 `H:\brwork\`，分别更新
+`BackupRestore.exe` 和 `Recovery.exe`，并逐一核对 SHA-256）。
 
 构建规则、静态 CRT、Windows SDK 路径等细节见 `docs/windows-build.md`。
 
@@ -94,7 +100,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 路径 | 内容 |
 |---|---|
 | `crates/` | 产品源码（Rust，唯一产品语言） |
-| `docs/` | **全部文档：顶层 32 份 + `开发方案/` 12 份，索引见 `docs/README.md`** |
+| `docs/` | 流程、开发进度、操作记录及历史方案，索引见 `docs/README.md` |
 | `tools/win-clicker/` | 测试脚手架：操控 VM 键鼠的自动化通道（PowerShell，不进产品） |
 | `build-win.sh` | ARM64 交叉构建 + 部署 + 哈希核对 |
 | `artifacts/` | PE 构建产物（`BackupRestorePE.iso/wim`、`BaseWinPE.iso`） |
@@ -124,13 +130,13 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 **完整文档索引（每份说明）见 [`文档索引.md`](文档索引.md)**。以下为高频入口：
 
-**所有文档的逐份说明在 [`docs/README.md`](docs/README.md)**，顶层 32 份分九类 + `开发方案/` 子目录。新接手先读这三份：
+**文档说明在 [`docs/README.md`](docs/README.md)**。新接手先读当前流程与最新进度，再按需查历史证据：
 
 | 文档 | 作用 |
 |---|---|
-| [`docs/project-status.md`](docs/project-status.md) | 当前状态、V1 范围、用户确认的约束 |
-| [`docs/current-status-2026-09-16.md`](docs/current-status-2026-09-16.md) | 执行基线（当前版本/未完成项以它为准） |
-| [`docs/verification-matrix.md`](docs/verification-matrix.md) | 哪些功能真实验证过、证据在哪 |
+| [备份还原完整流程](docs/20260930-1925-备份还原完整流程-GPT-6.md) | 当前代码链路、入口差异、失败边界与历史实测记录 |
+| [当前开发进度](docs/20260930-1925-当前开发进度-GPT-6.md) | 本轮结果与验证范围 |
+| [`docs/verification-matrix.md`](docs/verification-matrix.md) | 历史验证矩阵；结合最新记录判断覆盖范围 |
 
 高频入口：
 
@@ -145,8 +151,8 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ## 七、当前进度（截至 2026-09-30）
 
-截至 2026-09-30 17:00 的进度已更新至 [当前开发进度](docs/20260930-1700-当前开发进度-Gemini.md)，下一步安排见
-[下一步待实现](docs/20260930-1700-下一步待实现-Gemini.md)。
+截至 2026-09-30 19:25 的代码流程梳理见 [当前开发进度](docs/20260930-1925-当前开发进度-GPT-6.md)，后续安排见
+[下一步待实现](docs/20260930-1925-下一步待实现-GPT-6.md)。下列内容是历史开发记录，其中注册 WinRE 注入、迁出和写回机制已被独立副本通道替代；不要按旧记录操作当前版本。
 
 ### v1.8.11→v1.8.14（2026-09-30）：GUI 离线环境选择按钮修复 + 实机双分支复验 PASS
 
