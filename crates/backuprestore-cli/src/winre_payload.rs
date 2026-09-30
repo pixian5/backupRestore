@@ -6,7 +6,7 @@
 
 use backuprestore_core::{TaskError, sha256_file, verify_sha256};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const WINRE_SHELL_PAYLOAD_NAME: &str = "winpeshl.ini";
 const EXPECTED_WINRE_SHELL: &str = concat!(
@@ -63,14 +63,94 @@ fn copy_required(source: &Path, destination: &Path, role: &str) -> Result<(), Ta
     Ok(())
 }
 
+/// 判断两个路径是否指向同一个文件（离线侧 `executable_dir` 就是 System32，
+/// 此时 current_exe 与同目录的 `Recovery.exe` 本来就是同一个文件）。
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => left == right,
+    }
+}
+
+/// 决定载荷里 `Recovery.exe` 的来源文件，并在发现旧件时返回一条告警文案。
+///
+/// 载荷里的 `Recovery.exe` 与产品主程序按契约**就是同一份二进制的两个名字**
+/// （`build-win.sh` 把同一个 BackupRestore.exe 复制成两份）。
+///
+/// 实机踩过的坑（2026-09-30 任务 247a7169）：部署只更新了包目录，运行目录
+/// `H:` 下的 `Recovery.exe` 还是好几个版本前的旧件（c6e11439…），于是
+/// 「改了 BackupRestore.exe 不等于改了 PE 里跑的 Recovery.exe」——离线侧
+/// 实际执行的是旧代码，镜像元数据里 `programVersion` 甚至写着 1.8.7，
+/// 而任务清单的 `recoverySha256` 也把旧哈希记成了"正确值"，静态检查看不出问题。
+///
+/// 因此这里改为**优先用正在运行的可执行文件**当载荷来源：同哈希时沿用同目录
+/// 的 `Recovery.exe`（行为不变），一旦不同就用自己并把两个哈希写进日志，
+/// 让旧件永远不可能被烘焙进 WIM。
+pub fn resolve_recovery_payload_source(
+    executable_dir: &Path,
+    current_exe: Option<&Path>,
+) -> Result<(PathBuf, Option<String>), TaskError> {
+    let sibling = executable_dir.join("Recovery.exe");
+    let Some(current) = current_exe.filter(|path| path.is_file()) else {
+        return Ok((sibling, None));
+    };
+    if same_file(current, &sibling) {
+        return Ok((sibling, None));
+    }
+    if !sibling.is_file() {
+        let hash = sha256_file(current)?;
+        return Ok((
+            current.to_path_buf(),
+            Some(format!(
+                "payload Recovery.exe is missing at {}; using the running executable {} (sha256={hash})",
+                sibling.display(),
+                current.display()
+            )),
+        ));
+    }
+    let current_hash = sha256_file(current)?;
+    let sibling_hash = sha256_file(&sibling)?;
+    if current_hash == sibling_hash {
+        return Ok((sibling, None));
+    }
+    Ok((
+        current.to_path_buf(),
+        Some(format!(
+            "payload Recovery.exe is stale: {} sha256={sibling_hash} != running executable {} sha256={current_hash}; staging the running executable instead",
+            sibling.display(),
+            current.display()
+        )),
+    ))
+}
+
 /// Validate and stage all static files from the package into a task payload.
-pub fn stage_static_payload(executable_dir: &Path, payload: &Path) -> Result<(), TaskError> {
+///
+/// 返回值是可选告警：非 `None` 表示同目录的 `Recovery.exe` 是旧件或缺失，
+/// 已改用正在运行的可执行文件，调用方必须把这条写进准备日志。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn stage_static_payload(
+    executable_dir: &Path,
+    payload: &Path,
+) -> Result<Option<String>, TaskError> {
+    let current = std::env::current_exe().ok();
+    stage_static_payload_with_exe(executable_dir, payload, current.as_deref())
+}
+
+/// `stage_static_payload` 的可注入版本：显式传入"正在运行的可执行文件"，
+/// 供单测在任意平台构造旧件/缺失两种场景。
+pub fn stage_static_payload_with_exe(
+    executable_dir: &Path,
+    payload: &Path,
+    current_exe: Option<&Path>,
+) -> Result<Option<String>, TaskError> {
     // Keep the boot contract inside the Rust binary. A deployment must not
     // fail because an optional source-tree template was omitted from a VM.
     fs::write(payload.join(WINRE_SHELL_PAYLOAD_NAME), EXPECTED_WINRE_SHELL)?;
     validate_winre_shell(&payload.join(WINRE_SHELL_PAYLOAD_NAME))?;
+    let (recovery_source, warning) =
+        resolve_recovery_payload_source(executable_dir, current_exe)?;
     copy_required(
-        &executable_dir.join("Recovery.exe"),
+        &recovery_source,
         &payload.join("Recovery.exe"),
         "WinRE package payload",
     )?;
@@ -80,7 +160,7 @@ pub fn stage_static_payload(executable_dir: &Path, payload: &Path) -> Result<(),
             copy_required(&source, &payload.join(name), "WinRE runtime payload")?;
         }
     }
-    Ok(())
+    Ok(warning)
 }
 
 fn verify_payload_contract(payload: &Path) -> Result<(), TaskError> {
@@ -140,7 +220,10 @@ pub fn inject_winre_payload(mount: &Path, payload: &Path) -> Result<(), TaskErro
 
 #[cfg(test)]
 mod tests {
-    use super::{EXPECTED_WINRE_SHELL, inject_winre_payload, stage_static_payload};
+    use super::{
+        EXPECTED_WINRE_SHELL, inject_winre_payload, resolve_recovery_payload_source,
+        stage_static_payload_with_exe,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -166,7 +249,7 @@ mod tests {
         fs::create_dir_all(&payload).unwrap();
         fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
 
-        stage_static_payload(&package, &payload).unwrap();
+        stage_static_payload_with_exe(&package, &payload, None).unwrap();
 
         assert_eq!(
             fs::read_to_string(payload.join("winpeshl.ini")).unwrap(),
@@ -175,6 +258,77 @@ mod tests {
         assert!(payload.join("Recovery.exe").is_file());
         assert!(!payload.join("BackupRestore.exe").exists());
         assert!(!payload.join("RecoveryLauncher.cmd").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // 旧件场景回归锁：同目录 Recovery.exe 与正在运行的可执行文件哈希不同时，
+    // 必须改用正在运行的那一份，并给出带两个哈希的告警。
+    #[test]
+    fn stale_sibling_recovery_falls_back_to_the_running_executable() {
+        let root = temp_dir("stale");
+        let package = root.join("package");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("Recovery.exe"), b"old-build").unwrap();
+        let running = root.join("BackupRestore.exe");
+        fs::write(&running, b"new-build").unwrap();
+
+        let (source, warning) =
+            resolve_recovery_payload_source(&package, Some(running.as_path())).unwrap();
+
+        assert_eq!(source, running);
+        let warning = warning.expect("stale payload must warn");
+        assert!(warning.contains("stale"), "{warning}");
+        assert!(warning.contains("Recovery.exe"), "{warning}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // 同哈希时行为不变：仍沿用同目录的 Recovery.exe，且不告警。
+    #[test]
+    fn matching_sibling_recovery_is_kept_without_warning() {
+        let root = temp_dir("match");
+        let package = root.join("package");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("Recovery.exe"), b"same-build").unwrap();
+        let running = root.join("BackupRestore.exe");
+        fs::write(&running, b"same-build").unwrap();
+
+        let (source, warning) =
+            resolve_recovery_payload_source(&package, Some(running.as_path())).unwrap();
+
+        assert_eq!(source, package.join("Recovery.exe"));
+        assert!(warning.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // 同目录没有 Recovery.exe 时也能顶上，避免仅因部署漏拷一个名字就无法准备任务。
+    #[test]
+    fn missing_sibling_recovery_uses_the_running_executable() {
+        let root = temp_dir("absent");
+        let package = root.join("package");
+        fs::create_dir_all(&package).unwrap();
+        let running = root.join("BackupRestore.exe");
+        fs::write(&running, b"only-build").unwrap();
+
+        let (source, warning) =
+            resolve_recovery_payload_source(&package, Some(running.as_path())).unwrap();
+
+        assert_eq!(source, running);
+        assert!(warning.expect("missing payload must warn").contains("missing"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // 取不到 current_exe 时退回旧行为，不改变离线侧（executable_dir 即 System32）语义。
+    #[test]
+    fn without_a_running_executable_the_sibling_is_used() {
+        let root = temp_dir("noexe");
+        let package = root.join("package");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
+
+        let (source, warning) = resolve_recovery_payload_source(&package, None).unwrap();
+
+        assert_eq!(source, package.join("Recovery.exe"));
+        assert!(warning.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -200,7 +354,7 @@ mod tests {
         )
         .unwrap();
         fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
-        stage_static_payload(&package, &payload).unwrap();
+        stage_static_payload_with_exe(&package, &payload, None).unwrap();
         assert_eq!(
             fs::read_to_string(payload.join("winpeshl.ini")).unwrap(),
             EXPECTED_WINRE_SHELL
@@ -218,7 +372,7 @@ mod tests {
         fs::create_dir_all(&payload).unwrap();
         fs::create_dir_all(mount.join("Windows").join("System32")).unwrap();
         fs::write(package.join("Recovery.exe"), b"recovery").unwrap();
-        stage_static_payload(&package, &payload).unwrap();
+        stage_static_payload_with_exe(&package, &payload, None).unwrap();
         fs::write(payload.join("RecoveryTask.env"), b"TASK_ID=test").unwrap();
         fs::write(payload.join("task.json"), b"{}").unwrap();
         let system32 = mount.join("Windows").join("System32");

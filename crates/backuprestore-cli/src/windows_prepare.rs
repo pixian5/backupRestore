@@ -729,7 +729,13 @@ fn prepare_payload(
     fs::copy(&registered_wim, original.join("Winre.wim"))?;
     let original_hash = sha256_file(original.join("Winre.wim"))?;
 
-    winre_payload::stage_static_payload(executable_dir, &payload)?;
+    // 载荷 Recovery.exe 与主程序按契约同源；若同目录那份是旧件，
+    // stage_static_payload 会改用正在运行的可执行文件并回一条告警——
+    // 这条必须落进准备日志，否则"离线侧跑的是旧代码"只能事后从
+    // 镜像元数据的 programVersion 里反推。
+    if let Some(warning) = winre_payload::stage_static_payload(executable_dir, &payload)? {
+        append_log(log, &format!("payload staging warning: {warning}"))?;
+    }
 
     let env_path = payload.join("RecoveryTask.env");
     // 迁出任务：env 的 RECOVERY_* 直接指向 RE 暂存卷（先于注入烘焙进 WIM），

@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.14**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.15**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -138,8 +138,8 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ## 七、当前进度（截至 2026-09-30）
 
-截至 2026-09-30 的进度已更新至 [当前开发进度](docs/20260930-0437-当前开发进度.md)，下一步安排见
-[下一步待实现](docs/20260930-0437-下一步待实现.md)。
+截至 2026-09-30 的进度已更新至 [当前开发进度](docs/20260930-100300-当前开发进度.md)，下一步安排见
+[下一步待实现](docs/20260930-100300-下一步待实现.md)。
 
 ### v1.8.11→v1.8.14（2026-09-30）：GUI 离线环境选择按钮修复 + 实机双分支复验 PASS
 
@@ -157,7 +157,22 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 | 构建/部署 | v1.8.14 SHA-256 `71a157d0…abab06`，本地与 `H:\brwork` 一致 |
 | **实机复验** | ✅ **用真实 `WM_COMMAND` 注入（非 `--test-hook`）**：RE 分支 `choice=2` 正确捕获、PE 分支 `choice=1` 正确捕获，进程全程存活，确认框可取消回主界面 |
 
-> ✅ 该项已闭环，详见 [docs/20260930-085630-gui-system-drive-choice-button-verified.md](docs/20260930-085630-gui-system-drive-choice-button-verified.md)。**未验**：点「是」跑完整入 PE/RE 排任务链路（会触发真实重启）。
+> ✅ 该项已闭环，详见 [docs/20260930-085630-gui-system-drive-choice-button-verified.md](docs/20260930-085630-gui-system-drive-choice-button-verified.md)。**已补验**：「点『是』→ 真实重启进 RE → 备份 → 回 Windows」整段已于 2026-09-30 实机 PASS（真实系统卷 C:，87GB），见 [docs/20260930-100300-re-full-backup-passed.md](docs/20260930-100300-re-full-backup-passed.md)。
+
+### ✅ RE 分支完整备份闭环 PASS（2026-09-30 约 09:44，v1.8.14 实机）
+
+真实系统卷 C:（87GB 未压缩）走 GUI `choice=2` → 真实重启进 WinRE → DISM 捕获 → 回 Windows；终态干净。
+这是此前「按钮级复验」之后唯一未补的整段链路。
+
+| 终态核验 | 结果 |
+|---|---|
+| 任务状态 | ✅ `stage=success` / `progress=100`（`status.json`） |
+| 镜像可用 | ✅ 索引 1，`dism /Get-WimInfo` 可读，大小 87,254,275,408 字节（磁盘 33.4GB fast 压缩） |
+| BCD 一次性启动 | ✅ 已清（`{bootmgr}` 无 `bootsequence`） |
+| 注册 WinRE | ✅ 未动 / `Enabled`（`reagentc /info` 位置 `harddisk0\partition4`，标识符 `f530b9e0`） |
+| 本轮自建 BCD 条目 `{29662687}` | ✅ 已删（`disarm()` 生效） |
+
+> ⚠️ **发现历史孤儿 BCD 条目**：`bcdedit /enum all` 仍有一对 `{76ead7a9}/{76ead7a8}`（description "BackupRestore task RE"，ramdisk=`F:\BackupRestoreRE\Winre.wim`），来自**更早**测试轮次（本轮 GUID 为 `{29662687}` 已正确清理，二者不同）。不在 bootsequence/displayorder，不影响启动；建议建快照后用 `bcdedit /delete` 清理，并删已空的 `F:\BackupRestoreRE`。详见 [docs/20260930-100300-re-full-backup-passed.md](docs/20260930-100300-re-full-backup-passed.md)。
 
 ### 已实机验证（测试卷 T:，非系统卷，在线路径）
 
