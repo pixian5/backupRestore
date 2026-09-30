@@ -2437,6 +2437,7 @@ fn recover_windows(
                 }
             } else if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
                 // 数据卷还原：目标卷无 SYSTEM hive（非 Windows 系统），跳过 BCDBoot 启动修复。
+                append_log(log, "STEP 3/4 校验")?;
                 append_log(
                     log,
                     "data-volume restore: target has no SYSTEM hive; skipping BCDBoot",
@@ -2445,6 +2446,7 @@ fn recover_windows(
                     store.write_transition(task, Stage::BootRepaired)?;
                 }
                 if finalize_success {
+                    append_log(log, "STEP 4/4 清理re启动项/配置")?;
                     store.write_transition(task, Stage::Success)?;
                 }
             } else {

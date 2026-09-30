@@ -573,7 +573,7 @@ struct TokenElevation {
 
 struct Controls {
     language: Hwnd,
-    operation_tabs: [Hwnd; 5],
+    operation_tabs: [Hwnd; 4],
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
@@ -643,11 +643,10 @@ unsafe fn install_tooltips(state: &mut State) {
     }
     let language = selected_language(state);
     let controls = [
-        (state.controls.operation_tabs[0], "probe"),
-        (state.controls.operation_tabs[1], "backup"),
-        (state.controls.operation_tabs[2], "restore"),
-        (state.controls.operation_tabs[3], "secondary"),
-        (state.controls.operation_tabs[4], "pe"),
+        (state.controls.operation_tabs[0], "backup"),
+        (state.controls.operation_tabs[1], "restore"),
+        (state.controls.operation_tabs[2], "secondary"),
+        (state.controls.operation_tabs[3], "pe"),
         (state.controls.source, "source"),
         (state.controls.target, "target"),
         (state.controls.image, "image"),
@@ -850,7 +849,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "create_task") => "创建任务",
         (Language::Chinese, "refresh_task") => "刷新任务状态",
         (Language::Chinese, "initial_status") => {
-            "先点击“刷新环境”确认 Windows、恢复环境和卷身份。默认模式为无破坏探测。"
+            "先点击“刷新环境”确认 Windows、恢复环境和卷身份。默认模式为备份。"
         }
         (Language::Chinese, "probe") => "探测（仅检查）",
         (Language::Chinese, "backup") => "备份",
@@ -912,7 +911,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "create_task") => "Create task",
         (Language::English, "refresh_task") => "Refresh task status",
         (Language::English, "initial_status") => {
-            "Click Refresh environment to inspect Windows, WinRE and volume identities. Default mode is non-destructive probe."
+            "Click Refresh environment to inspect Windows, WinRE and volume identities. Default mode is backup."
         }
         (Language::English, "probe") => "Inspect",
         (Language::English, "backup") => "Backup",
@@ -1093,11 +1092,11 @@ unsafe fn set_child_text(parent: Hwnd, id: usize, value: &str) {
 
 unsafe fn selected_operation(state: &State) -> &'static str {
     match state.operation_index {
-        1 => "backup",
-        2 => "restore-existing",
-        3 => "create-secondary",
-        4 => "install-pe-entry",
-        _ => "probe",
+        0 => "backup",
+        1 => "restore-existing",
+        2 => "create-secondary",
+        3 => "install-pe-entry",
+        _ => "backup",
     }
 }
 
@@ -1106,7 +1105,7 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
         .controls
         .operation_tabs
         .iter()
-        .zip(["probe", "backup", "restore", "secondary", "pe"])
+        .zip(["backup", "restore", "secondary", "pe"])
         .enumerate()
     {
         set_text(*button, ui_text(language, key));
@@ -1149,7 +1148,7 @@ fn operation_hint_key(operation: &str) -> &'static str {
         "restore-existing" => "restore_hint",
         "create-secondary" => "secondary_hint",
         "install-pe-entry" => "pe_hint",
-        _ => "probe_hint",
+        _ => "backup_hint",
     }
 }
 
@@ -1612,7 +1611,7 @@ unsafe fn set_volume_labels(state: &State) {
 }
 
 unsafe fn select_operation(state: &mut State, index: usize) {
-    state.operation_index = index.min(4);
+    state.operation_index = index.min(3);
     set_operation_tabs(state, selected_language(state));
     if selected_operation(state) == "restore-existing"
         && let Some(source) = selected_drive_letter(state, state.controls.source)
@@ -2972,7 +2971,7 @@ unsafe fn read_image(state: &mut State) {
     }
 }
 
-unsafe fn browse_image(state: &State) {
+unsafe fn browse_image(state: &mut State) {
     let language = selected_language(state);
     let operation = selected_operation(state);
     let mut buffer = vec![0_u16; 32768];
@@ -3030,14 +3029,22 @@ unsafe fn browse_image(state: &State) {
     };
     if accepted != 0 {
         let length = buffer.iter().position(|value| *value == 0).unwrap_or(0);
-        set_text(
-            state.controls.image,
-            &String::from_utf16_lossy(&buffer[..length]),
-        );
+        let path = String::from_utf16_lossy(&buffer[..length]);
+        set_text(state.controls.image, &path);
         append_gui_log(
             state,
             "GUI action completed: image path selected from file dialog",
         );
+        let btn_task = GetDlgItem(state.root, ID_CREATE_TASK as i32);
+        if backuprestore_core::validate_absolute_path(&path).is_ok() {
+            set_text(
+                btn_task,
+                if language == Language::English { "Create task" } else { "创建任务" },
+            );
+        }
+        if operation != "backup" && Path::new(&path).is_file() {
+            read_image(state);
+        }
     } else {
         append_gui_log(state, "GUI action cancelled: image file dialog");
     }
@@ -3169,10 +3176,10 @@ unsafe fn test_hook_auto_install(state: &mut State) {
     // 1. 操作模式：默认 PE 恢复；支持 "tab":"backup"（备份）/"restore"/"secondary" 等
     let tab = json.get("tab").and_then(|v| v.as_str()).unwrap_or("pe");
     let op_index = match tab {
-        "backup" => 1,
-        "restore" => 2,
-        "secondary" => 3,
-        _ => 4,
+        "backup" => 0,
+        "restore" => 1,
+        "secondary" => 2,
+        _ => 3,
     };
     select_operation(state, op_index);
     // 2. 启动方式：ram / disk
@@ -4336,7 +4343,7 @@ fn read_latest_launcher_error(executable_dir: &std::path::Path) -> Option<String
         .map(|s| s.to_string())
 }
 
-unsafe fn create_task(state: &State) {
+unsafe fn create_task(state: &mut State) {
     let language = selected_language(state);
     let operation = selected_operation(state).to_string();
     append_gui_log(
@@ -4350,29 +4357,95 @@ unsafe fn create_task(state: &State) {
         install_pe_entry(state);
         return;
     }
-    let index = selected_wim_index(state);
-    if matches!(operation.as_str(), "restore-existing" | "create-secondary") && index.is_none() {
-        append_gui_log(
-            state,
-            "GUI action blocked: restore requested without a selected WIM index",
-        );
-        show_message(
-            state.root,
-            if language == Language::English {
-                "Read the WIM first, then select a valid image index from the dropdown."
-            } else {
-                "请先读取 WIM，再从下拉框选择有效的镜像索引。"
-            },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
-        );
+    let btn_task = GetDlgItem(state.root, ID_CREATE_TASK as i32);
+    let current_btn_text = get_text(btn_task);
+    if current_btn_text == "选择镜像位置" || current_btn_text == "Choose image location" {
+        browse_image(state);
+        let updated = get_text(state.controls.image).trim().to_string();
+        if backuprestore_core::validate_absolute_path(&updated).is_ok() {
+            set_text(
+                btn_task,
+                if language == Language::English { "Create task" } else { "创建任务" },
+            );
+            if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+                && Path::new(&updated).is_file()
+            {
+                read_image(state);
+            }
+        }
         return;
     }
-    let index = index.unwrap_or(1).to_string();
+    let image_path = get_text(state.controls.image).trim().to_string();
+    if operation != "probe"
+        && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
+    {
+        append_gui_log(
+            state,
+            &format!("GUI action blocked: invalid image path: {error}"),
+        );
+        let choice = ask_invalid_image_path(state.root, language);
+        if choice == 1 {
+            // 用户点击【选择镜像位置】：立即弹出文件浏览窗口
+            browse_image(state);
+            let updated = get_text(state.controls.image).trim().to_string();
+            if backuprestore_core::validate_absolute_path(&updated).is_ok() {
+                set_text(
+                    btn_task,
+                    if language == Language::English { "Create task" } else { "创建任务" },
+                );
+                if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+                    && Path::new(&updated).is_file()
+                {
+                    read_image(state);
+                }
+            }
+            SetFocus(state.controls.image);
+        } else {
+            // 用户点击【取消】：将主界面【创建任务】按钮文本修改为【选择镜像位置】
+            set_text(
+                btn_task,
+                if language == Language::English { "Choose image location" } else { "选择镜像位置" },
+            );
+            SetFocus(state.controls.image);
+        }
+        return;
+    }
+    // 路径合法时确保按钮文本为【创建任务】
+    set_text(
+        btn_task,
+        if language == Language::English { "Create task" } else { "创建任务" },
+    );
+    let index = selected_wim_index(state);
+    let index = if matches!(operation.as_str(), "restore-existing" | "create-secondary") && index.is_none() {
+        if Path::new(&image_path).is_file() {
+            read_image(state);
+        }
+        let recheck = selected_wim_index(state);
+        if recheck.is_none() {
+            append_gui_log(
+                state,
+                "GUI action blocked: restore requested without a selected WIM index",
+            );
+            show_message(
+                state.root,
+                if language == Language::English {
+                    "Read the WIM first, then select a valid image index from the dropdown."
+                } else {
+                    "请先读取 WIM，再从下拉框选择有效的镜像索引。"
+                },
+                if language == Language::English {
+                    "Validation failed"
+                } else {
+                    "参数校验失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+        recheck.unwrap().to_string()
+    } else {
+        index.unwrap_or(1).to_string()
+    };
     let selected_or_error = |control: Hwnd, label: &str| {
         selected_drive_letter(state, control)
             .ok_or_else(|| format!("{label}必须从下拉框选择一个可用卷。"))
@@ -4466,42 +4539,6 @@ unsafe fn create_task(state: &State) {
         );
         return;
     }
-    let image_path = get_text(state.controls.image).trim().to_string();
-    let btn_task = GetDlgItem(state.root, ID_CREATE_TASK as i32);
-    if operation != "probe"
-        && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
-    {
-        append_gui_log(
-            state,
-            &format!("GUI action blocked: invalid image path: {error}"),
-        );
-        let choice = ask_invalid_image_path(state.root, language);
-        if choice == 1 {
-            // 用户点击【选择镜像位置】：立即弹出文件浏览窗口
-            browse_image(state);
-            let updated = get_text(state.controls.image).trim().to_string();
-            if backuprestore_core::validate_absolute_path(&updated).is_ok() {
-                set_text(
-                    btn_task,
-                    if language == Language::English { "Create task" } else { "创建任务" },
-                );
-            }
-            SetFocus(state.controls.image);
-        } else {
-            // 用户点击【取消】：将主界面【创建任务】按钮文本修改为【选择镜像位置】
-            set_text(
-                btn_task,
-                if language == Language::English { "Choose image location" } else { "选择镜像位置" },
-            );
-            SetFocus(state.controls.image);
-        }
-        return;
-    }
-    // 路径合法时确保按钮文本为【创建任务】
-    set_text(
-        btn_task,
-        if language == Language::English { "Create task" } else { "创建任务" },
-    );
     let backup_will_append = operation == "backup" && PathBuf::from(&image_path).is_file();
     let image_drive = image_path
         .chars()
@@ -5251,21 +5288,10 @@ unsafe extern "system" fn window_proc(
                     hwnd,
                     "BUTTON",
                     "",
-                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 5
+                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 4
                     // 个之间切换，不会跳到下方 PE 启动方式那一组。
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP,
                     180,
-                    60,
-                    95,
-                    32,
-                    ID_OPERATION_PROBE,
-                ),
-                create_control(
-                    hwnd,
-                    "BUTTON",
-                    "",
-                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    279,
                     60,
                     95,
                     32,
@@ -5276,7 +5302,7 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    378,
+                    279,
                     60,
                     95,
                     32,
@@ -5287,7 +5313,7 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    477,
+                    378,
                     60,
                     95,
                     32,
@@ -5298,7 +5324,7 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    576,
+                    477,
                     60,
                     95,
                     32,
@@ -5418,7 +5444,7 @@ unsafe extern "system" fn window_proc(
             status: create_control(
                 hwnd,
                 "EDIT",
-                "先点击“刷新环境”确认系统、恢复环境和卷身份。默认模式为无破坏探测。",
+                "先点击“刷新环境”确认系统、恢复环境和卷身份。默认模式为备份。",
                 WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
                 20,
                 440,
@@ -5668,18 +5694,21 @@ unsafe extern "system" fn window_proc(
                 !GetDlgItem(hwnd, ID_PE_DIR_EDIT as i32).is_null(),
             ),
         );
+        let mut explicit_tab = false;
         if let Ok(image) = std::env::var("BACKUPRESTORE_OPEN_IMAGE")
             && !image.trim().is_empty()
         {
-            select_operation(&mut *state_ptr, 2);
+            select_operation(&mut *state_ptr, 1);
             set_text((*state_ptr).controls.image, &image);
             read_image(&mut *state_ptr);
+            explicit_tab = true;
         }
         if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB")
             && let Ok(index) = tab.parse::<usize>()
-            && (1..=4).contains(&index)
+            && (0..=3).contains(&index)
         {
             select_operation(&mut *state_ptr, index);
+            explicit_tab = true;
         }
         // 命令行参数 --tab N（UAC 提升后命令行参数保留，比环境变量可靠）
         {
@@ -5687,10 +5716,14 @@ unsafe extern "system" fn window_proc(
             if let Some(pos) = args.iter().position(|a| a == "--tab")
                 && let Some(value) = args.get(pos + 1)
                 && let Ok(index) = value.parse::<usize>()
-                && (1..=4).contains(&index)
+                && (0..=3).contains(&index)
             {
                 select_operation(&mut *state_ptr, index);
+                explicit_tab = true;
             }
+        }
+        if !explicit_tab {
+            select_operation(&mut *state_ptr, 0);
         }
         // 测试钩子：仅在显式 --test-hook 参数下读取 C:\br-test.json（正常启动不读，
         // 避免残留 JSON 导致程序一启动就自动执行备份/还原并弹窗）
@@ -5786,11 +5819,10 @@ unsafe extern "system" fn window_proc(
                 return 0;
             }
             if let Some(index) = match control_id {
-                ID_OPERATION_PROBE => Some(0),
-                ID_OPERATION_BACKUP => Some(1),
-                ID_OPERATION_RESTORE => Some(2),
-                ID_OPERATION_SECONDARY => Some(3),
-                ID_OPERATION_PE => Some(4),
+                ID_OPERATION_BACKUP => Some(0),
+                ID_OPERATION_RESTORE => Some(1),
+                ID_OPERATION_SECONDARY => Some(2),
+                ID_OPERATION_PE => Some(3),
                 _ => None,
             } {
                 select_operation(state, index);
