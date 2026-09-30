@@ -79,6 +79,7 @@ const VK_F5: u32 = 0x74;
 const BS_DEFPUSHBUTTON: u32 = 0x00000001;
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
+const SW_SHOWNORMAL: i32 = 1;
 const SW_MAXIMIZE: i32 = 3;
 const MB_OK: u32 = 0x00000000;
 const MB_ICONERROR: u32 = 0x00000010;
@@ -2150,6 +2151,15 @@ const ID_CHOICE_BODY: usize = 2000;
 const ID_CHOICE_PE: usize = 2001;
 const ID_CHOICE_RE: usize = 2002;
 const ID_CHOICE_CANCEL: usize = 2003;
+/// 系统选择对话框的日志位置：与 GUI 主日志同目录，故障时一起看。
+fn system_choice_log_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("logs")
+        .join("gui.log")
+}
 /// 对话框文案语言：0=中文 1=English（模态期间单实例，用静态即可）。
 static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
@@ -2244,6 +2254,17 @@ unsafe extern "system" fn window_proc_system_choice(
                 _ => -1,
             };
             if result >= 0 {
+                // 记下用户到底点了哪个按钮：2026-09-30 用户反馈「进入 Windows RE
+                // 点了没反应」，而日志里连一行都没有，无法判断是点击没送达还是
+                // 后续步骤静默失败。这一行就是为了让下次一眼看出区别。
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(system_choice_log_path())
+                    .and_then(|mut file| {
+                        use std::io::Write;
+                        writeln!(file, "[gui] system drive choice: button clicked, choice={result}")
+                    });
                 *state_ptr = result;
                 DestroyWindow(hwnd);
                 return 0;
@@ -2309,8 +2330,12 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
     if dialog.is_null() {
         return 0;
     }
-    let result_box = Box::new(0i32);
-    SetWindowLongPtrW(dialog, GWLP_USERDATA, Box::into_raw(result_box) as isize);
+    // 结果盒的裸指针留在**局部变量**里：循环退出后直接解引用读取。
+    // 绝不能像早先那样事后再 GetWindowLongPtrW(dialog, …)——那时窗口已被
+    // DestroyWindow 销毁，读它是未定义行为，实际稳定返回 0，
+    // 于是用户的选择被吞掉（2026-09-30 实机：choice=2 却返回 0）。
+    let result_box = Box::into_raw(Box::new(0i32));
+    SetWindowLongPtrW(dialog, GWLP_USERDATA, result_box as isize);
     // 模态：禁用主窗口，进入对话框消息循环
     EnableWindow(hwnd, 0);
     ShowWindow(dialog, SW_SHOW);
@@ -2329,12 +2354,9 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
             DispatchMessageW(&message);
         }
     }
-    let ptr = GetWindowLongPtrW(dialog, GWLP_USERDATA) as *mut i32;
-    let result = if ptr.is_null() { 0 } else { *ptr };
-    if !ptr.is_null() {
-        drop(Box::from_raw(ptr));
-    }
-    SetWindowLongPtrW(dialog, GWLP_USERDATA, 0);
+    // 窗口已销毁，但盒子还在：用局部裸指针读，不经过窗口句柄。
+    let result = unsafe { *result_box };
+    drop(unsafe { Box::from_raw(result_box) });
     // 恢复主窗口
     EnableWindow(hwnd, 1);
     SetForegroundWindow(hwnd);
@@ -4440,6 +4462,10 @@ unsafe fn create_task(state: &State) {
                 Some(c) => c,
                 None => ask_system_drive_handler(state.root, language),
             };
+            append_gui_log(
+                state,
+                &format!("system drive choice returned: {choice} (0=cancel 1=PE 2=RE)"),
+            );
             match choice {
                 1 => {
                     append_gui_log(
@@ -4462,19 +4488,28 @@ unsafe fn create_task(state: &State) {
                     // 确认后再走管理员 prepare → WinRE 任务链，避免"只关弹窗无反应"。
                     // 测试钩子指定了 choice 时跳过确认框（自动化环境无法精确点击）。
                     if state.test_drive_choice.is_none() {
+                        // 文案按实际操作区分：此前写死「备份」，还原/新增第二系统时
+                        // 也在说"执行备份"，用户会以为点错了。
+                        let (body, caption) = if language == Language::English {
+                            (
+                                format!("A {operation} task will be created and prepared with administrator rights, then the system will restart into the recovery environment to run it. Continue?"),
+                                "Enter the recovery environment".to_string(),
+                            )
+                        } else {
+                            (
+                                format!("将创建{operation}任务并以管理员权限准备，准备完成后系统会重启进入恢复环境执行。是否继续？"),
+                                "进入恢复环境".to_string(),
+                            )
+                        };
                         let confirm = show_message(
                             state.root,
-                            if language == Language::English {
-                                "A backup task will be created and prepared with administrator rights, then the system will restart into Windows RE to run it. Continue?"
-                            } else {
-                                "将创建备份任务并以管理员权限准备，准备完成后系统会重启进入 Windows RE 执行备份。是否继续？"
-                            },
-                            if language == Language::English {
-                                "Enter Windows RE"
-                            } else {
-                                "进入 Windows RE"
-                            },
+                            &body,
+                            &caption,
                             MB_YESNO | MB_ICONQUESTION,
+                        );
+                        append_gui_log(
+                            state,
+                            &format!("system drive operation: Windows RE confirm result={confirm} (6=yes)"),
                         );
                         if confirm != IDYES {
                             append_gui_log(
@@ -4562,13 +4597,25 @@ unsafe fn create_task(state: &State) {
         .join(" ");
     let runas = wide("runas");
     let params = wide(&params);
+    append_gui_log(
+        state,
+        &format!("elevated prepare: launching (visible) operation={operation} params={params:?}"),
+    );
     let result = ShellExecuteW(
         state.root,
         runas.as_ptr(),
         executable_wide.as_ptr(),
         params.as_ptr(),
         null(),
-        SW_HIDE,
+        // SW_SHOWNORMAL 而不是 SW_HIDE：prepare 是个控制台程序，隐藏运行意味着
+        // 用户点完按钮后什么都看不到，要等约 35 秒机器才重启——2026-09-30 用户
+        // 反馈的「进入 Windows RE 点了没反应」就是这个。显示出来后，桌面上能直接
+        // 看到 STEP 1/4…4/4 的步骤输出。
+        SW_SHOWNORMAL,
+    );
+    append_gui_log(
+        state,
+        &format!("elevated prepare: ShellExecute returned {result}"),
     );
     if result <= 32 {
         append_gui_log(

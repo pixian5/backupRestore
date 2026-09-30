@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.10**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.11**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -136,10 +136,27 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ---
 
-## 七、当前进度（截至 2026-09-29）
+## 七、当前进度（截至 2026-09-30）
 
 截至 2026-09-30 的进度已更新至 [当前开发进度](docs/20260930-0437-当前开发进度.md)，下一步安排见
 [下一步待实现](docs/20260930-0437-下一步待实现.md)。
+
+### v1.8.11（2026-09-30）：GUI 离线环境选择按钮修复（代码已修，实机点击复验待做）
+
+用户反馈「进入 Windows RE 点了没反应」。两个原因叠加：
+
+1. `ask_system_drive_handler` 在 `DestroyWindow` **之后**还用 `GetWindowLongPtrW(dialog, …)` 读结果盒 —— 窗口已销毁，未定义行为，实机稳定返回 `0`，用户点的 `choice=2` 被吞，程序按取消处理。
+2. 提权 prepare 用 `SW_HIDE` 隐藏运行，点完按钮后桌面约 35 秒没有任何反馈。
+
+修复：结果盒裸指针留局部变量直接读（不经窗口句柄）；prepare 改 `SW_SHOWNORMAL`；新增按钮点击 / choice 返回值 / 确认框结果 / `ShellExecuteW` 返回码四行日志；确认框文案不再写死「备份」。
+
+| 项 | 结果 |
+|---|---|
+| 本机验证 | `cargo test --workspace` **95 passed / 0 failed**（cli 72 + core 23） |
+| 构建 | 1,815,552 B，SHA-256 `7a2183b7…b423f2` |
+| 部署 | `C:\Users\Public\backupRestore-package\{BackupRestore,Recovery}.exe` 与 `H:\brwork\BackupRestore.exe` 三处哈希一致 |
+
+> ⚠️ **未复验**：`--test-hook` 会直接设置 choice、绕开对话框，不能作为验收。必须用真实按钮点击或等效消息注入证明 `choice=2` 完整流转，且改 BCD / 重启前先建快照。详见 [docs/20260930-0437-当前开发进度.md](docs/20260930-0437-当前开发进度.md)。
 
 ### 已实机验证（测试卷 T:，非系统卷，在线路径）
 
