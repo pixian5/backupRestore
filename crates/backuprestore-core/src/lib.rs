@@ -457,6 +457,9 @@ pub struct Task {
     pub image_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetSpec>,
+    /// 还原时是否严格对比哈希（默认仅对比大小，为 false 或 None 时离线跳过全包哈希流式计算）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_hash: Option<bool>,
     pub boot_plan: BootPlan,
     pub created: DateTime<Utc>,
     pub boot_once: bool,
@@ -493,6 +496,7 @@ impl Task {
             keep_indexes: None,
             image_name: None,
             target: None,
+            verify_hash: None,
             boot_plan,
             created: Utc::now(),
             boot_once: true,

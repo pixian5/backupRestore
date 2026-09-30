@@ -1941,7 +1941,21 @@ fn recover_windows(
         .transpose()?;
     if let Some(path) = &image_path {
         let image = task.image.as_ref().expect("image path implies image");
-        verify_image_file(path, image)?;
+        let verify_hash = task.verify_hash.unwrap_or(false);
+        if verify_hash {
+            verify_image_file(path, image)?;
+        } else {
+            // 快速校验：仅核对文件存在性和物理大小，避免数分钟无谓读盘
+            let size = fs::metadata(path)
+                .map_err(|e| err(&format!("failed to read image metadata: {e}")))?
+                .len();
+            if image.size_bytes != 0 && size != image.size_bytes {
+                return Err(err(&format!(
+                    "image size mismatch: expected {}, got {size}",
+                    image.size_bytes
+                )));
+            }
+        }
         if matches!(
             task.operation,
             Operation::RestoreExisting | Operation::CreateSecondary
@@ -1949,7 +1963,7 @@ fn recover_windows(
             // 配套备份 metadata 存在时校验 WIM 哈希与目标分区大小；缺失时
             // 视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过该校验。
             if let Ok(metadata) = read_index_metadata(path, image.index) {
-                if !metadata.image_sha256.eq_ignore_ascii_case(&image.sha256) {
+                if verify_hash && !metadata.image_sha256.eq_ignore_ascii_case(&image.sha256) {
                     return Err(err("image hash does not match backup metadata"));
                 }
                 let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;

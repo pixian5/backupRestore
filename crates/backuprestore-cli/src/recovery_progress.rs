@@ -69,7 +69,14 @@ pub struct ProgressShared {
     pub steps: Mutex<crate::text_parsing::StepTracker>,
     /// 操作类型（如 BACKUP / RESTORE_EXISTING），用于未打出步骤前预填骨架标题。
     pub operation: Mutex<Option<String>>,
+    /// 缓存上一次从日志解析出的最新阶段名，保证无新日志写入时依然能正常显示
+    pub cached_stage: Mutex<Option<String>>,
+    /// 缓存上一次从日志解析出的当前阶段百分比
+    pub cached_percent: Mutex<Option<u32>>,
+    /// 缓存最近的详情日志行
+    pub cached_details: Mutex<Vec<String>>,
 }
+
 
 impl ProgressShared {
     /// 切换监控的日志文件路径，并指定起始偏移（例如 0，或者累积日志的追加点）。
@@ -212,8 +219,8 @@ fn format_hms(secs: u64) -> String {
     }
 }
 
-/// 读取日志增量新行并分类更新窗口控件。返回（阶段、百分比、详情）。
-fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
+/// 读取日志增量新行并更新缓存状态与步骤跟踪器。
+fn read_log_delta(shared: &ProgressShared) {
     let path = shared.log_path.lock().unwrap().clone();
     let mut offset = shared.log_offset.lock().unwrap();
     let mut file = match OpenOptions::new().read(true).open(&path) {
@@ -228,7 +235,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         *offset = 0; // 日志被重建/替换
     }
     if size == *offset {
-        return; // 无新内容
+        return; // 无新内容，保留已有缓存
     }
     if file.seek(SeekFrom::Start(*offset)).is_err() {
         *offset = 0;
@@ -246,7 +253,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
 
     let mut latest_stage: Option<String> = None;
     let mut latest_percent: Option<u32> = None;
-    let mut details: Vec<String> = Vec::new();
+    let mut new_details: Vec<String> = Vec::new();
     // DISM 进度条用 \r 原地刷新（重定向到文件时不带 \n），先把整段按
     // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
     let lines: Vec<&str> = buffer.split(['\n', '\r']).collect();
@@ -259,19 +266,42 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             latest_percent = Some(value);
         }
         if let Some(value) = detail {
-            details.push(value);
-            if details.len() > 4 {
-                details.remove(0);
-            }
+            new_details.push(value);
+        }
+    }
+    if let Some(stage) = latest_stage {
+        *shared.cached_stage.lock().unwrap() = Some(stage);
+    }
+    if let Some(percent) = latest_percent {
+        *shared.cached_percent.lock().unwrap() = Some(percent);
+    }
+    if !new_details.is_empty() {
+        let mut details = shared.cached_details.lock().unwrap();
+        details.extend(new_details);
+        while details.len() > 4 {
+            details.remove(0);
         }
     }
     // 编号步骤跨增量累积，并算出进度。
-    let progress = {
-        let mut tracker = shared.steps.lock().unwrap();
-        tracker.feed(&lines);
-        tracker.set_current_percent(latest_percent);
-        tracker.snapshot()
-    };
+    let mut tracker = shared.steps.lock().unwrap();
+    tracker.feed(&lines);
+    if let Some(percent) = latest_percent {
+        tracker.set_current_percent(Some(percent));
+    }
+}
+
+/// 刷新进度窗口控件：包含时间跳动、呼吸小箭头动画与最新日志展示。
+/// 关键改进：即使无新增日志字节，本函数也会每秒完整驱动时钟跳动与呼吸动画，绝不假死。
+fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
+    // 1. 读取日志增量新行并更新缓存
+    read_log_delta(shared);
+
+    // 2. 提取最新状态（无论是否有新日志，都确保每秒驱动 UI 刷新与呼吸动画）
+    let latest_stage = shared.cached_stage.lock().unwrap().clone();
+    let latest_percent = *shared.cached_percent.lock().unwrap();
+    let details = shared.cached_details.lock().unwrap().clone();
+    let progress = shared.steps.lock().unwrap().snapshot();
+
     unsafe {
         // 用户要求：阶段大标题保持精简（如 "1/4 挂载卷、校验"、"2/4 还原镜像（时间长）"），
         // 且绝对不能被 DISM 控制台的 "正在还原系统分区…" 过程日志覆盖。
@@ -302,6 +332,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, pos as usize, 0);
 
         // 标题右侧增加一块显示已用时间/剩余时间、当前时间，靠右显示。
+        // 关键：每秒钟调用一次，当前时间精确跳动！
         let elapsed = shared.start_time.lock().unwrap().elapsed().as_secs();
         let elapsed_str = format_hms(elapsed);
         let remaining_str = if pos > 0 && pos < 100 {
@@ -384,6 +415,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         }
     }
 }
+
 
 unsafe extern "system" fn window_proc(
     hwnd: Hwnd,
@@ -501,6 +533,9 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         log_path: Mutex::new(initial_log),
         steps: Mutex::new(crate::text_parsing::StepTracker::new()),
         log_offset: Mutex::new(0),
+        cached_stage: Mutex::new(None),
+        cached_percent: Mutex::new(None),
+        cached_details: Mutex::new(Vec::new()),
         window_up: AtomicBool::new(false),
         close_requested: AtomicBool::new(false),
         start_time: Mutex::new(std::time::Instant::now()),

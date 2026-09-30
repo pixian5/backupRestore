@@ -675,12 +675,15 @@ fn prepare_task(
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let path = image_path.as_ref().expect("restore image path validated");
             let file_size = fs::metadata(path)?.len();
-            // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像时才流式计算，彻底避免重复读盘
+            // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像且未勾选 verify_hash 时填充合规占位，彻底避免重复读盘
             let sha256 = if let Ok(meta) = crate::read_index_metadata(Path::new(path), options.wim_index) {
                 meta.image_sha256
-            } else {
+            } else if options.verify_hash {
                 sha256_file(path)?
+            } else {
+                "0".repeat(64)
             };
+            task.verify_hash = Some(options.verify_hash);
             task.image = Some(ImageSpec {
                 volume: image_volume.clone(),
                 absolute_path: Some(path.clone()),
