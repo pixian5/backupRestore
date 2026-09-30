@@ -124,3 +124,6 @@ tools/win-clicker/_verify-post-winre.ps1
 tools/win-clicker/_list-tasks.ps1
 tools/win-clicker/_list-tasks-full.ps1
 tools/win-clicker/_probe-winre-artifacts.ps1
+
+# 开发日记（win备份还原工具开发日记系列；本机写作，不入库）
+/日记/
