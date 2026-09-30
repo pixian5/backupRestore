@@ -677,6 +677,7 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
         options.efi_root.as_deref(),
         None,
         true,
+        None,
     );
     if let Err(error) = &result {
         let _ = store.write_failure(&mut task, 1, error.to_string());
@@ -993,6 +994,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             efi_root.as_deref(),
             Some(&values),
             false,
+            Some(&progress),
         )
     })();
     if let Err(error) = &result {
@@ -1909,6 +1911,7 @@ fn recover_windows(
     _efi_root: Option<&Path>,
     _metadata_context: Option<&BTreeMap<String, String>>,
     _finalize_success: bool,
+    _progress: Option<&()>,
 ) -> Result<(), TaskError> {
     Err(err(
         "real Recovery execution is only available on Windows/WinRE",
@@ -1923,6 +1926,7 @@ fn recover_windows(
     efi_root: Option<&Path>,
     metadata_context: Option<&BTreeMap<String, String>>,
     finalize_success: bool,
+    progress: Option<&Arc<crate::recovery_progress::ProgressShared>>,
 ) -> Result<(), TaskError> {
     use backuprestore_core::TargetRole;
     if task.status == Stage::Prepared {
@@ -1997,6 +2001,9 @@ fn recover_windows(
         Operation::Backup => {
             use backuprestore_core::{BackupMetadata, PROGRAM_VERSION, write_json_atomic};
             append_log(log, "STEP 1/4 挂载卷、校验")?;
+            if let Some(p) = progress {
+                p.reset_start_time();
+            }
             let source = task.source.clone().ok_or_else(|| err("missing source"))?;
             let destination = task
                 .destination
@@ -2255,6 +2262,9 @@ fn recover_windows(
             let image_path = image_path.ok_or_else(|| err("missing image"))?;
             let target_root = resolve_volume_root(&target.volume)?;
             append_log(log, "STEP 1/4 挂载卷、校验")?;
+            if let Some(p) = progress {
+                p.reset_start_time();
+            }
             // TargetErased is deliberately persisted before formatting.  If
             // power fails after that write, formatting and applying the WIM
             // are safe to repeat on the explicitly selected target.  Older

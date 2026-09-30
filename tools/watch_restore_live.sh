@@ -1,28 +1,21 @@
 #!/bin/bash
 VM="Windows 11"
-DIR=".test-artifacts/captures/re-restore-live"
+DIR=".test-artifacts/captures/v204-restore"
 mkdir -p "$DIR"
 START=$(date +%s)
-echo "=== 开始监控还原执行流程 ==="
+echo "=== 开始监控还原及重启回桌面 ==="
 
-while true; do
-  NOW=$(date +%s)
-  ELAPSED=$((NOW - START))
+for i in $(seq 1 40); do
   STAMP=$(date +%H%M%S)
   prlctl capture "$VM" --file "$DIR/frame_$STAMP.png" >/dev/null 2>&1 || true
 
-  # 检查客体系统是否已经重启返回 Windows 桌面
   RESP=$(prlctl exec "$VM" whoami 2>&1 || true)
   if echo "$RESP" | grep -q "nt authority\\\\system"; then
-    echo "Windows 已重启成功返回系统桌面！耗时: ${ELAPSED}s"
-    prlctl capture "$VM" --file "$DIR/restored_windows_desktop.png" >/dev/null 2>&1 || true
-    break
-  fi
-
-  # 超时 30 分钟退出
-  if [ "$ELAPSED" -gt 1800 ]; then
-    echo "监控达到 30 分钟上限"
-    break
+    echo "系统还原成功！Windows 已重启并成功进入桌面！"
+    prlctl capture "$VM" --file "$DIR/restore_desktop_success.png" >/dev/null 2>&1 || true
+    exit 0
   fi
   sleep 10
 done
+echo "超时"
+exit 1

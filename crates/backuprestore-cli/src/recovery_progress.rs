@@ -58,6 +58,8 @@ pub struct ProgressShared {
     pub window_up: AtomicBool,
     // 窗口尚未创建时收到关闭请求也要记住，避免快速失败留下孤立进度窗。
     close_requested: AtomicBool,
+    /// 标记是否已对齐到 STEP 1/4 的开始时间
+    pub start_time_aligned: AtomicBool,
     /// 任务开始时间戳，用于计算已用时间与预估剩余时间。
     pub start_time: Mutex<std::time::Instant>,
     /// 进度窗口句柄（窗口线程创建后回填；主线程执行完请求关闭用 usize 存，
@@ -85,6 +87,13 @@ impl ProgressShared {
         *path_guard = new_path;
         let mut offset_guard = self.log_offset.lock().unwrap();
         *offset_guard = initial_offset;
+    }
+
+    /// 将已用时间的计时起点重置为当前时刻（在写入 STEP 1/4 时对齐）。
+    pub fn reset_start_time(&self) {
+        self.start_time_aligned.store(true, Ordering::SeqCst);
+        let mut guard = self.start_time.lock().unwrap();
+        *guard = std::time::Instant::now();
     }
 }
 
@@ -258,6 +267,11 @@ fn read_log_delta(shared: &ProgressShared) {
     // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
     let lines: Vec<&str> = buffer.split(['\n', '\r']).collect();
     for line in &lines {
+        // 当日志中首次出现 STEP 1/ 步骤时，将计时起点精确重置为当前时刻，确保已用时间与步骤时间戳分秒对齐
+        if line.contains("STEP 1/") && !shared.start_time_aligned.swap(true, Ordering::SeqCst) {
+            let mut guard = shared.start_time.lock().unwrap();
+            *guard = std::time::Instant::now();
+        }
         let (stage, percent, detail) = classify_log_line(line);
         if let Some(value) = stage {
             latest_stage = Some(value);
@@ -538,6 +552,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         cached_details: Mutex::new(Vec::new()),
         window_up: AtomicBool::new(false),
         close_requested: AtomicBool::new(false),
+        start_time_aligned: AtomicBool::new(false),
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
         operation: Mutex::new(operation.map(|s| s.to_string())),
