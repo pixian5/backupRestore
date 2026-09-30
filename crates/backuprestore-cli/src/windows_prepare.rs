@@ -302,9 +302,18 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
                 .iter()
                 .map(|(idx, meta)| {
                     json!({
+                        // 标准 DISM 字段（大驼峰，保证 GUI 及现有解析器无缝识别）
+                        "ImageIndex": idx,
+                        "ImageName": format!("Windows Backup (index {})", idx),
+                        "ImageSize": meta.image_size,
+                        "ImageDescription": format!("Computer: {}, Build: {}", meta.computer, meta.windows_build),
+                        "ImageVersion": meta.windows_build,
+                        "Architecture": meta.architecture,
+                        "EditionId": meta.windows_edition,
+                        "InstallationType": "Client",
+                        // 扩展字段（小驼峰，供现代 CLI/sidecar 特性使用）
                         "index": idx,
                         "name": format!("Windows Backup (index {})", idx),
-                        // sidecar 里已有准确的字节数和 sha256
                         "imageSize": meta.image_size,
                         "sha256": meta.image_sha256,
                         "createdAt": meta.created,
@@ -315,7 +324,6 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
                         "capturedUsedBytes": meta.captured_used_bytes,
                         "minimumTargetSize": meta.minimum_target_size,
                         "programVersion": meta.program_version,
-                        // 来源标记
                         "source": "sidecar",
                     })
                 })

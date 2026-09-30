@@ -140,7 +140,10 @@ pub(crate) fn wim_image_items(value: &Value) -> Result<Vec<Value>, String> {
     if let Some(items) = value.as_array() {
         return Ok(items.clone());
     }
-    if value.get("ImageIndex").is_some() || value.get("imageIndex").is_some() {
+    if value.get("ImageIndex").is_some()
+        || value.get("imageIndex").is_some()
+        || value.get("index").is_some()
+    {
         return Ok(vec![value.clone()]);
     }
     if let Some(images) = value.get("images") {
@@ -155,16 +158,43 @@ pub(crate) fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String
     let items = wim_image_items(&value)?;
     let mut images = Vec::with_capacity(items.len());
     for item in items {
-        let index = json_text(&item, "ImageIndex")
+        // 兼容 ImageIndex / imageIndex / index
+        let index_str = {
+            let s = json_text(&item, "ImageIndex");
+            if !s.is_empty() {
+                s
+            } else {
+                let s2 = json_text(&item, "imageIndex");
+                if !s2.is_empty() {
+                    s2
+                } else {
+                    json_text(&item, "index")
+                }
+            }
+        };
+        let index = index_str
             .parse::<u32>()
             .map_err(|_| "WIM metadata contains an invalid image index".to_string())?;
         if index == 0 {
             return Err("WIM metadata contains image index 0".to_string());
         }
-        let size_bytes = json_text(&item, "ImageSize").parse::<u64>().ok();
+        // 兼容 ImageSize / imageSize
+        let size_bytes = json_text(&item, "ImageSize")
+            .parse::<u64>()
+            .or_else(|_| json_text(&item, "imageSize").parse::<u64>())
+            .ok();
+        // 兼容 ImageName / name
+        let name = {
+            let n = json_text(&item, "ImageName");
+            if !n.is_empty() {
+                n
+            } else {
+                json_text(&item, "name")
+            }
+        };
         images.push(WimImageInfo {
             index,
-            name: json_text(&item, "ImageName"),
+            name,
             description: json_text(&item, "ImageDescription"),
             version: json_text(&item, "ImageVersion"),
             architecture: json_text(&item, "Architecture"),
