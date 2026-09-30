@@ -167,6 +167,9 @@ unsafe extern "system" {
 }
 
 /// 创建大号中文字体（负高度 = 字符高度；微软雅黑优先，缺失时系统回退）。
+const GB2312_CHARSET: u32 = 134;
+
+/// 创建大号中文字体（负高度 = 字符高度；微软雅黑优先，GB2312 字符集确保 WinRE 缺失时正确回退到中文字体）。
 fn create_font(height: i32, bold: bool) -> Hwnd {
     let face = encode("Microsoft YaHei");
     unsafe {
@@ -179,7 +182,7 @@ fn create_font(height: i32, bold: bool) -> Hwnd {
             0,
             0,
             0,
-            DEFAULT_CHARSET,
+            GB2312_CHARSET,
             0,
             0,
             CLEARTYPE_QUALITY,
@@ -219,7 +222,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     drop(file);
     // 中文 Windows 的 DISM 输出是 GBK 编码，不是合法 UTF-8。必须用有损解码，
     // 否则 read_to_string 一旦遇到非 UTF-8 字节就整体失败，窗口永远冻结在初始态。
-    let buffer = String::from_utf8_lossy(&raw);
+    let buffer = crate::text_parsing::decode_windows_bytes(&raw);
 
     let mut latest_stage: Option<String> = None;
     let mut latest_percent: Option<u32> = None;
@@ -242,7 +245,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             }
         }
     }
-    // 编号步骤跨增量累积，并算出总进度（已完成整步 + 当前步骤部分）。
+    // 编号步骤跨增量累积，并算出进度。
     let progress = {
         let mut tracker = shared.steps.lock().unwrap();
         tracker.feed(&lines);
@@ -254,14 +257,13 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             let wide: Vec<u16> = stage.encode_utf16().chain(std::iter::once(0)).collect();
             SetWindowTextW(GetDlgItem(hwnd, ID_STAGE), wide.as_ptr());
         }
-        // 进度条显示**总进度**：单看当前步骤的百分比会让人以为卡住
-        // （第 4 步的 90% 其实整体早就过了 70%）。
-        if let Some(overall) = progress.overall_percent {
-            SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, overall as usize, 0);
-        } else if let Some(percent) = latest_percent {
-            // 没有编号步骤（老格式日志）时退回用当前百分比，别让条子空着。
-            SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, percent as usize, 0);
-        }
+        // 用户要求：进度条显示当前阶段进度而非总进度。
+        // 当前阶段有百分比时显示当前阶段百分比（如 DISM 1%~100%），没有时显示 0。
+        let pos = progress
+            .current_percent
+            .or(latest_percent)
+            .unwrap_or(0);
+        SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, pos as usize, 0);
         // 详情区上面先画步骤清单，再跟日志尾部。清单用 ✓/▶/· 标出
         // 已完成/进行中/未开始，一眼看清「到哪一步了」。
         let mut body: Vec<String> = Vec::new();

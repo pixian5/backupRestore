@@ -1993,7 +1993,7 @@ fn recover_windows(
         }
         Operation::Backup => {
             use backuprestore_core::{BackupMetadata, PROGRAM_VERSION, write_json_atomic};
-            append_log(log, "STEP 1/4 准备备份环境（挂载卷、校验、必要时代原恢复环境）")?;
+            append_log(log, "STEP 1/4 准备备份环境（挂载卷、校验、必要时还原恢复环境）")?;
             let source = task.source.clone().ok_or_else(|| err("missing source"))?;
             let destination = task
                 .destination
@@ -2084,6 +2084,7 @@ fn recover_windows(
                 let _ = fs::remove_file(&candidate);
                 fs::copy(&destination_path, &candidate)?;
                 let append_args = [
+                    "/English",
                     "/Append-Image",
                     &format!("/ImageFile:{}", candidate.display()),
                     &format!("/CaptureDir:{}", source_path.display()),
@@ -2114,6 +2115,7 @@ fn recover_windows(
                 run_logged(
                     "dism.exe",
                     &[
+                        "/English",
                         "/Capture-Image",
                         &format!("/ImageFile:{}", partial.display()),
                         &format!("/CaptureDir:{}", source_path.display()),
@@ -2337,6 +2339,7 @@ fn recover_windows(
                 run_logged(
                     "dism.exe",
                     &[
+                        "/English",
                         "/Apply-Image",
                         &format!("/ImageFile:{}", image_path.display()),
                         &format!("/Index:{}", image_index),
@@ -3007,6 +3010,7 @@ fn verify_bcd_target(efi_root: &Path, target_root: &Path, log: &Path) -> Result<
     Ok(())
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn stream_to_log<R: Read>(
     label: &str,
     stream: R,
@@ -3016,11 +3020,10 @@ fn stream_to_log<R: Read>(
     let mut line: Vec<u8> = Vec::new();
     let mut saw_cr = false;
     let emit = |line: &[u8], sink: &Arc<Mutex<std::fs::File>>| -> Result<(), TaskError> {
-        // DISM/bcdboot use the Windows console code page on localized hosts;
-        // stdout is not guaranteed to be UTF-8. Preserve every byte in the
-        // log with replacement decoding instead of failing the recovery task
-        // after the native operation has already started.
-        let text = String::from_utf8_lossy(line);
+        // DISM/bcdboot 在本地化主机上使用 Windows 控制台代码页（如 CP936/GBK）；
+        // stdout 不一定是 UTF-8。使用 decode_windows_bytes 进行代码页感知解码，
+        // 彻底避免中文输出被截断损坏成 \u{FFFD}（锟斤拷乱码）。
+        let text = crate::text_parsing::decode_windows_bytes(line);
         let mut file = sink
             .lock()
             .map_err(|_| err("recovery log lock was poisoned"))?;

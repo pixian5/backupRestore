@@ -439,8 +439,13 @@ impl StepTracker {
             }
         }
         self.inner.steps.sort_by_key(|(index, _)| *index);
+        let previous_current = self.inner.current;
         self.inner.current = self.inner.steps.last().map(|(index, _)| *index);
-        self.inner.current_percent = fresh.current_percent.or(self.inner.current_percent);
+        if self.inner.current != previous_current {
+            self.inner.current_percent = fresh.current_percent;
+        } else {
+            self.inner.current_percent = fresh.current_percent.or(self.inner.current_percent);
+        }
         self.inner.overall_percent = self.overall();
         self.inner.clone()
     }
@@ -530,15 +535,74 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         stage = Some(format!("步骤 {index}/{total}：{name}"));
     }
     let percent = parse_percent(line);
-    let detail = if line.trim().is_empty()
+    let trimmed = line.trim();
+    let detail = if trimmed.is_empty()
         || ((line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%'))
         || line.starts_with("STEP ")
+        || trimmed == "[stdout]"
+        || trimmed == "[stderr]"
     {
-        None // 空行、纯进度行、编号步骤行都不占详情（步骤已由阶段标题展示）
+        None // 空行、纯进度行、编号步骤行、纯标签空行都不占详情（步骤已由阶段标题展示）
     } else {
         Some(line.trim_end().to_string())
     };
     (stage, percent, detail)
+}
+
+/// 将可能包含 Windows 控制台/ANSI 代码页（如 CP936/GBK）的字节切片解码为 UTF-8 字符串。
+/// 优先尝试 UTF-8，若失败在 Windows 下调用 MultiByteToWideChar（CP_OEMCP / CP_ACP）解码，
+/// 彻底避免控制台输出中文被损坏成 \u{FFFD}（锟斤拷）。
+pub(crate) fn decode_windows_bytes(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    #[cfg(windows)]
+    {
+        use std::ffi::c_int;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn MultiByteToWideChar(
+                code_page: u32,
+                flags: u32,
+                multi_byte_str: *const u8,
+                multi_byte_len: c_int,
+                wide_char_str: *mut u16,
+                wide_char_len: c_int,
+            ) -> c_int;
+        }
+        const CP_OEMCP: u32 = 1;
+        const CP_ACP: u32 = 0;
+
+        for &cp in &[CP_OEMCP, CP_ACP] {
+            let len = unsafe {
+                MultiByteToWideChar(
+                    cp,
+                    0,
+                    bytes.as_ptr(),
+                    bytes.len() as c_int,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if len > 0 {
+                let mut wide = vec![0u16; len as usize];
+                let res = unsafe {
+                    MultiByteToWideChar(
+                        cp,
+                        0,
+                        bytes.as_ptr(),
+                        bytes.len() as c_int,
+                        wide.as_mut_ptr(),
+                        len,
+                    )
+                };
+                if res > 0 {
+                    return String::from_utf16_lossy(&wide);
+                }
+            }
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Keep only the `systeminfo` lines that describe CPU and memory, so the
@@ -1863,14 +1927,14 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// PE 进度窗口一直停在初始那句「正在准备恢复环境…」（用户实机反馈）。
     #[test]
     fn parse_step_marker_works_on_real_timestamped_log_lines() {
-        let real = "[2026-09-29T03:36:32.259862400+00:00] STEP 1/4 准备备份环境（挂载卷、校验、必要时代原恢复环境）";
+        let real = "[2026-09-29T03:36:32.259862400+00:00] STEP 1/4 准备备份环境（挂载卷、校验、必要时还原恢复环境）";
         let (index, total, name) = parse_step_marker(real).expect("必须能从真实日志行解析出步骤");
         assert_eq!((index, total), (1, 4));
         assert!(name.contains("准备备份环境"));
 
         // 阶段标题也要能认出来，不只是步骤跟踪器。
         let (stage, _percent, _detail) = classify_log_line(real);
-        assert_eq!(stage.as_deref(), Some("步骤 1/4：准备备份环境（挂载卷、校验、必要时代原恢复环境）"));
+        assert_eq!(stage.as_deref(), Some("步骤 1/4：准备备份环境（挂载卷、校验、必要时还原恢复环境）"));
     }
 
     /// 认不出步骤标记时返回 None，不能 panic、不能猜。
@@ -1949,6 +2013,40 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(snap.overall_percent, Some(50), "250% 应夹成 100% → 半程");
         tracker.set_current_percent(Some(100));
         assert_eq!(tracker.snapshot().overall_percent, Some(50));
+    }
+
+    /// 步骤推进到下一步时，必须清空上一步残留的百分比。
+    #[test]
+    fn step_progress_resets_current_percent_when_advancing_step() {
+        let mut tracker = StepTracker::new();
+        tracker.feed(&["STEP 1/4 准备环境"]);
+        tracker.set_current_percent(Some(100));
+        assert_eq!(tracker.snapshot().current_percent, Some(100));
+
+        // 进入第 2 步，无百分比时应被清空，不应残留上一步的 100%
+        let second = tracker.feed(&["STEP 2/4 捕获镜像"]);
+        assert_eq!(second.current, Some(2));
+        assert_eq!(second.current_percent, None);
+    }
+
+    /// 纯 [stdout] / [stderr] 空标签行不占详情。
+    #[test]
+    fn classify_log_line_filters_empty_stdout_stderr_tags() {
+        let (_, _, detail1) = classify_log_line("[stdout]");
+        assert!(detail1.is_none());
+        let (_, _, detail2) = classify_log_line("  [stdout]   ");
+        assert!(detail2.is_none());
+        let (_, _, detail3) = classify_log_line("[stderr]");
+        assert!(detail3.is_none());
+        let (_, _, detail4) = classify_log_line("[stdout] real message");
+        assert_eq!(detail4.as_deref(), Some("[stdout] real message"));
+    }
+
+    /// UTF-8 解码直接无损通过。
+    #[test]
+    fn decode_windows_bytes_decodes_utf8_correctly() {
+        let msg = "正在备份系统分区";
+        assert_eq!(decode_windows_bytes(msg.as_bytes()), msg);
     }
 
     #[test]
