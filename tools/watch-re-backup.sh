@@ -2,7 +2,7 @@
 # 监控 WinRE 备份进度与屏幕捕获脚本
 set -u
 VM="Windows 11"
-DIR=".test-artifacts/captures/re-6wim-v1818"
+DIR=".test-artifacts/captures/re-6wim-v191"
 mkdir -p "$DIR"
 LOG="$DIR/monitor.log"
 
@@ -12,9 +12,8 @@ log() {
 }
 
 log "=== 开始监控 RE 备份过程 ==="
-IN_RE=0
+OFFLINE_COUNT=0
 START_TIME=$(date +%s)
-SCREEN_INDEX=0
 
 while true; do
   NOW=$(date +%s)
@@ -28,15 +27,15 @@ while true; do
   # 检测客体操作系统响应能力
   RESP=$(prlctl exec "$VM" whoami 2>&1 || true)
   if echo "$RESP" | grep -q "nt authority\\\\system"; then
-    if [ "$IN_RE" -eq 1 ]; then
-      log "检测到虚拟机已成功重启返回 Windows 桌面！耗时: ${ELAPSED}s"
+    if [ "$OFFLINE_COUNT" -ge 2 ]; then
+      log "检测到虚拟机已完成恢复任务并成功重启返回 Windows 桌面！耗时: ${ELAPSED}s"
       break
     else
       log "Windows 运行中 (Session 正常) - 已截图 $SCREEN_FILE"
     fi
   else
-    IN_RE=1
-    log "进入恢复环境或重启中 (Guest Tools 离线) - 已截图 $SCREEN_FILE (耗时 ${ELAPSED}s)"
+    OFFLINE_COUNT=$((OFFLINE_COUNT + 1))
+    log "进入恢复环境或重启中 (Guest Tools 离线, 累计 $OFFLINE_COUNT 次) - 已截图 $SCREEN_FILE (耗时 ${ELAPSED}s)"
   fi
   
   # 最多等待 30 分钟（1800 秒）
@@ -45,7 +44,7 @@ while true; do
     break
   fi
   
-  sleep 15
+  sleep 8
 done
 
 log "=== 监控结束 ==="

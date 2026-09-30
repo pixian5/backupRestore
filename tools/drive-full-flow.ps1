@@ -76,19 +76,41 @@ if ($btnBackup -ne [IntPtr]::Zero) {
 }
 Start-Sleep -Seconds 1
 
+$EM_SETSEL = 0x00B1
+$WM_CHAR = 0x0102
+$WM_GETTEXTLENGTH = 0x000E
+
+function TypeInto([int]$id, [string]$value) {
+    $ctl = [Native]::GetDlgItem($main, $id)
+    if ($ctl -eq [IntPtr]::Zero) { Write-Output ("FAIL: control " + $id + " not found"); return $false }
+    [void][Native]::SendMessage($ctl, $EM_SETSEL, [IntPtr]0, [IntPtr](-1))
+    foreach ($ch in $value.ToCharArray()) {
+        [void][Native]::SendMessage($ctl, $WM_CHAR, [IntPtr][int]$ch, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 8
+    }
+    $len = [int][Native]::SendMessage($ctl, $WM_GETTEXTLENGTH, [IntPtr]::Zero, [IntPtr]::Zero)
+    Write-Output ("  typed id=" + $id + " len=" + $len + " want=" + $value.Length)
+    return ($len -eq $value.Length)
+}
+
 Write-Output "== 3. 设置镜像路径为 F:\6.wim =="
-[void][Native]::SetDlgItemTextW($main, $ID_IMAGE, "F:\6.wim")
-Start-Sleep -Milliseconds 500
-$sbPath = New-Object System.Text.StringBuilder 512
-[void][Native]::GetDlgItemTextW($main, $ID_IMAGE, $sbPath, 512)
-Write-Output ("已设置路径: " + $sbPath.ToString())
+if (-not (TypeInto $ID_IMAGE "F:\6.wim")) { throw "TYPE_IMAGE_FAILED" }
+
+Write-Output "== 3.1 设置压缩模式为「不压缩」(ID_COMPRESS = 1208, Index = 1) =="
+$ID_COMPRESS = 1208
+$CB_SETCURSEL = 0x014E
+$cboCompress = [Native]::GetDlgItem($main, $ID_COMPRESS)
+if ($cboCompress -ne [IntPtr]::Zero) {
+    [void][Native]::SendMessage($cboCompress, $CB_SETCURSEL, [IntPtr]1, [IntPtr]::Zero)
+    Write-Output "已选择「不压缩」"
+}
 
 Write-Output "== 4. 点击「创建任务」(ID 1003) =="
 $btnCreate = [Native]::GetDlgItem($main, $ID_CREATE_TASK)
 if ($btnCreate -eq [IntPtr]::Zero) {
     throw "ID_CREATE_TASK_NOT_FOUND"
 }
-[void][Native]::SendMessage($btnCreate, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+[void][Native]::PostMessage($btnCreate, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
 Write-Output "已点击「创建任务」"
 
 Write-Output "== 5. 等待环境选择对话框 (BackupRestoreSystemDriveChoice) =="
@@ -110,7 +132,7 @@ if ($btnRe -eq [IntPtr]::Zero) {
     throw "ID_CHOICE_RE_NOT_FOUND"
 }
 Start-Sleep -Milliseconds 300
-[void][Native]::SendMessage($btnRe, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+[void][Native]::PostMessage($btnRe, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
 Write-Output "已点击「进入 Windows RE」"
 
 Write-Output "== 7. 等待「进入恢复环境」MessageBox 确认对话框 =="
@@ -132,5 +154,5 @@ if ($btnYes -eq [IntPtr]::Zero) {
     throw "IDYES_NOT_FOUND"
 }
 Start-Sleep -Milliseconds 300
-[void][Native]::SendMessage($btnYes, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+[void][Native]::PostMessage($btnYes, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
 Write-Output "SUCCESS: 任务已确认触发！系统正在准备恢复环境引导事务..."

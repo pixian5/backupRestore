@@ -412,6 +412,26 @@ const BIF_RETURNONLYFSDIRS: u32 = 0x00000001;
 const BIF_NEWDIALOGSTYLE: u32 = 0x00000040;
 const CSIDL_DESKTOPDIRECTORY: i32 = 0x0010;
 const SHGFP_TYPE_CURRENT: u32 = 0;
+const SEE_MASK_NOCLOSEPROCESS: u32 = 0x00000040;
+
+#[repr(C)]
+struct ShellExecuteInfoW {
+    cb_size: u32,
+    f_mask: u32,
+    hwnd: Hwnd,
+    lp_verb: *const u16,
+    lp_file: *const u16,
+    lp_parameters: *const u16,
+    lp_directory: *const u16,
+    n_show: i32,
+    h_inst_app: HInstance,
+    lp_id_list: *mut c_void,
+    lp_class: *const u16,
+    hkey_class: Handle,
+    dw_hot_key: u32,
+    h_icon: Handle,
+    h_process: Handle,
+}
 
 #[link(name = "shell32")]
 unsafe extern "system" {
@@ -423,6 +443,7 @@ unsafe extern "system" {
         directory: *const u16,
         show: i32,
     ) -> isize;
+    fn ShellExecuteExW(info: *mut ShellExecuteInfoW) -> i32;
     fn SHBrowseForFolderW(info: *const BrowseInfoW) -> *mut c_void;
     fn SHGetPathFromIDListW(pidl: *const c_void, path: *mut u16) -> i32;
     fn SHGetFolderPathW(hwnd: Hwnd, csidl: i32, token: Handle, flags: u32, path: *mut u16) -> i32;
@@ -4138,6 +4159,18 @@ pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
     Ok(())
 }
 
+/// 读取最近一次 launcher-errors.log 里的错误信息（用于 prepare 异常退出感知）
+fn read_latest_launcher_error(executable_dir: &std::path::Path) -> Option<String> {
+    let log_path = executable_dir.join("logs").join("launcher-errors.log");
+    let content = std::fs::read_to_string(log_path).ok()?;
+    content
+        .lines()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .map(|s| s.to_string())
+}
+
 unsafe fn create_task(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state).to_string();
@@ -4619,59 +4652,88 @@ unsafe fn create_task(state: &State) {
         state,
         &format!("elevated prepare: launching (visible) operation={operation} params={params:?}"),
     );
-    let result = ShellExecuteW(
-        state.root,
-        runas.as_ptr(),
-        executable_wide.as_ptr(),
-        params.as_ptr(),
-        null(),
-        // SW_SHOWNORMAL 而不是 SW_HIDE：prepare 是个控制台程序，隐藏运行意味着
-        // 用户点完按钮后什么都看不到，要等约 35 秒机器才重启——2026-09-30 用户
-        // 反馈的「进入 Windows RE 点了没反应」就是这个。显示出来后，桌面上能直接
-        // 看到 STEP 1/4…4/4 的步骤输出。
-        SW_SHOWNORMAL,
-    );
-    append_gui_log(
-        state,
-        &format!("elevated prepare: ShellExecute returned {result}"),
-    );
-    if result <= 32 {
+    let mut exec_info = ShellExecuteInfoW {
+        cb_size: size_of::<ShellExecuteInfoW>() as u32,
+        f_mask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: state.root,
+        lp_verb: runas.as_ptr(),
+        lp_file: executable_wide.as_ptr(),
+        lp_parameters: params.as_ptr(),
+        lp_directory: null(),
+        n_show: SW_SHOWNORMAL,
+        h_inst_app: null_mut(),
+        lp_id_list: null_mut(),
+        lp_class: null(),
+        hkey_class: null_mut(),
+        dw_hot_key: 0,
+        h_icon: null_mut(),
+        h_process: null_mut(),
+    };
+    let ok = ShellExecuteExW(&mut exec_info);
+    if ok == 0 {
+        let err = GetLastError();
         append_gui_log(
             state,
-            &format!(
-                "GUI action failed: elevated prepare launch; operation={operation}; ShellExecute={result}"
-            ),
+            &format!("GUI action failed: elevated prepare launch; operation={operation}; ShellExecuteExW failed err={err}"),
         );
-        set_text(
-            state.controls.status,
-            &if language == Language::English {
-                format!(
-                    "Could not start the elevated preparation script (ShellExecute code {result})."
-                )
-            } else {
-                format!("无法启动管理员准备脚本，ShellExecute 错误码：{result}")
-            },
-        );
-        // 状态栏可能被 tab 控件覆盖不可见，必须用弹窗给出明确反馈。
+        let err_msg = if language == Language::English {
+            format!("Could not start the elevated preparation script (Windows error {err}). No task, WinRE or reboot was requested.")
+        } else {
+            format!("无法启动管理员准备脚本（Windows 错误码 {err}）。未创建任务、未修改 WinRE、未请求重启。")
+        };
+        set_text(state.controls.status, &err_msg);
         show_message(
             state.root,
-            &if language == Language::English {
-                format!(
-                    "Could not start the elevated preparation script (ShellExecute code {result}). No task, WinRE or reboot was requested."
-                )
-            } else {
-                format!(
-                    "无法启动管理员准备脚本（ShellExecute 错误码 {result}）。未创建任务、未修改 WinRE、未请求重启。"
-                )
-            },
-            if language == Language::English {
-                "Preparation launch failed"
-            } else {
-                "准备启动失败"
-            },
+            &err_msg,
+            if language == Language::English { "Preparation launch failed" } else { "准备启动失败" },
             MB_OK | MB_ICONERROR,
         );
-    } else {
+        return;
+    }
+    append_gui_log(
+        state,
+        &format!("elevated prepare: ShellExecuteExW succeeded; h_process={:?}", exec_info.h_process),
+    );
+    if !exec_info.h_process.is_null() {
+        // 等待 1500 毫秒，检测 prepare 进程是否因参数校验或安全规则立即异常退出。
+        // 如果 1500ms 内退出，说明前置校验失败，必须立即读取 launcher-errors.log 弹窗报错；
+        // 如果 1500ms 后仍在运行，说明校验通过，正在正常执行 DISM 挂载与 BCD 准备。
+        let wait_result = WaitForSingleObject(exec_info.h_process, 1500);
+        if wait_result == 0 {
+            let mut exit_code: u32 = 0;
+            GetExitCodeProcess(exec_info.h_process, &mut exit_code);
+            CloseHandle(exec_info.h_process);
+            if exit_code != 0 {
+                let last_error = read_latest_launcher_error(&state.executable_dir)
+                    .unwrap_or_else(|| {
+                        if language == Language::English {
+                            format!("Preparation process terminated abnormally with exit code {exit_code}")
+                        } else {
+                            format!("管理员准备进程异常退出，退出码：{exit_code}")
+                        }
+                    });
+                append_gui_log(
+                    state,
+                    &format!("elevated prepare failed early: exit_code={exit_code} error={last_error}"),
+                );
+                let display_err = if language == Language::English {
+                    format!("Preparation failed (exit code {exit_code}):\n\n{last_error}")
+                } else {
+                    format!("准备失败（退出码 {exit_code}）：\n\n{last_error}")
+                };
+                set_text(state.controls.status, &display_err);
+                show_message(
+                    state.root,
+                    &display_err,
+                    if language == Language::English { "Preparation Failed" } else { "任务准备失败" },
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
+        } else {
+            CloseHandle(exec_info.h_process);
+        }
+    }
         append_gui_log(
             state,
             &format!(
@@ -4698,7 +4760,6 @@ unsafe fn create_task(state: &State) {
                 "已启动管理员准备脚本。请在任务结果中查看 status.json、prepare.log 和 Recovery.log；这不是恢复成功证明。"
             },
         );
-    }
 }
 
 // ===================== 智能分流：进入 PE / 在线直接执行 =====================

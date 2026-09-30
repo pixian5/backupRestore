@@ -292,12 +292,17 @@ pub struct VolumeRoles<'a> {
 ///
 /// F1（还原目标 == 注册 WinRE 宿主）与 F3（备份源 == 注册 WinRE 宿主）**已删除**：
 /// 新启动通道全程只读注册位，格式化目标卷不再威胁续跑启动源，捕获也不再污染注册 WIM。
+///
+/// v1.9.1 优化：备份操作（Backup）仅读取源卷捕获 WIM，并向镜像卷写入临时启动载荷，
+/// 绝不会格式化任何卷。因此在备份操作下，工作区落在承载 WinRE 的分区（如 C:）也是完全安全的；
+/// 仅在还原（RestoreExisting / CreateSecondary）等会清空或重写目标卷的操作下，若工作区落在
+/// 恢复分区或还原目标卷上才需要拦截。
 pub fn validate_volume_roles(
     roles: &VolumeRoles<'_>,
-    _operation: Operation,
+    operation: Operation,
     recovery: &VolumeIdentity,
 ) -> Result<(), VolumeRoleConflict> {
-    if roles.workspace.same_partition(recovery) {
+    if operation != Operation::Backup && roles.workspace.same_partition(recovery) {
         return Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre);
     }
     if roles.image.same_partition(recovery) {
@@ -2036,5 +2041,50 @@ mod tests {
         );
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn validate_volume_roles_allows_workspace_on_recovery_for_backup() {
+        let mut recovery = VolumeIdentity::new("disk-0", "part-c");
+        recovery.drive_letter = Some('C');
+        recovery.volume_guid = r"\\?\Volume{c-guid}\".into();
+        recovery.disk_number = Some(0);
+        recovery.partition_number = Some(4);
+
+        let workspace = recovery.clone();
+
+        let mut image = VolumeIdentity::new("disk-0", "part-f");
+        image.drive_letter = Some('F');
+        image.volume_guid = r"\\?\Volume{f-guid}\".into();
+        image.disk_number = Some(0);
+        image.partition_number = Some(5);
+
+        let roles = VolumeRoles {
+            workspace: &workspace,
+            image: &image,
+            source: Some(&recovery),
+            target: None,
+        };
+
+        // 备份模式：工作区即使落在 recovery (C:) 上，也应放行
+        assert!(validate_volume_roles(&roles, Operation::Backup, &recovery).is_ok());
+
+        // 还原模式：工作区落在 recovery (C:) 上，必须拦截
+        assert_eq!(
+            validate_volume_roles(&roles, Operation::RestoreExisting, &recovery),
+            Err(VolumeRoleConflict::WorkspaceOnRegisteredWinre)
+        );
+
+        // 镜像卷落在 recovery 上：无论何种模式都必须拦截
+        let roles_image_conflict = VolumeRoles {
+            workspace: &image,
+            image: &recovery,
+            source: Some(&recovery),
+            target: None,
+        };
+        assert_eq!(
+            validate_volume_roles(&roles_image_conflict, Operation::Backup, &recovery),
+            Err(VolumeRoleConflict::ImageOnRegisteredWinre)
+        );
     }
 }
