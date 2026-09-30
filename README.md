@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 `Recovery.exe` 离线执行 DISM 捕获/应用 WIM → 修复启动项 → 重启回正常 Windows。用户不需要做 U 盘、
 进 BIOS、手动选 WinRE，也不需要敲命令。
 
-当前版本 **1.8.11**（`VERSION`、两个 `Cargo.toml` 同步）。
+当前版本 **1.8.14**（`VERSION`、两个 `Cargo.toml` 同步）。
 
 > 版本号规则（用户 2026-09-29 重申）：每次修改 +0.0.1，**每一位满十才进位**。
 > 因此 `1.7.9` 之后是 `1.8.0`（第三位满十，进给第二位），不是 `1.7.10`。
@@ -141,22 +141,23 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 截至 2026-09-30 的进度已更新至 [当前开发进度](docs/20260930-0437-当前开发进度.md)，下一步安排见
 [下一步待实现](docs/20260930-0437-下一步待实现.md)。
 
-### v1.8.11（2026-09-30）：GUI 离线环境选择按钮修复（代码已修，实机点击复验待做）
+### v1.8.11→v1.8.14（2026-09-30）：GUI 离线环境选择按钮修复 + 实机双分支复验 PASS
 
-用户反馈「进入 Windows RE 点了没反应」。两个原因叠加：
+用户反馈「进入 Windows RE 点了没反应」。三个连锁缺陷：
 
 1. `ask_system_drive_handler` 在 `DestroyWindow` **之后**还用 `GetWindowLongPtrW(dialog, …)` 读结果盒 —— 窗口已销毁，未定义行为，实机稳定返回 `0`，用户点的 `choice=2` 被吞，程序按取消处理。
-2. 提权 prepare 用 `SW_HIDE` 隐藏运行，点完按钮后桌面约 35 秒没有任何反馈。
+2. `window_proc_system_choice` 的 `WM_DESTROY` 调 `PostQuitMessage` —— **线程级**，会连带杀死共享消息队列的主窗口循环，实机抓到「点完对话框整个程序消失」。
+3. v1.8.13 改 `IsWindow` 循环后暴露：`WM_COMMAND` 里**同步** `DestroyWindow` 会销毁正在执行窗口过程的按钮 → 跨进程 `SendMessage(BM_CLICK)` 永久阻塞。
 
-修复：结果盒裸指针留局部变量直接读（不经窗口句柄）；prepare 改 `SW_SHOWNORMAL`；新增按钮点击 / choice 返回值 / 确认框结果 / `ShellExecuteW` 返回码四行日志；确认框文案不再写死「备份」。
+修复：① 结果盒裸指针留局部变量直接读；② 删掉 `WM_DESTROY` 的 `PostQuitMessage`、模态循环改按 `IsWindow(dialog)` 退出；③ 两处改 `PostMessageW(WM_CLOSE)` 异步销毁 + 新增 `WM_CLOSE` 分支执行真正的 `DestroyWindow`。另 prepare 改 `SW_SHOWNORMAL`、确认框文案改走 `operation_display`（此前中文界面显示成「将创建 backup 任务」）。
 
 | 项 | 结果 |
 |---|---|
 | 本机验证 | `cargo test --workspace` **95 passed / 0 failed**（cli 72 + core 23） |
-| 构建 | 1,815,552 B，SHA-256 `7a2183b7…b423f2` |
-| 部署 | `C:\Users\Public\backupRestore-package\{BackupRestore,Recovery}.exe` 与 `H:\brwork\BackupRestore.exe` 三处哈希一致 |
+| 构建/部署 | v1.8.14 SHA-256 `71a157d0…abab06`，本地与 `H:\brwork` 一致 |
+| **实机复验** | ✅ **用真实 `WM_COMMAND` 注入（非 `--test-hook`）**：RE 分支 `choice=2` 正确捕获、PE 分支 `choice=1` 正确捕获，进程全程存活，确认框可取消回主界面 |
 
-> ⚠️ **未复验**：`--test-hook` 会直接设置 choice、绕开对话框，不能作为验收。必须用真实按钮点击或等效消息注入证明 `choice=2` 完整流转，且改 BCD / 重启前先建快照。详见 [docs/20260930-0437-当前开发进度.md](docs/20260930-0437-当前开发进度.md)。
+> ✅ 该项已闭环，详见 [docs/20260930-085630-gui-system-drive-choice-button-verified.md](docs/20260930-085630-gui-system-drive-choice-button-verified.md)。**未验**：点「是」跑完整入 PE/RE 排任务链路（会触发真实重启）。
 
 ### 已实机验证（测试卷 T:，非系统卷，在线路径）
 

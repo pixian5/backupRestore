@@ -2239,9 +2239,15 @@ unsafe extern "system" fn window_proc_system_choice(
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
         if !state_ptr.is_null() {
             *state_ptr = 0;
-            DestroyWindow(hwnd);
+            // 走 WM_CLOSE 异步销毁，理由同 WM_COMMAND 分支。
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
         }
+    }
+    if message == WM_CLOSE {
+        // 真正的销毁点：这时候已经不在按钮的同步 SendMessage 链里了。
+        DestroyWindow(hwnd);
+        return 0;
     }
     if message == WM_COMMAND {
         let control_id = w_param & 0xffff;
@@ -2266,15 +2272,21 @@ unsafe extern "system" fn window_proc_system_choice(
                         writeln!(file, "[gui] system drive choice: button clicked, choice={result}")
                     });
                 *state_ptr = result;
-                DestroyWindow(hwnd);
+                // **不能在这里直接 DestroyWindow**：WM_COMMAND 是在按钮处理
+                // BM_CLICK 时同步发过来的，销毁父窗口会连带销毁正在执行窗口过程的
+                // 按钮自身，跨进程 SendMessage(BM_CLICK) 因此永久阻塞——
+                // 2026-09-30 v1.8.13 实机卡死（提权 PowerShell 窗口挂住不返回）。
+                // 改成投递 WM_CLOSE，等按钮的消息处理链退栈后再销毁。
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
                 return 0;
             }
         }
     }
-    if message == WM_DESTROY {
-        PostQuitMessage(0);
-        return 0;
-    }
+    // 这里**故意不处理 WM_DESTROY**：PostQuitMessage 是线程级的，会给共享同一个
+    // 消息队列的主窗口循环也投一个 WM_QUIT。模态循环通常先把它取走，但那是竞态——
+    // 2026-09-30 实机抓到过一次主窗口跟着退出（用户点完对话框整个程序消失）。
+    // 模态循环改为按 IsWindow(dialog) 判断退出，不再依赖 WM_QUIT。
+    // 同类先例见 show_system_info_window 里的注释。
     DefWindowProcW(hwnd, message, w_param, l_param)
 }
 
@@ -2347,7 +2359,10 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
         time: 0,
         point: Point { x: 0, y: 0 },
     };
-    while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+    // 退出条件用 IsWindow(dialog)：WM_COMMAND / Esc 分支里的 DestroyWindow 是同步的，
+    // 处理完消息回到这里窗口已不存在，循环必然结束；不依赖 WM_DESTROY 里的
+    // PostQuitMessage（那会连带杀死主窗口的消息循环，见 window_proc_system_choice）。
+    while IsWindow(dialog) != 0 && GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
         // 对话框式键盘导航（Tab 遍历 / 回车默认按钮 / Esc / 方向键切换单选）。
         if IsDialogMessageW(dialog, &message) == 0 {
             TranslateMessage(&message);
@@ -4490,14 +4505,17 @@ unsafe fn create_task(state: &State) {
                     if state.test_drive_choice.is_none() {
                         // 文案按实际操作区分：此前写死「备份」，还原/新增第二系统时
                         // 也在说"执行备份"，用户会以为点错了。
+                        // 操作名走 operation_display 的显示名，不能直接用内部键：2026-09-30
+                        // 实机确认框显示成「将创建backup任务」，中文界面里混进英文内部键。
+                        let operation_text = operation_display(language, &operation);
                         let (body, caption) = if language == Language::English {
                             (
-                                format!("A {operation} task will be created and prepared with administrator rights, then the system will restart into the recovery environment to run it. Continue?"),
+                                format!("A {operation_text} task will be created and prepared with administrator rights, then the system will restart into the recovery environment to run it. Continue?"),
                                 "Enter the recovery environment".to_string(),
                             )
                         } else {
                             (
-                                format!("将创建{operation}任务并以管理员权限准备，准备完成后系统会重启进入恢复环境执行。是否继续？"),
+                                format!("将创建「{operation_text}」任务并以管理员权限准备，准备完成后系统会重启进入恢复环境执行。是否继续？"),
                                 "进入恢复环境".to_string(),
                             )
                         };
