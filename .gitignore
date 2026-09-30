@@ -138,4 +138,7 @@ tools/close_and_relaunch.ps1
 tools/drive_restore_h.ps1
 tools/enable_winre.ps1
 tools/restore_window.ps1
+tools/confirm_and_reboot.ps1
+tools/drive_ascii.ps1
+tools/drive_flow_nobom.ps1
 
