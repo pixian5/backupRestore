@@ -183,12 +183,27 @@ impl VolumeIdentity {
     /// `volume_guid` 为空时返回 `None`——调用方必须退回盘符路径，绝不能拼出一个
     /// 假路径（那会指到别的卷上去）。
     pub fn volume_path(&self) -> Option<String> {
-        let guid = self.volume_guid.trim();
+        // 原生 GetVolumeNameForVolumeMountPointW 返回完整路径，隐藏卷枚举保存裸 GUID。
+        // 两种来源必须生成同一个规范路径，不能把已成功读取的身份误判成缺失。
+        let raw = self.volume_guid.trim();
+        let guid = if let Some(rest) = raw.strip_prefix(r"\\?\Volume") {
+            rest.strip_suffix('\\')?
+        } else {
+            raw
+        };
         if guid.is_empty() {
             return None;
         }
         // 只接受带花括号的 GUID 形态，避免把 "C:" 之类的脏值拼进路径。
-        if !(guid.starts_with('{') && guid.ends_with('}') && guid.len() == 38) {
+        if !(guid.starts_with('{') && guid.ends_with('}') && guid.len() == 38)
+            || !guid.as_bytes()[1..37].iter().enumerate().all(|(i, b)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    *b == b'-'
+                } else {
+                    b.is_ascii_hexdigit()
+                }
+            })
+        {
             return None;
         }
         // 拼接而非 format!：verbatim 路径里的反斜杠在字符串字面量里极难写对，
@@ -1511,6 +1526,19 @@ mod tests {
     }
 
     #[test]
+    fn native_volume_path_and_bare_guid_resolve_identically() {
+        let mut identity = VolumeIdentity::new("disk", "partition");
+        identity.volume_guid = "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}".into();
+        let expected = identity.volume_path().unwrap();
+        identity.volume_guid = expected.clone();
+        assert_eq!(identity.volume_path(), Some(expected.clone()));
+        identity.volume_guid = format!("{expected}escape");
+        assert_eq!(identity.volume_path(), None);
+        identity.volume_guid = "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}".into();
+        assert_eq!(identity.volume_path(), None);
+    }
+
+    #[test]
     fn state_machine_accepts_recovery_paths() {
         assert!(Stage::Prepared.can_transition_to(Stage::BootRequested));
         assert!(Stage::Prepared.can_transition_to(Stage::Failed));
@@ -1519,20 +1547,6 @@ mod tests {
         assert!(Stage::Preflight.can_transition_to(Stage::Success));
         assert!(Stage::ImageApplied.can_transition_to(Stage::BootRepaired));
         assert!(!Stage::Prepared.can_transition_to(Stage::Success));
-    }
-    /// 构造一次角色校验：四个角色默认各占一个不同分区，"recovery" 固定为恢复环境宿主。
-    fn roles<'a>(
-        workspace: &'a VolumeIdentity,
-        image: &'a VolumeIdentity,
-        source: Option<&'a VolumeIdentity>,
-        target: Option<&'a VolumeIdentity>,
-    ) -> VolumeRoles<'a> {
-        VolumeRoles {
-            workspace,
-            image,
-            source,
-            target,
-        }
     }
     #[test]
     fn backup_rejects_same_partition() {

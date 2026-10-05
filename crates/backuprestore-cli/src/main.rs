@@ -19,9 +19,9 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
-use std::io::BufReader;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -44,13 +44,17 @@ mod boot_entry;
 #[cfg(windows)]
 mod native_gui;
 #[cfg(windows)]
-mod windows_command;
-#[cfg(windows)]
 mod online_operation;
+#[cfg(windows)]
+mod pe_operation;
+#[cfg(any(windows, test))]
+mod pe_safety;
 #[cfg(windows)]
 mod recovery_progress;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
+#[cfg(windows)]
+mod windows_command;
 #[cfg(windows)]
 mod windows_prepare;
 #[cfg(any(windows, test))]
@@ -869,8 +873,14 @@ fn recover_env(path: String) -> Result<(), TaskError> {
                 task.status,
                 Stage::TargetErased | Stage::ImageApplied | Stage::BootRepaired
             );
-            let source_letter =
-                mount_env_volume(&mut mounts, &values, "SOURCE", 'S', &early_log, reformatted_ok)?;
+            let source_letter = mount_env_volume(
+                &mut mounts,
+                &values,
+                "SOURCE",
+                'S',
+                &early_log,
+                reformatted_ok,
+            )?;
             let image_letter =
                 mount_env_volume(&mut mounts, &values, "IMAGE", 'I', &early_log, false)?;
             if let Some(source) = task.source.as_mut() {
@@ -1050,7 +1060,10 @@ fn recover_env(path: String) -> Result<(), TaskError> {
 #[cfg(windows)]
 fn finalize_boot_entry_after_task(task_dir: &Path, log: &Path) -> Result<(), TaskError> {
     let Some(entry) = boot_entry::ReBootEntry::read(task_dir)? else {
-        append_log(log, "Boot entry cleanup: no recorded boot entry; nothing to clean")?;
+        append_log(
+            log,
+            "Boot entry cleanup: no recorded boot entry; nothing to clean",
+        )?;
         return Ok(());
     };
     boot_entry::disarm(&entry, log)
@@ -1372,12 +1385,7 @@ fn mount_env_volume(
             VolumeMountQuery::Mounted(actual) => {
                 if crate::text_parsing::same_volume(&actual, &expected) {
                     verify_mounted_volume(letter, &expected, log)?;
-                    verify_live_volume_identity(
-                        letter,
-                        values,
-                        prefix,
-                        allow_reformatted_serial,
-                    )?;
+                    verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
                     append_log(
                         log,
                         &format!(
@@ -1602,7 +1610,10 @@ fn enumerate_mounted_volumes(log: &Path) -> Result<Vec<(String, Vec<char>)>, Tas
                 &format!(
                     "mountvol listing: {} volumes, {} mounted letters, exited {status} after {}ms",
                     listing.len(),
-                    listing.iter().map(|(_, letters)| letters.len()).sum::<usize>(),
+                    listing
+                        .iter()
+                        .map(|(_, letters)| letters.len())
+                        .sum::<usize>(),
                     started.elapsed().as_millis()
                 ),
             )?;
@@ -1637,10 +1648,7 @@ fn mount_letter_candidates(
     let reserved = ['A', 'B', 'C', 'X', 'R', 'S', 'T', 'W', 'Z'];
     let mut candidates = vec![requested];
     for spare in ['J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'U', 'V', 'Y'] {
-        if spare != requested
-            && !mounted_letters.contains(&spare)
-            && !reserved.contains(&spare)
-        {
+        if spare != requested && !mounted_letters.contains(&spare) && !reserved.contains(&spare) {
             candidates.push(spare);
         }
     }
@@ -2054,7 +2062,10 @@ fn recover_windows(
             } else {
                 Vec::new()
             };
-            let mut previous_metadata = backuprestore_core::image_metadata::load_sidecars(&destination_path, &previous_indexes)?;
+            let mut previous_metadata = backuprestore_core::image_metadata::load_sidecars(
+                &destination_path,
+                &previous_indexes,
+            )?;
             let legacy_path = legacy_metadata_path(&destination_path)?;
             let legacy_metadata: Option<BackupMetadata> = legacy_path
                 .is_file()
@@ -2064,8 +2075,14 @@ fn recover_windows(
                 .flatten();
 
             if let Some(value) = legacy_metadata.as_ref() {
-                if previous_indexes.contains(&value.wim_index) && previous_hash.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(&value.image_sha256)) {
-                    previous_metadata.entry(value.wim_index).or_insert_with(|| value.clone());
+                if previous_indexes.contains(&value.wim_index)
+                    && previous_hash
+                        .as_deref()
+                        .is_some_and(|h| h.eq_ignore_ascii_case(&value.image_sha256))
+                {
+                    previous_metadata
+                        .entry(value.wim_index)
+                        .or_insert_with(|| value.clone());
                 }
             }
 
@@ -2194,7 +2211,13 @@ fn recover_windows(
                 program_version: PROGRAM_VERSION.into(),
             };
             previous_metadata.insert(new_index, metadata.clone());
-            backuprestore_core::image_metadata::write_sidecars(&destination_path, &previous_metadata, &image_sha256, image_size, 0)?;
+            backuprestore_core::image_metadata::write_sidecars(
+                &destination_path,
+                &previous_metadata,
+                &image_sha256,
+                image_size,
+                0,
+            )?;
 
             // Retain a single legacy sidecar only when it clearly belongs to
             // this image.  New code always reads index-specific metadata;
@@ -2224,15 +2247,28 @@ fn recover_windows(
             if let Some(keep) = task.keep_indexes.filter(|n| *n > 0) {
                 let keep = keep.max(1).min(new_index);
                 for remaining in (keep + 1..=new_index).rev() {
-                    run_logged("dism.exe", &["/English", "/Delete-Image", &format!("/ImageFile:{}", destination_path.display()), "/Index:1"], log)?;
+                    run_logged(
+                        "dism.exe",
+                        &[
+                            "/English",
+                            "/Delete-Image",
+                            &format!("/ImageFile:{}", destination_path.display()),
+                            "/Index:1",
+                        ],
+                        log,
+                    )?;
                     if wim_indexes(&destination_path, log)? != (1..remaining).collect::<Vec<_>>() {
                         return Err(err("WIM retention index read-back mismatch"));
                     }
                 }
                 if keep < new_index {
-                    backuprestore_core::image_metadata::renumber_sidecars(&destination_path,new_index,new_index-keep)?;
+                    backuprestore_core::image_metadata::renumber_sidecars(
+                        &destination_path,
+                        new_index,
+                        new_index - keep,
+                    )?;
                     if legacy_belongs_to_image {
-                        let path = index_metadata_path(&destination_path,1)?;
+                        let path = index_metadata_path(&destination_path, 1)?;
                         if path.try_exists()? {
                             let first: BackupMetadata = read_json(path)?;
                             write_json_atomic(&legacy_path, &first)?;
@@ -2240,7 +2276,12 @@ fn recover_windows(
                             fs::remove_file(&legacy_path)?;
                         }
                     }
-                    append_log(log,&format!("Kept latest {keep} WIM indexes; sidecars renumbered and verified"))?;
+                    append_log(
+                        log,
+                        &format!(
+                            "Kept latest {keep} WIM indexes; sidecars renumbered and verified"
+                        ),
+                    )?;
                 }
             }
             if finalize_success {
@@ -3050,8 +3091,6 @@ mod tests {
         stage_resumable_after_interruption,
     };
     use backuprestore_core::Stage;
-    #[cfg(windows)]
-    use backuprestore_core::{Operation, VolumeIdentity, VolumeRoleConflict};
 
     #[test]
     fn automatic_boot_resume_is_limited_to_once_per_durable_stage() {
@@ -3274,14 +3313,22 @@ mod tests {
             .open(&log_path)
             .unwrap();
         let sink = Arc::new(Mutex::new(file));
-        let data: Vec<u8> =
-            b"[=   10.0% =]\r[=   20.0% =]\r[=  100.0% =]\nDone\n".to_vec();
+        let data: Vec<u8> = b"[=   10.0% =]\r[=   20.0% =]\r[=  100.0% =]\nDone\n".to_vec();
         super::stream_to_log("stdout", Cursor::new(data), Arc::clone(&sink)).unwrap();
         drop(sink);
         let content = std::fs::read_to_string(&log_path).unwrap();
-        assert!(content.contains("10.0%"), "missing first percent update: {content}");
-        assert!(content.contains("20.0%"), "missing second percent update: {content}");
-        assert!(content.contains("100.0%"), "missing final percent update: {content}");
+        assert!(
+            content.contains("10.0%"),
+            "missing first percent update: {content}"
+        );
+        assert!(
+            content.contains("20.0%"),
+            "missing second percent update: {content}"
+        );
+        assert!(
+            content.contains("100.0%"),
+            "missing final percent update: {content}"
+        );
         assert!(content.contains("Done"), "missing trailing line: {content}");
         // \r\n 不应产生重复空行。
         assert!(

@@ -6,9 +6,8 @@
 //! plus the Windows inbox command-line tools that perform the OS operations.
 
 use backuprestore_core::{
-    BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest,
-    TargetRole, TargetSpec, Task, TaskError, TaskStore,
-    VolumeIdentity, VolumeRoles, canonical_compression, sha256_file,
+    BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest, TargetRole, TargetSpec, Task,
+    TaskError, TaskStore, VolumeIdentity, VolumeRoles, canonical_compression, sha256_file,
     validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
@@ -289,7 +288,9 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
                     // 提取索引号
                     let mid = &fname_str[prefix.len()..fname_str.len() - suffix.len()];
                     if let Ok(idx) = mid.parse::<u32>() {
-                        if let Ok(meta) = read_json::<backuprestore_core::BackupMetadata>(entry.path()) {
+                        if let Ok(meta) =
+                            read_json::<backuprestore_core::BackupMetadata>(entry.path())
+                        {
                             sidecar_entries.push((idx, meta));
                         }
                     }
@@ -375,7 +376,6 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
     );
     Ok(())
 }
-
 
 pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskError> {
     let mut operation = None;
@@ -676,13 +676,14 @@ fn prepare_task(
             let path = image_path.as_ref().expect("restore image path validated");
             let file_size = fs::metadata(path)?.len();
             // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像且未勾选 verify_hash 时填充合规占位，彻底避免重复读盘
-            let sha256 = if let Ok(meta) = crate::read_index_metadata(Path::new(path), options.wim_index) {
-                meta.image_sha256
-            } else if options.verify_hash {
-                sha256_file(path)?
-            } else {
-                "0".repeat(64)
-            };
+            let sha256 =
+                if let Ok(meta) = crate::read_index_metadata(Path::new(path), options.wim_index) {
+                    meta.image_sha256
+                } else if options.verify_hash {
+                    sha256_file(path)?
+                } else {
+                    "0".repeat(64)
+                };
             task.verify_hash = Some(options.verify_hash);
             task.image = Some(ImageSpec {
                 volume: image_volume.clone(),
@@ -868,12 +869,7 @@ fn prepare_payload(
         task_dir.as_path(),
         log,
     )?;
-    crate::boot_entry::copy_into_staging(
-        &staged,
-        &re_staging.boot_sdi,
-        &re_staging.volume,
-        log,
-    )?;
+    crate::boot_entry::copy_into_staging(&staged, &re_staging.boot_sdi, &re_staging.volume, log)?;
     let staged_arg = staged.to_string_lossy().into_owned();
     let mount_arg = mount.to_string_lossy().into_owned();
     run_logged(
@@ -934,12 +930,9 @@ fn prepare_payload(
     // BCD 条目（条目本身在 DISM 之前就建好了，见上面的顺序要点）。
     // 注册位全程只是只读资产来源，因此迁出 / WINRE_HOME / 待回家收尾 / Plan D / F1·F3 全部不需要。
     // 依据：docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md
-    if let Err(error) = crate::boot_entry::copy_into_staging(
-        &staged,
-        &re_staging.boot_sdi,
-        &re_staging.volume,
-        log,
-    ) {
+    if let Err(error) =
+        crate::boot_entry::copy_into_staging(&staged, &re_staging.boot_sdi, &re_staging.volume, log)
+    {
         return Err(error);
     }
     // ★ 把簿记里的载荷哈希刷新成**注入后**的实际值。
@@ -949,11 +942,9 @@ fn prepare_payload(
     // 拿活载荷比对这份过期记录必然不符，整条续跑路被封死
     // （2026-09-30 实机：stage 卡在 image-applied/75，日志
     //  "payload WIM hash differs from the prepared one; refusing to re-arm"）。
-    if let Err(error) = crate::boot_entry::refresh_payload_hash(
-        &mut boot_entry,
-        task_dir.as_path(),
-        log,
-    ) {
+    if let Err(error) =
+        crate::boot_entry::refresh_payload_hash(&mut boot_entry, task_dir.as_path(), log)
+    {
         return Err(error);
     }
     // 武装是「人可以重启了」的唯一开关，放在这一步：载荷已注入、已覆盖到镜像卷、
@@ -981,14 +972,30 @@ fn prepare_payload(
         match crate::boot_entry::ReBootEntry::read(task_dir.as_path()) {
             Ok(Some(entry)) => {
                 if let Err(cleanup_error) = crate::boot_entry::disarm(&entry, log) {
-                    append_log(log, &format!("[ERROR] shutdown failed: {error}; RE rollback failed: {cleanup_error}; staged files or BCD objects may remain"))?;
+                    append_log(
+                        log,
+                        &format!(
+                            "[ERROR] shutdown failed: {error}; RE rollback failed: {cleanup_error}; staged files or BCD objects may remain"
+                        ),
+                    )?;
                 }
             }
-            Ok(None) => append_log(log, "[WARN] shutdown rollback: RE entry record missing; cleanup cannot be verified")?,
-            Err(read_error) => append_log(log, &format!("[ERROR] shutdown rollback: cannot read RE entry: {read_error}"))?,
+            Ok(None) => append_log(
+                log,
+                "[WARN] shutdown rollback: RE entry record missing; cleanup cannot be verified",
+            )?,
+            Err(read_error) => append_log(
+                log,
+                &format!("[ERROR] shutdown rollback: cannot read RE entry: {read_error}"),
+            )?,
         }
         if let Err(rollback_error) = rollback_boot_request(&task_dir, efi, log) {
-            append_log(log, &format!("[ERROR] shutdown failed: {error}; boot request rollback failed: {rollback_error}"))?;
+            append_log(
+                log,
+                &format!(
+                    "[ERROR] shutdown failed: {error}; boot request rollback failed: {rollback_error}"
+                ),
+            )?;
         }
         return Err(error);
     }
@@ -1140,30 +1147,33 @@ fn physical_volume_identity_at(
 ) -> Result<PhysicalVolumeIdentity, TaskError> {
     let partition_handle = open_device(&wide_null(path))?;
     let mut partition = vec![0_u8; 160];
-    let partition_query =
-        device_io_control(partition_handle, IOCTL_DISK_GET_PARTITION_INFO_EX, &mut partition)
-            .and_then(|_| {
-                let partition_offset = read_u64(&partition, 8)?;
-                let partition_size = read_u64(&partition, 16)?;
-                let partition_number = read_u32(&partition, 24)?;
-                let partition_type_guid = format_guid(&partition[32..48])?;
-                let partition_guid = format_guid(&partition[48..64])?;
-                Ok((
-                    partition_offset,
-                    partition_size,
-                    partition_number,
-                    partition_type_guid,
-                    partition_guid,
-                ))
-            });
+    let partition_query = device_io_control(
+        partition_handle,
+        IOCTL_DISK_GET_PARTITION_INFO_EX,
+        &mut partition,
+    )
+    .and_then(|_| {
+        let partition_offset = read_u64(&partition, 8)?;
+        let partition_size = read_u64(&partition, 16)?;
+        let partition_number = read_u32(&partition, 24)?;
+        let partition_type_guid = format_guid(&partition[32..48])?;
+        let partition_guid = format_guid(&partition[48..64])?;
+        Ok((
+            partition_offset,
+            partition_size,
+            partition_number,
+            partition_type_guid,
+            partition_guid,
+        ))
+    });
     let _ = unsafe { CloseHandle(partition_handle) };
     let (partition_offset, partition_size, partition_number, partition_type_guid, partition_guid) =
         partition_query?;
     let disk_path = format!(r"\\.\PhysicalDrive{}", disk_number);
     let disk_handle = open_device(&wide_null(&disk_path))?;
     let mut layout = vec![0_u8; 65_536];
-    let layout_query =
-        device_io_control(disk_handle, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &mut layout).and_then(|_| {
+    let layout_query = device_io_control(disk_handle, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &mut layout)
+        .and_then(|_| {
             if read_u32(&layout, 0)? != 1 {
                 return Err(err("selected disk is not GPT"));
             }
@@ -1181,82 +1191,37 @@ fn physical_volume_identity_at(
     })
 }
 
-/// 发现**本机引导的 ESP** 的 verbatim 卷路径，供零盘符写文件（方案 A）。
-///
-/// 与 [`esp_identity_without_drive_letter`] 同一套判据，但只回路径：GUI 那两处
-/// （"重启进 PE" / "计划 PE 任务"）只需要写一个 `pe-task.txt`，不关心分区 GUID、
-/// 磁盘号这些身份字段。筛选逻辑在 `text_parsing::esp_volume_from_listing`（纯函数，
-/// macOS 也能测），这里只负责跑 `mountvol`。
-pub(crate) fn esp_volume_path_for_task() -> Option<String> {
-    let output = Command::new("mountvol.exe")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    let text = crate::text_parsing::decode_bcdedit_bytes(&output.stdout);
-    crate::text_parsing::esp_volume_from_listing(&text)
-}
-
-/// **零盘符**定位本机引导的 ESP 并读它的身份。
-///
-/// 方案 A（v1.8.2）绕开 `mountvol X: /S` 的那一步。做法：
-/// 1. `mountvol`（无参数）列出系统里**所有**卷及其挂载点；
-/// 2. 只看**没有挂载点**的卷（`*** NO MOUNT POINTS ***` 是固定串，不随本地化变）——
-///    ESP 通常正是隐藏的，而开发用的 ESP 往往已经挂了盘符，这样天然把两者分开；
-/// 3. 按 verbatim 卷路径读身份，命中两条才算：分区类型 GUID 是 EFI
-///    （`c12a7328-...`），且卷里真有 `EFI` + `Microsoft` + `Boot` + `BCD`；
-/// 4. 命中多个绝不猜，报错让用户用 `--efi-drive` 指定。
-///
-/// 全程不分配盘符 → 没有卷到达事件 → 不弹自动播放窗口 → 也不会有"不可访问"。
-fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, TaskError> {
-    let output = Command::new("mountvol.exe")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|error| err(&format!("mountvol (list all) failed to start: {error}")))?;
-    let text = crate::text_parsing::decode_bcdedit_bytes(&output.stdout);
+/// 原生枚举包括已挂载卷；验证 EFI 类型及 BCD，多个候选或探测错误均拒绝猜测。
+pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, TaskError> {
     let mut matches: Vec<VolumeIdentity> = Vec::new();
     let mut last_error: Option<TaskError> = None;
-    for (volume_path, mounted) in crate::text_parsing::parse_mountvol_listing(&text) {
-        if !mounted.is_empty() {
-            continue;
-        }
+    for volume_path in native_volume_paths()? {
         // verbatim 路径形如 \\?\Volume{GUID}\，卷 GUID 取中段。
         let Some(guid) = volume_path
             .trim()
-                .strip_prefix("\\\\?\\Volume")
+            .strip_prefix(&crate::text_parsing::esp_volume_prefix())
             .and_then(|rest| rest.strip_suffix('\\'))
         else {
             continue;
         };
         match volume_identity_at_path(&volume_path, guid.to_string()) {
             Ok(identity) => {
-                if !identity
-                    .partition_type_guid
-                    .eq_ignore_ascii_case(EFI_TYPE)
-                {
+                if !identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) {
                     continue;
                 }
-                let mut bcd = PathBuf::from(&volume_path);
-                bcd.push("EFI");
-                bcd.push("Microsoft");
-                bcd.push("Boot");
-                bcd.push("BCD");
-                if !bcd.is_file() {
-                    continue;
+                // 未知错误不能当成不存在后随意挑另一个 ESP。
+                if crate::pe_safety::probe_file_metadata(
+                    std::path::Path::new(&volume_path),
+                    &["EFI", "Microsoft", "Boot", "BCD"],
+                )? {
+                    matches.push(identity);
                 }
-                matches.push(identity);
             }
             Err(error) => last_error = Some(error),
         }
     }
     match matches.len() {
-        0 => Err(last_error
-            .unwrap_or_else(|| err("no hidden GPT EFI system partition with a boot BCD was found"))),
+        0 => Err(last_error.unwrap_or_else(|| err("未发现具有可读取 BCD 的 GPT EFI 分区"))),
         1 => Ok(matches.remove(0)),
         _ => {
             let list = matches
@@ -1275,6 +1240,47 @@ fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, TaskError> {
             )))
         }
     }
+}
+
+/// 直接枚举卷 GUID，不解析 mountvol 的本地化提示，不分配盘符。
+pub(crate) fn native_volume_paths() -> Result<Vec<String>, TaskError> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FindFirstVolumeW(name: *mut u16, size: u32) -> *mut std::ffi::c_void;
+        fn FindNextVolumeW(handle: *mut std::ffi::c_void, name: *mut u16, size: u32) -> i32;
+        fn FindVolumeClose(handle: *mut std::ffi::c_void) -> i32;
+    }
+    let mut buffer = vec![0u16; 1024];
+    let handle = unsafe { FindFirstVolumeW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if handle as isize == -1 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut paths = Vec::new();
+    loop {
+        let len = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
+        paths.push(String::from_utf16_lossy(&buffer[..len]));
+        if unsafe { FindNextVolumeW(handle, buffer.as_mut_ptr(), buffer.len() as u32) } == 0 {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                FindVolumeClose(handle);
+            }
+            if error.raw_os_error() != Some(18) {
+                return Err(error.into());
+            }
+            break;
+        }
+    }
+    Ok(paths)
+}
+
+/// 从稳定卷 GUID 回读现场身份；调用方另行检查编号、几何及卷序列号。
+pub(crate) fn refresh_identity(expected: &VolumeIdentity) -> Result<VolumeIdentity, TaskError> {
+    let root = expected
+        .volume_path()
+        .ok_or_else(|| err("缺少稳定卷 GUID"))?;
+    let mut actual = volume_identity_at_path(&root, expected.volume_guid.clone())?;
+    actual.drive_letter = expected.drive_letter;
+    Ok(actual)
 }
 
 fn snapshot_raw_bcd(
@@ -1462,7 +1468,10 @@ fn validate_operation_inputs(
             let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
             if let Some(metadata) = &metadata {
                 let file_size = fs::metadata(path)?.len();
-                if metadata.image_size > 0 && file_size != metadata.image_size && !options.force_restore_hash {
+                if metadata.image_size > 0
+                    && file_size != metadata.image_size
+                    && !options.force_restore_hash
+                {
                     return Err(err("restore image size does not match metadata"));
                 }
                 // 用户要求：增加一个校验选项框，不勾选时仅对比大小，勾选时对比哈希
@@ -1650,7 +1659,11 @@ fn put_value(values: &mut BTreeMap<String, String>, key: &str, value: String) {
     values.insert(key.to_string(), value);
 }
 
-pub(crate) fn insert_identity(values: &mut BTreeMap<String, String>, prefix: &str, identity: &VolumeIdentity) {
+pub(crate) fn insert_identity(
+    values: &mut BTreeMap<String, String>,
+    prefix: &str,
+    identity: &VolumeIdentity,
+) {
     let insert = |suffix: &str, value: String, values: &mut BTreeMap<String, String>| {
         values.insert(format!("{prefix}_{suffix}"), value);
     };
@@ -1999,7 +2012,9 @@ fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {
         let error_code = unsafe { GetLastError() };
         // path 一起报出来：2026-09-29 方案 A 实机栽在「卷路径 != 设备路径」上，
         // 只有 CreateFileW 错误码而没有路径，等于没给线索。
-        let shown = String::from_utf16_lossy(path).trim_matches(char::from(0)).to_string();
+        let shown = String::from_utf16_lossy(path)
+            .trim_matches(char::from(0))
+            .to_string();
         Err(err(&format!(
             "CreateFileW failed on {shown} while reading volume identity (Windows error {error_code})"
         )))
@@ -2344,7 +2359,13 @@ fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskErr
         // Assignment succeeding is not proof: verify the letter really points
         // at the volume we asked for before handing it back.
         match volume_identity(letter) {
-            Ok(actual) if actual.volume_guid.trim().trim_end_matches('\\').eq_ignore_ascii_case(&trimmed) => {
+            Ok(actual)
+                if actual
+                    .volume_guid
+                    .trim()
+                    .trim_end_matches('\\')
+                    .eq_ignore_ascii_case(&trimmed) =>
+            {
                 return Ok(letter);
             }
             Ok(actual) => {
@@ -2356,9 +2377,8 @@ fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskErr
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        err("unable to mount the volume GUID on an available drive letter")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| err("unable to mount the volume GUID on an available drive letter")))
 }
 
 /// Reused by the normal-Windows boot-resume path so that resumption can reach
@@ -2369,7 +2389,14 @@ pub(crate) fn ensure_volume_mounted(
     _log: &Path,
 ) -> Result<char, TaskError> {
     if let Some(letter) = identity.drive_letter {
-        return Ok(letter);
+        // 保存的盘符只是提示，跨启动后可能已经属于另一分区。
+        if let Ok(actual) = volume_identity(letter)
+            && identity.same_partition(&actual)
+            && identity.partition_offset == actual.partition_offset
+            && identity.partition_size == actual.partition_size
+        {
+            return Ok(letter);
+        }
     }
     // Prefer reusing a mount point that already exists. The registered WinRE
     // very often lives on the OS partition, which Windows already exposes, so
@@ -2387,9 +2414,7 @@ pub(crate) fn ensure_volume_mounted(
         }
     }
     let disk = identity.disk_number.ok_or_else(|| {
-        err(
-            "volume has no disk number and could not be matched by GUID or an existing mount point",
-        )
+        err("volume has no disk number and could not be matched by GUID or an existing mount point")
     })?;
     let partition = identity
         .partition_number

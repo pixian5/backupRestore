@@ -185,7 +185,7 @@ fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskErr
 }
 
 /// 候选目录保留到事务完全成功；失败留下日志指定的副本，原镜像不受追加/清理失败影响。
-fn capture(
+pub(crate) fn capture(
     params: &OnlineOpParams,
     source: &Path,
     identity: VolumeIdentity,

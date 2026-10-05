@@ -48,7 +48,6 @@ const SS_RIGHT: u32 = 0x0000_0002;
 const TIMER_ID: usize = 1;
 const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
 const FW_BOLD: i32 = 700;
-const DEFAULT_CHARSET: u32 = 1;
 const CLEARTYPE_QUALITY: u32 = 5;
 
 /// 与窗口线程共享的进度状态：当前活动日志路径（主线程切换日志时更新）。
@@ -78,7 +77,6 @@ pub struct ProgressShared {
     /// 缓存最近的详情日志行
     pub cached_details: Mutex<Vec<String>>,
 }
-
 
 impl ProgressShared {
     /// 切换监控的日志文件路径，并指定起始偏移（例如 0，或者累积日志的追加点）。
@@ -339,10 +337,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         }
         // 用户要求：进度条显示当前阶段进度而非总进度。
         // 当前阶段有百分比时显示当前阶段百分比（如 DISM 1%~100%），没有时显示 0。
-        let pos = progress
-            .current_percent
-            .or(latest_percent)
-            .unwrap_or(0);
+        let pos = progress.current_percent.or(latest_percent).unwrap_or(0);
         SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, pos as usize, 0);
 
         // 标题右侧增加一块显示已用时间/剩余时间、当前时间，靠右显示。
@@ -357,18 +352,26 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             "--:--".to_string()
         };
         let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
-        let time_text = format!("已用: {elapsed_str}  剩余: {remaining_str}\r\n当前时间: {now_str}");
+        let time_text =
+            format!("已用: {elapsed_str}  剩余: {remaining_str}\r\n当前时间: {now_str}");
         let time_wide = encode(&time_text);
         SetWindowTextW(GetDlgItem(hwnd, ID_TIME_INFO), time_wide.as_ptr());
 
         // 详情区预填 4 阶段骨架清单，再跟日志尾部。清单用 ✓/▶/· 标出
         // 已完成/进行中/未开始；正文每个已开始阶段后面附上时间戳（时分秒）[HH:MM:SS]。
-        let online = shared.operation.lock().unwrap().as_deref().is_some_and(|s| s.starts_with("ONLINE_"));
+        let online = shared
+            .operation
+            .lock()
+            .unwrap()
+            .as_deref()
+            .is_some_and(|s| s.starts_with("ONLINE_"));
         let is_backup = {
             let op_guard = shared.operation.lock().unwrap();
             op_guard
                 .as_deref()
-                .map(|s| s.eq_ignore_ascii_case("BACKUP") || s.eq_ignore_ascii_case("ONLINE_BACKUP"))
+                .map(|s| {
+                    s.eq_ignore_ascii_case("BACKUP") || s.eq_ignore_ascii_case("ONLINE_BACKUP")
+                })
                 .unwrap_or(false)
         };
         let step2_default = if is_backup {
@@ -380,13 +383,20 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             (1, "挂载卷、校验"),
             (2, step2_default),
             (3, "校验"),
-            (4, if online { "发布副档/完成在线操作" } else { "清理re启动项/配置" }),
+            (
+                4,
+                if online {
+                    "发布副档/完成在线操作"
+                } else {
+                    "清理re启动项/配置"
+                },
+            ),
         ];
 
         let total_steps = progress.total.unwrap_or(4);
         let current = progress.current.unwrap_or(0);
-        let all_done = latest_stage.as_deref() == Some("操作完成")
-            || (current == total_steps && pos >= 100);
+        let all_done =
+            latest_stage.as_deref() == Some("操作完成") || (current == total_steps && pos >= 100);
 
         let mut body: Vec<String> = Vec::new();
         for (idx, default_name) in default_stages {
@@ -402,11 +412,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             } else if idx == current {
                 // 用户要求：当前正在执行阶段的小箭头亮 1 秒、消失 1 秒（每秒刷新时交替闪烁），
                 // 消失时使用全角空格占位，保证排版平稳、文字不发生横向抖动。
-                if elapsed % 2 == 0 {
-                    "▶"
-                } else {
-                    "\u{3000}"
-                }
+                if elapsed % 2 == 0 { "▶" } else { "\u{3000}" }
             } else {
                 "·"
             };
@@ -429,7 +435,6 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         }
     }
 }
-
 
 unsafe extern "system" fn window_proc(
     hwnd: Hwnd,

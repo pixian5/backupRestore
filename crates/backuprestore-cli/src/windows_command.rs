@@ -21,7 +21,6 @@ pub(crate) enum CmdOutcome {
     ExitCodeUnavailable(u32),
     WaitFailed { error: u32, terminated: bool },
     ContainmentFailed,
-    Skipped,
 }
 impl CmdOutcome {
     pub(crate) fn is_success(self) -> bool {
@@ -45,7 +44,6 @@ impl std::fmt::Display for CmdOutcome {
                 f,
                 "无法确认进程树已结束，禁止重试；请检查后台进程或重启系统"
             ),
-            Self::Skipped => write!(f, "前置条件不满足，未执行"),
         }
     }
 }
@@ -425,7 +423,6 @@ mod tests {
                 error: 0,
                 terminated: true,
             },
-            CmdOutcome::Skipped,
             CmdOutcome::ContainmentFailed,
         ] {
             assert!(!result.is_success());

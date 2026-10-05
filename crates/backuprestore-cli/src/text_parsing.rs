@@ -423,20 +423,20 @@ pub(crate) struct StepProgress {
 /// 从日志行行首提取时分秒时间戳 `HH:MM:SS`。
 pub(crate) fn extract_timestamp_hms(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
-    if trimmed.starts_with('[') {
-        if let Some(end) = trimmed.find(']') {
-            let inside = &trimmed[1..end];
-            // 尝试解析 RFC3339 / ISO-8601 形如 "2026-09-30T08:18:08.054361500+00:00"
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(inside) {
-                let local: chrono::DateTime<chrono::Local> = dt.into();
-                return Some(local.format("%H:%M:%S").to_string());
-            }
-            // 尝试匹配尾部的 HH:MM:SS（例如 "2026-09-30 16:18:08" 或 "16:18:08"）
-            if inside.len() >= 8 {
-                let tail = &inside[inside.len() - 8..];
-                if tail.chars().filter(|c| *c == ':').count() == 2 {
-                    return Some(tail.to_string());
-                }
+    if trimmed.starts_with('[')
+        && let Some(end) = trimmed.find(']')
+    {
+        let inside = &trimmed[1..end];
+        // 尝试解析 RFC3339 / ISO-8601 形如 "2026-09-30T08:18:08.054361500+00:00"
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(inside) {
+            let local: chrono::DateTime<chrono::Local> = dt.into();
+            return Some(local.format("%H:%M:%S").to_string());
+        }
+        // 尝试匹配尾部的 HH:MM:SS（例如 "2026-09-30 16:18:08" 或 "16:18:08"）
+        if inside.len() >= 8 {
+            let tail = &inside[inside.len() - 8..];
+            if tail.chars().filter(|c| *c == ':').count() == 2 {
+                return Some(tail.to_string());
             }
         }
     }
@@ -488,12 +488,18 @@ impl StepTracker {
             self.inner.total = Some(total);
         }
         for (index, name, ts) in fresh.steps {
-            if let Some(existing) = self.inner.steps.iter_mut().find(|(seen, _, _)| *seen == index) {
+            if let Some(existing) = self
+                .inner
+                .steps
+                .iter_mut()
+                .find(|(seen, _, _)| *seen == index)
+            {
                 if existing.2.is_none() && ts.is_some() {
                     existing.2 = ts;
                 }
             } else {
-                let timestamp = ts.or_else(|| Some(chrono::Local::now().format("%H:%M:%S").to_string()));
+                let timestamp =
+                    ts.or_else(|| Some(chrono::Local::now().format("%H:%M:%S").to_string()));
                 self.inner.steps.push((index, name, timestamp));
             }
         }
@@ -552,10 +558,7 @@ pub(crate) fn parse_step_marker(line: &str) -> Option<(u32, u32, String)> {
     let (Some(index), Some(total)) = (parts.next(), parts.next()) else {
         return None;
     };
-    let (Ok(index), Ok(total)) = (
-        index.trim().parse::<u32>(),
-        total.trim().parse::<u32>(),
-    ) else {
+    let (Ok(index), Ok(total)) = (index.trim().parse::<u32>(), total.trim().parse::<u32>()) else {
         return None;
     };
     if index == 0 || total == 0 || index > total {
@@ -590,7 +593,9 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
     } else if line.contains("The operation completed successfully") {
         // DISM 的一条命令成功，不代表哈希、副档和清理已完成。
         stage = Some("当前命令完成，等待后续校验".to_string());
-    } else if line.contains("Recovery completed") || line.contains("操作完成：命令、回读和副档簿记均已通过") {
+    } else if line.contains("Recovery completed")
+        || line.contains("操作完成：命令、回读和副档簿记均已通过")
+    {
         stage = Some("操作完成".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {
         stage = Some("正在准备恢复环境…".to_string());
@@ -623,7 +628,9 @@ pub(crate) fn decode_windows_bytes(bytes: &[u8]) -> String {
     }
     #[cfg(windows)]
     for cp in [1, 0] {
-        if let Some(value) = decode_code_page(bytes, cp) { return value; }
+        if let Some(value) = decode_code_page(bytes, cp) {
+            return value;
+        }
     }
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -633,15 +640,40 @@ pub(crate) fn decode_windows_bytes(bytes: &[u8]) -> String {
 pub(crate) fn decode_code_page(bytes: &[u8], code_page: u32) -> Option<String> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn MultiByteToWideChar(cp: u32, flags: u32, bytes: *const u8, length: i32, out: *mut u16, capacity: i32) -> i32;
+        fn MultiByteToWideChar(
+            cp: u32,
+            flags: u32,
+            bytes: *const u8,
+            length: i32,
+            out: *mut u16,
+            capacity: i32,
+        ) -> i32;
     }
     let length = i32::try_from(bytes.len()).ok()?;
-    if length == 0 { return None; }
+    if length == 0 {
+        return None;
+    }
     unsafe {
-        let count=MultiByteToWideChar(code_page,0,bytes.as_ptr(),length,std::ptr::null_mut(),0);
-        if count <= 0 { return None; }
-        let mut out=vec![0u16;count as usize];
-        let written=MultiByteToWideChar(code_page,0,bytes.as_ptr(),length,out.as_mut_ptr(),count);
+        let count = MultiByteToWideChar(
+            code_page,
+            0,
+            bytes.as_ptr(),
+            length,
+            std::ptr::null_mut(),
+            0,
+        );
+        if count <= 0 {
+            return None;
+        }
+        let mut out = vec![0u16; count as usize];
+        let written = MultiByteToWideChar(
+            code_page,
+            0,
+            bytes.as_ptr(),
+            length,
+            out.as_mut_ptr(),
+            count,
+        );
         (written > 0).then(|| String::from_utf16_lossy(&out[..written as usize]))
     }
 }
@@ -919,8 +951,6 @@ fn split_volume_and_path(wim_path: &str) -> (String, String) {
     (String::new(), inside)
 }
 
-/// 运行 bcdedit 并回读输出；退出码非 0 即失败（带上输出便于定位）。
-
 /// 从 `bcdedit /enum <osloader> /v` 的输出里取**设备选项对象** GUID。
 ///
 /// 必须从 `device`/`osdevice` 行里取：该输出第一个 GUID 是 **osloader 自己**，
@@ -929,10 +959,10 @@ fn split_volume_and_path(wim_path: &str) -> (String, String) {
 pub(crate) fn ramdisk_device_options_guid(text: &str) -> Option<String> {
     for line in text.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("device ") || trimmed.starts_with("osdevice ") {
-            if let Some(guid) = parse_guid(trimmed) {
-                return Some(guid);
-            }
+        if (trimmed.starts_with("device ") || trimmed.starts_with("osdevice "))
+            && let Some(guid) = parse_guid(trimmed)
+        {
+            return Some(guid);
         }
     }
     None
@@ -952,7 +982,9 @@ pub(crate) fn staging_sdi_path(staging_dir: &str) -> String {
 pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Err(format!("BCD {what}: GUID is empty - refusing to touch {{default}}"));
+        return Err(format!(
+            "BCD {what}: GUID is empty - refusing to touch {{default}}"
+        ));
     }
     if !is_guid(trimmed) {
         return Err(format!("BCD {what}: not a valid GUID: {trimmed}"));
@@ -976,7 +1008,8 @@ pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
 pub(crate) const ESP_LOG_DIR: &str = "S:\\BackupRestore\\logs";
 
 /// 必须留在 `S:\` 根的控制通道文件名（PE 启动最早期按固定路径读取）。
-pub(crate) const ESP_CONTROL_FILES: [&str; 3] = ["pe-task.txt", "pe-task.txt.done", "pe-task-result.txt"];
+pub(crate) const ESP_CONTROL_FILES: [&str; 3] =
+    ["pe-task.txt", "pe-task.txt.done", "pe-task-result.txt"];
 
 /// 取证实录/日志在 ESP 上的路径。子目录不存在则顺带建好——调用方清一色是
 /// `let _ = std::fs::write(...)`，目录缺失会静默失败，2026-09-29 已为这类静默失败
@@ -1099,6 +1132,7 @@ pub(crate) fn same_volume(left: &str, right: &str) -> bool {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
     // 退回盘符形态时不需要任何替换。
     if esp_root == r"S:\" {
@@ -1125,7 +1159,11 @@ pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
             // 所以三个都要吃掉。少吃掉一个就会留下 `卷根\\` 或 `卷根\:`，
             // 路径立刻失效（2026-09-29 实测两种都踩到过）。
             out.push_str(esp_root);
-            index += if index + 2 < bytes.len() && bytes[index + 2] == 92_u8 { 3 } else { 2 };
+            index += if index + 2 < bytes.len() && bytes[index + 2] == 92_u8 {
+                3
+            } else {
+                2
+            };
             continue;
         }
         out.push(bytes[index] as char);
@@ -1134,6 +1172,7 @@ pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
     out
 }
 
+#[cfg(test)]
 pub(crate) fn esp_volume_from_listing(listing: &str) -> Option<String> {
     let esp_prefix = esp_volume_prefix();
     // 反斜杠一律用 ASCII 码拼：verbatim 路径里少一层就退化成普通路径，
@@ -1640,8 +1679,18 @@ Possible values for VolumeName along with current mount points are:
 
     #[test]
     fn dism_success_does_not_finish_the_whole_transaction() {
-        assert_ne!(classify_log_line("The operation completed successfully.").0.as_deref(), Some("操作完成"));
-        assert_eq!(classify_log_line("操作完成：命令、回读和副档簿记均已通过").0.as_deref(), Some("操作完成"));
+        assert_ne!(
+            classify_log_line("The operation completed successfully.")
+                .0
+                .as_deref(),
+            Some("操作完成")
+        );
+        assert_eq!(
+            classify_log_line("操作完成：命令、回读和副档簿记均已通过")
+                .0
+                .as_deref(),
+            Some("操作完成")
+        );
     }
 
     #[test]
@@ -1778,7 +1827,7 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(systeminfo_cpu_memory(""), "");
     }
 
-#[test]
+    #[test]
     fn guid_parsing_accepts_both_shapes() {
         assert_eq!(
             parse_guid("已将该项成功复制到 {ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}。").as_deref(),
@@ -1792,7 +1841,7 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(parse_guid(""), None);
     }
 
-#[test]
+    #[test]
     fn empty_guid_is_refused_before_any_bcd_write() {
         // 这条是硬约束：空 GUID 会让 bcdedit 作用于 {default}（真实事故）。
         let error = require_guid("", "test").unwrap_err();
@@ -1815,8 +1864,14 @@ Hotfix(s):                 1 Hotfix(s) Installed.
 
     #[test]
     fn staging_sdi_path_always_starts_with_a_backslash() {
-        assert_eq!(staging_sdi_path("BackupRestoreRE"), r"\BackupRestoreRE\boot.sdi");
-        assert_eq!(staging_sdi_path(r"\BackupRestoreRE"), r"\BackupRestoreRE\boot.sdi");
+        assert_eq!(
+            staging_sdi_path("BackupRestoreRE"),
+            r"\BackupRestoreRE\boot.sdi"
+        );
+        assert_eq!(
+            staging_sdi_path(r"\BackupRestoreRE"),
+            r"\BackupRestoreRE\boot.sdi"
+        );
     }
 
     /// 这条断言直接照抄实机 `bcdedit /enum` 回显：方括号只包卷，`]` 紧跟卷后闭合。
@@ -1841,7 +1896,10 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// * `[整条路径,{…}`   —— bcdedit 报「指定的设备无效」（2026-09-29 ProcMon 实锤）
     #[test]
     fn ramdisk_spec_rejects_both_historical_malformed_shapes() {
-        let spec = ramdisk_spec(r"F:\BackupRestoreRE\Winre.wim", "{dead0000-0000-0000-0000-000000000000}");
+        let spec = ramdisk_spec(
+            r"F:\BackupRestoreRE\Winre.wim",
+            "{dead0000-0000-0000-0000-000000000000}",
+        );
         assert!(!spec.contains(r"[F:\"), "方括号里不能出现路径：{spec}");
         assert!(spec.contains("[F:]"), "方括号里必须正好是卷：{spec}");
         assert!(!spec.contains("],{"), "`]` 不能落在逗号前：{spec}");
@@ -1860,8 +1918,14 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// `BCD enum: not a valid GUID: {bootmgr}`，卡在 v1.7.12 第一次 verify）。
     #[test]
     fn require_identifier_accepts_the_bootmgr_alias() {
-        assert_eq!(require_identifier("{bootmgr}", "enum").unwrap(), "{bootmgr}");
-        assert_eq!(require_identifier(" {BOOTMGR} ", "enum").unwrap(), "{BOOTMGR}");
+        assert_eq!(
+            require_identifier("{bootmgr}", "enum").unwrap(),
+            "{bootmgr}"
+        );
+        assert_eq!(
+            require_identifier(" {BOOTMGR} ", "enum").unwrap(),
+            "{BOOTMGR}"
+        );
     }
 
     /// 守门人不能被别名白名单连带废掉：`{default}` 之类**一律拒**。
@@ -1906,7 +1970,8 @@ Hotfix(s):                 1 Hotfix(s) Installed.
             volume_path_to_device_path(r"\\.\PhysicalDrive0").as_deref(),
             Some(r"\\.\PhysicalDrive0")
         );
-    }    /// 方案 A 的第一层筛选：**只保留未挂载的卷**。
+    }
+    /// 方案 A 的第一层筛选：**只保留未挂载的卷**。
     ///
     /// 这不是洁癖：ESP 通常隐藏，而开发用的 ESP 往往已经挂了盘符；挑已挂载的那个，
     /// 等于把用户正在看的盘符当成目标。真正的 ESP 判定（分区类型 GUID + BCD 文件）
@@ -1938,7 +2003,10 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     /// 说不清的输入必须判为"不同"，不能当成相等。
     #[test]
     fn same_volume_refuses_to_guess() {
-        assert!(!same_volume("", r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\"));
+        assert!(!same_volume(
+            "",
+            r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\"
+        ));
         assert!(!same_volume("C:", "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}"));
         assert!(!same_volume("garbage", "garbage"));
         // 真的不同卷
@@ -1981,7 +2049,10 @@ Hotfix(s):                 1 Hotfix(s) Installed.
 
         // 阶段标题也要能认出来，不只是步骤跟踪器。
         let (stage, _percent, _detail) = classify_log_line(real);
-        assert_eq!(stage.as_deref(), Some("1/4 准备备份环境（挂载卷、校验、必要时还原恢复环境）"));
+        assert_eq!(
+            stage.as_deref(),
+            Some("1/4 准备备份环境（挂载卷、校验、必要时还原恢复环境）")
+        );
     }
 
     /// 认不出步骤标记时返回 None，不能 panic、不能猜。
@@ -2033,7 +2104,13 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     #[test]
     fn step_progress_ignores_malformed_step_lines() {
         let mut tracker = StepTracker::new();
-        let none = tracker.feed(&["STEP ", "STEP abc", "STEP 0/4 bad", "STEP 5/4 bad", "not a step"]);
+        let none = tracker.feed(&[
+            "STEP ",
+            "STEP abc",
+            "STEP 0/4 bad",
+            "STEP 5/4 bad",
+            "not a step",
+        ]);
         assert!(none.total.is_none());
         assert!(none.steps.is_empty());
         assert!(none.current.is_none());
@@ -2044,10 +2121,14 @@ Hotfix(s):                 1 Hotfix(s) Installed.
     #[test]
     fn step_progress_without_numbered_steps_reports_nothing() {
         let mut tracker = StepTracker::new();
-        let progress = tracker.feed(&["[stdout] [100.0%]", "The operation completed successfully."]);
+        let progress =
+            tracker.feed(&["[stdout] [100.0%]", "The operation completed successfully."]);
         assert!(progress.total.is_none());
         assert!(progress.current.is_none());
-        assert!(progress.overall_percent.is_none(), "没有 n/N 就不该编造总进度");
+        assert!(
+            progress.overall_percent.is_none(),
+            "没有 n/N 就不该编造总进度"
+        );
     }
 
     /// 当前步骤百分比要夹在 0–100，且总进度不超过 100。
@@ -2103,7 +2184,12 @@ Hotfix(s):                 1 Hotfix(s) Installed.
             let title = stage.unwrap();
             assert!(!title.contains("步骤"));
             assert!(!title.contains('：'));
-            assert!(title.starts_with("1/4 ") || title.starts_with("2/4 ") || title.starts_with("3/4 ") || title.starts_with("4/4 "));
+            assert!(
+                title.starts_with("1/4 ")
+                    || title.starts_with("2/4 ")
+                    || title.starts_with("3/4 ")
+                    || title.starts_with("4/4 ")
+            );
         }
     }
 
@@ -2221,13 +2307,11 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         path.push_str(guid);
         path.push(bs);
         path
-    }    #[test]
+    }
+    #[test]
     fn mountvol_listing_reports_volume_presence_from_l_not_s_exit_code() {
         // 实机抓到的形态：`/L` 输出一行卷路径；没挂上时输出空或只有 CRLF。
-        let real = format!(
-            "\\?\\Volume{}",
-            "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\\"
-        );
+        let real = format!("\\?\\Volume{}", "{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\\");
         assert!(mountvol_listing_has_volume(&real));
         assert!(!mountvol_listing_has_volume(""));
         assert!(!mountvol_listing_has_volume("\r\n"));
@@ -2255,7 +2339,13 @@ Hotfix(s):                 1 Hotfix(s) Installed.
 
     #[test]
     fn require_identifier_still_rejects_default_and_other_aliases() {
-        for rejected in ["{default}", "{current}", "{ntldr}", "{fwbootmgr}", "{ramdiskoptions}"] {
+        for rejected in [
+            "{default}",
+            "{current}",
+            "{ntldr}",
+            "{fwbootmgr}",
+            "{ramdiskoptions}",
+        ] {
             assert!(
                 require_identifier(rejected, "enum").is_err(),
                 "{rejected} 必须被拒，否则可能误伤用户启动项"
@@ -2263,6 +2353,9 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         }
         assert!(require_identifier("", "enum").is_err());
         assert!(require_identifier("  ", "enum").is_err());
-        assert!(require_guid("{bootmgr}", "enum").is_err(), "旧入口仍然只认 GUID");
+        assert!(
+            require_guid("{bootmgr}", "enum").is_err(),
+            "旧入口仍然只认 GUID"
+        );
     }
 }

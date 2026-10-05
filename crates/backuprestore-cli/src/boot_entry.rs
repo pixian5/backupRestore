@@ -23,9 +23,9 @@
 
 use backuprestore_core::{TaskError, VolumeIdentity, read_json, write_json_atomic};
 use std::fs;
-use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::windows_prepare::ensure_volume_mounted;
@@ -193,9 +193,10 @@ fn registered_winre_templates(log: &Path) -> Result<(String, String), TaskError>
         crate::err("reagentc /info did not report a WinRE BCD identifier; is WinRE enabled?")
     })?;
     let enum_text = bcd(&["/enum", &loader, "/v"])?;
-    let devopts = crate::text_parsing::ramdisk_device_options_guid(&enum_text).ok_or_else(|| {
-        crate::err("registered WinRE entry does not reference a device options object")
-    })?;
+    let devopts =
+        crate::text_parsing::ramdisk_device_options_guid(&enum_text).ok_or_else(|| {
+            crate::err("registered WinRE entry does not reference a device options object")
+        })?;
     Ok((loader, devopts))
 }
 
@@ -314,25 +315,34 @@ pub fn create_entry(
         Err(error) => {
             crate::append_log(
                 log,
-                &format!("new boot channel: registered entry unusable as template ({error}); scanning all entries"),
+                &format!(
+                    "new boot channel: registered entry unusable as template ({error}); scanning all entries"
+                ),
             )?;
             any_usable_winre_template(log)?
         }
     };
 
     // 1) 设备选项对象：copy 模板（/create /device 造的对象不能作 ramdisk= 目标）
-    let devopts_raw = bcd(&["/copy", &template_devopts, "/d", &format!("{ENTRY_DESCRIPTION} device options")])?;
+    let devopts_raw = bcd(&[
+        "/copy",
+        &template_devopts,
+        "/d",
+        &format!("{ENTRY_DESCRIPTION} device options"),
+    ])?;
     let devopts = crate::text_parsing::require_guid(
         &crate::text_parsing::parse_guid(&devopts_raw).unwrap_or_default(),
         "create device options",
-    ).map_err(|message| crate::err(&message))?;
+    )
+    .map_err(|message| crate::err(&message))?;
     crate::append_log(log, &format!("new boot channel: device options {devopts}"))?;
     // 2) osloader：copy 注册条目（/create /application OSLOADER 吃不下 ramdisk device）
     let loader_raw = bcd(&["/copy", &template_loader, "/d", ENTRY_DESCRIPTION])?;
     let loader = crate::text_parsing::require_guid(
         &crate::text_parsing::parse_guid(&loader_raw).unwrap_or_default(),
         "create loader",
-    ).map_err(|message| crate::err(&message))?;
+    )
+    .map_err(|message| crate::err(&message))?;
     crate::append_log(log, &format!("new boot channel: loader {loader}"))?;
 
     // 建后即验：两个对象都必须立即可枚举，否则后面的 /set 会落空。
@@ -381,7 +391,10 @@ pub fn create_entry(
                 break;
             }
             Err(error) => {
-                crate::append_log(log, &format!("new boot channel: attempt {attempt}: {error}"))?;
+                crate::append_log(
+                    log,
+                    &format!("new boot channel: attempt {attempt}: {error}"),
+                )?;
                 last_error = Some(error);
             }
         }
@@ -401,9 +414,7 @@ pub fn create_entry(
     let actual_osdevice = bcd_field(&loader, "osdevice")?;
     crate::append_log(
         log,
-        &format!(
-            "new boot channel: readback device={actual_device} osdevice={actual_osdevice}"
-        ),
+        &format!("new boot channel: readback device={actual_device} osdevice={actual_osdevice}"),
     )?;
     if actual_device != expected || actual_osdevice != expected {
         let _ = bcd(&["/delete", &loader, "/f"]);
@@ -495,8 +506,10 @@ pub(crate) fn refresh_payload_hash(
 /// —— 带着一个指向不存在/被改过的 WIM 的启动项重武装，只会让机器进不了任务环境。
 #[cfg(windows)]
 pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
-    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "rearm loader").map_err(|message| crate::err(&message))?;
-    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "rearm device options").map_err(|message| crate::err(&message))?;
+    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "rearm loader")
+        .map_err(|message| crate::err(&message))?;
+    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "rearm device options")
+        .map_err(|message| crate::err(&message))?;
     let expected = crate::text_parsing::ramdisk_spec(&entry.wim_path, &devopts);
     let device = bcd_field(&loader, "device")?;
     if device != expected {
@@ -537,8 +550,10 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
 /// 机器会带着一个指向不存在对象的一次性启动重启。
 #[cfg(windows)]
 pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
-    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "disarm loader").map_err(|message| crate::err(&message))?;
-    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "disarm device options").map_err(|message| crate::err(&message))?;
+    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "disarm loader")
+        .map_err(|message| crate::err(&message))?;
+    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "disarm device options")
+        .map_err(|message| crate::err(&message))?;
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed == loader {
         bcd(&["/deletevalue", BOOTMGR, "bootsequence"])?;
@@ -567,17 +582,32 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
     // 先用卷 GUID 路径核验磁盘/分区身份，再仅删除此卷上的项目载荷。
     let root = crate::boot_cleanup::staging_volume_root(&entry.wim_volume)?;
     let actual = crate::windows_prepare::volume_identity_at_path(
-        &root.to_string_lossy(), entry.wim_volume.volume_guid.clone(),
+        &root.to_string_lossy(),
+        entry.wim_volume.volume_guid.clone(),
     )?;
     if !actual.same_partition(&entry.wim_volume)
         || actual.partition_offset != entry.wim_volume.partition_offset
         || actual.partition_size != entry.wim_volume.partition_size
     {
-        return Err(crate::err("RE staging volume identity mismatch; refusing cleanup"));
+        return Err(crate::err(
+            "RE staging volume identity mismatch; refusing cleanup",
+        ));
     }
-    crate::append_log(log, &format!("new boot channel: cleanup volume={} recorded_letter={:?}", root.display(), entry.wim_volume.drive_letter))?;
+    crate::append_log(
+        log,
+        &format!(
+            "new boot channel: cleanup volume={} recorded_letter={:?}",
+            root.display(),
+            entry.wim_volume.drive_letter
+        ),
+    )?;
     let dir = crate::boot_cleanup::remove_staging(&root)?;
-    crate::append_log(log, &format!("new boot channel: staging directory {} removed and verified", dir.display()))?;
+    crate::append_log(
+        log,
+        &format!(
+            "new boot channel: staging directory {} removed and verified",
+            dir.display()
+        ),
+    )?;
     Ok(())
 }
-

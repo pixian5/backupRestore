@@ -147,8 +147,7 @@ pub fn stage_static_payload_with_exe(
     // fail because an optional source-tree template was omitted from a VM.
     fs::write(payload.join(WINRE_SHELL_PAYLOAD_NAME), EXPECTED_WINRE_SHELL)?;
     validate_winre_shell(&payload.join(WINRE_SHELL_PAYLOAD_NAME))?;
-    let (recovery_source, warning) =
-        resolve_recovery_payload_source(executable_dir, current_exe)?;
+    let (recovery_source, warning) = resolve_recovery_payload_source(executable_dir, current_exe)?;
     copy_required(
         &recovery_source,
         &payload.join("Recovery.exe"),
@@ -313,7 +312,11 @@ mod tests {
             resolve_recovery_payload_source(&package, Some(running.as_path())).unwrap();
 
         assert_eq!(source, running);
-        assert!(warning.expect("missing payload must warn").contains("missing"));
+        assert!(
+            warning
+                .expect("missing payload must warn")
+                .contains("missing")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

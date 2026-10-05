@@ -17,8 +17,8 @@ use std::process::Command;
 use std::ptr::{null, null_mut};
 
 use crate::text_parsing::{
-    WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, esp_log_path, first_braced_guid,
-    format_bytes, json_text, parse_wim_images, quote_argument,
+    WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, first_braced_guid, format_bytes,
+    json_text, parse_wim_images, quote_argument,
 };
 use backuprestore_core::PROGRAM_VERSION;
 
@@ -107,7 +107,6 @@ const ID_CREATE_TASK: usize = 1003;
 const ID_REFRESH_TASK: usize = 1004;
 const ID_LANGUAGE: usize = 1005;
 const ID_BROWSE_IMAGE: usize = 1006;
-const ID_OPERATION_PROBE: usize = 1100;
 const ID_OPERATION_BACKUP: usize = 1101;
 const ID_OPERATION_RESTORE: usize = 1102;
 const ID_OPERATION_SECONDARY: usize = 1103;
@@ -1480,13 +1479,24 @@ unsafe fn layout_operation(state: &State) {
         24,
     );
     // 「单系统还原」与「新增第二系统」tab 的 WIM 索引与校验复选框布局：
-    let (index_width, verify_hash_x, verify_hash_y) = if selected_operation(state) == "create-secondary" {
-        (380, field_x, secondary_y + 32)
-    } else {
-        (field_width - 320, field_x + field_width - 300, secondary_y + 2)
-    };
+    let (index_width, verify_hash_x, verify_hash_y) =
+        if selected_operation(state) == "create-secondary" {
+            (380, field_x, secondary_y + 32)
+        } else {
+            (
+                field_width - 320,
+                field_x + field_width - 300,
+                secondary_y + 2,
+            )
+        };
     reposition(state.controls.index, field_x, secondary_y, index_width, 220);
-    reposition(state.controls.verify_hash, verify_hash_x, verify_hash_y, 300, 24);
+    reposition(
+        state.controls.verify_hash,
+        verify_hash_x,
+        verify_hash_y,
+        300,
+        24,
+    );
     reposition(
         state.controls.menu,
         field_x + 500,
@@ -2278,7 +2288,10 @@ unsafe extern "system" fn window_proc_system_choice(
                     .open(system_choice_log_path())
                     .and_then(|mut file| {
                         use std::io::Write;
-                        writeln!(file, "[gui] system drive choice: button clicked, choice={result}")
+                        writeln!(
+                            file,
+                            "[gui] system drive choice: button clicked, choice={result}"
+                        )
                     });
                 *state_ptr = result;
                 // **不能在这里直接 DestroyWindow**：WM_COMMAND 是在按钮处理
@@ -3028,7 +3041,11 @@ unsafe fn browse_image(state: &mut State) {
         if backuprestore_core::validate_absolute_path(&path).is_ok() {
             set_text(
                 btn_task,
-                if language == Language::English { "Create task" } else { "创建任务" },
+                if language == Language::English {
+                    "Create task"
+                } else {
+                    "创建任务"
+                },
             );
         }
         if operation != "backup" && Path::new(&path).is_file() {
@@ -3813,24 +3830,57 @@ unsafe fn install_pe_harddisk(state: &State) {
     let format_log = state.executable_dir.join("pe-format.log");
     let format_result = (|| -> Result<(), backuprestore_core::TaskError> {
         let before = crate::windows_prepare::volume_identity(drive_char)?;
-        if before.volume_serial.is_empty() { return Err(crate::err("cannot verify format without original volume serial")); }
+        if before.volume_serial.is_empty() {
+            return Err(crate::err(
+                "cannot verify format without original volume serial",
+            ));
+        }
         let script = crate::diskpart_format_script(before.disk_number, before.partition_number)?;
         let script_file = state.executable_dir.join("_pe-format.txt");
         std::fs::write(&script_file, &script)?;
-        crate::append_log(&format_log, &format!("PE 格式化前身份：{before:?}；脚本：{script}"))?;
-        let result = crate::windows_command::run_program("diskpart.exe", &["/s".into(),script_file.to_string_lossy().into_owned()], Some(&format_log), 300000);
-        crate::append_log(&format_log,&format!("diskpart 执行结果：{result}"))?;
-        if !result.is_success() { return Err(crate::err(&format!("diskpart failed: {result}"))); }
+        crate::append_log(
+            &format_log,
+            &format!("PE 格式化前身份：{before:?}；脚本：{script}"),
+        )?;
+        let result = crate::windows_command::run_program(
+            "diskpart.exe",
+            &["/s".into(), script_file.to_string_lossy().into_owned()],
+            Some(&format_log),
+            300000,
+        );
+        crate::append_log(&format_log, &format!("diskpart 执行结果：{result}"))?;
+        if !result.is_success() {
+            return Err(crate::err(&format!("diskpart failed: {result}")));
+        }
         let after = crate::windows_prepare::volume_identity(drive_char)?;
-        crate::append_log(&format_log,&format!("PE 格式化后身份：{after:?}"))?;
+        crate::append_log(&format_log, &format!("PE 格式化后身份：{after:?}"))?;
         backuprestore_core::operation_safety::verify_formatted_volume(&before, &after)?;
-        if !Path::new(&format!("{drive_char}:\\")).is_dir() { return Err(crate::err("formatted volume root inaccessible")); }
+        if !Path::new(&format!("{drive_char}:\\")).is_dir() {
+            return Err(crate::err("formatted volume root inaccessible"));
+        }
         std::fs::remove_file(script_file)?;
-        crate::append_log(&format_log,"格式化身份、NTFS 文件系统与新卷序列号已回读验证")
+        crate::append_log(
+            &format_log,
+            "格式化身份、NTFS 文件系统与新卷序列号已回读验证",
+        )
     })();
-    if let Err(error)=format_result {
-        append_gui_log(state,&format!("PE format failed; refusing apply: {error}; log={}",format_log.display()));
-        show_message(state.root,&format!("无法确认格式化成功，已停止展开镜像。\n{error}\n日志：{}",format_log.display()),"安装失败",MB_OK|MB_ICONERROR);
+    if let Err(error) = format_result {
+        append_gui_log(
+            state,
+            &format!(
+                "PE format failed; refusing apply: {error}; log={}",
+                format_log.display()
+            ),
+        );
+        show_message(
+            state.root,
+            &format!(
+                "无法确认格式化成功，已停止展开镜像。\n{error}\n日志：{}",
+                format_log.display()
+            ),
+            "安装失败",
+            MB_OK | MB_ICONERROR,
+        );
         return;
     }
     // 2. Apply PE WIM（索引 1 = WinPE）到分区
@@ -4110,11 +4160,7 @@ unsafe fn pe_create_shortcut(state: &State) {
     }
 }
 
-/// 「重启进入 PE」：设置 {bootmgr} bootsequence 指向已安装的 PE 启动项，
-/// 配置成功后**立即自动重启**（无需用户手动重启），由 bootmgr 自动进入 PE
-/// 恢复环境（无需手动选菜单）。PE 恢复桌面启动时会自动清除该 bootsequence
-/// （见 pe_self_clean_bootsequence），因此之后再重启会正常回到主系统，
-/// 全程无需用户操作。
+/// 设置一次性 PE 启动项并重启，进入恢复桌面等待用户选择操作。
 unsafe fn pe_reboot_to_pe(state: &State) {
     let language = selected_language(state);
     let guid_file = state.executable_dir.join("pe-entry-guid.txt");
@@ -4139,29 +4185,12 @@ unsafe fn pe_reboot_to_pe(state: &State) {
         );
         return;
     };
-    // 1. 写 PE 任务配置到 ESP（PE 启动按配置自动执行，无需用户操作）
-    // 方案 A（v1.8.2）：用 verbatim 卷路径写，**不挂 S:**。
-    // 挂盘符会触发一次「卷到达」→ 自动播放弹窗 → 用完卸载后已弹出的窗口显示
-    // 「不可访问」，这一整套在本通道里是不必要的。
-    let task = "clean_bootsequence\nverify\nreboot\n";
-    let write_ok = match crate::windows_prepare::esp_volume_path_for_task() {
-        Some(volume) => {
-            let mut path = std::path::PathBuf::from(volume);
-            path.push("pe-task.txt");
-            std::fs::write(path, task).is_ok()
-        }
-        None => false,
-    };
-    append_gui_log(
-        state,
-        &format!("PE reboot to PE: write pe-task.txt via volume path ok={write_ok}"),
-    );
-    // 2. 设置 bootsequence 引导进 PE
+    // 单纯进入恢复桌面，无需写入可执行文本任务。
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
     append_gui_log(state, &format!("PE reboot to PE: {command}"));
     let code = run_cmd_to_file(&command, None);
     append_gui_log(state, &format!("PE reboot to PE: exit code={code}"));
-    if code.is_success() && write_ok {
+    if code.is_success() {
         // 配置成功：立即自动重启进入 PE（无需用户手动重启）
         append_gui_log(state, "PE reboot to PE: bootsequence set, auto reboot now");
         if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
@@ -4178,9 +4207,9 @@ unsafe fn pe_reboot_to_pe(state: &State) {
                 show_message(
                     state.root,
                     &if language == Language::English {
-                        "PE task configured and boot sequence set, but auto-reboot failed (ExitWindowsEx and shutdown.exe both failed). Please restart manually.".to_string()
+                        "PE boot sequence set, but auto-reboot failed (ExitWindowsEx and shutdown.exe both failed). Please restart manually.".to_string()
                     } else {
-                        "已写入 PE 任务配置并设置一次性启动项，但自动重启失败（ExitWindowsEx 与 shutdown.exe 均失败），请手动重启进入 PE。".to_string()
+                        "已设置 PE 一次性启动项，但自动重启失败（ExitWindowsEx 与 shutdown.exe 均失败），请手动重启进入 PE。".to_string()
                     },
                     if language == Language::English {
                         "Auto-reboot failed"
@@ -4196,12 +4225,10 @@ unsafe fn pe_reboot_to_pe(state: &State) {
             state.root,
             &if language == Language::English {
                 format!(
-                    "Failed to configure PE task (bcdedit code {code}, config write {write_ok}). Run as administrator."
+                    "Failed to set PE boot sequence (bcdedit code {code}). Run as administrator."
                 )
             } else {
-                format!(
-                    "配置失败（bcdedit 退出码 {code}，配置写入 {write_ok}）。请确认以管理员身份运行。"
-                )
+                format!("配置失败（bcdedit 退出码 {code}）。请确认以管理员身份运行。")
             },
             if language == Language::English {
                 "Failed"
@@ -4282,7 +4309,12 @@ fn read_latest_launcher_error(executable_dir: &std::path::Path) -> Option<String
 
 unsafe fn create_task(state: &mut State) {
     if ONLINE_BUSY.is_busy() {
-        show_message(state.root,"已有在线任务正在执行，请等待完成。","任务运行中",MB_OK|MB_ICONWARNING);
+        show_message(
+            state.root,
+            "已有在线任务正在执行，请等待完成。",
+            "任务运行中",
+            MB_OK | MB_ICONWARNING,
+        );
         return;
     }
     let language = selected_language(state);
@@ -4306,7 +4338,11 @@ unsafe fn create_task(state: &mut State) {
         if backuprestore_core::validate_absolute_path(&updated).is_ok() {
             set_text(
                 btn_task,
-                if language == Language::English { "Create task" } else { "创建任务" },
+                if language == Language::English {
+                    "Create task"
+                } else {
+                    "创建任务"
+                },
             );
             if matches!(operation.as_str(), "restore-existing" | "create-secondary")
                 && Path::new(&updated).is_file()
@@ -4332,7 +4368,11 @@ unsafe fn create_task(state: &mut State) {
             if backuprestore_core::validate_absolute_path(&updated).is_ok() {
                 set_text(
                     btn_task,
-                    if language == Language::English { "Create task" } else { "创建任务" },
+                    if language == Language::English {
+                        "Create task"
+                    } else {
+                        "创建任务"
+                    },
                 );
                 if matches!(operation.as_str(), "restore-existing" | "create-secondary")
                     && Path::new(&updated).is_file()
@@ -4345,7 +4385,11 @@ unsafe fn create_task(state: &mut State) {
             // 用户点击【取消】：将主界面【创建任务】按钮文本修改为【选择镜像位置】
             set_text(
                 btn_task,
-                if language == Language::English { "Choose image location" } else { "选择镜像位置" },
+                if language == Language::English {
+                    "Choose image location"
+                } else {
+                    "选择镜像位置"
+                },
             );
             SetFocus(state.controls.image);
         }
@@ -4354,10 +4398,16 @@ unsafe fn create_task(state: &mut State) {
     // 路径合法时确保按钮文本为【创建任务】
     set_text(
         btn_task,
-        if language == Language::English { "Create task" } else { "创建任务" },
+        if language == Language::English {
+            "Create task"
+        } else {
+            "创建任务"
+        },
     );
     let index = selected_wim_index(state);
-    let index = if matches!(operation.as_str(), "restore-existing" | "create-secondary") && index.is_none() {
+    let index = if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+        && index.is_none()
+    {
         if Path::new(&image_path).is_file() {
             read_image(state);
         }
@@ -4717,24 +4767,26 @@ unsafe fn create_task(state: &mut State) {
                         let operation_text = operation_display(language, &operation);
                         let (body, caption) = if language == Language::English {
                             (
-                                format!("A {operation_text} task will be created and prepared with administrator rights, then the system will restart into the recovery environment to run it. Continue?"),
+                                format!(
+                                    "A {operation_text} task will be created and prepared with administrator rights, then the system will restart into the recovery environment to run it. Continue?"
+                                ),
                                 "Enter the recovery environment".to_string(),
                             )
                         } else {
                             (
-                                format!("将创建「{operation_text}」任务并以管理员权限准备，准备完成后系统会重启进入恢复环境执行。是否继续？"),
+                                format!(
+                                    "将创建「{operation_text}」任务并以管理员权限准备，准备完成后系统会重启进入恢复环境执行。是否继续？"
+                                ),
                                 "进入恢复环境".to_string(),
                             )
                         };
-                        let confirm = show_message(
-                            state.root,
-                            &body,
-                            &caption,
-                            MB_YESNO | MB_ICONQUESTION,
-                        );
+                        let confirm =
+                            show_message(state.root, &body, &caption, MB_YESNO | MB_ICONQUESTION);
                         append_gui_log(
                             state,
-                            &format!("system drive operation: Windows RE confirm result={confirm} (6=yes)"),
+                            &format!(
+                                "system drive operation: Windows RE confirm result={confirm} (6=yes)"
+                            ),
                         );
                         if confirm != IDYES {
                             append_gui_log(
@@ -4851,25 +4903,38 @@ unsafe fn create_task(state: &mut State) {
         let err = GetLastError();
         append_gui_log(
             state,
-            &format!("GUI action failed: elevated prepare launch; operation={operation}; ShellExecuteExW failed err={err}"),
+            &format!(
+                "GUI action failed: elevated prepare launch; operation={operation}; ShellExecuteExW failed err={err}"
+            ),
         );
         let err_msg = if language == Language::English {
-            format!("Could not start the elevated preparation script (Windows error {err}). No task, WinRE or reboot was requested.")
+            format!(
+                "Could not start the elevated preparation script (Windows error {err}). No task, WinRE or reboot was requested."
+            )
         } else {
-            format!("无法启动管理员准备脚本（Windows 错误码 {err}）。未创建任务、未修改 WinRE、未请求重启。")
+            format!(
+                "无法启动管理员准备脚本（Windows 错误码 {err}）。未创建任务、未修改 WinRE、未请求重启。"
+            )
         };
         set_text(state.controls.status, &err_msg);
         show_message(
             state.root,
             &err_msg,
-            if language == Language::English { "Preparation launch failed" } else { "准备启动失败" },
+            if language == Language::English {
+                "Preparation launch failed"
+            } else {
+                "准备启动失败"
+            },
             MB_OK | MB_ICONERROR,
         );
         return;
     }
     append_gui_log(
         state,
-        &format!("elevated prepare: ShellExecuteExW succeeded; h_process={:?}", exec_info.h_process),
+        &format!(
+            "elevated prepare: ShellExecuteExW succeeded; h_process={:?}",
+            exec_info.h_process
+        ),
     );
     if !exec_info.h_process.is_null() {
         // 等待 1500 毫秒，检测 prepare 进程是否因参数校验或安全规则立即异常退出。
@@ -4891,7 +4956,9 @@ unsafe fn create_task(state: &mut State) {
                     });
                 append_gui_log(
                     state,
-                    &format!("elevated prepare failed early: exit_code={exit_code} error={last_error}"),
+                    &format!(
+                        "elevated prepare failed early: exit_code={exit_code} error={last_error}"
+                    ),
                 );
                 let display_err = if language == Language::English {
                     format!("Preparation failed (exit code {exit_code}):\n\n{last_error}")
@@ -4902,7 +4969,11 @@ unsafe fn create_task(state: &mut State) {
                 show_message(
                     state.root,
                     &display_err,
-                    if language == Language::English { "Preparation Failed" } else { "任务准备失败" },
+                    if language == Language::English {
+                        "Preparation Failed"
+                    } else {
+                        "任务准备失败"
+                    },
                     MB_OK | MB_ICONERROR,
                 );
                 return;
@@ -4911,39 +4982,37 @@ unsafe fn create_task(state: &mut State) {
             CloseHandle(exec_info.h_process);
         }
     }
-        append_gui_log(
-            state,
-            &format!(
-                "GUI action delegated: elevated prepare launched; operation={operation}; source={source_drive}; target={target_drive}"
-            ),
-        );
-        set_text(
-            state.controls.status,
-            if operation == "probe" {
-                if language == Language::English {
-                    "Probe preparation started with -NoReboot. Check status.json and logs; no backup, restore or reboot will run."
-                } else {
-                    "已启动探测准备流程（不重启）。请查看任务状态和日志；不会备份、还原或格式化。"
-                }
-            } else if backup_will_append {
-                if language == Language::English {
-                    "Elevated preparation started. The existing WIM will receive a new index; existing indexes remain unchanged until the append candidate is verified."
-                } else {
-                    "已启动管理员准备流程。现有 WIM 将追加一个新索引；候选镜像验证完成前，原有索引不会被修改。"
-                }
-            } else if language == Language::English {
-                "Elevated preparation started. Check status.json, prepare.log and Recovery.log; this is not recovery success."
+    append_gui_log(
+        state,
+        &format!(
+            "GUI action delegated: elevated prepare launched; operation={operation}; source={source_drive}; target={target_drive}"
+        ),
+    );
+    set_text(
+        state.controls.status,
+        if operation == "probe" {
+            if language == Language::English {
+                "Probe preparation started with -NoReboot. Check status.json and logs; no backup, restore or reboot will run."
             } else {
-                "已启动管理员准备脚本。请在任务结果中查看 status.json、prepare.log 和 Recovery.log；这不是恢复成功证明。"
-            },
-        );
+                "已启动探测准备流程（不重启）。请查看任务状态和日志；不会备份、还原或格式化。"
+            }
+        } else if backup_will_append {
+            if language == Language::English {
+                "Elevated preparation started. The existing WIM will receive a new index; existing indexes remain unchanged until the append candidate is verified."
+            } else {
+                "已启动管理员准备流程。现有 WIM 将追加一个新索引；候选镜像验证完成前，原有索引不会被修改。"
+            }
+        } else if language == Language::English {
+            "Elevated preparation started. Check status.json, prepare.log and Recovery.log; this is not recovery success."
+        } else {
+            "已启动管理员准备脚本。请在任务结果中查看 status.json、prepare.log 和 Recovery.log；这不是恢复成功证明。"
+        },
+    );
 }
 
 // ===================== 智能分流：进入 PE / 在线直接执行 =====================
 
-/// 智能分流「进入 PE」：把备份/还原动作写入 ESP 的 S:\pe-task.txt，设置
-/// bootsequence 指向已安装 PE，自动重启。PE 启动后按配置自动执行备份/还原，
-/// 结尾 `reboot` 使 PE 执行完自动重启回 Windows，全程无需用户操作。
+/// 将绑定稳定卷身份和镜像索引的请求持久写入 ESP，成功后才安排一次性 PE 启动。
 unsafe fn schedule_pe_task(
     state: &State,
     operation: &str,
@@ -4976,35 +5045,33 @@ unsafe fn schedule_pe_task(
         );
         return;
     };
-    // PE 任务解析按空白分词：路径含空格会拆坏，先拦截提示
-    if image_path.contains(' ') {
+    let request = (|| -> Result<(), backuprestore_core::TaskError> {
+        let mode = if operation == "backup" {
+            "backup"
+        } else {
+            "restore"
+        };
+        let drive = if mode == "backup" {
+            source_drive
+        } else {
+            target_drive
+        };
+        let index = _index
+            .parse::<u32>()
+            .map_err(|_| crate::err("镜像索引无效"))?;
+        let request = crate::pe_operation::new_request(mode, drive, image_path, index, None, "")?;
+        crate::pe_operation::enqueue(&request)
+    })();
+    let write_ok = request.is_ok();
+    if let Err(error) = request {
         show_message(
             state.root,
-            if language == Language::English {
-                "The PE task channel does not support spaces in the WIM path yet. Move the image to a path without spaces and retry."
-            } else {
-                "PE 自动执行通道暂不支持带空格的镜像路径。请把 WIM 放到无空格路径后重试。"
-            },
-            if language == Language::English {
-                "Path not supported"
-            } else {
-                "路径暂不支持"
-            },
-            MB_OK | MB_ICONWARNING,
+            &error.to_string(),
+            "任务写入失败，未修改启动项",
+            MB_OK | MB_ICONERROR,
         );
         return;
     }
-    // 方案 A（v1.8.2）：同上一处，用 verbatim 卷路径写任务配置，不挂 S:。
-    let task = if operation == "backup" {
-        format!("backup {source_drive} \"{image_path}\"\nreboot\n")
-    } else {
-        format!("restore \"{image_path}\" {target_drive}\nreboot\n")
-    };
-    let write_ok = std::fs::write(esp_log_path("pe-task.txt"), &task).is_ok();
-    append_gui_log(
-        state,
-        &format!("schedule_pe_task: write pe-task.txt ok={write_ok} task={task}"),
-    );
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
     append_gui_log(state, &format!("schedule_pe_task: {command}"));
     let code = run_cmd_to_file(&command, None);
@@ -5061,35 +5128,78 @@ unsafe fn schedule_pe_task(
 
 use crate::online_operation::{OnlineOpParams, OnlineResult};
 static ONLINE_RESULT: std::sync::Mutex<Option<OnlineResult>> = std::sync::Mutex::new(None);
-static ONLINE_BUSY: backuprestore_core::operation_safety::OperationGate = backuprestore_core::operation_safety::OperationGate::new();
+static ONLINE_BUSY: backuprestore_core::operation_safety::OperationGate =
+    backuprestore_core::operation_safety::OperationGate::new();
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn run_online_operation(state: &State, operation: &str, source_drive: &str, target_drive: &str,
-    image_path: &str, index: &str, compress: &str, image_name: &str, keep_indexes: Option<u32>) {
+unsafe fn run_online_operation(
+    state: &State,
+    operation: &str,
+    source_drive: &str,
+    target_drive: &str,
+    image_path: &str,
+    index: &str,
+    compress: &str,
+    image_name: &str,
+    keep_indexes: Option<u32>,
+) {
     if !ONLINE_BUSY.try_start() {
-        show_message(state.root, "已有在线任务正在执行或结果尚未处理，请等待完成。", "任务运行中", MB_OK | MB_ICONWARNING);
+        show_message(
+            state.root,
+            "已有在线任务正在执行或结果尚未处理，请等待完成。",
+            "任务运行中",
+            MB_OK | MB_ICONWARNING,
+        );
         return;
     }
-    let params=OnlineOpParams { operation:operation.into(), source_drive:source_drive.into(), target_drive:target_drive.into(), image_path:image_path.into(), index:index.into(), compress:compress.into(), image_name:image_name.into(), keep_indexes };
-    let root=state.root as usize;
+    let params = OnlineOpParams {
+        operation: operation.into(),
+        source_drive: source_drive.into(),
+        target_drive: target_drive.into(),
+        image_path: image_path.into(),
+        index: index.into(),
+        compress: compress.into(),
+        image_name: image_name.into(),
+        keep_indexes,
+    };
+    let root = state.root as usize;
     EnableWindow(GetDlgItem(state.root, ID_CREATE_TASK as i32), 0);
     // 忙标志一直保持到主窗口取走结果；旧结果不会被新任务清空。
-    let spawn=std::thread::Builder::new().name("online-operation".into()).spawn(move || {
-        let result=std::panic::catch_unwind(|| crate::online_operation::execute(&params))
-            .unwrap_or_else(|_| OnlineResult { success:false, detail:"在线执行线程异常退出，请检查本轮日志和候选目录；不能判定为成功。".into() });
-        *ONLINE_RESULT.lock().unwrap_or_else(|e|e.into_inner())=Some(result);
-        unsafe { PostMessageW(root as Hwnd, WM_APP_ONLINE_DONE, 0, 0); }
-    });
-    if let Err(error)=spawn {
+    let spawn = std::thread::Builder::new()
+        .name("online-operation".into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(|| crate::online_operation::execute(&params))
+                .unwrap_or_else(|_| OnlineResult {
+                    success: false,
+                    detail: "在线执行线程异常退出，请检查本轮日志和候选目录；不能判定为成功。"
+                        .into(),
+                });
+            *ONLINE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+            unsafe {
+                PostMessageW(root as Hwnd, WM_APP_ONLINE_DONE, 0, 0);
+            }
+        });
+    if let Err(error) = spawn {
         ONLINE_BUSY.finish();
         EnableWindow(GetDlgItem(state.root, ID_CREATE_TASK as i32), 1);
-        show_message(state.root,&format!("无法启动在线线程：{error}"),"启动失败",MB_OK|MB_ICONERROR);
+        show_message(
+            state.root,
+            &format!("无法启动在线线程：{error}"),
+            "启动失败",
+            MB_OK | MB_ICONERROR,
+        );
         return;
     }
     // 消息投递失败时由定时器兜底；结果存在则处理一次，不通过文本猜测是否成功。
     SetTimer(state.root, 9002, 1000, None);
-    set_text(state.controls.status,"在线任务执行中；请勿关闭程序。进度窗口显示当前阶段，完成后报告结果。");
-    append_gui_log(state,&format!("online started: op={operation} source={source_drive} target={target_drive}"));
+    set_text(
+        state.controls.status,
+        "在线任务执行中；请勿关闭程序。进度窗口显示当前阶段，完成后报告结果。",
+    );
+    append_gui_log(
+        state,
+        &format!("online started: op={operation} source={source_drive} target={target_drive}"),
+    );
 }
 
 unsafe extern "system" fn window_proc(
@@ -5593,15 +5703,45 @@ unsafe extern "system" fn window_proc(
             return 0;
         }
         if message == WM_APP_ONLINE_DONE || (message == WM_TIMER && w_param == 9002) {
-            let result=ONLINE_RESULT.lock().unwrap_or_else(|e|e.into_inner()).take();
-            if let Some(result)=result {
-                KillTimer(state.root,9002);
+            let result = ONLINE_RESULT
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(result) = result {
+                KillTimer(state.root, 9002);
                 // 弹窗期间继续保持忙状态，避免模态消息循环重入创建任务。
-                append_gui_log(state,&format!("online completed: success={}\n{}",result.success,result.detail));
-                set_text(state.controls.status,if result.success { "在线任务已完成并通过校验" } else { "在线任务失败，请检查日志；不要将部分产物视为成功" });
-                show_message(state.root,&result.detail,if result.success { "执行完成" } else { "执行失败" },MB_OK|if result.success { MB_ICONINFORMATION } else { MB_ICONERROR });
+                append_gui_log(
+                    state,
+                    &format!(
+                        "online completed: success={}\n{}",
+                        result.success, result.detail
+                    ),
+                );
+                set_text(
+                    state.controls.status,
+                    if result.success {
+                        "在线任务已完成并通过校验"
+                    } else {
+                        "在线任务失败，请检查日志；不要将部分产物视为成功"
+                    },
+                );
+                show_message(
+                    state.root,
+                    &result.detail,
+                    if result.success {
+                        "执行完成"
+                    } else {
+                        "执行失败"
+                    },
+                    MB_OK
+                        | if result.success {
+                            MB_ICONINFORMATION
+                        } else {
+                            MB_ICONERROR
+                        },
+                );
                 ONLINE_BUSY.finish();
-                EnableWindow(GetDlgItem(state.root,ID_CREATE_TASK as i32),1);
+                EnableWindow(GetDlgItem(state.root, ID_CREATE_TASK as i32), 1);
             }
             return 0;
         }
@@ -5674,9 +5814,16 @@ unsafe extern "system" fn window_proc(
                 ID_REFRESH_TASK => refresh_task_status(state),
                 ID_PE_REBOOT_MAIN => {
                     if ONLINE_BUSY.is_busy() {
-                        show_message(state.root,"在线任务运行中，禁止重启或更改启动项。","任务运行中",MB_OK|MB_ICONWARNING);
-                    } else { pe_reboot_to_pe(state); }
-                },
+                        show_message(
+                            state.root,
+                            "在线任务运行中，禁止重启或更改启动项。",
+                            "任务运行中",
+                            MB_OK | MB_ICONWARNING,
+                        );
+                    } else {
+                        pe_reboot_to_pe(state);
+                    }
+                }
                 ID_PE_SHORTCUT => pe_create_shortcut(state),
                 ID_PE_MODE_RAM | ID_PE_MODE_DISK => {
                     // 切换启动方式：刷新目录行显隐与布局；
@@ -5707,7 +5854,12 @@ unsafe extern "system" fn window_proc(
     }
     if message == WM_CLOSE {
         if ONLINE_BUSY.is_busy() {
-            show_message(hwnd,"在线任务尚未完成。为避免中断写入，请等待结果后再关闭。","任务运行中",MB_OK|MB_ICONWARNING);
+            show_message(
+                hwnd,
+                "在线任务尚未完成。为避免中断写入，请等待结果后再关闭。",
+                "任务运行中",
+                MB_OK | MB_ICONWARNING,
+            );
             return 0;
         }
         DestroyWindow(hwnd);
@@ -5993,7 +6145,10 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                             diag.push(format!(
                                 "verify bootsequence: enum exit={enum_code}, present={bootsequence_present}"
                             ));
-                            if set_code.is_success() && enum_code.is_success() && !bootsequence_present {
+                            if set_code.is_success()
+                                && enum_code.is_success()
+                                && !bootsequence_present
+                            {
                                 found_bcd = true;
                             } else {
                                 diag.push("BCD restore verification failed".to_string());
@@ -6124,35 +6279,6 @@ fn pe_default_image_drive(system: &str) -> String {
     "H".to_string()
 }
 
-/// 从动作结果里提取关键行，用于结果对话框（避免把 diskpart/dism 长输出
-/// 全部塞进弹窗）。
-fn pe_result_preview(result: &str) -> String {
-    let mut lines = Vec::new();
-    for line in result.lines() {
-        let l = line.trim();
-        if l.is_empty() {
-            continue;
-        }
-        if l.starts_with('[')
-            || l.contains("code=")
-            || l.contains("REFUSED")
-            || l.contains("successfully")
-            || l.contains("Error")
-            || l.contains("failed")
-            || l.contains("skipped")
-            || l.contains("system drive")
-            || l.contains("actual drive")
-        {
-            lines.push(l.to_string());
-        }
-    }
-    if lines.is_empty() {
-        result.to_string()
-    } else {
-        lines.join("\n")
-    }
-}
-
 unsafe extern "system" fn window_proc_pe_dialog(
     hwnd: Hwnd,
     message: u32,
@@ -6229,7 +6355,11 @@ unsafe extern "system" fn window_proc_pe_dialog(
             create_control(
                 hwnd,
                 "STATIC",
-                "菜单名称：",
+                if get_text(hwnd).contains("还原系统") {
+                    "镜像索引："
+                } else {
+                    "菜单名称："
+                },
                 0,
                 16,
                 128,
@@ -6711,270 +6841,141 @@ unsafe extern "system" fn system_info_window_proc(
 }
 
 /// PE 桌面「备份系统」：PE 内直接 dism 捕获，不再跳主 GUI。
+/// PE 三个界面入口共用类型化请求，不再拼接逐行破坏命令。
 unsafe fn pe_backup_from_desktop(hwnd: Hwnd) {
-    // 自动点击模式（S:\pe-click.txt）：跳过对话框，用配置参数直接执行，
-    // 完成后恢复 BCD 并自动重启回 Windows（等效鼠标点击整条链路）。
-    if let Some(params) = pe_click_params("backup")
-        && params.len() >= 2
-    {
-        let mut result = String::new();
-        let mut reboot = false;
-        let mut src = params[0].trim_end_matches(':').to_string();
-        // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
-        if src == "AUTO" {
-            execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
-            src = resolve_drive("AUTO");
-        }
-        let wim = resolve_pe_wim_path(&params[1], &src);
-        execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
-        let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-backup.txt"), &result);
-        exit_pe_to_windows(hwnd);
-        return;
-    }
-    // 1. 定位系统卷（默认源卷）
-    let mut result = String::new();
-    let mut reboot = false;
-    execute_pe_task_line("find-system-drive", &mut result, &mut reboot);
-    let system = resolve_drive("AUTO");
-    // 2. 默认镜像路径：数据卷 + 时间戳文件名（避开 dism 转义字母）
-    let image_drive = pe_default_image_drive(&system);
-    let default_wim = format!("{image_drive}:\\pe-bk-{}.wim", pe_timestamp());
-    // 3. 对话框确认源卷与镜像路径
-    let out = pe_dialog(
-        hwnd,
-        "备份系统 - BackupRestore",
-        false,
-        "将把所选卷捕获为 WIM 镜像（不修改源卷）。",
-        &default_wim,
-        "",
-    );
-    let Some((drive_item, wim, _name)) = out else {
-        return;
-    };
-    let src = drive_item
-        .split('|')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches(':')
-        .to_string();
-    let wim = wim.trim().to_string();
-    if src.is_empty() || wim.is_empty() {
-        return;
-    }
-    // 4. 执行备份
-    result.clear();
-    execute_pe_task_line(&format!("backup {src} {wim}"), &mut result, &mut reboot);
-    // 5. 日志落 ESP（重启后可读回验证）
-    let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-backup.txt"), &result);
-    // 6. 结果展示
-    show_message(
-        hwnd,
-        &pe_result_preview(&result),
-        "备份完成",
-        MB_OK | MB_ICONINFORMATION,
-    );
-    // 7. 询问是否返回 Windows
-    let ask = show_message(
-        hwnd,
-        "备份完成。返回 Windows 吗？",
-        "BackupRestore",
-        MB_YESNO | MB_ICONQUESTION,
-    );
-    if ask == IDYES {
-        pe_reboot(hwnd);
-    }
+    pe_run_interactive(hwnd, "backup");
 }
-
-/// PE 桌面「还原系统」：格式化目标卷 + Apply WIM + BCDBoot（目标为系统卷时）。
 unsafe fn pe_restore_from_desktop(hwnd: Hwnd) {
-    // 自动点击模式：跳过对话框与二次确认，直接格式化+还原+修复引导。
-    if let Some(params) = pe_click_params("restore")
-        && params.len() >= 2
-    {
-        let mut result = String::new();
-        let mut reboot = false;
-        let mut target = params[1].trim_end_matches(':').to_string();
-        // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
-        if target == "AUTO" {
-            execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
-            target = resolve_drive("AUTO");
-        }
-        let wim = resolve_pe_wim_path(&params[0], &target);
-        execute_pe_task_line(
-            &format!("format {target} --allow-system"),
-            &mut result,
-            &mut reboot,
-        );
-        execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
-        execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
-        let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-restore.txt"), &result);
-        exit_pe_to_windows(hwnd);
-        return;
-    }
-    let mut result = String::new();
-    let mut reboot = false;
-    execute_pe_task_line("find-system-drive", &mut result, &mut reboot);
-    let _system = resolve_drive("AUTO");
-    let out = pe_dialog(
-        hwnd,
-        "还原系统 - BackupRestore",
-        false,
-        "警告：将格式化目标卷并应用 WIM，目标卷数据将被覆盖！",
-        "H:\\pe-wim1.wim",
-        "",
-    );
-    let Some((drive_item, wim, _name)) = out else {
-        return;
-    };
-    let target = drive_item
-        .split('|')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches(':')
-        .to_string();
-    let wim = wim.trim().to_string();
-    if target.is_empty() || wim.is_empty() {
-        return;
-    }
-    // 二次确认（高危操作）
-    let ask = show_message(
-        hwnd,
-        &format!(
-            "确认将 {} 还原到卷 {}:？\n此操作将格式化目标卷，数据不可恢复！",
-            wim, target
-        ),
-        "还原确认",
-        MB_YESNO | MB_ICONWARNING,
-    );
-    if ask != IDYES {
-        return;
-    }
-    result.clear();
-    // 1. 格式化（还原系统放行系统卷）
-    execute_pe_task_line(
-        &format!("format {target} --allow-system"),
-        &mut result,
-        &mut reboot,
-    );
-    // 2. 应用 WIM
-    execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
-    // 3. 修复引导（目标是系统卷时执行 bcdboot）
-    execute_pe_task_line(&format!("bcdboot {target} S"), &mut result, &mut reboot);
-    let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-restore.txt"), &result);
-    show_message(
-        hwnd,
-        &pe_result_preview(&result),
-        "还原完成",
-        MB_OK | MB_ICONINFORMATION,
-    );
-    // 还原后必须重启
-    let ask2 = show_message(
-        hwnd,
-        "还原完成，现在重启进入系统？",
-        "BackupRestore",
-        MB_YESNO | MB_ICONQUESTION,
-    );
-    if ask2 == IDYES {
-        pe_reboot(hwnd);
-    }
+    pe_run_interactive(hwnd, "restore");
+}
+unsafe fn pe_secondary_from_desktop(hwnd: Hwnd) {
+    pe_run_interactive(hwnd, "secondary");
 }
 
-/// PE 桌面「安装第二系统」：Apply WIM 到目标卷 + BCD 追加启动项。
-unsafe fn pe_secondary_from_desktop(hwnd: Hwnd) {
-    // 自动点击模式：跳过对话框与确认，直接格式化+还原+追加启动项。
-    if let Some(params) = pe_click_params("secondary")
-        && params.len() >= 2
-    {
-        let mut result = String::new();
-        let mut reboot = false;
-        let mut target = params[1].trim_end_matches(':').to_string();
-        // AUTO：先用 find-drive 定位含 marker.txt 的测试盘（PE 盘符漂移）
-        if target == "AUTO" {
-            execute_pe_task_line("find-drive marker.txt", &mut result, &mut reboot);
-            target = resolve_drive("AUTO");
-        }
-        let wim = resolve_pe_wim_path(&params[0], &target);
-        let menu = if params.len() >= 3 {
-            params[2].clone()
-        } else {
-            "Windows 备份".to_string()
-        };
-        execute_pe_task_line(&format!("format {target}"), &mut result, &mut reboot);
-        execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
-        execute_pe_task_line(
-            &format!("add-secondary-entry {target} {menu}"),
-            &mut result,
-            &mut reboot,
-        );
-        let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-secondary.txt"), &result);
-        exit_pe_to_windows(hwnd);
-        return;
-    }
-    let out = pe_dialog(
+unsafe fn pe_run_interactive(hwnd: Hwnd, operation: &str) {
+    let (title, warning, default_name) = match operation {
+        "backup" => (
+            "备份系统 - BackupRestore",
+            "捕获所选卷；已有镜像使用候选副本追加，不删除原件。",
+            "",
+        ),
+        "secondary" => (
+            "安装第二系统 - BackupRestore",
+            "安装到指定目标；必须另外确认需要保留的主系统。",
+            "Windows 备份",
+        ),
+        _ => (
+            "还原系统 - BackupRestore",
+            "仅接受系统镜像；先校验再格式化，失败即停止。",
+            "1",
+        ),
+    };
+    let default_wim = if operation == "backup" {
+        format!(
+            "{}:\\pe-bk-{}.wim",
+            pe_default_image_drive(""),
+            pe_timestamp()
+        )
+    } else {
+        String::new()
+    };
+    let Some((drive_item, image, name)) = pe_dialog(
         hwnd,
-        "安装第二系统 - BackupRestore",
-        true,
-        "将把 WIM 应用到目标卷并添加启动菜单项（不影响 Windows 默认启动）。",
-        "H:\\pe-wim1.wim",
-        "Windows 备份",
-    );
-    let Some((drive_item, wim, name)) = out else {
+        title,
+        operation != "backup",
+        warning,
+        &default_wim,
+        default_name,
+    ) else {
         return;
     };
-    let target = drive_item
+    let drive = drive_item
         .split('|')
         .next()
         .unwrap_or("")
-        .trim_end_matches(':')
-        .to_string();
-    let wim = wim.trim().to_string();
-    if target.is_empty() || wim.is_empty() {
-        return;
-    }
-    let menu = if name.trim().is_empty() {
-        "Windows 备份"
+        .trim_end_matches(':');
+    let main = if operation == "secondary" {
+        let Some((item, _, _)) = pe_dialog(
+            hwnd,
+            "选择需保留的主系统",
+            false,
+            "此处选择已有主系统卷，仅记录保护身份，不写入该卷。",
+            "",
+            "",
+        ) else {
+            return;
+        };
+        item.chars().next()
     } else {
-        name.trim()
+        None
     };
-    let ask = show_message(
-        hwnd,
-        &format!(
-            "确认将 {} 安装为第二系统到卷 {}:？\n菜单名称：{}",
-            wim, target, menu
-        ),
-        "安装第二系统",
-        MB_YESNO | MB_ICONWARNING,
-    );
-    if ask != IDYES {
-        return;
+    let index = if operation == "restore" {
+        name.trim().parse::<u32>()
+    } else {
+        Ok(1)
+    };
+    let request = index
+        .map_err(|_| crate::err("镜像索引必须是正整数"))
+        .and_then(|index| {
+            crate::pe_operation::new_request(operation, drive, image.trim(), index, main, &name)
+        });
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => {
+            show_message(
+                hwnd,
+                &error.to_string(),
+                "参数校验失败",
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+    };
+    if operation != "backup" {
+        let ask = show_message(
+            hwnd,
+            &format!(
+                "确认将 {} 的索引 {} 还原到卷 {}:？\n此操作将格式化目标卷。输入或角色校验失败时不会格式化。",
+                image.trim(),
+                request.index,
+                drive
+            ),
+            "还原确认",
+            MB_YESNO | MB_ICONWARNING,
+        );
+        if ask != IDYES {
+            return;
+        }
     }
-    let mut result = String::new();
-    let mut reboot = false;
-    // 1. 格式化（第二系统目标默认拒绝系统卷/ESP）
-    execute_pe_task_line(&format!("format {target}"), &mut result, &mut reboot);
-    // 2. 应用 WIM
-    execute_pe_task_line(&format!("restore {wim} {target}"), &mut result, &mut reboot);
-    // 3. BCD 追加启动项
-    execute_pe_task_line(
-        &format!("add-secondary-entry {target} {menu}"),
-        &mut result,
-        &mut reboot,
-    );
-    let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-gui-secondary.txt"), &result);
-    show_message(
-        hwnd,
-        &pe_result_preview(&result),
-        "安装第二系统完成",
-        MB_OK | MB_ICONINFORMATION,
-    );
-    let ask2 = show_message(
-        hwnd,
-        "第二系统已添加，现在重启查看启动菜单？",
-        "BackupRestore",
-        MB_YESNO | MB_ICONQUESTION,
-    );
-    if ask2 == IDYES {
-        pe_reboot(hwnd);
+    EnableWindow(hwnd, 0);
+    let result = crate::pe_operation::execute(&request);
+    EnableWindow(hwnd, 1);
+    match result {
+        Ok(detail) => {
+            let title = if operation == "backup" {
+                "备份完成"
+            } else {
+                "还原完成"
+            };
+            show_message(hwnd, &detail, title, MB_OK | MB_ICONINFORMATION);
+            if show_message(
+                hwnd,
+                "操作已完成，返回 Windows 吗？",
+                "BackupRestore",
+                MB_YESNO | MB_ICONQUESTION,
+            ) == IDYES
+            {
+                pe_reboot(hwnd);
+            }
+        }
+        Err(error) => {
+            show_message(
+                hwnd,
+                &format!("操作未完成，已停止后续写入。\n{error}"),
+                "操作失败",
+                MB_OK | MB_ICONERROR,
+            );
+        }
     }
 }
 
@@ -7225,747 +7226,26 @@ unsafe extern "system" fn window_proc_pe(
     DefWindowProcW(hwnd, message, w_param, l_param)
 }
 
-/// Full-screen, shell-free recovery desktop for WinPE sessions. The main GUI
-/// follows when the technician picks backup/restore/secondary (returned as the
-/// operation tab index); `None` means the desktop was dismissed without one.
-/// PE 启动时自清 bootsequence。
-///
-/// PE 是 RAM 盘（X:\），bootmgr 引导 PE 后无法把"已消费 bootsequence"写回
-/// ESP 的 BCD，导致 bootsequence 残留：每次重启都会再次进入 PE、回不了
-/// 主系统。本函数在 PE 恢复桌面启动时（用户可见 UI 出现前）静默挂载 ESP
-/// 分区（S:）并清除 {bootmgr} bootsequence，恢复"下次重启回主系统"的
-/// 正常行为，全程无需用户操作。结果写入 ESP 根目录
-/// pe-bootsequence-clean.log，重启后可回到 Windows 读回验证。
-/// 配置驱动的 PE 任务执行：Windows 侧把要执行的动作写入 ESP 的
-/// `S:\pe-task.txt`（每行一个动作，`reboot` 表示执行完自动重启回
-/// Windows），PE 启动时读取并按配置逐条执行，结果落盘
-/// `S:\pe-task-result.txt`，配置改名为 `.done` 防止重复执行。
-/// 返回 `true` 表示配置要求执行后自动重启（调用方自动重启，无需用户
-/// 操作）；无配置返回 `false`（正常显示 PE 恢复桌面）。
-///
-/// 解析动作里的盘符参数：`AUTO` 表示用 attach-vhd 实际挂载出的盘符
-/// （PE 里 diskpart 手动 assign 不生效，VHD 分区由系统自动分配盘符，
-/// 通过枚举 marker.txt 所在盘符得到）。
-fn resolve_drive(drive: &str) -> String {
-    if drive.eq_ignore_ascii_case("AUTO") {
-        std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-drive.txt"))
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    } else {
-        drive.to_string()
-    }
-}
-
-/// 解析动作里的路径参数：路径中的 `AUTO:` 前缀替换为实际盘符。
-fn resolve_path(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("AUTO:") {
-        format!("{}:{rest}", resolve_drive("AUTO"))
-    } else {
-        path.to_string()
-    }
-}
-
-/// 解析自动点击配置里的 WIM 路径：`AUTO:PE\xxx.wim` 前缀在 PE 内自动
-/// 定位「PE 源盘」（含 BackupRestorePE\sources\boot.wim 的卷），解决
-/// Win11 侧盘符（如 Q:）在 PE 里盘符漂移、路径不存在的问题。
-/// `exclude` 为数据盘盘符（find-drive 定位的源/目标盘），排除它是因为
-/// 数据盘上也可能残留 BackupRestorePE 目录（如 RAM 模式验证部署过）。
-fn resolve_pe_wim_path(wim: &str, exclude: &str) -> String {
-    if let Some(rest) = wim.strip_prefix("AUTO:PE") {
-        format!("{}:{rest}", find_pe_source_drive(exclude))
-    } else {
-        wim.to_string()
-    }
-}
-
-/// 在 PE 内定位「PE 源盘」：枚举 C:-Z: 找含
-/// BackupRestorePE\sources\boot.wim 的卷（PE 从它内存启动）。
-fn find_pe_source_drive(exclude: &str) -> String {
-    for letter in 'C'..='Z' {
-        let letter = letter.to_string();
-        if letter == exclude {
-            continue;
-        }
-        let path = format!("{letter}:\\BackupRestorePE\\sources\\boot.wim");
-        if std::path::Path::new(&path).exists() {
-            return letter;
-        }
-    }
-    "Q".to_string() // 兜底：Win11 侧约定盘符（PE 找不到时按字面尝试）
-}
-
-/// 读取 PE 桌面自动点击配置 S:\pe-click.txt（首行 action，空格分隔参数）。
-/// 格式：`backup <源盘> <wim路径>` / `restore <wim路径> <目标盘>`
-/// / `secondary <wim路径> <目标盘> [菜单名]`。文件不存在返回 None。
-/// 该机制让「Win11 配置 → 重启进 PE → 自动点击按钮（与鼠标点击同路径）
-/// → 自动执行 → 自动回 Win11」全链路无需任何人工操作。
-fn read_pe_click_config() -> Option<(&'static str, Vec<String>)> {
-    let config = std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-click.txt")).ok()?;
-    let mut parts = config.split_whitespace();
-    let action = parts.next()?;
-    let params: Vec<String> = parts.map(|s| s.to_string()).collect();
-    let action = match action {
-        "backup" => "backup",
-        "restore" => "restore",
-        "secondary" => "secondary",
-        "exit" => "exit",
-        "main" => "main",
-        _ => return None,
-    };
-    Some((action, params))
-}
-
-/// 供 PE 桌面按钮 handler 使用的自动参数分支：返回动作与参数配置，
-/// 存在且动作匹配时调用方应跳过对话框、直接执行。
-/// 注意：handler 运行时 `S:\pe-click.txt` 已被启动流程改名 `.done`
-/// （防止重复触发），因此这里读 `.done` 才能拿到本次点击的参数。
-fn pe_click_params(action: &str) -> Option<Vec<String>> {
-    let config = std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-click.txt.done")).ok()?;
-    let mut parts = config.split_whitespace();
-    let config_action = parts.next()?;
-    if config_action != action {
-        return None;
-    }
-    Some(parts.map(|s| s.to_string()).collect())
-}
-
-/// 支持动作（每行一个，空格分隔参数）：
-/// - `clean_bootsequence`：挂载 ESP 并清除 {bootmgr} bootsequence
-/// - `verify`：取证（bootmgr 枚举 / ESP 目录列表 / 结果日志读回）
-/// - `attach-vhd <路径> <盘符>`：diskpart 挂载 VHD 并分配盘符（PE 测试用）
-/// - `backup <盘符> <wim路径>`：dism 捕获卷为 WIM
-/// - `restore <wim路径> <盘符>`：dism 应用 WIM 到卷
-/// - `verify-file <路径>`：检查文件是否存在（测试验证）
-/// - `reboot`：全部执行完后自动重启回 Windows
-/// PE 侧拿 ESP 卷路径，**优先零盘符**；拿不到才退回挂 S:。
-///
-/// 返回 `(ESP 的 verbatim 卷路径或 None, 本次是否挂了 S:, 诊断日志)`。
-/// 第三个元素是要并进 PE 任务结果里的明细——2026-09-29 用户的明确要求：
-/// 「增加详细日志帮助发现问题」。这三种失败形态在线码里长得一模一样
-/// （都是后面某一步报错），只有日志能区分：
-///   1. 一次计划任务都没跑成   → 收集器根本没起来
-///   2. 收集器跑命令失败       → 非零退出码
-///   3. 跑成但结果错           → 命令写错
-/// PE 是离线环境、看不到桌面，日志是唯一线索，所以这里把每条分支都说清楚。
-#[cfg(windows)]
-fn esp_store_path_for_pe(detail: &mut String) -> (Option<String>, bool) {
-    if let Some(volume) = crate::windows_prepare::esp_volume_path_for_task() {
-        let mut store = std::path::PathBuf::from(volume);
-        store.push("EFI");
-        store.push("Microsoft");
-        store.push("Boot");
-        store.push("BCD");
-        detail.push_str(&format!(
-            "[ESP] zero drive letter: {}\n",
-            store.display()
-        ));
-        return (Some(store.to_string_lossy().into_owned()), false);
-    }
-    detail.push_str("[ESP] volume GUID not found; falling back to mountvol S: /S\n");
-    let code = run_cmd_to_file("mountvol.exe S: /S", None);
-    if !code.is_success() {
-        detail.push_str(&format!(
-            "[ESP] mountvol S: /S FAILED with exit code {code}\n"
-        ));
-        return (None, true);
-    }
-    (Some(r"S:\EFI\Microsoft\Boot\BCD".to_string()), true)
-}
-
-/// 把命令串里的 `S:` 前缀换成 ESP 根（方案 A 的零盘符改造）。
-///
-/// 只替换**盘符后紧跟反斜杠或冒号结尾**的 `S:`，不动命令里别处可能出现的字母 S。
-/// PE 里 `S:` 是本项目自己分配给 ESP 的（`X:` 是 RAM 盘），所以这个替换是安全的。
-fn rewrite_s_root(command: &str, esp_root: &str) -> String {
-    if esp_root == "S:\\" {
-        return command.to_string();
-    }
-    let bytes = command.as_bytes();
-    let mut out = String::with_capacity(command.len() + esp_root.len());
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte == b'S' && index + 1 < bytes.len() && bytes[index + 1] == b':' {
-            // 前一个字符不能是盘符/路径的一部分（例如 H:\pe-wim1.wim 里的 S 不算）
-            let prev_is_sep = index == 0 || bytes[index - 1] == b' ' || bytes[index - 1] == b'>'
-                || bytes[index - 1] == b'(' || bytes[index - 1] == b'=';
-            let next_ok = index + 2 >= bytes.len() || bytes[index + 2] == b'\\';
-            if prev_is_sep && next_ok {
-                out.push_str(esp_root);
-                continue;
-            }
-        }
-        out.push(*byte as char);
-    }
-    out
-}
-
-fn execute_pe_task_line(action: &str, result: &mut String, reboot: &mut bool) {
-    // 方案 A（v1.8.3）：整个函数里对 ESP 的访问都走这一个根。
-    // 零盘符时是 verbatim 卷路径，挂载失败才退回 S:。
-    //  computed once: 一个任务行里可能有多次 ESP 访问，每次重算既慢又可能不一致。
-    let mut esp_detail = String::new();
-    let (esp_store, _esp_mounted) = esp_store_path_for_pe(&mut esp_detail);
-    if !esp_detail.is_empty() {
-        result.push_str(&esp_detail);
-    }
-    // 卷根：store 指到 ...\Boot\BCD，回退四级就是卷根。
-    let esp_root = match &esp_store {
-        Some(store) => {
-            let mut path = std::path::PathBuf::from(store);
-            for _ in 0..4 {
-                path.pop();
-            }
-            path.to_string_lossy().into_owned()
-        }
-        None => "S:\\".to_string(),
-    };
-    let parts: Vec<&str> = action.split_whitespace().collect();
-    match parts.as_slice() {
-        [] => {}
-        ["reboot"] => *reboot = true,
-        ["clean_bootsequence"] => {
-            // 方案 A（v1.8.3）：零盘符优先。PE 里同样不必为了删一个值就分配盘符。
-            let mut detail = String::new();
-            let (store, _mounted) = esp_store_path_for_pe(&mut detail);
-            let clean_code = match &store {
-                Some(store) => run_cmd_to_file(
-                    &format!(
-                        "bcdedit.exe /store \"{store}\" /deletevalue {{bootmgr}} bootsequence"
-                    ),
-                    None,
-                ),
-                None => {
-                    detail.push_str("[clean_bootsequence] no ESP path; skipped\n");
-                    CmdOutcome::Skipped
-                }
-            };
-            result.push_str(&detail);
-            result.push_str(&format!(
-                "clean_bootsequence: clean={clean_code}\n"
-            ));
-        }
-        ["verify"] => {
-            // 取证 A：bootmgr 条目当前状态（确认 bootsequence 已清除）
-            run_cmd_to_file(
-                &rewrite_s_root("cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {bootmgr} > S:\\verify-bcd-enum.txt 2>&1", &esp_root),
-                None,
-            );
-            match std::fs::read_to_string(crate::text_parsing::esp_log_path("verify-bcd-enum.txt")) {
-                Ok(text) => result.push_str(&format!("[ENUM_BOOTMGR]\n{text}\n")),
-                Err(_) => result.push_str("[ENUM_BOOTMGR] read failed\n"),
-            }
-            // 取证 B：ESP 根目录文件列表
-            run_cmd_to_file(&rewrite_s_root("cmd /c dir S:\\ > S:\\verify-dir.txt 2>&1", &esp_root), None);
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("verify-dir.txt")) {
-                result.push_str(&format!("[DIR_S]\n{text}\n"));
-            }
-            // 取证 C：结果日志读回（确认已落盘）
-            match std::fs::read_to_string(esp_log_path("pe-task-result.txt")) {
-                Ok(text) => result.push_str(&format!("[RESULT_READBACK]\n{text}\n")),
-                Err(_) => result.push_str("[RESULT_READBACK] not yet written\n"),
-            }
-        }
-        ["attach-vhd", vhd, _drive] => {
-            // PE 里盘符可能与 Windows 不同：先搜索 VHD 文件实际所在盘符，
-            // 再用实际路径 attach（diskpart 路径错误会直接失败）。
-            let file = vhd
-                .rsplit('\\')
-                .next()
-                .unwrap_or(vhd)
-                .rsplit('/')
-                .next()
-                .unwrap_or(vhd);
-            let find_out = crate::text_parsing::esp_log_path("find-vhd.txt");
-            run_cmd_to_file(
-                &format!(
-                    "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{file} echo %d > {find_out}"
-                ),
-                None,
-            );
-            let mut real_vhd = vhd.to_string();
-            if let Ok(text) = std::fs::read_to_string(find_out)
-                && let Some(line) = text.lines().next()
-            {
-                let drv = line.trim().trim_end_matches(':');
-                if drv.len() == 1 && drv.as_bytes()[0].is_ascii_alphabetic() {
-                    real_vhd = format!("{drv}:\\{file}");
-                }
-            }
-            result.push_str(&format!("attach-vhd: file={vhd}, resolved={real_vhd}\n"));
-            // diskpart 挂载 VHD（先 automount enable 确保 PE 自动分配盘符，
-            // 不手动 assign——PE 里 assign 不生效）
-            let script = format!("automount enable\nselect vdisk file={real_vhd}\nattach vdisk\n");
-            let script_file = "X:\\attach-vhd.txt";
-            let _ = std::fs::write(script_file, &script);
-            let code = run_cmd_to_file(
-                &rewrite_s_root(&format!("cmd /c diskpart /s {script_file} > S:\\attach-vhd-out.txt 2>&1"), &esp_root),
-                None,
-            );
-            result.push_str(&format!("attach-vhd {real_vhd}: code={code}\n"));
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("attach-vhd-out.txt")) {
-                result.push_str(&format!("[ATTACH_VHD]\n{text}\n"));
-            }
-            // 枚举 marker.txt 所在盘符（VHD 卷自动分配的盘符）
-            run_cmd_to_file(
-                &rewrite_s_root("cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\marker.txt echo %d > S:\\find-marker.txt", &esp_root),
-                None,
-            );
-            let mut actual = String::new();
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("find-marker.txt")) {
-                actual = text.lines().next().unwrap_or("").trim().to_string();
-            }
-            let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-drive.txt"), &actual);
-            result.push_str(&format!("attach-vhd: actual drive = {actual}\n"));
-            // 诊断：attach 后实际盘符卷内容
-            if !actual.is_empty() {
-                run_cmd_to_file(
-                    &rewrite_s_root(&format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"), &esp_root),
-                    None,
-                );
-                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("dir-attached.txt")) {
-                    result.push_str(&format!("[DIR_ATTACHED {actual}:]\n{text}\n"));
-                }
-            }
-        }
-        ["backup", drive, wim] => {
-            // dism 捕获卷为 WIM（程序备份核心就是 dism Capture-Image）
-            // 目标 WIM 已存在时 dism 会追加索引，先删除保证单索引
-            let d = resolve_drive(drive);
-            let _ = std::fs::remove_file(wim);
-            let out = crate::text_parsing::esp_log_path("backup-out.txt");
-            // 备份进度 GUI：后台窗口线程读 DISM 输出文件实时刷新，
-            // 不弹 cmd 黑窗、不阻塞界面（见 recovery_progress.rs）。
-            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()), Some("BACKUP"));
-            // 生成 DISM 排除配置（Parallels 卷根占位符/临时目录/回收站/浏览器缓存），
-            // 写到 PE 的 X: RAM 盘，不会落在捕获卷内；配置失败则不带排除继续捕获。
-            // 路径拼进 cmd 字符串，可能含空格，必须加引号。
-            let mut exclude_arg = String::new();
-            let source_root = format!("{d}:\\");
-            if let Ok(config_path) =
-                backuprestore_core::write_capture_exclusion_config(Path::new(&source_root))
-            {
-                exclude_arg = format!(" /ConfigFile:\"{}\"", config_path.display());
-            }
-            // PE 的 dism 对长参数敏感，用最小参数集（Name 值不能含连字符）
-            run_cmd_to_file_timeout(
-                &format!(
-                    "cmd /c dism.exe /Capture-Image /ImageFile:{wim} /CaptureDir:{d}:\\ /Name:PE{exclude_arg} > {out} 2>&1"
-                ),
-                None,
-                600000,
-            );
-            crate::recovery_progress::request_close(&progress);
-            if let Ok(text) = std::fs::read_to_string(out) {
-                result.push_str(&format!("[BACKUP {d}: -> {wim}]\n{text}\n"));
-            } else {
-                result.push_str(&format!("backup {d}: -> {wim}: no output\n"));
-            }
-        }
-        ["delete-file", path] => {
-            // 删除文件（还原验证：删掉后 restore 应恢复它）
-            let p = resolve_path(path);
-            let out = crate::text_parsing::esp_log_path("delete-out.txt");
-            run_cmd_to_file(&format!("cmd /c del /q {p} > {out} 2>&1"), None);
-            if let Ok(text) = std::fs::read_to_string(out) {
-                result.push_str(&format!("[DELETE_FILE {p}]\n{text}\n"));
-            } else {
-                result.push_str(&format!("delete-file {p}: no output\n"));
-            }
-        }
-        ["find-drive", marker] => {
-            // 枚举含标记文件的盘符（真实分区在 PE 里盘符可能变化，
-            // 物理分区会自动挂载，只需找到实际盘符）
-            run_cmd_to_file(
-                &rewrite_s_root(&format!(
-                    "cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\{marker} echo %d > S:\\find-drive.txt"
-                ), &esp_root),
-                None,
-            );
-            let mut actual = String::new();
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("find-drive.txt")) {
-                actual = text.lines().next().unwrap_or("").trim().to_string();
-            }
-            let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-drive.txt"), &actual);
-            result.push_str(&format!("find-drive {marker}: actual drive = {actual}\n"));
-            if !actual.is_empty() {
-                run_cmd_to_file(
-                    &rewrite_s_root(&format!("cmd /c dir {actual}:\\ > S:\\dir-attached.txt 2>&1"), &esp_root),
-                    None,
-                );
-                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("dir-attached.txt")) {
-                    result.push_str(&format!("[DIR_ATTACHED {actual}:]\n{text}\n"));
-                }
-            }
-        }
-        ["dism-diag"] => {
-            // 诊断 PE 的 dism Capture-Image 各变体（一次进 PE 拿全部信息）
-            let cases: [(&str, &str); 4] = [
-                (
-                    "c1_img=H:\\pe-wim1.wim dir=T:\\",
-                    "cmd /c dism.exe /Capture-Image /ImageFile:H:\\pe-wim1.wim /CaptureDir:T:\\ /Name:X > S:\\diag1.txt 2>&1",
-                ),
-                (
-                    "c2_img=X:\\pe-wim1.wim dir=T:\\",
-                    "cmd /c dism.exe /Capture-Image /ImageFile:X:\\pe-wim1.wim /CaptureDir:T:\\ /Name:X > S:\\diag2.txt 2>&1",
-                ),
-                (
-                    "c3_img=H:\\pe-wim1.wim dir=T:",
-                    "cmd /c dism.exe /Capture-Image /ImageFile:H:\\pe-wim1.wim /CaptureDir:T: /Name:X > S:\\diag3.txt 2>&1",
-                ),
-                (
-                    "c4_img=H:\\pewim1.wim dir=T:\\",
-                    "cmd /c dism.exe /Capture-Image /ImageFile:H:\\pewim1.wim /CaptureDir:T:\\ /Name:X > S:\\diag4.txt 2>&1",
-                ),
-            ];
-            for (label, command) in cases {
-                let out = match label.chars().nth(1) {
-                    Some('1') => crate::text_parsing::esp_log_path("diag1.txt"),
-                    Some('2') => crate::text_parsing::esp_log_path("diag2.txt"),
-                    Some('3') => crate::text_parsing::esp_log_path("diag3.txt"),
-                    _ => crate::text_parsing::esp_log_path("diag4.txt"),
-                };
-                run_cmd_to_file(command, None);
-                result.push_str(&format!("[{label}]\n"));
-                if let Ok(text) = std::fs::read_to_string(out) {
-                    result.push_str(&text);
-                    result.push('\n');
-                } else {
-                    result.push_str("no output\n");
-                }
-            }
-        }
-        ["restore", wim, drive] => {
-            // dism 应用 WIM 到卷
-            let d = resolve_drive(drive);
-            let out = crate::text_parsing::esp_log_path("restore-out.txt");
-            // 还原进度 GUI（同备份：后台窗口线程读 DISM 输出实时刷新）。
-            let progress = crate::recovery_progress::spawn(PathBuf::from(out.as_str()), Some("RESTORE_EXISTING"));
-            run_cmd_to_file_timeout(
-                &format!(
-                    "cmd /c dism.exe /Apply-Image /ImageFile:{wim} /Index:1 /ApplyDir:{d}:\\ > {out} 2>&1"
-                ),
-                None,
-                600000,
-            );
-            crate::recovery_progress::request_close(&progress);
-            if let Ok(text) = std::fs::read_to_string(out) {
-                result.push_str(&format!("[RESTORE {wim} -> {d}:]\n{text}\n"));
-            } else {
-                result.push_str(&format!("restore {wim} -> {d}: no output\n"));
-            }
-        }
-        ["verify-file", path] => {
-            // 检查文件是否存在（PE 精简版无 PowerShell，用 cmd if exist）
-            let p = resolve_path(path);
-            let out = crate::text_parsing::esp_log_path("verify-file-out.txt");
-            run_cmd_to_file(
-                &format!("cmd /c if exist {p} (echo FOUND) else (echo MISSING) > {out} 2>&1"),
-                None,
-            );
-            if let Ok(text) = std::fs::read_to_string(out) {
-                result.push_str(&format!("[VERIFY_FILE {p}]\n{text}\n"));
-            } else {
-                result.push_str(&format!("verify-file {p}: no output\n"));
-            }
-        }
-        ["find-system-drive"] => {
-            // 枚举含 Windows 的卷（PE 里系统分区盘符会变），写入 S:\pe-drive.txt
-            run_cmd_to_file(
-                &rewrite_s_root("cmd /c for %d in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\\Windows\\System32\\Config\\SYSTEM echo %d > S:\\find-system.txt", &esp_root),
-                None,
-            );
-            let mut actual = String::new();
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("find-system.txt")) {
-                actual = text.lines().next().unwrap_or("").trim().to_string();
-            }
-            let _ = std::fs::write(crate::text_parsing::esp_log_path("pe-drive.txt"), &actual);
-            result.push_str(&format!("find-system-drive: system drive = {actual}\n"));
-        }
-        ["format", drive] | ["format", drive, "--allow-system"] => {
-            let d = resolve_drive(drive);
-            let allow_system = parts.len() == 3;
-            let d_upper = d.trim_end_matches(':').to_ascii_uppercase();
-            // 保护 1：PE 运行盘 X: 与 ESP S: 一律拒绝
-            if d_upper == "X" || d_upper == "S" || d_upper.is_empty() {
-                result.push_str(&format!("format {d}: REFUSED: PE RAM disk or ESP\n"));
-            } else {
-                // 保护 2：含 Windows 的卷默认拒绝，仅 --allow-system 放行（还原系统场景）
-                run_cmd_to_file(
-                    &rewrite_s_root(&format!(
-                        "cmd /c if exist {d_upper}:\\Windows\\System32\\Config\\SYSTEM (echo SYS) else (echo NOSYS) > S:\\format-check.txt"
-                    ), &esp_root),
-                    None,
-                );
-                let mut is_system = false;
-                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("format-check.txt")) {
-                    is_system = text.contains("SYS");
-                }
-                if is_system && !allow_system {
-                    result.push_str(&format!(
-                        "format {d_upper}: REFUSED: system volume requires --allow-system\n"
-                    ));
-                } else {
-                    // diskpart 按盘符选卷并快速格式化
-                    let script = format!("select volume {d_upper}\nformat fs=ntfs quick\n");
-                    let script_file = "X:\\pe-format.txt";
-                    let _ = std::fs::write(script_file, &script);
-                    let code = run_cmd_to_file_timeout(
-                        &format!("cmd /c diskpart /s {script_file} > S:\\format-out.txt 2>&1"),
-                        None,
-                        300000,
-                    );
-                    result.push_str(&format!("format {d_upper}: code={code}\n"));
-                    if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("format-out.txt")) {
-                        result.push_str(&format!("[FORMAT {d_upper}]\n{text}\n"));
-                    }
-                }
-            }
-        }
-        ["bcdboot", drive] | ["bcdboot", drive, ..] => {
-            let d = resolve_drive(drive);
-            let esp_letter = if parts.len() >= 3 {
-                parts[2].trim_end_matches(':')
-            } else {
-                "S"
-            };
-            // 仅当目标是系统卷（SYSTEM hive + winload.efi 双条件）才执行 bcdboot 重建引导
-            run_cmd_to_file(
-                &rewrite_s_root(&format!(
-                    "cmd /c if exist {d}:\\Windows\\System32\\Config\\SYSTEM (if exist {d}:\\Windows\\system32\\winload.efi (echo SYS) else (echo NOSYS)) else (echo NOSYS) > S:\\bcdboot-check.txt"
-                ), &esp_root),
-                None,
-            );
-            let mut is_system = false;
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-check.txt")) {
-                is_system = text.contains("SYS");
-            }
-            if is_system {
-                // 记录修复前 {bootmgr} 默认条目所引用的卷（partition=X:）。
-                // 注意：default 字段可能是 {default} 别名，bcdboot 执行后该别名会
-                // 重新绑定到新条目，所以必须按「原默认卷」找回真实条目 GUID 再恢复。
-                run_cmd_to_file(
-                    &rewrite_s_root("cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum {default} > S:\\bcdboot-def-before.txt 2>&1", &esp_root),
-                    None,
-                );
-                let mut old_partition = String::new();
-                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-def-before.txt")) {
-                    for line in text.lines() {
-                        let t = line.trim();
-                        if let Some(rest) = t.strip_prefix("device") {
-                            // 形如 partition=C:
-                            if let Some(p) = rest.find("partition=") {
-                                let tail = &rest[p + "partition=".len()..];
-                                let letter = tail.trim().chars().next().unwrap_or('?');
-                                if letter.is_ascii_alphabetic() {
-                                    old_partition = format!("{letter}:");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                let code = run_cmd_to_file_timeout(
-                    &format!(
-                        "cmd /c bcdboot.exe {d}:\\Windows /s {esp_letter}: /f UEFI > S:\\bcdboot-out.txt 2>&1"
-                    ),
-                    None,
-                    300000,
-                );
-                result.push_str(&format!("bcdboot {d}: /s {esp_letter}: code={code}\n"));
-                if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-out.txt")) {
-                    result.push_str(&format!("[BCDBOOT {d}]\n{text}\n"));
-                }
-                // 恢复 default 与菜单顺序：按原默认卷在 BCD 中找回真实条目并设回默认/第一
-                if !old_partition.is_empty() {
-                    run_cmd_to_file(
-                        &rewrite_s_root("cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /enum > S:\\bcdboot-after.txt 2>&1", &esp_root),
-                        None,
-                    );
-                    let mut real_guid = String::new();
-                    let mut cur_guid = String::new();
-                    if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-after.txt")) {
-                        for line in text.lines() {
-                            let t = line.trim();
-                            // bcdedit 语言：中文系统输出"标识符"，英文系统输出"identifier"
-                            if let Some(rest) = t
-                                .strip_prefix("标识符")
-                                .or_else(|| t.strip_prefix("identifier"))
-                                && let Some(s) = rest.find('{')
-                                && let Some(e) = rest[s + 1..].find('}')
-                            {
-                                cur_guid = rest[s..s + 1 + e + 1].to_string();
-                                continue;
-                            }
-                            if cur_guid.is_empty() {
-                                continue;
-                            }
-                            // device partition=X: 且该条目是 osloader（有 path 行）
-                            if let Some(rest) = t.strip_prefix("device") {
-                                let dev = rest.trim();
-                                if dev.contains(&old_partition) && cur_guid != "{bootmgr}" {
-                                    real_guid = cur_guid.clone();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if !real_guid.is_empty() {
-                        run_cmd_to_file(
-                            &rewrite_s_root(&format!(
-                                "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /set {{bootmgr}} default {real_guid} > S:\\bcdboot-restore.txt 2>&1"
-                            ), &esp_root),
-                            None,
-                        );
-                        run_cmd_to_file(
-                            &rewrite_s_root(&format!(
-                                "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /displayorder {real_guid} /addfirst > S:\\bcdboot-order.txt 2>&1"
-                            ), &esp_root),
-                            None,
-                        );
-                        if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("bcdboot-restore.txt")) {
-                            result.push_str(&format!("[DEFAULT_RESTORE {real_guid}] {text}\n"));
-                        }
-                    } else {
-                        result.push_str(&format!(
-                            "bcdboot: default entry for {old_partition} not found after bcdboot\n"
-                        ));
-                    }
-                } else {
-                    result.push_str(
-                        "bcdboot: no previous default, keeping bcdboot-assigned default\n",
-                    );
-                }
-            } else {
-                result.push_str(&format!("bcdboot {d}: skipped (not a system volume)\n"));
-            }
-        }
-        ["add-secondary-entry", drive, ..] => {
-            let d = resolve_drive(drive);
-            let name = parts[2..].join(" ");
-            // 创建 osloader 条目（完整字段避免 0xc0000225）
-            run_cmd_to_file(
-                &rewrite_s_root(&format!(
-                    "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /create /d \"{name}\" /application osloader > S:\\pe-addsec-create.txt 2>&1"
-                ), &esp_root),
-                None,
-            );
-            let mut guid = String::new();
-            if let Ok(text) = std::fs::read_to_string(crate::text_parsing::esp_log_path("pe-addsec-create.txt")) {
-                result.push_str(&format!("[ADD_SECONDARY_CREATE]\n{text}\n"));
-                // 提取 {guid}（bcdedit 输出 "The entry {xxxx-...} was successfully created."）
-                if let Some(start) = text.find('{')
-                    && let Some(end) = text[start + 1..].find('}')
-                {
-                    guid = text[start..start + 1 + end + 1].to_string();
-                }
-            }
-            if guid.is_empty() {
-                result.push_str(&format!(
-                    "add-secondary-entry: GUID parse failed for {name}\n"
-                ));
-            } else {
-                let steps = [
-                    ("device", format!("partition={d}:")),
-                    ("osdevice", format!("partition={d}:")),
-                    ("path", r"\Windows\system32\winload.efi".to_string()),
-                    ("systemroot", r"\Windows".to_string()),
-                    ("nx", "OptIn".to_string()),
-                ];
-                for (field, value) in steps {
-                    let code = run_cmd_to_file(
-                        &rewrite_s_root(&format!(
-                            "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /set {guid} {field} {value} > S:\\pe-addsec-set.txt 2>&1"
-                        ), &esp_root),
-                        None,
-                    );
-                    result.push_str(&format!("add-secondary-entry set {field}: code={code}\n"));
-                }
-                let code = run_cmd_to_file(
-                    &rewrite_s_root(&format!(
-                        "cmd /c bcdedit.exe /store S:\\EFI\\Microsoft\\Boot\\BCD /displayorder {guid} /addlast > S:\\pe-addsec-order.txt 2>&1"
-                    ), &esp_root),
-                    None,
-                );
-                result.push_str(&format!("add-secondary-entry displayorder: code={code}\n"));
-                // default 保持不变（部署期已写入 pe-exit-guid.txt 的 Windows 条目 GUID）
-            }
-        }
-        other => result.push_str(&format!("unknown action: {}\n", other.join(" "))),
-    }
-}
-
-/// 配置驱动的 PE 任务执行：Windows 侧把要执行的动作写入 ESP 的
-/// `S:\pe-task.txt`（每行一个动作，`reboot` 表示执行完自动重启回
-/// Windows），PE 启动时读取并按配置逐条执行，结果落盘
-/// `S:\pe-task-result.txt`，配置改名为 `.done` 防止重复执行。
-/// 返回 `true` 表示配置要求执行后自动重启（调用方自动重启，无需用户
-/// 操作）；无配置返回 `false`（正常显示 PE 恢复桌面）。
+/// 自动请求只领取一次；全部成功才返回重启许可，失败保留证据。
+/// 旧文本任务保留原件，绝不解释为可重放命令。
 fn pe_task_execute() -> bool {
-    // 0. 拿 ESP 路径——任务配置就在卷根的 pe-task.txt。
-    //    方案 A（v1.8.3）：先试零盘符，失败才挂 S:。
-    let mut detail = String::new();
-    let (store, mounted) = esp_store_path_for_pe(&mut detail);
-    let task_file = match &store {
-        Some(store) => {
-            let mut path = std::path::PathBuf::from(store);
-            // 回到卷根（store 指到 ...\Boot\BCD，配置在卷根）
-            for _ in 0..4 {
-                path.pop();
+    let result = crate::pe_operation::execute_pending();
+    match result {
+        Ok(completed) => completed,
+        Err(error) => {
+            unsafe {
+                show_message(
+                    null_mut(),
+                    &format!(
+                        "自动任务未执行或未完成：{error}\n已保留任务与状态，请检查后重新安排。"
+                    ),
+                    "PE 自动任务已停止",
+                    MB_OK | MB_ICONERROR,
+                );
             }
-            path.push("pe-task.txt");
-            path.to_string_lossy().into_owned()
+            false
         }
-        None => String::new(),
-    };
-
-    let mut reboot = false;
-    let Ok(config) = std::fs::read_to_string(task_file.as_str()) else {
-        // 读不到配置也要留痕：PE 是离线环境，静默 return 等于现场被抹掉。
-        let _ = std::fs::write(
-            esp_log_path("pe-task-result.txt"),
-            format!("PE task execute: no config at {task_file}\n{detail}"),
-        );
-        return false;
-    };
-    let mut result = format!("PE task execute start\n{detail}");
-    for line in config.lines() {
-        let action = line.trim();
-        execute_pe_task_line(action, &mut result, &mut reboot);
     }
-    let _ = std::fs::write(esp_log_path("pe-task-result.txt"), &result);
-    // 配置标记完成（防下次重复执行）
-    // .done 与 task_file 同卷：零盘符时 task_file 是卷路径，target 也必须
-    // 是同一个卷路径，否则跨"卷路径→盘符" rename 会失败。
-    let done_file = if let Some(store) = &store {
-        let mut path = std::path::PathBuf::from(store);
-        for _ in 0..4 {
-            path.pop();
-        }
-        path.push("pe-task.txt.done");
-        path.to_string_lossy().into_owned()
-    } else {
-        esp_log_path("pe-task.txt.done")
-    };
-    let renamed = std::fs::rename(&task_file, &done_file);
-    if renamed.is_err() {
-        // 改不了名只能在 result 里写一笔，至少别让下一轮重复执行同一个任务。
-        result.push_str(&format!("[WARN] rename to .done failed: {renamed:?}\n"));
-    }
-    // 2026-09-29：修掉「PE 挂上 S: 后从不卸载」。任务已跑完、结果已落盘，
-    // 再留着 S: 只会让 Windows 侧出现「刚自动打开的 S: 窗口内容突然不可访问」
-    // （自动播放弹窗是 Windows 启动后 explorer 起来的，窗口指向的盘符已不存在）。
-    // 卸载同样不看退出码——`mountvol /D` 的返回码在实机上同样不可信。
-    if mounted {
-        // 真的挂了 S: 才卸。零盘符路径下这句是无意义操作，还可能卸掉别人挂的卷。
-        // 退出码仍然只记录、不当判据——mountvol 返回码在实机上不可信
-        // （v1.8.0 实测过：失败时返回 0、成功时反而返回 1）。
-        let unmount_code = run_cmd_to_file("mountvol.exe S: /D", None);
-        result = format!("{result}\n[UNMOUNT_ESP] mountvol S: /D code={unmount_code}\n");
-    } else {
-        result.push_str("[UNMOUNT_ESP] not needed: zero drive letter path was used\n");
-    }
-    let _ = std::fs::write(esp_log_path("pe-task-result.txt"), &result);
-    reboot
 }
 
 pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
@@ -7980,9 +7260,7 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             return Ok(None);
         }
         close_previous_gui_windows();
-        // PE 恢复桌面启动：读取 Windows 侧写入 ESP 的任务配置
-        // S:\pe-task.txt，按配置执行动作；配置含 reboot 则执行完自动
-        // 重启回 Windows，全程无需用户操作。无配置则正常显示 PE 桌面。
+        // 领取类型化请求；失败停留桌面，无请求则等待用户操作。
         let auto_reboot = pe_task_execute();
         if auto_reboot {
             let _ = run_cmd_to_file("wpeutil.exe reboot", None);
@@ -8035,23 +7313,7 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             return Err(super::err("CreateWindowExW failed (PE desktop)"));
         }
         ShowWindow(window, SW_SHOW);
-        // PE 桌面「自动点击」（开发/验收）：存在 S:\pe-click.txt 时，自动
-        // 向主窗口投递对应按钮的 WM_COMMAND——与真实鼠标点击走完全相同
-        // 的分发路径（window_proc_pe → handler → 确认框自动接受 → 执行 →
-        // 恢复 BCD 并重启回 Windows）。配置随即改名 .done 防重复执行。
-        let auto_click_id = match read_pe_click_config() {
-            Some(("backup", _)) => Some(ID_PE_BACKUP),
-            Some(("restore", _)) => Some(ID_PE_RESTORE),
-            Some(("secondary", _)) => Some(ID_PE_SECONDARY),
-            Some(("exit", _)) => Some(ID_PE_EXIT),
-            Some(("main", _)) => Some(ID_PE_MAIN_GUI),
-            _ => None,
-        };
-        if let Some(btn_id) = auto_click_id {
-            PE_AUTO_CLICK.store(true, std::sync::atomic::Ordering::SeqCst);
-            let _ = std::fs::rename(crate::text_parsing::esp_log_path("pe-click.txt"), crate::text_parsing::esp_log_path("pe-click.txt.done"));
-            PostMessageW(window, WM_COMMAND, btn_id as WParam, 0);
-        }
+        // 旧 pe-click 文本未绑定目标身份，不再自动授权破坏性操作。
         let mut message = Msg {
             hwnd: null_mut(),
             message: 0,
