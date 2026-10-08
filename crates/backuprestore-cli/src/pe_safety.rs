@@ -84,6 +84,29 @@ pub(crate) fn verify_binding(
     Ok(())
 }
 
+/// 跨启动只重新绑定现场地址；稳定身份、几何和文件系统仍须全部吻合。
+/// 返回值用于本次操作，后续写入继续由 verify_binding 拒绝编号再次变化。
+pub(crate) fn rebind_after_boot(
+    expected: &VolumeIdentity,
+    actual: &VolumeIdentity,
+    serial: bool,
+) -> Result<VolumeIdentity, TaskError> {
+    if !expected.is_complete() {
+        return Err(crate::err("准备期卷身份不完整，拒绝重新绑定"));
+    }
+    let mut rebound = expected.clone();
+    rebound.disk_number = actual.disk_number;
+    rebound.partition_number = actual.partition_number;
+    rebound.drive_letter = actual.drive_letter;
+    verify_binding(&rebound, actual, serial)?;
+    if !expected.filesystem.eq_ignore_ascii_case(&actual.filesystem)
+        || !crate::text_parsing::same_volume(&expected.volume_guid, &actual.volume_guid)
+    {
+        return Err(crate::err("跨启动卷身份或文件系统变化，拒绝重新绑定"));
+    }
+    Ok(rebound)
+}
+
 pub(crate) fn check_target(
     target: &VolumeIdentity,
     protected: &[VolumeIdentity],
@@ -309,6 +332,39 @@ mod tests {
         after.volume_serial = "new".into();
         assert!(verify_binding(&before, &after, true).is_err());
         assert!(verify_binding(&before, &after, false).is_ok());
+    }
+
+    #[test]
+    fn boot_rebinding_keeps_stable_identity_and_pins_new_addresses() {
+        let before = identity("target");
+        let mut current = before.clone();
+        current.disk_number = Some(7);
+        current.partition_number = Some(4);
+        current.drive_letter = Some('Q');
+        let rebound = rebind_after_boot(&before, &current, true).unwrap();
+        assert_eq!(rebound.disk_number, Some(7));
+        assert_eq!(rebound.partition_number, Some(4));
+        assert!(verify_binding(&rebound, &current, true).is_ok());
+        let script =
+            crate::diskpart_format_script(rebound.disk_number, rebound.partition_number).unwrap();
+        assert!(script.starts_with("select disk 7\r\nselect partition 4\r\n"));
+        current.disk_number = Some(8);
+        assert!(verify_binding(&rebound, &current, true).is_err());
+        for mutate in [
+            |v: &mut VolumeIdentity| v.disk_guid = "foreign".into(),
+            |v: &mut VolumeIdentity| v.partition_guid = "foreign".into(),
+            |v: &mut VolumeIdentity| v.volume_guid = "foreign".into(),
+            |v: &mut VolumeIdentity| v.partition_type_guid = "foreign".into(),
+            |v: &mut VolumeIdentity| v.partition_offset += 4096,
+            |v: &mut VolumeIdentity| v.partition_size += 4096,
+            |v: &mut VolumeIdentity| v.filesystem = "FAT32".into(),
+            |v: &mut VolumeIdentity| v.volume_serial = "foreign".into(),
+            |v: &mut VolumeIdentity| v.disk_number = None,
+        ] {
+            let mut foreign = current.clone();
+            mutate(&mut foreign);
+            assert!(rebind_after_boot(&before, &foreign, true).is_err());
+        }
     }
     struct Recorder {
         calls: Vec<String>,

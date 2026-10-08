@@ -164,6 +164,9 @@ fn verify_recovery_object(text: &str, recovery: &str, letter: char) -> Result<()
 trait Backend {
     fn preflight(&mut self) -> Result<(), TaskError>;
     fn info(&mut self) -> Result<Info, TaskError>;
+    fn reset_clone(&mut self, _info: &Info) -> Result<bool, TaskError> {
+        Ok(false)
+    }
     fn register(&mut self) -> Result<(), TaskError>;
     fn enable(&mut self) -> Result<(), TaskError>;
     fn reconnect(&mut self, info: &Info) -> Result<(), TaskError>;
@@ -172,7 +175,15 @@ trait Backend {
 
 fn run(backend: &mut impl Backend) -> Result<(), TaskError> {
     backend.preflight()?;
-    let before = backend.info()?;
+    let mut before = backend.info()?;
+    if backend.reset_clone(&before)? {
+        before = backend.info()?;
+        if before.enabled {
+            return Err(crate::err(
+                "第二系统克隆配置重置后仍启用，拒绝修改原恢复对象",
+            ));
+        }
+    }
     // BCDBoot 可重建系统加载器；注册仍启用并不代表新加载器已有恢复关联。
     if !before.enabled {
         backend.register()?;
@@ -191,6 +202,28 @@ pub(crate) fn repair(
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
 ) -> Result<(), TaskError> {
+    repair_with_mode(target, efi, expected, log, false)
+}
+
+/// 仅由新增第二系统的已授权任务调用，允许重建目标内克隆来的注册配置。
+#[cfg(windows)]
+pub(crate) fn repair_secondary(
+    target: &std::path::Path,
+    efi: &std::path::Path,
+    expected: &backuprestore_core::VolumeIdentity,
+    log: &std::path::Path,
+) -> Result<(), TaskError> {
+    repair_with_mode(target, efi, expected, log, true)
+}
+
+#[cfg(windows)]
+fn repair_with_mode(
+    target: &std::path::Path,
+    efi: &std::path::Path,
+    expected: &backuprestore_core::VolumeIdentity,
+    log: &std::path::Path,
+    independent: bool,
+) -> Result<(), TaskError> {
     use crate::{append_log, capture_logged, pe_safety, windows_prepare as wp};
     use std::{fs, path::Path};
     struct WindowsBackend<'a> {
@@ -203,6 +236,7 @@ pub(crate) fn repair(
         location: String,
         hashes: Vec<(std::path::PathBuf, String)>,
         original_sdi: Option<Vec<u8>>,
+        independent: bool,
     }
     impl WindowsBackend<'_> {
         fn bcd(&self, active: bool) -> Result<String, TaskError> {
@@ -325,6 +359,49 @@ pub(crate) fn repair(
             let windows = self.target.join("Windows");
             parse_info(&self.reagent(&["/info", "/target", &windows.to_string_lossy()])?)
         }
+        fn reset_clone(&mut self, info: &Info) -> Result<bool, TaskError> {
+            if !self.independent
+                || !info.enabled
+                || info.location.as_deref() == Some(&self.location)
+            {
+                return Ok(false);
+            }
+            self.identity()?;
+            // 不调用 /disable：克隆配置引用的是原系统对象，禁用会误伤原系统。
+            // 只备份并移走已核验目标内部的两份配置，让系统工具为新加载器建立独立对象。
+            for parts in [
+                vec!["Windows", "System32", "Recovery", "ReAgent.xml"],
+                vec!["Recovery", "WindowsRE", "ReAgent.xml"],
+            ] {
+                if !pe_safety::probe_file(self.target, &parts)? {
+                    continue;
+                }
+                let path = parts
+                    .iter()
+                    .fold(self.target.to_path_buf(), |p, part| p.join(part));
+                let backup = path.with_extension("xml.before-secondary");
+                let mut backup_parts = parts.clone();
+                *backup_parts.last_mut().expect("配置文件名") = "ReAgent.xml.before-secondary";
+                let exists = pe_safety::probe_file(self.target, &backup_parts)?;
+                let hash = crate::sha256_file(&path)?;
+                if exists {
+                    if crate::sha256_file(&backup)? != hash {
+                        return Err(crate::err("第二系统原注册备份已存在且内容不同"));
+                    }
+                } else {
+                    fs::copy(&path, &backup)?;
+                    if crate::sha256_file(&backup)? != hash {
+                        return Err(crate::err("第二系统原注册备份摘要不符"));
+                    }
+                }
+                fs::remove_file(&path)?;
+            }
+            append_log(
+                self.log,
+                "第二系统克隆注册配置已在目标卷内备份并重置；原系统恢复对象未禁用",
+            )?;
+            Ok(true)
+        }
         fn register(&mut self) -> Result<(), TaskError> {
             self.identity()?;
             let windows = self.target.join("Windows");
@@ -440,6 +517,7 @@ pub(crate) fn repair(
         location: String::new(),
         hashes: Vec::new(),
         original_sdi: None,
+        independent,
     };
     let result = run(&mut backend);
     if let Err(error) = result {
@@ -708,6 +786,7 @@ mod tests {
         fail: &'static str,
         enabled: bool,
         false_success: bool,
+        cloned: bool,
     }
     impl Fake {
         fn step(&mut self, name: &'static str) -> Result<(), TaskError> {
@@ -730,6 +809,15 @@ mod tests {
                 location: None,
                 recovery_id: None,
             })
+        }
+        fn reset_clone(&mut self, _info: &Info) -> Result<bool, TaskError> {
+            if !self.cloned {
+                return Ok(false);
+            }
+            self.step("reset")?;
+            self.enabled = self.fail == "ineffective-reset";
+            self.cloned = false;
+            Ok(true)
         }
         fn register(&mut self) -> Result<(), TaskError> {
             self.step("register")
@@ -759,6 +847,7 @@ mod tests {
                 fail,
                 enabled: false,
                 false_success: false,
+                cloned: false,
             };
             assert!(run(&mut fake).is_err());
             assert_eq!(fake.calls.last(), Some(&fail));
@@ -768,6 +857,7 @@ mod tests {
             fail: "",
             enabled: false,
             false_success: true,
+            cloned: false,
         };
         assert!(run(&mut fake).is_err());
         let mut fake = Fake {
@@ -785,6 +875,7 @@ mod tests {
             fail: "",
             enabled: false,
             false_success: false,
+            cloned: false,
         };
         run(&mut fake).unwrap();
         assert_eq!(
@@ -797,5 +888,40 @@ mod tests {
             fake.calls,
             ["preflight", "info", "reconnect", "info", "verify"]
         );
+    }
+
+    #[test]
+    fn cloned_registration_must_reset_and_reread_before_enabling() {
+        for fail in ["", "reset", "ineffective-reset"] {
+            let mut fake = Fake {
+                calls: Vec::new(),
+                fail,
+                enabled: true,
+                false_success: false,
+                cloned: true,
+            };
+            let result = run(&mut fake);
+            if fail.is_empty() {
+                result.unwrap();
+                assert_eq!(
+                    fake.calls,
+                    [
+                        "preflight",
+                        "info",
+                        "reset",
+                        "info",
+                        "register",
+                        "enable",
+                        "info",
+                        "verify"
+                    ]
+                );
+            } else {
+                assert!(result.is_err());
+                assert!(!fake.calls.contains(&"register"));
+                assert!(!fake.calls.contains(&"enable"));
+                assert!(!fake.calls.contains(&"reconnect"));
+            }
+        }
     }
 }

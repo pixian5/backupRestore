@@ -76,12 +76,12 @@ impl ReBootEntry {
     }
 }
 
-const BCDEDIT: &str = r"C:\Windows\System32\bcdedit.exe";
-
 /// 只读操作（`/enum`、`/export` 等）：必须捕获输出，所以用管道。
 #[cfg(windows)]
 fn bcd(args: &[&str]) -> Result<String, TaskError> {
-    let output = Command::new(BCDEDIT)
+    // C: 可已被擦除；使用当前恢复环境的系统工具，WinRE 中位于 X:。
+    let root = std::env::var_os("SystemRoot").ok_or_else(|| crate::err("SystemRoot 未知"))?;
+    let output = Command::new(PathBuf::from(root).join("System32\\bcdedit.exe"))
         .args(args)
         .stdin(Stdio::null())
         .creation_flags(crate::CREATE_NO_WINDOW)
@@ -162,14 +162,7 @@ fn bcd_field(guid: &str, field: &str) -> Result<String, TaskError> {
     let guid = crate::text_parsing::require_identifier(guid, "enum")
         .map_err(|message| crate::err(&message))?;
     let text = bcd(&["/enum", &guid, "/v"])?;
-    let prefix = format!("{field} ");
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            return Ok(rest.trim().to_string());
-        }
-    }
-    Ok(String::new())
+    crate::resume_safety::field(&text, field)
 }
 
 /// 从「当前注册的 WinRE 条目」取模板：`reagentc /info` 给 loader，`bcdedit /enum` 给设备选项对象。
@@ -510,14 +503,34 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         .map_err(|message| crate::err(&message))?;
     let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "rearm device options")
         .map_err(|message| crate::err(&message))?;
-    let expected = crate::text_parsing::ramdisk_spec(&entry.wim_path, &devopts);
-    let device = bcd_field(&loader, "device")?;
-    if device != expected {
-        return Err(crate::err(&format!(
-            "recorded boot entry no longer points at our payload: {device}"
-        )));
+    let root = crate::boot_cleanup::staging_volume_root(&entry.wim_volume)?;
+    let actual = crate::windows_prepare::volume_identity_at_path(
+        &root.to_string_lossy(),
+        entry.wim_volume.volume_guid.clone(),
+    )?;
+    let bound = crate::pe_safety::rebind_after_boot(&entry.wim_volume, &actual, true)?;
+    let letter = ensure_volume_mounted(&bound, 'I', log)?;
+    crate::pe_safety::verify_binding(
+        &bound,
+        &crate::windows_prepare::volume_identity(letter)?,
+        true,
+    )?;
+    let path = crate::resume_safety::payload_path(&entry.wim_path, letter)?;
+    for name in ["Winre.wim", "boot.sdi"] {
+        if !crate::pe_safety::probe_file(&root, &["BackupRestoreRE", name])?
+            || fs::metadata(root.join("BackupRestoreRE").join(name))?.len() == 0
+        {
+            return Err(crate::err("续跑载荷缺失、为空或路径不可安全访问"));
+        }
     }
-    let wim = PathBuf::from(&entry.wim_path);
+    crate::resume_safety::verify_chain(
+        &bcd(&["/enum", &loader, "/v"])?,
+        &bcd(&["/enum", &devopts, "/v"])?,
+        &path,
+        &devopts,
+        letter,
+    )?;
+    let wim = PathBuf::from(&path);
     if !wim.is_file() {
         return Err(crate::err(&format!(
             "payload WIM is missing at {}; cannot re-arm",
@@ -530,6 +543,7 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
             "payload WIM hash differs from the prepared one; refusing to re-arm",
         ));
     }
+    crate::resume_safety::allow_rearm(&bcd_field(BOOTMGR, "bootsequence")?, &loader)?;
     bcd(&["/bootsequence", &loader])?;
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed != loader {

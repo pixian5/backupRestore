@@ -51,6 +51,10 @@ mod pe_operation;
 mod pe_safety;
 #[cfg(windows)]
 mod recovery_progress;
+#[cfg(any(windows, test))]
+mod resume_safety;
+#[cfg(any(windows, test))]
+mod secondary_registry;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
 #[cfg(windows)]
@@ -767,12 +771,6 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     early_log = task_dir.join("Recovery-early.log");
     // 早期日志切到任务目录后，进度窗口跟随新日志并重置读取偏移。
     progress.switch_log_path(early_log.clone(), 0);
-    // Mount Recovery before loading/validating the task so the emergency
-    // guard always uses the Recovery volume letter, never the workspace
-    // letter. The old ordering could attempt restoration under T:\Recovery.
-    let recovery_letter =
-        mount_env_volume(&mut mounts, &values, "RECOVERY", 'R', &early_log, false)?;
-    meta_log(&format!("mount RECOVERY OK (r={recovery_letter})"));
     let mut task = store.load(&task_id)?;
     meta_log(&format!(
         "task loaded status={:?} operation={:?}",
@@ -864,17 +862,18 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             ));
         }
 
+        // 先完成任务和不可变载荷校验，再判断哪些角色确实受本任务格式化影响。
+        let recovery_letter = mount_env_volume(
+            &mut mounts,
+            &values,
+            "RECOVERY",
+            'R',
+            &early_log,
+            resume_safety::role_was_erased(&task, &values, "RECOVERY"),
+        )?;
+        meta_log(&format!("mount RECOVERY OK (r={recovery_letter})"));
         let efi_letter = if task.operation != Operation::Probe {
-            // SOURCE 与 TARGET 用同一条「已格式化则放过序列号」条件：
-            // restore-existing 要求 target == source（同一分区），restore 会格式化
-            // target，source 的序列号随之改变。若这里仍传 false，断电续跑到
-            // ImageApplied Stage 时会以 "SOURCE volume serial differs after mounting"
-            // 失败——卷 GUID 明明对得上、盘符也挂成功了，却卡在序列号
-            // （2026-09-30 实机：任务 b05006df）。
-            let reformatted_ok = matches!(
-                task.status,
-                Stage::TargetErased | Stage::ImageApplied | Stage::BootRepaired
-            );
+            let reformatted_ok = resume_safety::role_was_erased(&task, &values, "SOURCE");
             let source_letter = mount_env_volume(
                 &mut mounts,
                 &values,
@@ -1517,6 +1516,23 @@ fn assign_volume_letter(
         mounts.record(expected, letter);
         return Ok(letter);
     }
+    let bare = crate::text_parsing::bare_volume_guid(expected)
+        .and_then(|value| crate::text_parsing::require_guid(value, "恢复卷").ok())
+        .ok_or_else(|| err("挂载后备路径缺少有效卷标识符"))?;
+    let path = format!(r"\\?\Volume{bare}\");
+    let live = windows_prepare::volume_identity_at_path(&path, expected.to_string())?;
+    verify_env_volume_identity(&live, values, prefix, allow_reformatted_serial)?;
+    append_log(
+        log,
+        &format!(
+            "挂载稳定身份已核验：准备期 {disk}/{partition}，现场 {:?}/{:?}",
+            live.disk_number, live.partition_number,
+        ),
+    )?;
+    let disk = live.disk_number.ok_or_else(|| err("现场磁盘编号缺失"))?;
+    let partition = live
+        .partition_number
+        .ok_or_else(|| err("现场分区编号缺失"))?;
     let body =
         format!("select disk {disk}\r\nselect partition {partition}\r\nassign letter={letter}\r\n");
     fs::write(&script, body)?;
@@ -1669,6 +1685,16 @@ fn verify_live_volume_identity(
         letter,
         env_required(values, &format!("{prefix}_VOLUME_GUID"))?,
     )?;
+    verify_env_volume_identity(&live, values, prefix, allow_reformatted_serial)
+}
+
+#[cfg(windows)]
+fn verify_env_volume_identity(
+    live: &backuprestore_core::VolumeIdentity,
+    values: &BTreeMap<String, String>,
+    prefix: &str,
+    allow_reformatted_serial: bool,
+) -> Result<(), TaskError> {
     // 卷 GUID 单独比：env 里存的是裸 `{GUID}`，而读回来的是 `\\?\Volume{GUID}\`，
     // 直接比会把同一个卷判成两个（2026-09-30 restore-existing 就这么整任务失败过）。
     {
@@ -1709,11 +1735,11 @@ fn verify_live_volume_identity(
             "partition number",
         ),
     ] {
-        let expected = env_u32(values, &format!("{prefix}_{suffix}"))?;
-        if actual != Some(expected) {
+        // 准备期编号仅校验记录格式；重启后地址由完整稳定身份确认。
+        env_u32(values, &format!("{prefix}_{suffix}"))?;
+        if actual.is_none() || (suffix == "PARTITION_NUMBER" && actual == Some(0)) {
             return Err(err(&format!(
-                "{prefix} {label} differs after mounting: expected {expected}, got {:?}",
-                actual
+                "{prefix} {label} is unavailable after mounting"
             )));
         }
     }
@@ -1734,8 +1760,7 @@ fn verify_live_volume_identity(
     }
     if !allow_reformatted_serial
         && let Some(expected) = env_optional(values, &format!("{prefix}_VOLUME_SERIAL"))
-        && !live.volume_serial.is_empty()
-        && !live.volume_serial.eq_ignore_ascii_case(&expected)
+        && (live.volume_serial.is_empty() || !live.volume_serial.eq_ignore_ascii_case(&expected))
     {
         return Err(err(&format!(
             "{prefix} volume serial differs after mounting"
@@ -2289,7 +2314,7 @@ fn recover_windows(
             }
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
-            let target = task.target.clone().ok_or_else(|| err("missing target"))?;
+            let mut target = task.target.clone().ok_or_else(|| err("missing target"))?;
             // v1.7.11 新通道：格式化目标卷不再威胁"续跑启动源"（它在镜像卷上），
             // 因此 F1 执行层二次闸整体取消。目标卷自带的 Winre.wim 会被镜像里的
             // 干净原版替换，这与 Ghost 类工具语义一致（注册侧处置见设计文档 §3.3）。
@@ -2301,10 +2326,52 @@ fn recover_windows(
             }
             let image_path = image_path.ok_or_else(|| err("missing image"))?;
             let target_root = resolve_volume_root(&target.volume)?;
+            let target_letter = target
+                .volume
+                .drive_letter
+                .ok_or_else(|| err("目标盘符缺失"))?;
+            let live = windows_prepare::volume_identity(target_letter)?;
+            let previous = (target.volume.disk_number, target.volume.partition_number);
+            target.volume = pe_safety::rebind_after_boot(
+                &target.volume,
+                &live,
+                !matches!(
+                    task.status,
+                    Stage::TargetErased | Stage::ImageApplied | Stage::BootRepaired
+                ),
+            )?;
+            append_log(
+                log,
+                &format!(
+                    "恢复目标稳定身份已核验，现场地址重绑定：{previous:?} -> {:?}",
+                    (target.volume.disk_number, target.volume.partition_number),
+                ),
+            )?;
             append_log(log, "STEP 1/4 挂载卷、校验")?;
             if let Some(p) = progress {
                 p.reset_start_time();
             }
+            // 一次性启动已经被固件消费。完整系统还原必须在擦除前重新武装，
+            // 使真正断电后的下一次开机仍能从外部分区进入同一任务。
+            let resume_entry =
+                if metadata_context.is_some() && task.operation == Operation::RestoreExisting {
+                    let entry = boot_entry::ReBootEntry::read(&store.task_dir(&task.task_id)?)?
+                        .ok_or_else(|| err("系统还原缺少续跑启动记录，拒绝擦除"))?;
+                    if entry.wim_volume.same_partition(&target.volume) {
+                        return Err(err("续跑载荷位于擦除目标，拒绝执行"));
+                    }
+                    if !task
+                        .image
+                        .as_ref()
+                        .is_some_and(|image| image.volume.same_partition(&entry.wim_volume))
+                    {
+                        return Err(err("续跑载荷卷与本任务镜像卷不符"));
+                    }
+                    boot_entry::rearm(&entry, log)?;
+                    Some(entry)
+                } else {
+                    None
+                };
             // TargetErased is deliberately persisted before formatting.  If
             // power fails after that write, formatting and applying the WIM
             // are safe to repeat on the explicitly selected target.  Older
@@ -2332,6 +2399,11 @@ fn recover_windows(
                 }
             }
             if matches!(task.status, Stage::TargetErased | Stage::ImageApplied) {
+                pe_safety::verify_binding(
+                    &target.volume,
+                    &windows_prepare::volume_identity(target_letter)?,
+                    false,
+                )?;
                 append_log(log, "STEP 2/4 还原镜像（时间长）")?;
                 let entering_image_applied = task.status == Stage::TargetErased;
                 run_logged(
@@ -2387,11 +2459,17 @@ fn recover_windows(
                 {
                     return Err(err("development test fault: BCDBoot failure injected"));
                 }
+                pe_safety::verify_binding(
+                    &target.volume,
+                    &windows_prepare::volume_identity(target_letter)?,
+                    false,
+                )?;
                 let windows_root = target_root.join("Windows");
                 // Capture the primary BCD state from the byte-for-byte task
                 // snapshot before BCDBoot.  It remains available even if a
                 // power failure occurs after BCDBoot changes the live store.
                 let previous_boot_manager = if target.role == TargetRole::NewWindows {
+                    secondary_registry::repair(&target_root, &target.volume, log)?;
                     Some(boot_manager_state_from_task_snapshot(store, task, log)?)
                 } else {
                     None
@@ -2408,13 +2486,23 @@ fn recover_windows(
                     bcd_args.push("/addlast".to_string());
                 }
                 let bcd_refs: Vec<&str> = bcd_args.iter().map(String::as_str).collect();
+                if let Some(entry) = &resume_entry {
+                    boot_entry::rearm(entry, log)?;
+                }
                 run_logged("bcdboot.exe", &bcd_refs, log)?;
+                if let Some(entry) = &resume_entry {
+                    boot_entry::rearm(entry, log)?;
+                }
                 let boot_manager = efi.join("EFI\\Microsoft\\Boot\\bootmgfw.efi");
                 if !boot_manager.exists() {
                     return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
                 }
                 verify_bcd_target(&efi, &target_root, log)?;
-                winre_registration::repair(&target_root, &efi, &target.volume, log)?;
+                if target.role == TargetRole::NewWindows {
+                    winre_registration::repair_secondary(&target_root, &efi, &target.volume, log)?;
+                } else {
+                    winre_registration::repair(&target_root, &efi, &target.volume, log)?;
+                }
                 if target.role == TargetRole::NewWindows {
                     let menu_name = target
                         .boot_menu_name
@@ -2581,6 +2669,11 @@ fn format_target_partition(
     target: &backuprestore_core::VolumeIdentity,
     log: &Path,
 ) -> Result<(), TaskError> {
+    let letter = target
+        .drive_letter
+        .ok_or_else(|| err("格式化目标盘符缺失"))?;
+    // 在生成写盘命令前再次严格比较此次绑定，拒绝核验后发生的编号变化。
+    pe_safety::verify_binding(target, &windows_prepare::volume_identity(letter)?, false)?;
     let task_dir = store.task_dir(&task.task_id)?;
     let script = task_dir.join("diskpart-format.txt");
     let body = diskpart_format_script(target.disk_number, target.partition_number)?;
@@ -2888,16 +2981,12 @@ fn preserve_primary_boot_manager(
     let verified = parse_boot_manager_state(&verified_text)
         .ok_or_else(|| err("Boot Manager state could not be read after preserving order"))?;
     if verified.default != previous.default
+        || verified.display_order.len() != expected_order.len()
         || verified
             .display_order
-            .last()
-            .is_none_or(|identifier| !identifier.eq_ignore_ascii_case(secondary_identifier))
-        || expected_order.iter().any(|identifier| {
-            !verified
-                .display_order
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(identifier))
-        })
+            .iter()
+            .zip(&expected_order)
+            .any(|(actual, expected)| !actual.eq_ignore_ascii_case(expected))
     {
         return Err(err(
             "Boot Manager default or secondary display order could not be preserved",
@@ -2943,8 +3032,12 @@ fn parse_boot_manager_state(output: &str) -> Option<BcdBootManagerState> {
             reading_display_order = false;
             continue;
         }
-        if lower.starts_with("displayorder") || trimmed.starts_with("显示顺序") {
+        let key = trimmed.split_whitespace().next().unwrap_or("");
+        if key.eq_ignore_ascii_case("displayorder") || key == "显示顺序" {
             reading_display_order = true;
+        } else if !trimmed.starts_with('{') {
+            // 只有纯 GUID 续行属于启动菜单；toolsdisplayorder 等后续字段必须隔离。
+            reading_display_order = false;
         }
         if reading_display_order {
             if let Some(value) = bcd_value_from_line(trimmed) {
@@ -3212,6 +3305,16 @@ mod tests {
             vec!["{default}"]
         );
         assert!(parse_boot_manager_state("default dangerous;value").is_none());
+    }
+
+    #[test]
+    fn boot_menu_does_not_absorb_tools_or_later_guid_fields() {
+        for field in ["displayorder", "显示顺序"] {
+            let state = parse_boot_manager_state(&format!(
+                "identifier {{9dea862c-5cdd-4e70-acc1-f32b344d4795}}\r\ndefault {{default}}\r\n{field} {{default}}\r\n                        {{current}}\r\ntoolsdisplayorder {{memdiag}}\r\n                        {{other}}\r\ntimeout 0"
+            )).unwrap();
+            assert_eq!(state.display_order, ["{default}", "{current}"]);
+        }
     }
 
     #[test]
