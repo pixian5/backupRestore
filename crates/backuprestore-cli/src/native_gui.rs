@@ -3112,10 +3112,10 @@ fn run_cmd_to_file(command: &str, out_file: Option<&Path>) -> CmdOutcome {
 }
 fn run_cmd_to_file_timeout(command: &str, out_file: Option<&Path>, timeout_ms: u32) -> CmdOutcome {
     // 历史调用方依赖覆盖文件；在线多阶段日志则由 run_program 追加。
-    if let Some(path) = out_file {
-        if let Err(error) = std::fs::write(path, []) {
-            return CmdOutcome::SpawnFailed(error.raw_os_error().unwrap_or(1) as u32);
-        }
+    if let Some(path) = out_file
+        && let Err(error) = std::fs::write(path, [])
+    {
+        return CmdOutcome::SpawnFailed(error.raw_os_error().unwrap_or(1) as u32);
     }
     crate::windows_command::run_shell(command, out_file, timeout_ms)
 }

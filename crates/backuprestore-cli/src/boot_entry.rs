@@ -156,7 +156,7 @@ fn bcd_object_exists(guid: &str, log: &Path) -> Result<(), TaskError> {
 ///
 /// 校验函数在 `text_parsing` 里，不在本模块：本模块整个是 `#[cfg(windows)]`，
 /// 放在这里的单测在 macOS 上一次都不会编译——上次 `ramdisk=` 值畸形就是这么漏过去的。
-
+///
 /// `bcdedit /enum <guid> /v` 的某个字段值。
 fn bcd_field(guid: &str, field: &str) -> Result<String, TaskError> {
     let guid = crate::text_parsing::require_identifier(guid, "enum")
@@ -211,11 +211,11 @@ fn any_usable_winre_template(log: &Path) -> Result<(String, String), TaskError> 
     let mut candidates: Vec<(String, String)> = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("device ") || trimmed.starts_with("osdevice ") {
-            if let Some(devopts) = crate::text_parsing::ramdisk_device_options_guid(trimmed) {
-                // 找到该行所属的 osloader 标识符不好回溯，改为配对收集：先取 loader 再取 devopts。
-                let _ = devopts;
-            }
+        if (trimmed.starts_with("device ") || trimmed.starts_with("osdevice "))
+            && let Some(devopts) = crate::text_parsing::ramdisk_device_options_guid(trimmed)
+        {
+            // 找到该行所属的 osloader 标识符不好回溯，改为配对收集：先取 loader 再取 devopts。
+            let _ = devopts;
         }
     }
     // 简化且可靠：按块切分，每块取「标识符 + device 行的设备选项对象」。
@@ -223,14 +223,14 @@ fn any_usable_winre_template(log: &Path) -> Result<(String, String), TaskError> 
         let loader = block
             .lines()
             .find(|line| line.trim_start().starts_with("标识符"))
-            .and_then(|line| crate::text_parsing::parse_guid(line));
+            .and_then(crate::text_parsing::parse_guid);
         let devopts = block
             .lines()
             .find(|line| {
                 let t = line.trim_start();
                 (t.starts_with("device ") || t.starts_with("osdevice ")) && t.contains("ramdisk=")
             })
-            .and_then(|line| crate::text_parsing::parse_guid(line));
+            .and_then(crate::text_parsing::parse_guid);
         if let (Some(loader), Some(devopts)) = (loader, devopts) {
             candidates.push((loader, devopts));
         }

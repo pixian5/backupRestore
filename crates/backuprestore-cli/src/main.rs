@@ -1366,20 +1366,19 @@ fn mount_env_volume(
     if let Some((_, letters)) = listing
         .iter()
         .find(|(guid, _)| crate::text_parsing::same_volume(guid, &expected))
+        && let Some(&existing) = letters.first()
     {
-        if let Some(&existing) = letters.first() {
-            verify_mounted_volume(existing, &expected, log)?;
-            verify_live_volume_identity(existing, values, prefix, allow_reformatted_serial)?;
-            append_log(
-                log,
-                &format!(
-                    "mount {prefix} complete via pre-mounted letter {existing}: in {}ms",
-                    mount_started.elapsed().as_millis()
-                ),
-            )?;
-            mounts.record(&expected, existing);
-            return Ok(existing);
-        }
+        verify_mounted_volume(existing, &expected, log)?;
+        verify_live_volume_identity(existing, values, prefix, allow_reformatted_serial)?;
+        append_log(
+            log,
+            &format!(
+                "mount {prefix} complete via pre-mounted letter {existing}: in {}ms",
+                mount_started.elapsed().as_millis()
+            ),
+        )?;
+        mounts.record(&expected, existing);
+        return Ok(existing);
     }
     for letter in mount_letter_candidates(letter, &listing, mounts) {
         match query_mounted_volume(letter, log)? {
@@ -1506,7 +1505,7 @@ fn assign_volume_letter(
         ),
     )?;
     if direct_status.success() {
-        verify_mounted_volume(letter, &expected, log)?;
+        verify_mounted_volume(letter, expected, log)?;
         verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
         append_log(
             log,
@@ -1515,7 +1514,7 @@ fn assign_volume_letter(
                 mount_started.elapsed().as_millis()
             ),
         )?;
-        mounts.record(&expected, letter);
+        mounts.record(expected, letter);
         return Ok(letter);
     }
     let body =
@@ -1570,7 +1569,7 @@ fn assign_volume_letter(
         ),
     )?;
     let _ = fs::remove_file(&script);
-    verify_mounted_volume(letter, &expected, log)?;
+    verify_mounted_volume(letter, expected, log)?;
     verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
     append_log(
         log,
@@ -1579,7 +1578,7 @@ fn assign_volume_letter(
             mount_started.elapsed().as_millis()
         ),
     )?;
-    mounts.record(&expected, letter);
+    mounts.record(expected, letter);
     Ok(letter)
 }
 
@@ -2075,16 +2074,15 @@ fn recover_windows(
                 .ok()
                 .flatten();
 
-            if let Some(value) = legacy_metadata.as_ref() {
-                if previous_indexes.contains(&value.wim_index)
-                    && previous_hash
-                        .as_deref()
-                        .is_some_and(|h| h.eq_ignore_ascii_case(&value.image_sha256))
-                {
-                    previous_metadata
-                        .entry(value.wim_index)
-                        .or_insert_with(|| value.clone());
-                }
+            if let Some(value) = legacy_metadata.as_ref()
+                && previous_indexes.contains(&value.wim_index)
+                && previous_hash
+                    .as_deref()
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&value.image_sha256))
+            {
+                previous_metadata
+                    .entry(value.wim_index)
+                    .or_insert_with(|| value.clone());
             }
 
             // 生成 DISM 排除配置（Parallels 卷根占位符/回收站/临时目录/更新缓存/

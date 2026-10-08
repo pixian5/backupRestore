@@ -1,6 +1,10 @@
 //! 系统还原收尾：启用目标系统的恢复环境，并核验实际 BCD 关联。
 use backuprestore_core::TaskError;
 
+#[cfg(all(test, windows))]
+#[path = "winre_registration_fault_tests.rs"]
+mod fault_tests;
+
 #[derive(Debug, PartialEq, Eq)]
 struct Info {
     enabled: bool,
@@ -548,7 +552,19 @@ mod tests {
                     &log,
                 )?;
             }
+            // 克隆项不能共享主系统的休眠恢复对象，否则 reagentc /enable
+            // 会沿 resumeobject 修改主系统的恢复开关，污染测试基线。
+            if field(
+                object(&before.replace("\r\n", "\n"), &primary_id)?,
+                "resumeobject",
+            )
+            .is_ok()
+            {
+                capture_logged("bcdedit.exe", &["/deletevalue", &id, "resumeobject"], &log)?;
+            }
+            fault_tests::preflight_failures(&target, &efi, &expected, &id, &log)?;
             repair(&target, &efi, &expected, &log)?;
+            fault_tests::registered_failures(&target, &efi, &expected, &id, &primary_id, &log)?;
             repair(&target, &efi, &expected, &log)?;
             // 重现实际 C: 故障：注册保持启用，但 BCDBoot 新加载器丢失恢复关联。
             capture_logged(
@@ -582,6 +598,7 @@ mod tests {
         capture_logged("bcdedit.exe", &["/delete", &id], &log).unwrap();
         let final_bcd = capture_logged("bcdedit.exe", &["/enum", "all", "/v"], &log).unwrap();
         assert_eq!(crate::parse_boot_manager_state(&final_bcd), Some(manager));
+        assert_eq!(final_bcd, before, "测试改变了原有启动对象，必须恢复原基线");
         result.unwrap();
     }
     fn bcd() -> String {

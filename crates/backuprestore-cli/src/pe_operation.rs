@@ -290,11 +290,13 @@ pub(crate) fn decode_output(bytes: &[u8]) -> Result<String, TaskError> {
         crate::text_parsing::ConsoleBytes::Utf8(text) => Ok(text),
         crate::text_parsing::ConsoleBytes::Utf16 => {
             let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 return Err(crate::err("UTF-16 输出被截断"));
             }
             let words: Vec<u16> = bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|b| u16::from_le_bytes([b[0], b[1]]))
                 .collect();
             String::from_utf16(&words).map_err(|_| crate::err("UTF-16 输出解码失败"))

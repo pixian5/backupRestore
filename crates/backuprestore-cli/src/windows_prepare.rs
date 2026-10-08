@@ -287,12 +287,11 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
                 if fname_str.starts_with(&prefix) && fname_str.ends_with(suffix) {
                     // 提取索引号
                     let mid = &fname_str[prefix.len()..fname_str.len() - suffix.len()];
-                    if let Ok(idx) = mid.parse::<u32>() {
-                        if let Ok(meta) =
+                    if let Ok(idx) = mid.parse::<u32>()
+                        && let Ok(meta) =
                             read_json::<backuprestore_core::BackupMetadata>(entry.path())
-                        {
-                            sidecar_entries.push((idx, meta));
-                        }
+                    {
+                        sidecar_entries.push((idx, meta));
                     }
                 }
             }
@@ -930,11 +929,7 @@ fn prepare_payload(
     // BCD 条目（条目本身在 DISM 之前就建好了，见上面的顺序要点）。
     // 注册位全程只是只读资产来源，因此迁出 / WINRE_HOME / 待回家收尾 / Plan D / F1·F3 全部不需要。
     // 依据：docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md
-    if let Err(error) =
-        crate::boot_entry::copy_into_staging(&staged, &re_staging.boot_sdi, &re_staging.volume, log)
-    {
-        return Err(error);
-    }
+    crate::boot_entry::copy_into_staging(&staged, &re_staging.boot_sdi, &re_staging.volume, log)?;
     // ★ 把簿记里的载荷哈希刷新成**注入后**的实际值。
     // create_entry 在 DISM 注入之前就跑（顺序要点见上），那时的
     // copy_into_staging 复制的是干净原件，记下的是它的哈希；注入后载荷
@@ -942,23 +937,13 @@ fn prepare_payload(
     // 拿活载荷比对这份过期记录必然不符，整条续跑路被封死
     // （2026-09-30 实机：stage 卡在 image-applied/75，日志
     //  "payload WIM hash differs from the prepared one; refusing to re-arm"）。
-    if let Err(error) =
-        crate::boot_entry::refresh_payload_hash(&mut boot_entry, task_dir.as_path(), log)
-    {
-        return Err(error);
-    }
+    crate::boot_entry::refresh_payload_hash(&mut boot_entry, task_dir.as_path(), log)?;
     // 武装是「人可以重启了」的唯一开关，放在这一步：载荷已注入、已覆盖到镜像卷、
     // 簿记已落盘。v1.7.14 之前它藏在 create_entry 里无条件执行，导致
     // `--no-reboot` 也会改 bootmgr 的 bootsequence（实机证据见 boot_entry::arm_one_shot）。
-    if let Err(error) = crate::boot_entry::arm_one_shot(&boot_entry, log) {
-        return Err(error);
-    }
-    if let Err(error) = store.write_transition(task, backuprestore_core::Stage::BootRequested) {
-        return Err(error);
-    }
-    if let Err(error) = write_status_env(&task_dir, task, "boot-requested") {
-        return Err(error);
-    }
+    crate::boot_entry::arm_one_shot(&boot_entry, log)?;
+    store.write_transition(task, backuprestore_core::Stage::BootRequested)?;
+    write_status_env(&task_dir, task, "boot-requested")?;
     if options.test_fault.as_deref() == Some("power-loss-window") {
         append_log(
             log,
@@ -2408,10 +2393,10 @@ pub(crate) fn ensure_volume_mounted(
     // for identities without numeric disk/partition coordinates (imported or
     // legacy tasks) and for hidden recovery partitions DiskPart refuses to
     // expose by number.
-    if !identity.volume_guid.trim().is_empty() {
-        if let Ok(letter) = mount_volume_guid(&identity.volume_guid, preferred) {
-            return Ok(letter);
-        }
+    if !identity.volume_guid.trim().is_empty()
+        && let Ok(letter) = mount_volume_guid(&identity.volume_guid, preferred)
+    {
+        return Ok(letter);
     }
     let disk = identity.disk_number.ok_or_else(|| {
         err("volume has no disk number and could not be matched by GUID or an existing mount point")

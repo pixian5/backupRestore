@@ -412,7 +412,11 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
             } else if idx == current {
                 // 用户要求：当前正在执行阶段的小箭头亮 1 秒、消失 1 秒（每秒刷新时交替闪烁），
                 // 消失时使用全角空格占位，保证排版平稳、文字不发生横向抖动。
-                if elapsed % 2 == 0 { "▶" } else { "\u{3000}" }
+                if elapsed.is_multiple_of(2) {
+                    "▶"
+                } else {
+                    "\u{3000}"
+                }
             } else {
                 "·"
             };
