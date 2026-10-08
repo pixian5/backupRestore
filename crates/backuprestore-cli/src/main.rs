@@ -59,6 +59,8 @@ mod windows_command;
 mod windows_prepare;
 #[cfg(any(windows, test))]
 mod winre_payload;
+#[cfg(any(windows, test))]
+mod winre_registration;
 
 fn usage() -> ! {
     eprintln!(
@@ -1018,9 +1020,8 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
         }
     }
-    // v1.7.11 新通道终态收尾：删掉我们自建的一次性启动与 BCD 对象、删掉镜像卷上的
-    // 载荷 WIM。**不再碰系统注册 WinRE**（它全程只是只读资产来源），因此
-    // 「写回干净原件 + 校验哈希 + 桌面重注册」那一整套在新通道里整体消失。
+    // 终态只清理本任务的一次性启动对象与载荷。系统还原已在 BCDBoot 后
+    // 单独完成目标 WinRE 注册核验；此处不能删除新的系统恢复对象。
     let cleanup = finalize_boot_entry_after_task(&task_dir, &log);
     if let Err(error) = &cleanup {
         append_log(&log, &format!("Boot entry cleanup failed: {error}"))?;
@@ -2415,6 +2416,7 @@ fn recover_windows(
                     return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
                 }
                 verify_bcd_target(&efi, &target_root, log)?;
+                winre_registration::repair(&target_root, &efi, &target.volume, log)?;
                 if target.role == TargetRole::NewWindows {
                     let menu_name = target
                         .boot_menu_name
@@ -2679,8 +2681,8 @@ fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, Ta
         .stdin(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let mut text = crate::text_parsing::decode_windows_bytes(&output.stdout);
+    text.push_str(&crate::text_parsing::decode_windows_bytes(&output.stderr));
     if !text.is_empty() {
         append_log(log, &text)?;
     }

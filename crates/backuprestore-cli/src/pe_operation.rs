@@ -741,7 +741,13 @@ impl RestoreBackend for Engine {
                 return Err(crate::err("第二系统默认项或菜单顺序不符合约定，拒绝报成功"));
             }
         }
-        self.log("引导对象已回读；系统实际可启动性需另行启动验收")
+        crate::winre_registration::repair(
+            &std::path::PathBuf::from(format!("{target_letter}:\\")),
+            &std::path::PathBuf::from(format!("{esp_letter}:\\")),
+            &target,
+            &log,
+        )?;
+        self.log("引导与恢复环境关联已回读；系统实际可启动性需另行启动验收")
     }
 }
 
