@@ -593,10 +593,12 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
     } else if line.contains("The operation completed successfully") {
         // DISM 的一条命令成功，不代表哈希、副档和清理已完成。
         stage = Some("当前命令完成，等待后续校验".to_string());
-    } else if line.contains("Recovery completed")
+    } else if line.contains("Boot entry cleaned; task marked successful")
         || line.contains("操作完成：命令、回读和副档簿记均已通过")
     {
         stage = Some("操作完成".to_string());
+    } else if line.contains("Recovery completed") {
+        stage = Some("恢复已完成，正在清理".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {
         stage = Some("正在准备恢复环境…".to_string());
     } else if let Some((index, total, name)) = parse_step_marker(line) {
@@ -1055,23 +1057,6 @@ pub(crate) fn volume_path_to_device_path(path: &str) -> Option<String> {
     Some(device)
 }
 
-/// 从 `mountvol`（无参）输出里挑出**未挂载**的候选卷路径。
-///
-/// 方案 A（v1.8.2）的第一步筛选，判据只有一条：该卷没有任何挂载点
-/// （`mountvol` 打 `*** NO MOUNT POINTS ***`，固定串不随本地化变）。
-///
-/// 为什么偏好"未挂载"的：ESP 通常隐藏，而开发用的 ESP 往往已经挂了盘符；
-/// 顺带也就避开了"选中一个用户正在看的盘符"这种最坏情况。
-///
-/// 「是不是真的 ESP」**不在这里判**——`mountvol` 的输出里看不到卷内目录，
-/// 靠文本猜会把 `EFI` 这种字样误当成挂载点。真正的判定在
-/// `windows_prepare::esp_identity_without_drive_letter()`：分区类型 GUID 必须是
-/// `c12a7328-...`，且卷里必须真有 `EFI` + `Microsoft` + `Boot` + `BCD` 文件。
-/// 两层分开，文本层保持简单可测。
-///
-/// 放在本模块（而非 `native_gui.rs`）是为了让它在 macOS 的 `cargo test` 里也能跑——
-/// 那个模块在 macOS 上根本不编译， historically that blind spot is exactly where
-/// the expensive regressions came from.
 /// verbatim 卷路径的前缀 `\\?\Volume`，用 ASCII 码拼出来。
 ///
 /// 单独一个函数是为了让「路径里到底有几个反斜杠」这件事只有一个地方说了算。
@@ -1170,45 +1155,6 @@ pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
         index += 1;
     }
     out
-}
-
-#[cfg(test)]
-pub(crate) fn esp_volume_from_listing(listing: &str) -> Option<String> {
-    let esp_prefix = esp_volume_prefix();
-    // 反斜杠一律用 ASCII 码拼：verbatim 路径里少一层就退化成普通路径，
-    // 会指到别的卷上去，而这种错在日志里看不出来。
-    const BACKSLASH: char = 92u8 as char;
-    let mut current: Option<String> = None;
-    for line in listing.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(guid) = trimmed
-            .strip_prefix(&esp_prefix)
-            .and_then(|rest| rest.strip_suffix('\\'))
-        {
-            // 收尾上一个候选：未挂载才算通过这一层。
-            if let Some(path) = current.take() {
-                return Some(path);
-            }
-            let mut path = String::new();
-            path.push(BACKSLASH);
-            path.push(BACKSLASH);
-            path.push('?');
-            path.push(BACKSLASH);
-            path.push_str("Volume");
-            path.push_str(guid);
-            path.push(BACKSLASH);
-            current = Some(path);
-            continue;
-        }
-        // 任何非空行（除了上面那个固定串）都说明这个卷有挂载点。
-        if current.is_some() && !trimmed.contains("NO MOUNT POINTS") {
-            current = None;
-        }
-    }
-    current
 }
 
 pub(crate) fn esp_log_path(name: &str) -> String {
@@ -1709,6 +1655,12 @@ Possible values for VolumeName along with current mount points are:
         );
         assert_eq!(
             classify_log_line("Recovery completed").0.as_deref(),
+            Some("恢复已完成，正在清理")
+        );
+        assert_eq!(
+            classify_log_line("Boot entry cleaned; task marked successful")
+                .0
+                .as_deref(),
             Some("操作完成")
         );
         assert_eq!(
@@ -2251,63 +2203,6 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         );
     }
 
-    #[test]
-    fn esp_volume_from_listing_ignores_already_mounted_volumes() {
-        let bs = 92u8 as char;
-        let mounted = volume_literal("{11111111-2222-3333-4444-555555555555}");
-        let hidden = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
-        let listing = format!(
-            "    {mounted}\r\n        S:{bs}\r\n    {hidden}\r\n        *** NO MOUNT POINTS ***\r\n"
-        );
-        assert_eq!(
-            esp_volume_from_listing(&listing).as_deref(),
-            Some(hidden.as_str())
-        );
-    }
-
-    /// 未挂载 → 选中。
-    #[test]
-    fn esp_volume_from_listing_selects_the_unmounted_volume() {
-        let hidden = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
-        let listing = format!("    {hidden}\r\n        *** NO MOUNT POINTS ***\r\n");
-        assert_eq!(
-            esp_volume_from_listing(&listing).as_deref(),
-            Some(hidden.as_str())
-        );
-    }
-
-    /// 目录挂载点（不是盘符）也算"已挂载"，必须排除。
-    #[test]
-    fn esp_volume_from_listing_treats_directory_mount_points_as_mounted() {
-        let bs = 92u8 as char;
-        let vol = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
-        let listing = format!("    {vol}\r\n        \\\\?\\C:\\mount\\folder\r\n");
-        let _ = bs;
-        assert!(esp_volume_from_listing(&listing).is_none());
-    }
-
-    /// 空输出 / 没有未挂载卷 → `None`，绝不猜。
-    #[test]
-    fn esp_volume_from_listing_returns_none_when_nothing_is_unmounted() {
-        assert!(esp_volume_from_listing("").is_none());
-        let bs = 92u8 as char;
-        let vol = volume_literal("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
-        assert!(esp_volume_from_listing(&format!("    {vol}\r\n        C:{bs}\r\n")).is_none());
-    }
-
-    /// 构造 `\\?\Volume{GUID}\` 字面量，测试里反复要用。
-    fn volume_literal(guid: &str) -> String {
-        let bs = 92u8 as char;
-        let mut path = String::new();
-        path.push(bs);
-        path.push(bs);
-        path.push('?');
-        path.push(bs);
-        path.push_str("Volume");
-        path.push_str(guid);
-        path.push(bs);
-        path
-    }
     #[test]
     fn mountvol_listing_reports_volume_presence_from_l_not_s_exit_code() {
         // 实机抓到的形态：`/L` 输出一行卷路径；没挂上时输出空或只有 CRLF。
