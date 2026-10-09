@@ -22,14 +22,18 @@ VM「Windows 11」始终保持 `running`，即使长时间没在 VM 里做事、
 自动暂停（Pause Windows when possible）要**同时满足**：
 
 1. **VM 窗口处于「非活跃 / 失去焦点（在后台）」状态**超过设定时间；
-2. **Windows 内没有运行任何应用程序**（Parallels 依据其应用/Dock 集成状态来判定，即"Dock 里没有 Windows 应用图标"）。
+2. **Windows 内没有运行任何应用程序**（KB 6860 原话：**"Dock 里没有 Windows 应用程序的图标"**）。
 
 **前提条件**：
 - 必须安装 **Parallels Tools**；
 - **「隔离 Mac 与 Windows」(Isolate Mac from Windows) 必须关闭**。
 
-> **关键澄清**：触发条件里的"闲置"指的是 **VM 窗口不在前台 + Windows 内无应用**，
+> **关键澄清 1**：触发条件里的"闲置"指的是 **VM 窗口不在前台 + Windows 内无应用**，
 > **不是**"Mac 整体无用户操作"。这是初查时理解错的地方。
+>
+> **关键澄清 2（2026-10-09 用户追问后补）**：这里的"应用程序"指的是**带窗口、会出现在
+> macOS Dock 里的 Windows 桌面程序**。**后台 / 托盘常驻进程（无窗口）不会出现在 Dock，
+> 不计入条件 2**——所以"VM 里有进程在跑"不等于"会被判定为有应用运行"。
 
 ---
 
@@ -71,24 +75,44 @@ prlctl exec "Windows 11" powershell -NoProfile -Command "Get-Process | ..."
 关键输出（节选）：
 
 ```
-BackupRestore      ← 你的测试程序在跑
+BackupRestore      ← 你的测试程序在跑（Win32 桌面 GUI，有主窗口 → 占 Dock 图标）
 powershell
-cc-switch
+cc-switch          ← 后台/托盘常驻，无主窗口，不占 Dock 图标（见下方澄清）
 conhost
 ...
 ```
 
-**`BackupRestore` 进程正在运行**。这就是根因：Parallels 判定"Windows 内有应用运行" → 条件2永不达标 → VM 永不自动暂停。
-（哪怕窗口在后台、超时设 10 秒也没用，因为"无应用运行"这一硬门槛一直过不去。）
+> **澄清（重要）**：上面这一列里，`powershell`、`cc-switch`、`conhost` 都是**后台 / 托盘常驻进程**，
+> 没有 Windows 桌面窗口，因此**不会出现在 macOS Dock**，Parallels 的"无应用运行"判定**不计它们**。
+> 真正卡住条件 2 的是 **`BackupRestore`**——它是 `native_gui.rs` 手写的 **Win32 桌面 GUI 程序**，
+> 只要窗口开着，就会在 Dock 占一个 Windows 应用图标 → Parallels 据此判定"有应用运行" → 条件 2 永不达标。
+>
+> 这一点已被用户实测反证：用户在 **只关掉 BackupRestore、CC Switch 保持运行** 的情况下，
+> VM 正常自动暂停了。说明 cc-switch 这类无窗口后台进程**不阻断**自动暂停，只有带窗口的
+> 桌面程序（BackupRestore）才阻断。
 
 ---
 
 ## 四、二次核实结论（根因）
 
-**不是 Mac 被操作的问题，也不是配置没开。**
-真正原因是：**Windows 内你的 BackupRestore 程序（及 powershell 等）一直在运行**，Parallels 据此认为"有应用程序在运行"，自动暂停的硬条件（Windows 内无应用）永远不满足，所以 VM 始终 `running`。
+**不是 Mac 被操作的问题，也不是配置没开，更不是"程序正在执行某个操作"。**
 
-只要 VM 里还开着任何 Windows 应用，这个功能就不会触发——无论你把超时设多短、把窗口放后台多久。
+真正原因是：**BackupRestore 是一个带窗口的 Windows 桌面 GUI 程序，只要它开着，
+就会在 macOS Dock 里占一个 Windows 应用图标；Parallels 据此判定"有应用运行"，
+自动暂停的硬条件（Dock 里无 Windows 应用图标）永远不满足 → VM 始终 `running`。**
+
+要点拆解（回答两个常见误解）：
+
+- **❓"是不是因为这个程序在执行什么操作（比如正在备份/还原）？"**
+  **不是。** 判定只看"有没有桌面程序的窗口/Dock 图标"，**不看程序当下在不在干活**。
+  即便 BackupRestore 完全空闲、什么都没做，只要它的窗口还开着（占了 Dock 图标），
+  Parallels 就认为"有应用运行"，照样不暂停。所以**解决方法是"关掉这个程序"，不是"停掉某个任务"**。
+- **❓"CC Switch 我也没关，为什么能正常休眠？"**
+  **因为 CC Switch 是后台 / 托盘常驻工具（HKCU\Run 自启动，无主窗口），不会在 Dock 出现图标**，
+  Parallels 的"无应用运行"判定不计它。同理 `powershell`、`conhost`、各种服务进程也不计。
+  只有**带桌面窗口的程序**（如 BackupRestore、Chrome、资源管理器窗口等）才会阻断自动暂停。
+
+一句话：**自动暂停的"无应用" = "Dock 里没有 Windows 应用图标"；窗口类程序开着就挡，后台类进程开着不挡。**
 
 ---
 
