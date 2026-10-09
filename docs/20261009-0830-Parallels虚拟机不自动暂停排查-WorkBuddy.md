@@ -1,123 +1,127 @@
 # Parallels 虚拟机「Windows 11」没有自动暂停的原因排查
 
-> 排查时间：2026-10-09 08:30
 > 环境：macOS（宿主）+ Parallels Desktop 26.4.2 (57518) + VM「Windows 11」(ARM64)
-> 结论先行：**配置是开着的，不生效是因为 Mac 一直被操作，没达到「Mac 闲置 15 分钟」的触发阈值。**
+> 初查：2026-10-09 08:30；**二次核实更正：2026-10-09 08:35（用户质疑定义，已纠正）**
+
+> ## ⚠️ 更正声明（2026-10-09 二次核实）
+> 初查时把触发条件误说成「Mac 闲置满 N 秒才暂停 VM」，并据此归因于「你一直在操作 Mac，idle 计时器没到」。
+> **这是错的。** 实测把超时改成 10 秒、VM 窗口放到后台、等 13 秒仍不暂停，说明与 Mac 是否被操作无关。
+> 真正根因见下方「二次核实结论」：**Windows 内你的 BackupRestore 程序一直在运行，Parallels 据此判定"有应用运行"，硬条件不满足 → 永不暂停。**
+> 本文件以二次核实结论为准。
 
 ---
 
 ## 一、现象
 
-VM「Windows 11」始终保持 `running`，即使长时间没在 VM 里做事，Parallels 也没有自动把它暂停（Pause / Suspend）。
+VM「Windows 11」始终保持 `running`，即使长时间没在 VM 里做事、甚至把窗口切到后台，Parallels 也没有自动把它暂停（Pause / Suspend）。
 
 ---
 
-## 二、排查过程与命令
+## 二、Parallels 自动暂停的官方正确定义（KB 6860 + PD 26 文档）
 
-### 1. 确认 Parallels 工具与 VM 状态
+自动暂停（Pause Windows when possible）要**同时满足**：
 
-```bash
-prlctl --version          # prlctl version 26.4.2 (57518)
-prlctl list -a            # Windows 11  running
-```
+1. **VM 窗口处于「非活跃 / 失去焦点（在后台）」状态**超过设定时间；
+2. **Windows 内没有运行任何应用程序**（Parallels 依据其应用/Dock 集成状态来判定，即"Dock 里没有 Windows 应用图标"）。
 
-### 2. 看 VM 的自动暂停相关配置
+**前提条件**：
+- 必须安装 **Parallels Tools**；
+- **「隔离 Mac 与 Windows」(Isolate Mac from Windows) 必须关闭**。
 
-```bash
-prlctl list -i "Windows 11" | grep -iE "pause|idle|auto"
-```
-
-关键输出：
-
-```
-Pause idle: on
-```
-
-再直接读 VM 配置文件 `config.pvs`（XML）：
-
-```bash
-grep -iE "PauseIdle" "/Users/x/Parallels/Windows 11.pvm/config.pvs"
-```
-
-结果：
-
-```xml
-<PauseIdleVM>1</PauseIdleVM>
-<PauseIdleVMTimeout>900</PauseIdleVMTimeout>
-```
-
-| 字段 | 值 | 含义 |
-|------|----|------|
-| `PauseIdleVM` | `1` | 空闲暂停**已开启** |
-| `PauseIdleVMTimeout` | `900` | 阈值是 **900 秒 = 15 分钟** |
-
-### 3. 排除「被外部脚本持续驱动」
-
-你的工作流里常有 br-agent 常驻、vmkey 键盘注入、br-gui 鼠标注入、`prlctl exec` 循环——这些都会让 Parallels 判定 VM 在忙，从而不触发暂停。实查宿主进程：
-
-```bash
-ps -axo pid,etime,command | grep -iE "br-agent|vmkey|br-gui|prlctl|parallels|win-clicker" | grep -v grep
-```
-
-结果：**没有**任何 br-agent / vmkey / br-gui / `prlctl exec` 常驻循环进程（只有 Parallels 自身进程）。当前也没有挂着的 `prlctl` 子进程。
-
-### 4. 实测 Mac 当前是否「闲置」
-
-Parallels 的 Pause idle 语义是「**当 Mac 自身闲置（用户停止操作 Mac）达到阈值，才暂停 VM**」，不是「VM 自己空闲就暂停」。直接量 Mac 的 HID 空闲时间：
-
-```bash
-idle=$(ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {print $NF; exit}')
-echo "约 $((idle/1000000000)) 秒（阈值 900 秒）"
-```
-
-实测输出：**约 119 秒**（远小于 900 秒）。说明你最近一直在操作 Mac（键鼠活动不停重置 idle 计时器）。
+> **关键澄清**：触发条件里的"闲置"指的是 **VM 窗口不在前台 + Windows 内无应用**，
+> **不是**"Mac 整体无用户操作"。这是初查时理解错的地方。
 
 ---
 
-## 三、根因结论
+## 三、排查与实测
 
-1. **开关是开的**：`PauseIdleVM=1`，超时 `900s`（15 分钟）。
-2. **没被你的自动化脚本干扰**：当前无 br-agent / vmkey / prlctl exec 常驻。
-3. **真正原因**：Parallels 的「Pause idle」= **Mac 闲置满 15 分钟才暂停 VM**。你持续使用 Mac（本次排查就在 Mac 上操作），idle 计时器一直被重置，永远到不了 900 秒，所以 VM 不会暂停。
-
-这不是故障，是设计行为。
-
----
-
-## 四、如何验证机制本身正常
-
-要让它真的暂停，只需：**停止操作 Mac 整整 15 分钟**（不碰键鼠），然后：
+### 1. 配置与前提（全部满足）
 
 ```bash
-prlctl list -a        # Windows 11 状态应变 paused / suspended
+grep -iE "PauseIdle"  ~/Parallels/Windows\ 11.pvm/config.pvs
+# <PauseIdleVM>1</PauseIdleVM>
+# <PauseIdleVMTimeout>10</PauseIdleVMTimeout>   ← 用户已改成 10 秒
 ```
 
-若 15 分钟不碰 Mac 后仍不暂停，再排查别的（如 VM 内有持续 CPU/磁盘活动、外接设备、全屏应用等）。
+| 项 | 值 | 说明 |
+|----|----|------|
+| `PauseIdleVM` | `1` | 开关已开 ✓ |
+| `PauseIdleVMTimeout` | `10` | 用户改成的 10 秒 ✓ |
+| `IsolatedVm` (config.pvs) | `0` | 未隔离 ✓ |
+| GuestTools | `installed 26.4.2` | Tools 已装 ✓ |
+
+### 2. 条件1 + 前提已满足，但仍不暂停
+
+把 VM 窗口切到后台（Mac 前台是别的 App），等 **13 秒**（远超 10 秒）：
+
+```bash
+prlctl list -a | grep "Windows 11"   # 仍是 running，没有暂停
+```
+
+→ 说明「窗口非活跃」这个条件其实不卡（已超时仍未触发），问题在**条件2**。
+
+### 3. 条件2 核查：Windows 内是否有应用运行（真正的卡点）
+
+进 VM 列出非系统进程：
+
+```bash
+prlctl exec "Windows 11" powershell -NoProfile -Command "Get-Process | ..."
+```
+
+关键输出（节选）：
+
+```
+BackupRestore      ← 你的测试程序在跑
+powershell
+cc-switch
+conhost
+...
+```
+
+**`BackupRestore` 进程正在运行**。这就是根因：Parallels 判定"Windows 内有应用运行" → 条件2永不达标 → VM 永不自动暂停。
+（哪怕窗口在后台、超时设 10 秒也没用，因为"无应用运行"这一硬门槛一直过不去。）
 
 ---
 
-## 五、可选优化（是否要做由你定）
+## 四、二次核实结论（根因）
 
-如果你想要的是「**VM 在我忙着用 Mac 时也能省资源**」，Parallels 自带功能做不到（它只看 Mac 是否闲置）。可选方案：
+**不是 Mac 被操作的问题，也不是配置没开。**
+真正原因是：**Windows 内你的 BackupRestore 程序（及 powershell 等）一直在运行**，Parallels 据此认为"有应用程序在运行"，自动暂停的硬条件（Windows 内无应用）永远不满足，所以 VM 始终 `running`。
 
-1. **手动暂停**：不用时 `prlctl suspend "Windows 11"`（或写个快捷键/脚本一键挂起）。
-2. **缩短阈值**：把 `PauseIdleVMTimeout` 调小（如 300 秒 = 5 分钟），让 Mac 一闲置就更快暂停：
-   ```bash
-   # 经用户确认后再执行，此处仅记录命令
-   prlctl set "Windows 11" --pause-idle-timeout 300
-   ```
-3. **定时挂起**：用 `launchd` 在固定时段（如离开电脑前）自动 `prlctl suspend`。
-
-> 注：你之前有「br-agent 空闲 15 分钟自退」的自有逻辑，那是 agent 进程自退，与 Parallels 的 VM 暂停是两回事，不要混淆。
+只要 VM 里还开着任何 Windows 应用，这个功能就不会触发——无论你把超时设多短、把窗口放后台多久。
 
 ---
 
-## 六、速查命令
+## 五、如何验证（自行确认）
+
+1. 在 VM 内**关闭 BackupRestore 程序及所有 Windows 应用窗口**（退出，不只是最小化）；
+2. 把 VM 窗口切到后台（Mac 焦点切到别的 App）；
+3. 等待 `PauseIdleVMTimeout`（当前 10 秒）以上；
+4. `prlctl list -a` 看状态应变 `paused` / `suspended`。
+
+若关闭应用后如期暂停，即坐实根因。
+
+---
+
+## 六、可靠替代方案（不受"无应用运行"限制）
+
+如果你想要"用完 VM 就让它释放资源"，最稳的是**手动/脚本挂起**，不依赖上面的自动判定：
+
+```bash
+prlctl suspend "Windows 11"     # 挂起（释放 CPU）
+prlctl resume  "Windows 11"     # 恢复
+```
+
+也可用 `launchd` 定时（如离开电脑前）自动 `prlctl suspend`。
+
+---
+
+## 七、速查命令
 
 | 目的 | 命令 |
 |------|------|
-| 看 VM 自动暂停开关 | `prlctl list -i "Windows 11" \| grep "Pause idle"` |
-| 看具体阈值（秒） | `grep PauseIdleVMTimeout ~/Parallels/Windows\ 11.pvm/config.pvs` |
-| 测 Mac 当前闲置秒数 | `ioreg -c IOHIDSystem \| awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'` |
-| 手动挂起 VM | `prlctl suspend "Windows 11"` |
-| 恢复 VM | `prlctl resume "Windows 11"` |
+| 看自动暂停开关 | `prlctl list -i "Windows 11" \| grep "Pause idle"` |
+| 看阈值（秒） | `grep PauseIdleVMTimeout ~/Parallels/Windows\ 11.pvm/config.pvs` |
+| 查隔离是否关闭 | `grep IsolatedVm ~/Parallels/Windows\ 11.pvm/config.pvs`（应为 0） |
+| 查 VM 内运行的非系统进程 | `prlctl exec "Windows 11" powershell -NoProfile -Command "Get-Process \| Where-Object {\$_.Name -notmatch '^(System\|Idle\|...)$'} \| Select-Object Name"` |
+| 手动挂起 / 恢复 VM | `prlctl suspend "Windows 11"` / `prlctl resume "Windows 11"` |
