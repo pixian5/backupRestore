@@ -153,3 +153,24 @@ prlctl resume  "Windows 11"     # 恢复
 | 查隔离是否关闭 | `grep IsolatedVm ~/Parallels/Windows\ 11.pvm/config.pvs`（应为 0） |
 | 查 VM 内运行的非系统进程 | `prlctl exec "Windows 11" powershell -NoProfile -Command "Get-Process \| Where-Object {\$_.Name -notmatch '^(System\|Idle\|...)$'} \| Select-Object Name"` |
 | 手动挂起 / 恢复 VM | `prlctl suspend "Windows 11"` / `prlctl resume "Windows 11"` |
+
+---
+
+## 八、用户补充实测（2026-10-09）：窗口即阻断，与"是否在干活"无关
+
+用户在后续实测中进一步确认了阻断的本质，并理顺了此前"CC Switch 不挡"的看似矛盾：
+
+- **只要 Windows 里有"带窗口的桌面程序"处于打开状态（不论在前台还是只是开着），
+  就算它完全空闲、啥也没干，自动暂停照样被挡。** 阻断的是**"窗口的存在"本身**，
+  不是"程序在跑任务 / 在消耗 CPU"。
+- 因此：**关掉 BackupRestore 的窗口，或关掉 CC Switch（的窗口），系统就能正常休眠**——
+  二者本质上都是"关掉一个窗口类应用"这一个动作。
+- **CC Switch 的双重身份（解释前后两次看似矛盾的现象）**：
+  - 它以 `HKCU\Run` 自启，平时是**后台 / 托盘常驻、没有窗口** → 此时不在 Parallels 的
+    "运行中的应用"清单里 → **不阻断**（对应此前"CC Switch 没关、BackupRestore 关了 → 能休眠"）；
+  - 但它**也有一个可打开的 UI 窗口**，当这个窗口处于打开/前台时，它就和 BackupRestore 一样
+    成为"窗口类应用" → **阻断**（对应此次"关掉 CC Switch（窗口）也能休眠"）。
+  - 结论：CC Switch 是否阻断，取决于**它此刻有没有窗口开着**，而不是"进程在不在跑"。
+
+> **最终版核心判定**：自动暂停的"无应用" = **Windows 内没有任何"带窗口的桌面程序"处于打开状态。**
+> 与程序是否在干活、是否占 CPU 无关；后台 / 托盘进程（无窗口）永远不计入。
