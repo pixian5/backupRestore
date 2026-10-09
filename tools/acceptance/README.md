@@ -19,7 +19,7 @@
 
 ## 真实断电
 
-`--boot` 进入真实任务恢复环境。`acceptance:cleanup-matrix:hold` 依次暂停在清理启动请求、删除启动对象、删除载荷、成功写入前后；`acceptance:boot-matrix:hold` 暂停在 BCDBoot 前后以及注册写入后的检查点。每个检查点先持久化标记，因此恢复时只触发一次。
+`--boot` 进入真实任务恢复环境。`acceptance:cleanup-matrix:hold` 依次暂停在清理启动请求、删除启动对象、删除载荷、成功写入前后；`acceptance:boot-matrix:hold` 暂停在 BCDBoot 前、运行中、完成后，以及注册写入后的检查点。每个检查点先持久化标记，因此恢复时只触发一次。运行中检查点先让真实 BCDBoot 执行 10 毫秒，再暂停仍存活的进程；必须看到 `BCDBOOT_PROCESS_SUSPENDED` 与对应检查点，不把已退出进程算作命中。
 
 ```bash
 .venv/bin/python tools/acceptance/run.py snapshot --case cleanup-matrix
@@ -47,3 +47,19 @@ Windows 原生测试中的 `boot_entry::fault_tests::missing_payload_conflict_an
 ```
 
 压缩包只包含小型日志、状态、截图和文字证据，排除 WIM（Windows 映像文件）、虚拟磁盘和完整注册表。收尾时恢复本次测试临时调整的虚拟机空闲暂停设置，并记录剩余快照与版本摘要。
+
+## Windows 原生回归
+
+采用 `build-win.sh` 的同一链接器及静态运行库参数，运行 `cargo test --workspace --all-targets --offline --target aarch64-pc-windows-msvc --no-run --message-format=json`，从编译事件中提取 `profile.test=true` 的两个 `executable`，转换为客体能读取的共享路径并保存 JSON 数组清单。不要根据文件时间猜选测试程序。
+
+在正常 Windows 的 SYSTEM（系统账户）通道调用 `native.ps1 -Manifest <清单路径> -Evidence <证据目录>`。它按工作卷 GUID 定位，复制并比对摘要后，在虚拟机本地串行执行两个测试程序，保存输出并检查退出码。破坏性夹具仍须单独指定目标、快照和测试名。避免把完整脚本拼成过长的 `EncodedCommand`；宿主通道挂住且未产生客体输出时，不视为已执行。
+
+`tests::secondary_menu_repair_native` 验证第二系统重建后的菜单收尾。先核验新快照并挂载 EFI 系统分区，提供 `BR_ACCEPTANCE_SNAPSHOT`、`BR_ACCEPTANCE_ROOT`、`BR_ACCEPTANCE_TASK`、`BR_ACCEPTANCE_EFI`、`BR_ACCEPTANCE_SECONDARY`，使用 `--ignored --exact tests::secondary_menu_repair_native --nocapture --test-threads=1`。该夹具要求已成功的第二系统任务，调用产品同一收尾函数并回读启动菜单；不重做镜像应用。
+
+## 系统创建与实际启动
+
+系统模式的 `case.ps1 verify` 只验证终态、格式化哨兵及主系统恢复原件，返回 `systemVerificationRequired=true`。继续调用 `system.ps1 -Action created -Config <用例配置> -Baseline <同一镜像的已验证基线目录>`，核对两系统关键文件、夹具、原默认项、仍存在的原菜单顺序、独立恢复对象及临时对象清理。基线必须包含 `primary-before-secondary.json` 和 `fixture.json`，不能换用其他镜像的摘要。
+
+实际启动第二系统后以 `-Action booted` 再核验系统卷 GUID、C: 盘符、当前加载器、恢复注册、桌面及核心服务。任务成功和离线文件检查不能替代这一步。标准恢复菜单进入和返回仍需另建快照并保存实际画面与返回后的系统身份。
+
+BCDBoot 完成后的特定中断点可能清除一次性请求，先启动已恢复的系统；此时使用产品 `resume` 显式续跑。记录自动与显式续跑的区别，不把六个检查点统称为自动续跑。

@@ -4,6 +4,8 @@
 .idea/
 .vscode/
 .venv/
+__pycache__/
+*.pyc
 .arts/
 .trae/
 target/

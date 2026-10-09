@@ -722,6 +722,18 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
 
 #[cfg(windows)]
 fn recover_env_interactive(path: String) -> Result<(), TaskError> {
+    // 自定义恢复入口没有经过系统恢复桌面；先枚举即插即用设备，
+    // 否则 ARM64 恢复环境中的键盘可能尚未就绪，错误窗口无法操作。
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"X:\Windows".into());
+    let init_log = PathBuf::from(&system_root).join("Temp/BackupRestore-init.log");
+    if std::process::Command::new("reg.exe")
+        .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\MiniNT"])
+        .output()?
+        .status
+        .success()
+    {
+        run_logged("wpeinit.exe", &[], &init_log)?;
+    }
     #[link(name = "user32")]
     unsafe extern "system" {
         fn MessageBoxW(
@@ -738,7 +750,8 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                 let text: Vec<u16> = format!("恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”进入系统恢复工具。\n恢复已完成的任务只重试清理，不会再次擦除目标。\0").encode_utf16().collect();
                 let title: Vec<u16> = "BackupRestore 恢复需要处理\0".encode_utf16().collect();
                 let result = unsafe {
-                    MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x35)
+                    // MB_SETFOREGROUND：恢复环境没有桌面外壳帮错误窗口取得键盘焦点。
+                    MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10035)
                 };
                 if result != 4 {
                     return Err(error);
@@ -801,7 +814,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     struct ProgressGuard(Arc<recovery_progress::ProgressShared>);
     impl Drop for ProgressGuard {
         fn drop(&mut self) {
-            recovery_progress::request_close(&self.0);
+            recovery_progress::close_and_wait(&self.0);
         }
     }
     let _progress_guard = ProgressGuard(Arc::clone(&progress));
@@ -823,6 +836,18 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", task_letter)));
     let task_dir = store.task_dir(&task_id)?;
     early_log = task_dir.join("Recovery-early.log");
+    // RAM 盘初始化日志也落到任务目录，便于跨重启核验设备初始化。
+    if let Ok(system_root) = std::env::var("SystemRoot") {
+        for (source, name) in [
+            ("Temp/BackupRestore-init.log", "WinPE-init.log"),
+            ("System32/wpeinit.log", "wpeinit.log"),
+        ] {
+            let source = PathBuf::from(&system_root).join(source);
+            if source.is_file() {
+                fs::copy(source, task_dir.join(name))?;
+            }
+        }
+    }
     // 早期日志切到任务目录后，进度窗口跟随新日志并重置读取偏移。
     progress.switch_log_path(early_log.clone(), 0);
     let mut task = store.load(&task_id)?;
@@ -2979,9 +3004,7 @@ fn boot_manager_state_from_store(
         .ok_or_else(|| err("existing Boot Manager state is missing or invalid"))
 }
 
-/// Restore the exact previous default and display order, appending the newly
-/// created secondary loader last. This uses BCDEdit after BCDBoot because
-/// BCDBoot ignores `/addlast` when called with an explicit EFI root.
+/// 保留原默认系统和仍存在的菜单项，再追加第二系统；不复活 BCDBoot 删除的旧编号。
 #[cfg(windows)]
 fn preserve_primary_boot_manager(
     efi_root: &Path,
@@ -2991,6 +3014,12 @@ fn preserve_primary_boot_manager(
 ) -> Result<(), TaskError> {
     let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
     let store_arg = store.to_string_lossy().into_owned();
+    let live = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    let expected_order = secondary_boot_order(previous, secondary_identifier, &live)?;
     run_logged(
         "bcdedit.exe",
         &[
@@ -3003,16 +3032,6 @@ fn preserve_primary_boot_manager(
         ],
         log,
     )?;
-    let mut expected_order: Vec<String> = previous
-        .display_order
-        .iter()
-        .filter(|identifier| !identifier.eq_ignore_ascii_case(secondary_identifier))
-        .cloned()
-        .collect();
-    if expected_order.is_empty() {
-        expected_order.push(previous.default.clone());
-    }
-    expected_order.push(secondary_identifier.to_string());
     let mut display_args = vec![
         "/store".to_string(),
         store_arg.clone(),
@@ -3049,6 +3068,38 @@ fn preserve_primary_boot_manager(
         ),
     )?;
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn secondary_boot_order(
+    previous: &BcdBootManagerState,
+    secondary: &str,
+    live: &str,
+) -> Result<Vec<String>, TaskError> {
+    let normalized = live.replace("\r\n", "\n");
+    let objects: std::collections::BTreeSet<String> = normalized
+        .split("\n\n")
+        .filter_map(|block| block.lines().find_map(bcd_identifier_from_line))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if !objects.contains(&previous.default.to_ascii_lowercase())
+        || !objects.contains(&secondary.to_ascii_lowercase())
+    {
+        return Err(err("主系统或新第二系统加载器缺失，拒绝改写启动菜单"));
+    }
+    let mut order: Vec<_> = previous
+        .display_order
+        .iter()
+        .filter(|id| {
+            objects.contains(&id.to_ascii_lowercase()) && !id.eq_ignore_ascii_case(secondary)
+        })
+        .cloned()
+        .collect();
+    if order.is_empty() {
+        order.push(previous.default.clone());
+    }
+    order.push(secondary.to_owned());
+    Ok(order)
 }
 
 /// Parse the minimal Boot Manager state required to preserve the existing
@@ -3231,6 +3282,56 @@ mod tests {
         parse_boot_manager_state, parse_recover_options, split_workspace_root_rel,
         stage_resumable_after_interruption,
     };
+
+    #[test]
+    fn secondary_menu_omits_deleted_objects_and_requires_primary() {
+        let primary = "{11111111-2222-4333-8444-555555555555}";
+        let removed = "{22222222-3333-4444-8555-666666666666}";
+        let secondary = "{33333333-4444-4555-8666-777777777777}";
+        let other = "{44444444-5555-4666-8777-888888888888}";
+        let previous = super::BcdBootManagerState {
+            default: primary.into(),
+            display_order: vec![primary.into(), removed.into(), other.into()],
+        };
+        let live = format!("identifier {primary}\n\n标识符 {secondary}\n\nidentifier {other}");
+        assert_eq!(
+            super::secondary_boot_order(&previous, secondary, &live).unwrap(),
+            [primary, other, secondary]
+        );
+        assert!(
+            super::secondary_boot_order(&previous, secondary, &format!("identifier {secondary}"))
+                .is_err()
+        );
+        assert!(
+            super::secondary_boot_order(&previous, secondary, &format!("identifier {primary}"))
+                .is_err()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "需要已完成的第二系统任务、EFI 挂载点及新核验快照；真实修改启动菜单"]
+    fn secondary_menu_repair_native() {
+        use std::path::PathBuf;
+        let snapshot = std::env::var("BR_ACCEPTANCE_SNAPSHOT").expect("新快照");
+        assert!(super::bcd_identifier_from_line(&snapshot).is_some());
+        let root = std::env::var("BR_ACCEPTANCE_ROOT").expect("任务根目录");
+        let id = std::env::var("BR_ACCEPTANCE_TASK").expect("任务ID");
+        let efi = PathBuf::from(std::env::var("BR_ACCEPTANCE_EFI").expect("已挂载ESP"));
+        let secondary = std::env::var("BR_ACCEPTANCE_SECONDARY").expect("已核验第二加载器");
+        assert!(super::bcd_identifier_from_line(&secondary).is_some());
+        let store = super::TaskStore::new(root);
+        let task = store.load(&id).unwrap();
+        assert_eq!(task.status, super::Stage::Success);
+        assert_eq!(task.operation, super::Operation::CreateSecondary);
+        let log = store
+            .task_dir(&id)
+            .unwrap()
+            .join("menu-repair-acceptance.log");
+        let previous = super::boot_manager_state_from_task_snapshot(&store, &task, &log).unwrap();
+        super::preserve_primary_boot_manager(&efi, &previous, &secondary, &log).unwrap();
+        println!("SECONDARY_MENU_REPAIR_VERIFIED");
+    }
     use backuprestore_core::Stage;
 
     #[test]

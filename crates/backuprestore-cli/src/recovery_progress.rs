@@ -57,6 +57,7 @@ pub struct ProgressShared {
     pub window_up: AtomicBool,
     // 窗口尚未创建时收到关闭请求也要记住，避免快速失败留下孤立进度窗。
     close_requested: AtomicBool,
+    window_thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// 标记是否已对齐到 STEP 1/4 的开始时间
     pub start_time_aligned: AtomicBool,
     /// 任务开始时间戳，用于计算已用时间与预估剩余时间。
@@ -572,17 +573,28 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         cached_details: Mutex::new(Vec::new()),
         window_up: AtomicBool::new(false),
         close_requested: AtomicBool::new(false),
+        window_thread: Mutex::new(None),
         start_time_aligned: AtomicBool::new(false),
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
         operation: Mutex::new(operation.map(|s| s.to_string())),
     });
     let thread_shared = Arc::clone(&shared);
-    let _ = thread::spawn(move || {
+    let handle = thread::spawn(move || {
         // 窗口线程：创建 Win32 进度窗口并进入消息循环。
         unsafe { run_window(&thread_shared) };
     });
+    *shared.window_thread.lock().unwrap() = Some(handle);
     shared
+}
+
+/// 等旧窗口彻底退出，再显示重试窗口，避免异步销毁抢走新窗口焦点。
+pub fn close_and_wait(shared: &ProgressShared) {
+    request_close(shared);
+    let handle = shared.window_thread.lock().unwrap().take();
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
 }
 
 /// 请求关闭进度窗口（主线程操作执行完毕后调用，避免窗口残留在前台）。

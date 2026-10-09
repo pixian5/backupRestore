@@ -78,7 +78,7 @@ if($Action -eq 'retry'){
  $info=(& reagentc /info | Out-String).Trim()
  if($info -cne [IO.File]::ReadAllText("$r\winre-before.txt").Trim()){throw 'Primary recovery registration changed'}
  if($c.boot -and (Test-Path "$($w.DriveLetter):\BackupRestoreRE") -and !$c.systemImage){throw 'Task staging remains'}
- $result=[pscustomobject]@{task=$task.taskId;status=$task.status;target=$t.Guid;fixturesVerified=$true;primaryRecoveryUnchanged=$true;build=$c.exeSha256}
+ $result=[pscustomobject]@{task=$task.taskId;status=$task.status;target=$t.Guid;fixturesVerified=(!$c.systemImage);systemVerificationRequired=$c.systemImage;primaryRecoveryUnchanged=$true;build=$c.exeSha256}
  $result | ConvertTo-Json | Set-Content -Encoding UTF8 "$r\verified.json"
  $result | ConvertTo-Json
 }
