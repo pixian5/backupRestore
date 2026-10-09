@@ -50,6 +50,8 @@ mod pe_operation;
 #[cfg(any(windows, test))]
 mod pe_safety;
 #[cfg(windows)]
+mod recovery_fault;
+#[cfg(windows)]
 mod recovery_progress;
 #[cfg(any(windows, test))]
 mod resume_safety;
@@ -68,7 +70,7 @@ mod winre_registration;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -219,10 +221,16 @@ fn main() {
                 .and_then(|(r, i)| options.map(|options| (r, i, options)))
                 .and_then(|(r, i, options)| recover(r, i, options))
         }
+        #[cfg(windows)]
+        Some("resume") => {
+            let root = args.next().ok_or_else(|| err("task root is required"));
+            let id = args.next().ok_or_else(|| err("task id is required"));
+            root.and_then(|r| id.and_then(|id| resume_task(r, id)))
+        }
         Some("recover-env") => args
             .next()
             .ok_or_else(|| err("RecoveryTask.env is required"))
-            .and_then(recover_env),
+            .and_then(recover_env_interactive),
         Some("run-command") => {
             let program = args.next().ok_or_else(|| err("program is required"));
             program.and_then(|p| run_command(&p, args.collect()))
@@ -370,9 +378,8 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
             continue;
         }
         let task_id = entry.file_name().to_string_lossy().to_string();
-        let task_path = entry.path().join("task.json");
         let status_path = entry.path().join("status.json");
-        let Ok(task) = read_json::<Task>(&task_path) else {
+        let Ok(task) = TaskStore::new(workspace).load(&task_id) else {
             continue;
         };
         if !stage_resumable_after_interruption(task.status) || task.validate().is_err() {
@@ -405,7 +412,15 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         return Ok(false);
     }
 
-    let (task, task_dir) = pending.pop().expect("pending length checked above");
+    let (mut task, task_dir) = pending.pop().expect("pending length checked above");
+    if task.status == Stage::RecoveryComplete {
+        complete_recovery_cleanup(
+            &TaskStore::new(workspace),
+            &mut task,
+            &task_dir.join("prepare.log"),
+        )?;
+        return Ok(false);
+    }
     if !claim_boot_resume_attempt(&task_dir, task.status)? {
         append_log(
             &task_dir.join("prepare.log"),
@@ -414,33 +429,11 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
                 task.status
             ),
         )?;
-        // 放弃自动续跑：撤掉我们自建的一次性启动与 BCD 对象、删掉镜像卷上的载荷，
-        // 别把机器留在「下次开机进任务 RE，但没人会来跑」的状态。注册位从头到尾
-        // 没被我们碰过，所以这里不需要、也不应该做任何"写回原件"的动作。
-        let suppressed_log = task_dir.join("prepare.log");
-        match boot_entry::ReBootEntry::read(&task_dir) {
-            Ok(Some(entry)) => {
-                if let Err(error) = boot_entry::disarm(&entry, &suppressed_log) {
-                    append_log(
-                        &suppressed_log,
-                        &format!("Suppressed resume: could not remove our boot entry: {error}"),
-                    )?;
-                } else {
-                    append_log(
-                        &suppressed_log,
-                        "Suppressed resume: our boot entry and payload removed",
-                    )?;
-                }
-            }
-            Ok(None) => append_log(
-                &suppressed_log,
-                "Suppressed resume: no recorded boot entry; nothing to remove",
-            )?,
-            Err(error) => append_log(
-                &suppressed_log,
-                &format!("Suppressed resume: could not read the boot entry record: {error}"),
-            )?,
-        }
+        // 自动重试次数限制只停止自动重启，绝不删除唯一的恢复入口。
+        append_log(
+            &task_dir.join("prepare.log"),
+            "自动续跑已暂停；任务阶段、启动对象和恢复载荷全部保留，可使用 resume 命令重试",
+        )?;
         return Ok(false);
     }
     for required in [
@@ -533,6 +526,7 @@ fn stage_resumable_after_interruption(stage: Stage) -> bool {
             | Stage::TargetErased
             | Stage::ImageApplied
             | Stage::BootRepaired
+            | Stage::RecoveryComplete
     )
 }
 
@@ -680,17 +674,36 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
             ),
         )?;
     }
+    #[cfg(windows)]
+    {
+        let dir = store.task_dir(&id)?;
+        let env = dir.join("payload/RecoveryTask.env");
+        let values = if env.is_file() {
+            read_env_file(env)?
+        } else {
+            BTreeMap::new()
+        };
+        recovery_fault::configure(values.get("TEST_FAULT").map(String::as_str), &dir);
+        if task.status == Stage::RecoveryComplete {
+            return complete_recovery_cleanup(&store, &mut task, &log);
+        }
+    }
     let result = recover_windows(
         &store,
         &mut task,
         &log,
         options.efi_root.as_deref(),
         None,
-        true,
+        false,
         None,
     );
     if let Err(error) = &result {
-        let _ = store.write_failure(&mut task, 1, error.to_string());
+        store.write_recovery_error(&task, error.to_string())?;
+    }
+    #[cfg(windows)]
+    if result.is_ok() {
+        store.write_transition(&mut task, Stage::RecoveryComplete)?;
+        complete_recovery_cleanup(&store, &mut task, &log)?;
     }
     result
 }
@@ -700,6 +713,39 @@ fn recover_env(_path: String) -> Result<(), TaskError> {
     Err(err(
         "recover-env is only available on Windows/WinRE; use recover --dry-run on this host",
     ))
+}
+
+#[cfg(not(windows))]
+fn recover_env_interactive(path: String) -> Result<(), TaskError> {
+    recover_env(path)
+}
+
+#[cfg(windows)]
+fn recover_env_interactive(path: String) -> Result<(), TaskError> {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(
+            window: *mut std::ffi::c_void,
+            text: *const u16,
+            title: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+    loop {
+        match recover_env(path.clone()) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let text: Vec<u16> = format!("恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”进入系统恢复工具。\n恢复已完成的任务只重试清理，不会再次擦除目标。\0").encode_utf16().collect();
+                let title: Vec<u16> = "BackupRestore 恢复需要处理\0".encode_utf16().collect();
+                let result = unsafe {
+                    MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x35)
+                };
+                if result != 4 {
+                    return Err(error);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -751,6 +797,14 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     let operation_hint = values.get("OPERATION").map(|s| s.as_str());
     // WinRE 恢复进度窗口（失败静默降级，非关键）：GUI 显示阶段/DISM 进度/日志尾部。
     let progress = recovery_progress::spawn(early_log.clone(), operation_hint);
+    // 每次重试拥有自己的窗口，任何提前返回都关闭旧窗口。
+    struct ProgressGuard(Arc<recovery_progress::ProgressShared>);
+    impl Drop for ProgressGuard {
+        fn drop(&mut self) {
+            recovery_progress::request_close(&self.0);
+        }
+    }
+    let _progress_guard = ProgressGuard(Arc::clone(&progress));
     // One registry for every role mounted in this WinRE session, so two roles
     // that resolve to the same volume share its letter instead of stealing it
     // from each other.
@@ -776,7 +830,16 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         "task loaded status={:?} operation={:?}",
         task.status, task.operation
     ));
-    if matches!(task.status, Stage::Success | Stage::Failed) {
+    if task.status == Stage::RecoveryComplete {
+        // 清理中断后的重入仅清理，不依赖已删除的载荷文件，也绝不再次格式化。
+        recovery_fault::configure(values.get("TEST_FAULT").map(String::as_str), &task_dir);
+        complete_recovery_cleanup(&store, &mut task, &early_log)?;
+        return run_logged("wpeutil.exe", &["reboot"], &early_log);
+    }
+    if task.status == Stage::Success {
+        return run_logged("wpeutil.exe", &["reboot"], &early_log);
+    }
+    if task.status == Stage::Failed {
         return Err(err(&format!(
             "task is already terminal at stage {:?}; refusing to run it again",
             task.status
@@ -796,7 +859,6 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     // 方便用户在 WIM 旁直接查看。workspace_log 保留给 GUI 状态报告读取。
     let workspace_log = store.log_path(&task_id)?;
     let mut log = workspace_log.clone();
-    let stage_before_failure = task.status;
     let mut efi_root = None;
     // WinRE cleanup is part of the recovery contract.  Defer the terminal
     // success write until the original registered WinRE image has been
@@ -862,6 +924,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             ));
         }
 
+        recovery_fault::configure(values.get("TEST_FAULT").map(String::as_str), &task_dir);
         // 先完成任务和不可变载荷校验，再判断哪些角色确实受本任务格式化影响。
         let recovery_letter = mount_env_volume(
             &mut mounts,
@@ -1008,51 +1071,91 @@ fn recover_env(path: String) -> Result<(), TaskError> {
             Some(&progress),
         )
     })();
+    if let Err(error) = result {
+        // C: 可能已经被擦除；回滚旧 BCD 不会还原系统文件，并可能移除续跑对象。
+        // 保留当前阶段与外部载荷，停止本次执行，故障解除后从同一阶段重试。
+        let persisted = store.write_recovery_error(&task, error.to_string());
+        let _ = append_log(
+            &log,
+            &format!(
+                "Recovery retry required at {:?}: {error}; boot entry and payload retained",
+                task.status
+            ),
+        );
+        if let Err(state_error) = persisted {
+            let _ = append_log(
+                &log,
+                &format!("Unable to persist recovery error: {state_error}"),
+            );
+        }
+        return Err(error);
+    }
+    store.write_transition(&mut task, Stage::RecoveryComplete)?;
+    complete_recovery_cleanup(&store, &mut task, &log)?;
+    meta_log("FINAL: success, wpeutil reboot");
+    run_logged("wpeutil.exe", &["reboot"], &log)
+}
+
+/// 该阶段证明磁盘、引导、恢复注册均已完成；重复执行不会重做磁盘操作。
+#[cfg(windows)]
+fn complete_recovery_cleanup(
+    store: &TaskStore,
+    task: &mut Task,
+    log: &Path,
+) -> Result<(), TaskError> {
+    if task.status != Stage::RecoveryComplete {
+        return Err(err("任务尚未完成恢复，拒绝清理"));
+    }
+    append_log(log, "STEP 4/4 清理恢复启动项/配置")?;
+    let env = store
+        .task_dir(&task.task_id)?
+        .join("payload/RecoveryTask.env");
+    if env.is_file() {
+        let values = read_env_file(env)?;
+        recovery_fault::configure(
+            values.get("TEST_FAULT").map(String::as_str),
+            &store.task_dir(&task.task_id)?,
+        );
+    }
+    let result = (|| {
+        finalize_boot_entry_after_task(&store.task_dir(&task.task_id)?, log)?;
+        recovery_fault::checkpoint("success-before", log)?;
+        store.write_transition(task, Stage::Success)?;
+        recovery_fault::checkpoint("success-after", log)?;
+        append_log(log, "Boot entry cleaned; task marked successful")
+    })();
     if let Err(error) = &result {
-        let should_rollback_bcd =
-            task.status == Stage::BootRepaired || stage_before_failure == Stage::BootRepaired;
-        let _ = store.write_failure(&mut task, 1, error.to_string());
-        append_log(&log, &format!("Recovery failed: {error}"))?;
-        if should_rollback_bcd
-            && let Err(rollback) = restore_bcd_snapshot(&task_dir, efi_root.as_deref(), &log)
-        {
-            append_log(&log, &format!("BCD rollback failed: {rollback}"))?;
+        if task.status == Stage::RecoveryComplete {
+            store.write_recovery_error(task, format!("恢复已完成，待重试清理：{error}"))?;
         }
+        append_log(
+            log,
+            &format!("Recovery completed; cleanup pending: {error}"),
+        )?;
     }
-    // 终态只清理本任务的一次性启动对象与载荷。系统还原已在 BCDBoot 后
-    // 单独完成目标 WinRE 注册核验；此处不能删除新的系统恢复对象。
-    let cleanup = finalize_boot_entry_after_task(&task_dir, &log);
-    if let Err(error) = &cleanup {
-        append_log(&log, &format!("Boot entry cleanup failed: {error}"))?;
+    result
+}
+
+/// 显式重试既有任务：先核验外部启动链；已恢复的任务只补做清理。
+#[cfg(windows)]
+fn resume_task(root: String, id: String) -> Result<(), TaskError> {
+    let store = TaskStore::new(root);
+    let mut task = store.load(&id)?;
+    let dir = store.task_dir(&id)?;
+    let log = store.log_path(&id)?;
+    if task.status == Stage::RecoveryComplete {
+        return complete_recovery_cleanup(&store, &mut task, &log);
     }
-    match (result, cleanup) {
-        (Ok(()), Ok(())) => {
-            store.write_transition(&mut task, Stage::Success)?;
-            append_log(&log, "Boot entry cleaned; task marked successful")?;
-            meta_log("FINAL: success, wpeutil reboot");
-            run_logged("wpeutil.exe", &["reboot"], &log)?;
-            Ok(())
-        }
-        (Ok(()), Err(cleanup_error)) => {
-            // 磁盘动作已完成，但自建启动项/载荷没清干净：任务判负，让运维看见。
-            // 不会把机器留在不可启动状态——一次性启动顶多再进一次任务 RE。
-            if let Err(status_error) = store.write_failure(
-                &mut task,
-                2,
-                format!("Boot entry cleanup failed: {cleanup_error}"),
-            ) {
-                append_log(
-                    &log,
-                    &format!("Unable to persist cleanup failure: {status_error}"),
-                )?;
-            }
-            Err(cleanup_error)
-        }
-        (Err(recovery_error), _) => {
-            meta_log(&format!("FINAL: FAILED recovery_error={recovery_error}"));
-            Err(recovery_error)
-        }
+    if !stage_resumable_after_interruption(task.status) {
+        return Err(err("该任务不处于可续跑阶段"));
     }
+    let entry = boot_entry::ReBootEntry::read(&dir)?.ok_or_else(|| err("任务缺少启动记录"))?;
+    boot_entry::rearm(&entry, &log)?;
+    append_log(
+        &log,
+        "Explicit resume: validated existing task and boot payload",
+    )?;
+    run_logged("shutdown.exe", &["/r", "/t", "0"], &log)
 }
 
 /// 终态清理：清一次性启动、删自建 BCD 对象、删镜像卷上的载荷 WIM。
@@ -1852,68 +1955,6 @@ fn verify_mounted_volume(letter: char, expected: &str, log: &Path) -> Result<(),
 }
 
 #[cfg(windows)]
-fn restore_bcd_snapshot(
-    task_dir: &Path,
-    efi_root: Option<&Path>,
-    log: &Path,
-) -> Result<(), TaskError> {
-    let snapshot = task_dir.join("bcd-before-export");
-    if !snapshot.exists() {
-        return Err(err("BCD snapshot is missing"));
-    }
-    let raw_snapshot = task_dir.join("bcd-before-raw");
-    let efi_store = efi_root.map(|root| root.join("EFI\\Microsoft\\Boot\\BCD"));
-    if let Some(efi_store) = efi_store.filter(|path| path.exists()) {
-        if raw_snapshot.is_file() {
-            let expected = sha256_file(&raw_snapshot)?;
-            match fs::copy(&raw_snapshot, &efi_store) {
-                Ok(_) => {
-                    backuprestore_core::verify_sha256(&efi_store, &expected)?;
-                    append_log(
-                        log,
-                        "Previous byte-for-byte EFI BCD snapshot restored after boot repair failure",
-                    )?;
-                }
-                Err(error) if error.raw_os_error() == Some(32) => {
-                    let snapshot_arg = raw_snapshot.to_string_lossy().into_owned();
-                    run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
-                    append_log(
-                        log,
-                        "Raw EFI BCD restore was locked; imported the saved BCD snapshot",
-                    )?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        } else {
-            // Older tasks only contain a logical BCD export. Import it into
-            // the selected EFI store; copying the export bytes is not a valid
-            // rollback because the file may be a different hive format.
-            let snapshot_arg = snapshot.to_string_lossy().into_owned();
-            run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
-            append_log(
-                log,
-                "Legacy exported BCD snapshot restored after boot repair failure",
-            )?;
-        }
-        // Do not invoke `bcdedit /store /enum` after the byte-level copy:
-        // opening a BCD hive can rewrite its internal transaction metadata
-        // and change the SHA-256 that we just verified. The copy plus hash
-        // is the authoritative rollback proof; the logical fallback is
-        // recorded separately above.
-    } else {
-        let snapshot_arg = snapshot.to_string_lossy().into_owned();
-        run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
-    }
-    if efi_root.is_none() {
-        append_log(
-            log,
-            "Previous exported BCD snapshot imported after boot repair failure",
-        )?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
 fn native_windows_architecture() -> String {
     let reported = [
         env::var("PROCESSOR_ARCHITEW6432").ok(),
@@ -2353,25 +2394,24 @@ fn recover_windows(
             }
             // 一次性启动已经被固件消费。完整系统还原必须在擦除前重新武装，
             // 使真正断电后的下一次开机仍能从外部分区进入同一任务。
-            let resume_entry =
-                if metadata_context.is_some() && task.operation == Operation::RestoreExisting {
-                    let entry = boot_entry::ReBootEntry::read(&store.task_dir(&task.task_id)?)?
-                        .ok_or_else(|| err("系统还原缺少续跑启动记录，拒绝擦除"))?;
-                    if entry.wim_volume.same_partition(&target.volume) {
-                        return Err(err("续跑载荷位于擦除目标，拒绝执行"));
-                    }
-                    if !task
-                        .image
-                        .as_ref()
-                        .is_some_and(|image| image.volume.same_partition(&entry.wim_volume))
-                    {
-                        return Err(err("续跑载荷卷与本任务镜像卷不符"));
-                    }
-                    boot_entry::rearm(&entry, log)?;
-                    Some(entry)
-                } else {
-                    None
-                };
+            let resume_entry = if metadata_context.is_some() {
+                let entry = boot_entry::ReBootEntry::read(&store.task_dir(&task.task_id)?)?
+                    .ok_or_else(|| err("系统还原缺少续跑启动记录，拒绝擦除"))?;
+                if entry.wim_volume.same_partition(&target.volume) {
+                    return Err(err("续跑载荷位于擦除目标，拒绝执行"));
+                }
+                if !task
+                    .image
+                    .as_ref()
+                    .is_some_and(|image| image.volume.same_partition(&entry.wim_volume))
+                {
+                    return Err(err("续跑载荷卷与本任务镜像卷不符"));
+                }
+                boot_entry::rearm(&entry, log)?;
+                Some(entry)
+            } else {
+                None
+            };
             // TargetErased is deliberately persisted before formatting.  If
             // power fails after that write, formatting and applying the WIM
             // are safe to repeat on the explicitly selected target.  Older
@@ -2406,6 +2446,7 @@ fn recover_windows(
                 )?;
                 append_log(log, "STEP 2/4 还原镜像（时间长）")?;
                 let entering_image_applied = task.status == Stage::TargetErased;
+                recovery_fault::checkpoint("apply", log)?;
                 run_logged(
                     "dism.exe",
                     &[
@@ -2489,7 +2530,9 @@ fn recover_windows(
                 if let Some(entry) = &resume_entry {
                     boot_entry::rearm(entry, log)?;
                 }
+                recovery_fault::checkpoint("bcdboot-before", log)?;
                 run_logged("bcdboot.exe", &bcd_refs, log)?;
+                recovery_fault::checkpoint("bcdboot-after", log)?;
                 if let Some(entry) = &resume_entry {
                     boot_entry::rearm(entry, log)?;
                 }
@@ -2737,6 +2780,11 @@ fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError>
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()?;
+    if let Err(error) = recovery_fault::pause_running_bcdboot(program, &mut child, log) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
     let log_file = OpenOptions::new().create(true).append(true).open(log)?;
     let sink = Arc::new(Mutex::new(log_file));
     let stdout: ChildStdout = child

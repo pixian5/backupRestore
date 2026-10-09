@@ -171,6 +171,9 @@ trait Backend {
     fn enable(&mut self) -> Result<(), TaskError>;
     fn reconnect(&mut self, info: &Info) -> Result<(), TaskError>;
     fn verify(&mut self, info: &Info) -> Result<(), TaskError>;
+    fn checkpoint(&self, _point: &str) -> Result<(), TaskError> {
+        Ok(())
+    }
 }
 
 fn run(backend: &mut impl Backend) -> Result<(), TaskError> {
@@ -187,9 +190,12 @@ fn run(backend: &mut impl Backend) -> Result<(), TaskError> {
     // BCDBoot 可重建系统加载器；注册仍启用并不代表新加载器已有恢复关联。
     if !before.enabled {
         backend.register()?;
+        backend.checkpoint("registration-register")?;
         backend.enable()?;
+        backend.checkpoint("registration-enable")?;
     } else {
         backend.reconnect(&before)?;
+        backend.checkpoint("registration-reconnect")?;
     }
     let after = backend.info()?;
     backend.verify(&after)
@@ -263,6 +269,9 @@ fn repair_with_mode(
         }
     }
     impl Backend for WindowsBackend<'_> {
+        fn checkpoint(&self, point: &str) -> Result<(), TaskError> {
+            crate::recovery_fault::checkpoint(point, self.log)
+        }
         fn preflight(&mut self) -> Result<(), TaskError> {
             capture_logged(
                 "reg.exe",

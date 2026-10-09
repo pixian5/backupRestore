@@ -265,6 +265,11 @@ fn read_log_delta(shared: &ProgressShared) {
     // \r/\n 都拆成行再分类，否则整段会合并成一行、百分比永远取到第一个。
     let lines: Vec<&str> = buffer.split(['\n', '\r']).collect();
     for line in &lines {
+        if crate::text_parsing::parse_step_marker(line).is_some() {
+            // 新步骤不能继承上一条 DISM 命令的 100%。
+            latest_percent = None;
+            *shared.cached_percent.lock().unwrap() = None;
+        }
         // 当日志中首次出现 STEP 1/ 步骤时，将计时起点精确重置为当前时刻，确保已用时间与步骤时间戳分秒对齐
         if line.contains("STEP 1/") && !shared.start_time_aligned.swap(true, Ordering::SeqCst) {
             let mut guard = shared.start_time.lock().unwrap();
@@ -337,7 +342,13 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         }
         // 用户要求：进度条显示当前阶段进度而非总进度。
         // 当前阶段有百分比时显示当前阶段百分比（如 DISM 1%~100%），没有时显示 0。
-        let pos = progress.current_percent.or(latest_percent).unwrap_or(0);
+        let pos = if latest_stage.as_deref() == Some("操作完成") {
+            100
+        } else if progress.current.is_some() {
+            progress.current_percent.unwrap_or(0)
+        } else {
+            latest_percent.unwrap_or(0)
+        };
         SendMessageW(GetDlgItem(hwnd, ID_BAR), PBM_SETPOS, pos as usize, 0);
 
         // 标题右侧增加一块显示已用时间/剩余时间、当前时间，靠右显示。
@@ -395,8 +406,8 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
 
         let total_steps = progress.total.unwrap_or(4);
         let current = progress.current.unwrap_or(0);
-        let all_done =
-            latest_stage.as_deref() == Some("操作完成") || (current == total_steps && pos >= 100);
+        // 最后一步出现 100% 也不能代替终态落盘证据。
+        let all_done = latest_stage.as_deref() == Some("操作完成");
 
         let mut body: Vec<String> = Vec::new();
         for (idx, default_name) in default_stages {
@@ -608,8 +619,9 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
     };
     unsafe {
         InitCommonControlsEx(&icc);
-        if RegisterClassExW(&class) == 0 {
-            return; // 类已注册或失败：进度窗口非关键，静默降级
+        static REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*REGISTERED.get_or_init(|| RegisterClassExW(&class) != 0) {
+            return; // 注册失败时进度窗口非关键，静默降级。
         }
     }
     let title = encode("BackupRestore 恢复进度");

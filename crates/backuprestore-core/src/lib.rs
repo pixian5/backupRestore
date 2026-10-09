@@ -30,6 +30,7 @@ const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
 
 pub mod image_metadata;
 pub mod operation_safety;
+mod state_transaction;
 
 pub const TASK_VERSION: u32 = 1;
 pub const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -70,6 +71,8 @@ pub enum Stage {
     TargetErased,
     ImageApplied,
     BootRepaired,
+    /// 磁盘、引导与恢复注册已验证；只剩任务启动项清理。
+    RecoveryComplete,
     Success,
     Failed,
 }
@@ -98,6 +101,10 @@ impl Stage {
                 | (ImageApplied, Failed)
                 | (BootRepaired, Success)
                 | (BootRepaired, Failed)
+                | (Preflight, RecoveryComplete)
+                | (Capturing, RecoveryComplete)
+                | (BootRepaired, RecoveryComplete)
+                | (RecoveryComplete, Success)
         )
     }
     pub fn is_destructive_boundary(self) -> bool {
@@ -770,6 +777,7 @@ fn default_progress(stage: Stage) -> u8 {
         Stage::TargetErased => 35,
         Stage::ImageApplied => 75,
         Stage::BootRepaired => 90,
+        Stage::RecoveryComplete => 95,
         Stage::Success => 100,
         Stage::Failed => 0,
     }
@@ -1080,6 +1088,7 @@ impl TaskStore {
     }
     pub fn load(&self, task_id: &str) -> Result<Task, TaskError> {
         validate_task_id(task_id)?;
+        self.replay_state_transaction(task_id)?;
         let task: Task = read_json(self.task_path(task_id)?)?;
         let requested_id = Uuid::parse_str(task_id)
             .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))?;
@@ -1099,8 +1108,7 @@ impl TaskStore {
         next: Stage,
     ) -> Result<StatusRecord, TaskError> {
         let status = task.transition(next)?;
-        write_json_atomic(self.task_path(&task.task_id)?, task)?;
-        write_json_atomic(self.status_path(&task.task_id)?, &status)?;
+        self.commit_state(task, &status)?;
         Ok(status)
     }
     pub fn write_failure(
@@ -1125,8 +1133,29 @@ impl TaskStore {
             error_code: Some(code),
             error: Some(error.into()),
         };
-        write_json_atomic(self.task_path(&task.task_id)?, task)?;
-        write_json_atomic(self.status_path(&task.task_id)?, &status)?;
+        self.commit_state(task, &status)?;
+        Ok(status)
+    }
+
+    /// 保留可续跑阶段和所有恢复材料；错误信息不等于任务终结。
+    pub fn write_recovery_error(
+        &self,
+        task: &Task,
+        error: impl Into<String>,
+    ) -> Result<StatusRecord, TaskError> {
+        if !task.status.is_incomplete() {
+            return Err(TaskError::Invalid("终态任务不能记录可重试错误".into()));
+        }
+        let status = StatusRecord {
+            task_id: task.task_id.clone(),
+            operation: task.operation,
+            stage: task.status,
+            progress: default_progress(task.status),
+            updated: Utc::now(),
+            error_code: Some(1),
+            error: Some(error.into()),
+        };
+        self.commit_state(task, &status)?;
         Ok(status)
     }
 
@@ -1136,6 +1165,14 @@ impl TaskStore {
         let path = self.task_dir(task_id)?;
         if !path.is_dir() {
             return Ok(false);
+        }
+        let task = self.load(task_id)?;
+        let status: StatusRecord = read_json(self.status_path(task_id)?)?;
+        if task.status.is_incomplete()
+            || status.stage != task.status
+            || status.task_id != task.task_id
+        {
+            return Err(TaskError::Invalid("未完成任务禁止清理恢复材料".into()));
         }
         let mount = path.join("mount");
         if mount.is_dir() && fs::read_dir(&mount)?.next().is_some() {
@@ -1818,6 +1855,93 @@ mod tests {
         assert_eq!(status.stage, Stage::Failed);
         assert_eq!(status.error_code, Some(123));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn interrupted_state_transaction_replays_at_each_write_boundary() {
+        for written_views in 0..=2 {
+            let root = std::env::temp_dir().join(format!("br-state-{}", Uuid::new_v4()));
+            let store = TaskStore::new(&root);
+            let mut task = backup_task();
+            task.status = Stage::RecoveryComplete;
+            store.create(&task).unwrap();
+            let status = task.transition(Stage::Success).unwrap();
+            let journal = store
+                .task_dir(&task.task_id)
+                .unwrap()
+                .join("state-transaction.json");
+            write_json_atomic(&journal, &serde_json::json!({"task":task,"status":status})).unwrap();
+            if written_views >= 1 {
+                write_json_atomic(store.task_path(&task.task_id).unwrap(), &task).unwrap();
+            }
+            if written_views >= 2 {
+                write_json_atomic(store.status_path(&task.task_id).unwrap(), &status).unwrap();
+            }
+            assert_eq!(store.load(&task.task_id).unwrap().status, Stage::Success);
+            let visible: StatusRecord =
+                read_json(store.status_path(&task.task_id).unwrap()).unwrap();
+            assert_eq!(visible.stage, Stage::Success);
+            assert!(!journal.exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn retryable_error_and_cleanup_error_preserve_recovery_materials() {
+        for stage in [
+            Stage::Capturing,
+            Stage::TargetErased,
+            Stage::ImageApplied,
+            Stage::BootRepaired,
+            Stage::RecoveryComplete,
+        ] {
+            let root = std::env::temp_dir().join(format!("br-retry-{}", Uuid::new_v4()));
+            let store = TaskStore::new(&root);
+            let mut task = backup_task();
+            task.status = stage;
+            store.create(&task).unwrap();
+            let payload = store.task_dir(&task.task_id).unwrap().join("payload");
+            fs::create_dir(&payload).unwrap();
+            fs::write(payload.join("Recovery.exe"), b"recovery").unwrap();
+            for _ in 0..3 {
+                store.write_recovery_error(&task, "持续读写错误").unwrap();
+            }
+            assert_eq!(store.load(&task.task_id).unwrap().status, stage);
+            assert!(store.cleanup_task_artifacts(&task.task_id).is_err());
+            assert!(
+                store
+                    .cleanup_terminal_tasks(0)
+                    .unwrap()
+                    .removed_task_ids
+                    .is_empty()
+            );
+            assert_eq!(fs::read(payload.join("Recovery.exe")).unwrap(), b"recovery");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn state_transaction_cannot_replace_authorized_target_or_skip_stages() {
+        let root = std::env::temp_dir().join(format!("br-state-invalid-{}", Uuid::new_v4()));
+        let store = TaskStore::new(&root);
+        let task = backup_task();
+        store.create(&task).unwrap();
+        let journal = store
+            .task_dir(&task.task_id)
+            .unwrap()
+            .join("state-transaction.json");
+        let mut changed = task.clone();
+        let status = changed.transition(Stage::RecoveryStarted).unwrap();
+        changed.source.as_mut().unwrap().partition_guid = "other".into();
+        write_json_atomic(
+            &journal,
+            &serde_json::json!({"task":changed,"status":status}),
+        )
+        .unwrap();
+        assert!(store.load(&task.task_id).is_err());
+        fs::remove_file(&journal).unwrap();
+        assert_eq!(store.load(&task.task_id).unwrap(), task);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

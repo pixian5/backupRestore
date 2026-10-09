@@ -578,6 +578,7 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
             &format!("new boot channel: bootsequence belongs to {armed}; left untouched"),
         )?;
     }
+    crate::recovery_fault::checkpoint("cleanup-sequence", log)?;
     for guid in [&loader, &devopts] {
         if let Err(error) = bcd(&["/delete", guid, "/f"]) {
             // 已删除的对象再次清理可能报错；是否成功以枚举回读为准。
@@ -592,6 +593,7 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
     }
     crate::append_log(log, "new boot channel: BCD objects removed and verified")?;
 
+    crate::recovery_fault::checkpoint("cleanup-objects", log)?;
     // 启动簿记仍保存桌面盘符，不能传给优先信任缓存盘符的 ensure_volume_mounted。
     // 先用卷 GUID 路径核验磁盘/分区身份，再仅删除此卷上的项目载荷。
     let root = crate::boot_cleanup::staging_volume_root(&entry.wim_volume)?;
@@ -616,6 +618,7 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         ),
     )?;
     let dir = crate::boot_cleanup::remove_staging(&root)?;
+    crate::recovery_fault::checkpoint("cleanup-payload", log)?;
     crate::append_log(
         log,
         &format!(
@@ -625,3 +628,7 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "boot_entry_fault_tests.rs"]
+mod fault_tests;

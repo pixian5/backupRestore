@@ -442,7 +442,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                         | "power-loss-target-erased"
                         | "power-loss-image-applied"
                         | "power-loss-boot-repaired"
-                ) {
+                ) && !crate::recovery_fault::valid(&fault)
+                {
                     return Err(err(
                         "--test-fault must be identity-env-mismatch, bcdboot-failure, power-loss-window, power-loss-target-erased, power-loss-image-applied, or power-loss-boot-repaired",
                     ));
