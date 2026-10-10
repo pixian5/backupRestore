@@ -1001,17 +1001,17 @@ pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
 /// bcdedit 静默作用于 `{default}`」立的（真实事故：曾把 Windows 11 启动项 device 改成
 /// ramdisk）。放任别名进去，`{default}` 就从同一个口子混进来了。所以这里只认白名单里的
 /// 一个，且白名单里**故意不放 `{default}`/`{current}`/`{ntldr}` 这些指向用户启动项的东西**。
-/// ESP 上本项目**取证/日志**文件的目录。
+/// ESP 上本项目取证/日志文件所在的子目录（相对卷根）。
 ///
-/// 2026-09-29 实测：`S:\` 根目录堆了 38 个 `.txt`/`.log`（约 93 KB，跨度 09-11~09-26）。
-/// ESP 是引导分区、容量百 MB 级，根目录还混着 `EFI\`；固件每次枚举根目录都要扫过它们。
-/// 这些文件**没有一个是控制通道**：PE 启动时真正需要固定路径的只有
-/// `pe-task.txt`/`.done`/`pe-task-result.txt`（见 [`ESP_CONTROL_FILES`]）。
-pub(crate) const ESP_LOG_DIR: &str = "S:\\BackupRestore\\logs";
-
-/// 必须留在 `S:\` 根的控制通道文件名（PE 启动最早期按固定路径读取）。
-pub(crate) const ESP_CONTROL_FILES: [&str; 3] =
-    ["pe-task.txt", "pe-task.txt.done", "pe-task-result.txt"];
+/// 2026-09-29 实测：ESP 根目录曾堆了 38 个 `.txt`/`.log`（约 93 KB，跨度 09-11~09-26）。
+/// ESP 是引导分区、容量百 MB 级，根目录还混着 `EFI\`；固件每次枚举根目录都要扫过它们，
+/// 所以诊断文件一律进子目录。
+///
+/// **不再带盘符**：旧值写死 `S:\BackupRestore\logs`，等于假设 `S:` 就是 ESP。
+/// 该假设在 `S:` 被数据卷占用、或 ESP 已挂在别的盘符时成立不了，会把本项目的
+/// 日志写到一个无关卷上。现在一律由调用方传入**已核验**的卷根
+/// （`windows_prepare::esp_identity_without_drive_letter()` 的结果），见 [`esp_log_path_on`]。
+pub(crate) const ESP_LOG_SUBDIR: &str = r"BackupRestore\logs";
 
 /// 取证实录/日志在 ESP 上的路径。子目录不存在则顺带建好——调用方清一色是
 /// `let _ = std::fs::write(...)`，目录缺失会静默失败，2026-09-29 已为这类静默失败
@@ -1117,52 +1117,23 @@ pub(crate) fn same_volume(left: &str, right: &str) -> bool {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn rewrite_s_root(command: &str, esp_root: &str) -> String {
-    // 退回盘符形态时不需要任何替换。
-    if esp_root == r"S:\" {
-        return command.to_string();
-    }
-    let bytes = command.as_bytes();
-    let mut out = String::with_capacity(command.len() + esp_root.len());
-    let mut index = 0_usize;
-    while index < bytes.len() {
-        // 只看「S 后面紧跟冒号」这一种形态，且前后都必须像盘符边界。
-        let is_drive = bytes[index] == b'S'
-            && index + 1 < bytes.len()
-            && bytes[index + 1] == b':'
-            // 前一个字符是分隔符：否则 H:\pe-wim1.wim 里的 S 也会被误换。
-            && (index == 0
-                || matches!(
-                    bytes[index - 1],
-                    b' ' | b'>' | b'(' | b'=' | 0x22 | b'<'
-                ))
-            // 后一个字符是反斜杠或结尾：System32 里的 S 后面跟 y，不算盘符。
-            && (index + 2 >= bytes.len() || bytes[index + 2] == b'\\');
-        if is_drive {
-            // `S:\` 是三个字符（S、冒号、反斜杠），esp_root 自带尾部反斜杠，
-            // 所以三个都要吃掉。少吃掉一个就会留下 `卷根\\` 或 `卷根\:`，
-            // 路径立刻失效（2026-09-29 实测两种都踩到过）。
-            out.push_str(esp_root);
-            index += if index + 2 < bytes.len() && bytes[index + 2] == 92_u8 {
-                3
-            } else {
-                2
-            };
-            continue;
-        }
-        out.push(bytes[index] as char);
-        index += 1;
-    }
-    out
-}
 
-pub(crate) fn esp_log_path(name: &str) -> String {
-    if ESP_CONTROL_FILES.contains(&name) {
-        return format!("S:\\{name}");
+/// 取证/日志文件在 ESP 上的完整路径，基于**已核验的卷根**。
+///
+/// `volume_root` 可以是 verbatim 卷路径（`\\?\Volume{GUID}\`）或带盘符的根
+/// （`S:\`）；两种都必须是调用方已经确认指向该 ESP 的值，本函数不做猜测、
+/// 也不替换盘符字符串。缺尾部反斜杠时补齐。
+///
+/// 子目录不存在则顺带建好——调用方清一色是 `let _ = ...write(...)`，
+/// 目录缺失会静默失败，2026-09-29 已为这类静默失败付过好几轮排查代价。
+pub(crate) fn esp_log_path_on(volume_root: &str, name: &str) -> String {
+    let mut root = volume_root.to_string();
+    if !root.ends_with('\\') {
+        root.push('\\');
     }
-    let _ = std::fs::create_dir_all(ESP_LOG_DIR);
-    format!("{ESP_LOG_DIR}\\{name}")
+    let dir = format!("{root}{ESP_LOG_SUBDIR}");
+    let _ = std::fs::create_dir_all(&dir);
+    format!("{dir}\\{name}")
 }
 
 pub(crate) fn is_well_known_identifier(value: &str) -> bool {
@@ -2172,43 +2143,6 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(decode_windows_bytes(msg.as_bytes()), msg);
     }
 
-    #[test]
-    fn rewrite_s_root_only_replaces_the_esp_drive_letter() {
-        let bs = 92u8 as char;
-        let mut root = String::new();
-        root.push(bs);
-        root.push(bs);
-        root.push('?');
-        root.push(bs);
-        root.push_str("Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}");
-        root.push(bs);
-
-        assert_eq!(
-            rewrite_s_root(r"cmd /c dir S:\ > S:\out.txt 2>&1", &root),
-            format!("cmd /c dir {root} > {root}out.txt 2>&1")
-        );
-        // 别的盘符路径里的 S 不能被碰。
-        assert_eq!(
-            rewrite_s_root(
-                r"cmd /c dism /ImageFile:H:\pe-wim1.wim > S:\diag1.txt 2>&1",
-                &root
-            ),
-            format!("cmd /c dism /ImageFile:H:\\pe-wim1.wim > {root}diag1.txt 2>&1")
-        );
-        // 退回盘符形态时原样返回。
-        assert_eq!(
-            rewrite_s_root(r"cmd /c dir S:\ > S:\out.txt", r"S:\"),
-            r"cmd /c dir S:\ > S:\out.txt"
-        );
-        // S 出现在词中间（如 System32）不能动。
-        assert_eq!(
-            rewrite_s_root(
-                r"cmd /c if exist C:\Windows\System32\Config\SYSTEM echo S > S:\c.txt",
-                &root
-            ),
-            format!("cmd /c if exist C:\\Windows\\System32\\Config\\SYSTEM echo S > {root}c.txt")
-        );
-    }
 
     #[test]
     fn mountvol_listing_reports_volume_presence_from_l_not_s_exit_code() {
@@ -2223,19 +2157,29 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert!(!mountvol_listing_has_volume("   \t  "));
     }
 
-    /// 锁住「控制通道留 ESP 根、其余日志进子目录」这条约定。
-    /// 这条不是美观问题：PE 启动最早期按固定路径读 S:\pe-task.txt，改目录会让
-    /// 整个自动执行链断掉；而 ESP 是引导分区，根目录堆日志会拖慢固件枚举。
-    /// （2026-09-29 实测根目录已堆了 38 个 txt/log，约 93 KB。）
+    /// 锁住「日志进子目录、且路径只来自调用方给的已核验卷根」这条约定。
+    ///
+    /// 旧实现写死 `S:\BackupRestore\logs`（并为已废弃的 `pe-task.txt` 控制通道
+    /// 留了 `S:\` 根的特例）。那等于假设 `S:` 就是 ESP——`S:` 被数据卷占用或 ESP
+    /// 挂在别的盘符时，日志会落到无关卷上。现在盘符形态与 verbatim 卷路径都接受，
+    /// 但必须由调用方传入，本函数不猜、也不做盘符字符串替换。
+    /// ESP 是引导分区，根目录堆日志会拖慢固件枚举（2026-09-29 实测根目录曾堆 38 个
+    /// txt/log，约 93 KB），所以一律进子目录。
     #[test]
-    fn esp_log_path_keeps_control_channel_at_the_root() {
-        for control in ["pe-task.txt", "pe-task.txt.done", "pe-task-result.txt"] {
-            let p = esp_log_path(control);
-            assert_eq!(p, format!("S:\\{control}"));
-        }
+    fn esp_log_path_is_built_from_the_caller_supplied_volume_root() {
+        let verbatim = r"\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\";
         for log in ["diag1.txt", "bcd-all.txt", "exit-pe.log"] {
-            let p = esp_log_path(log);
-            assert!(p.starts_with("S:\\BackupRestore\\logs\\"), "{p} 应在子目录");
+            // verbatim 卷根：原样前缀，不出现任何盘符。
+            let p = esp_log_path_on(verbatim, log);
+            assert_eq!(p, format!(r"{verbatim}BackupRestore\logs\{log}"));
+            assert!(!p.contains("S:"), "{p} 不得引入盘符假设");
+            // 盘符形态：也只用调用方给的那个盘符。
+            assert_eq!(
+                esp_log_path_on(r"Q:\", log),
+                format!(r"Q:\BackupRestore\logs\{log}")
+            );
+            // 缺尾部反斜杠时补齐，不会拼出 `Q:BackupRestore`。
+            assert_eq!(esp_log_path_on("Q:", log), esp_log_path_on(r"Q:\", log));
         }
     }
 

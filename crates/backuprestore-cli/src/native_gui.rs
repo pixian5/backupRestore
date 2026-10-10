@@ -5927,19 +5927,28 @@ unsafe fn pe_reboot(hwnd: Hwnd) {
     }
 }
 
-/// Best-effort diagnostics written via the volume path
-/// (`\\?\Volume{GUID}\exit-pe.log`, survives unmount and reboot), plus
-/// `Q:\exit-pe.log` and `X:\exit-pe.log` (PE RAM disk) so a failed exit
-/// attempt can be diagnosed from the next Windows session. Writes go through
-/// CreateFileW/WriteFile directly because std::fs writes to mounted FAT
-/// volumes failed silently inside PE. Returns per-path failure details
-/// (including GetLastError) so the caller can surface them during development.
+/// Best-effort diagnostics written via the **verified** ESP volume path
+/// (`\\?\Volume{GUID}\exit-pe.log`, survives unmount and reboot) plus a copy
+/// in that same volume's log subdirectory, and `X:\exit-pe.log` (PE RAM disk),
+/// so a failed exit attempt can be diagnosed from the next Windows session.
+///
+/// 此前这里还会盲写 `S:\BackupRestore\logs\exit-pe.log`，等于假设 `S:` 就是 ESP。
+/// `S:` 被数据卷占用、或 ESP 挂在别的盘符时，本项目的日志会落到一个无关卷上，
+/// 而且读日志的人无法分辨。现在所有 ESP 侧路径都从调用方传进来的已核验卷根派生
+/// （见 `text_parsing::esp_log_path_on`），卷根拿不到时就只写 RAM 盘，不猜盘符。
+///
+/// Writes go through CreateFileW/WriteFile directly because std::fs writes to
+/// mounted FAT volumes failed silently inside PE. Returns per-path failure
+/// details (including GetLastError) so the caller can surface them during
+/// development.
 fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<String> {
     let text = entries.join("\r\n");
     let mut failures: Vec<String> = Vec::new();
-    // 优先写卷路径（\\.\Volume{GUID}\ 独立于盘符，PE 内最可靠，重启后仍
-    // 保留在 ESP 上）；再写 S:（若已挂载）与 X:（PE RAM 盘，重启丢失）。
-    // 注意：不要写 Q: —— PE 里 Q: 通常不存在（Win11 侧盘符漂移）。
+    // 优先写卷路径（\\?\Volume{GUID}\ 独立于盘符，PE 内最可靠，重启后仍保留在
+    // ESP 上），再写同一个已核验卷上的日志子目录副本，最后写 X:（PE RAM 盘，
+    // 重启即丢，仅供当次排查）。
+    // 不猜盘符：卷根拿不到时宁可只留 RAM 盘那一份，也不往 S:/Q: 盲写——
+    // PE 里 Q: 通常不存在（Win11 侧盘符漂移），S: 也可能是别的卷。
     let mut paths: Vec<String> = Vec::new();
     if let Some(vp) = esp_volume_path {
         let mut full = vp.to_string();
@@ -5948,8 +5957,8 @@ fn write_pe_exit_log(entries: &[String], esp_volume_path: Option<&str>) -> Vec<S
         }
         full.push_str("exit-pe.log");
         paths.push(full);
+        paths.push(crate::text_parsing::esp_log_path_on(vp, "exit-pe.log"));
     }
-    paths.push(crate::text_parsing::esp_log_path("exit-pe.log").to_string());
     paths.push("X:\\exit-pe.log".to_string());
     for path in paths {
         let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();

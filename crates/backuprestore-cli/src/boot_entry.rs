@@ -34,6 +34,15 @@ use crate::windows_prepare::ensure_volume_mounted;
 use crate::boot_cleanup::RE_STAGING_DIR;
 /// 任务目录里记录「本次自建启动项」的簿记文件名。
 const ENTRY_RECORD: &str = "boot-entry.json";
+/// 半成品条目的簿记文件名。
+///
+/// 刻意**与 [`ENTRY_RECORD`] 分开**：`create_entry` 在字段写入全部重试失败后会保留
+/// 已建的两个 BCD 对象供诊断（见那里的 KEEP 分支），但那两个对象的 `device`/`osdevice`
+/// 从未成功写入。若把它记进 `boot-entry.json`，下一次 `create_entry` 的"复用已有条目"
+/// 分支就会把这个**字段不全的条目**当成可用条目，`arm_one_shot` 随后武装它，机器
+/// 下次开机会进一个指不到载荷的启动项。记到独立文件里，既让统一补偿能按精确 GUID
+/// 清掉它（不靠描述字符串匹配，避免误删别的任务的对象），又不会被复用分支看见。
+const ENTRY_RESIDUE: &str = "boot-entry-residue.json";
 /// 一次性 `bootsequence` 只设在 bootmgr 上；绝不写 default / displayorder / timeout。
 const BOOTMGR: &str = "{bootmgr}";
 /// 目标系统自建条目在 BCD 里的描述前缀（便于人工排查与清理）。
@@ -77,6 +86,34 @@ impl ReBootEntry {
 
     pub(crate) fn write(&self, task_dir: &Path) -> Result<(), TaskError> {
         write_json_atomic(Self::record_path(task_dir), self)
+    }
+
+    fn residue_path(task_dir: &Path) -> PathBuf {
+        task_dir.join(ENTRY_RESIDUE)
+    }
+
+    /// 读取半成品条目簿记（见 [`ENTRY_RESIDUE`]）；没有则返回 `None`。
+    /// 统一补偿用它按精确 GUID 清理 `create_entry` 保留下来的对象。
+    pub(crate) fn read_residue(task_dir: &Path) -> Result<Option<Self>, TaskError> {
+        let path = Self::residue_path(task_dir);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        read_json(path).map(Some)
+    }
+
+    /// 落盘半成品条目簿记。**不写 [`ENTRY_RECORD`]**，以免被"复用已有条目"分支当成可用条目。
+    pub(crate) fn write_residue(&self, task_dir: &Path) -> Result<(), TaskError> {
+        write_json_atomic(Self::residue_path(task_dir), self)
+    }
+
+    /// 补偿成功后清掉半成品簿记；文件不存在视为已清理。
+    pub(crate) fn clear_residue(task_dir: &Path) -> Result<(), TaskError> {
+        match fs::remove_file(Self::residue_path(task_dir)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -414,10 +451,27 @@ pub fn create_entry(
         }
     }
     if let Some(error) = last_error {
-        // 诊断：保留对象并记录 GUID，方便用别的进程上下文重试同一条命令
+        // 诊断：保留对象并记录 GUID，方便用别的进程上下文重试同一条命令。
+        // 同时把 GUID 落到**独立的**残留簿记里（见 [`ENTRY_RESIDUE`]），让准备期的
+        // 统一补偿能按精确 GUID 把它们删掉——此前这两个对象只出现在日志里，
+        // 界面报"准备失败"而机器上静静留着两个 BCD 对象，没有任何代码认得它们。
+        let residue = ReBootEntry {
+            task_id: task_id.to_string(),
+            loader_guid: loader.clone(),
+            devopts_guid: devopts.clone(),
+            wim_volume: wim_volume.clone(),
+            wim_path: wim_path.clone(),
+            wim_sha256: wim_sha256.clone(),
+            created: chrono::Utc::now().to_rfc3339(),
+        };
+        let note = match residue.write_residue(task_dir) {
+            Ok(()) => "recorded for compensation".to_string(),
+            // 簿记写不下去不能掩盖原始错误，但必须明确说出"这两个对象没人认得了"。
+            Err(write_error) => format!("RESIDUE RECORD FAILED: {write_error}"),
+        };
         crate::append_log(
             log,
-            &format!("new boot channel: KEEP loader={loader} devopts={devopts}"),
+            &format!("new boot channel: KEEP loader={loader} devopts={devopts}; {note}"),
         )?;
         return Err(error);
     }
