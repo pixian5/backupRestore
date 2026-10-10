@@ -1,8 +1,9 @@
-﻿param([string]$Manifest,[string]$Evidence)
+﻿param([string]$Manifest,[string]$Evidence,[string]$Round='BRRE-220-20261010',[string]$Label='native')
 $ErrorActionPreference='Stop'
+# 工作卷按分区 GUID 定位，不信任盘符；落地目录按轮次参数化，避免把新一轮证据写进上一轮目录。
 $workspace=@(Get-Partition | Where-Object {$_.Guid -eq '{0e68475f-4890-43f3-ab85-75e8339116ac}'})
 if($workspace.Count -ne 1 -or !$workspace[0].DriveLetter){throw 'Workspace identity missing'}
-$dest="$($workspace[0].DriveLetter):\BRRE-219-20261009\native-final"
+$dest="$($workspace[0].DriveLetter):\$Round\$Label"
 New-Item -ItemType Directory -Force $dest | Out-Null
 # 先复制到虚拟机本地卷，再串行运行默认安全测试；破坏性夹具仍默认忽略。
 foreach($source in (Get-Content -Encoding UTF8 $Manifest -Raw | ConvertFrom-Json)){

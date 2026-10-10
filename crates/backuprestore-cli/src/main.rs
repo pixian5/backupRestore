@@ -2067,7 +2067,23 @@ fn recover_windows(
             // 视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过该校验。
             if let Ok(metadata) = read_index_metadata(path, image.index) {
                 if verify_hash && !metadata.image_sha256.eq_ignore_ascii_case(&image.sha256) {
-                    return Err(err("image hash does not match backup metadata"));
+                    // 用户在准备阶段显式接受过这份镜像时，旧副档不再充当判据。
+                    // 镜像在用户确认之后是否又被改动，已由上面的 verify_image_file
+                    // 按「接受时的真实哈希与大小」核验；这里只确认例外确实绑定当前
+                    // 索引与内容，不是别的镜像或别的索引留下的通用放行。
+                    let covered = task.image_acceptance.as_ref().is_some_and(|accepted| {
+                        accepted.covers(image.index, &image.sha256, image.size_bytes)
+                    });
+                    if !covered {
+                        return Err(err("image hash does not match backup metadata"));
+                    }
+                    append_log(
+                        log,
+                        &format!(
+                            "image hash differs from sidecar {} but the user accepted {} at prepare time; sidecar is no longer the source-of-truth for this task",
+                            metadata.image_sha256, image.sha256
+                        ),
+                    )?;
                 }
                 let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;
                 let required = metadata

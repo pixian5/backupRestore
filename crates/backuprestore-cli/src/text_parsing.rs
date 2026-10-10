@@ -1824,6 +1824,13 @@ Hotfix(s):                 1 Hotfix(s) Installed.
             staging_sdi_path(r"\BackupRestoreRE"),
             r"\BackupRestoreRE\boot.sdi"
         );
+        // 载荷按任务隔离后，SDI 也落在任务自己的子目录里；
+        // 实际传入的始终是 boot_cleanup::staging_relative_dir 的返回值。
+        const TASK: &str = "11111111-2222-4333-8444-555555555555";
+        assert_eq!(
+            staging_sdi_path(&crate::boot_cleanup::staging_relative_dir(TASK).unwrap()),
+            format!(r"\BackupRestoreRE\{TASK}\boot.sdi")
+        );
     }
 
     /// 这条断言直接照抄实机 `bcdedit /enum` 回显：方括号只包卷，`]` 紧跟卷后闭合。

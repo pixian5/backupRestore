@@ -354,6 +354,45 @@ pub struct ImageSpec {
     pub name: Option<String>,
 }
 
+/// 用户在准备阶段对「镜像与副档记录不符」显式点了强制继续时留下的例外记录。
+///
+/// 为什么需要独立建模：旧实现只把 `force_restore_hash` 用在准备阶段的判断上，
+/// 不落盘；任务里仍写着**副档的旧哈希**和 `verifyHash = true`。机器重启进恢复
+/// 环境后，离线侧拿镜像真实内容再比那个旧值，必然不符，于是用户的强制继续
+/// 被静默撤销，而且是在系统已经进入恢复环境之后才失败。
+///
+/// 这里记录的是**用户接受当时读到的真实哈希**，因此：
+/// - 旧副档不再承担"来源真实性证明"的角色（只留痕，见
+///   [`ImageAcceptance::superseded_sidecar_sha256`]）；
+/// - 镜像在用户确认之后**再次变化**仍然会被检出（离线侧比的是接受时的真实值）；
+/// - 例外绑定任务、镜像与索引，不会退化成通用的"跳过安全检查"。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAcceptance {
+    /// 用户接受时镜像文件的真实 SHA-256（不是副档记录的值）。
+    pub accepted_sha256: String,
+    /// 用户接受时镜像文件的真实字节数。
+    pub accepted_size_bytes: u64,
+    /// 被接受的 WIM 索引；换索引不复用这次例外。
+    pub index: u32,
+    /// 接受时副档记录的哈希，仅留痕，不再作为判据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_sidecar_sha256: Option<String>,
+    /// 用户确认的时刻。
+    pub accepted_at: DateTime<Utc>,
+}
+
+impl ImageAcceptance {
+    /// 这次例外是否适用于给定镜像：必须同一索引、同一真实内容、同一大小。
+    /// 任何一项不符都表示"不是用户当时看过并接受的那份镜像"，必须按未授权处理。
+    pub fn covers(&self, index: u32, actual_sha256: &str, actual_size_bytes: u64) -> bool {
+        self.index == index
+            && self.accepted_size_bytes == actual_size_bytes
+            && !self.accepted_sha256.is_empty()
+            && self.accepted_sha256.eq_ignore_ascii_case(actual_sha256)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DestinationSpec {
@@ -482,6 +521,10 @@ pub struct Task {
     /// 还原时是否严格对比哈希（默认仅对比大小，为 false 或 None 时离线跳过全包哈希流式计算）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_hash: Option<bool>,
+    /// 用户在准备阶段显式接受"与副档不符的当前镜像"时的例外记录（见 [`ImageAcceptance`]）。
+    /// 为 None 表示没有任何例外，离线侧按常规判据执行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_acceptance: Option<ImageAcceptance>,
     pub boot_plan: BootPlan,
     pub created: DateTime<Utc>,
     pub boot_once: bool,
@@ -519,6 +562,7 @@ impl Task {
             image_name: None,
             target: None,
             verify_hash: None,
+            image_acceptance: None,
             boot_plan,
             created: Utc::now(),
             boot_once: true,
@@ -563,6 +607,37 @@ impl Task {
                 ("staged WinRE", payload.staged_winre_sha256.as_str()),
             ] {
                 validate_sha256_text(name, hash)?;
+            }
+        }
+        // 用户接受例外必须始终绑在本任务的镜像记录上。任务文件被改动时，
+        // 这里要让一个「对不上自己镜像」的例外直接失败，而不是变成通用放行。
+        if let Some(accepted) = self.image_acceptance.as_ref() {
+            let image = self
+                .image
+                .as_ref()
+                .ok_or_else(|| TaskError::Invalid("image acceptance has no image".into()))?;
+            if accepted.index != image.index {
+                return Err(TaskError::Invalid(
+                    "image acceptance index does not match the task image index".into(),
+                ));
+            }
+            if accepted.accepted_size_bytes != image.size_bytes {
+                return Err(TaskError::Invalid(
+                    "image acceptance size does not match the task image size".into(),
+                ));
+            }
+            // 空哈希表示"仅大小"模式下的接受，不覆盖哈希判据；非空则必须与任务
+            // 镜像哈希一致，否则离线侧会拿一个无人确认过的值当作已授权内容。
+            if !accepted.accepted_sha256.is_empty() {
+                validate_sha256_text("accepted image", &accepted.accepted_sha256)?;
+                if !accepted.accepted_sha256.eq_ignore_ascii_case(&image.sha256) {
+                    return Err(TaskError::Invalid(
+                        "image acceptance hash does not match the task image hash".into(),
+                    ));
+                }
+            }
+            if let Some(sidecar) = accepted.superseded_sidecar_sha256.as_deref() {
+                validate_sha256_text("superseded sidecar", sidecar)?;
             }
         }
         match self.operation {
@@ -1669,6 +1744,135 @@ mod tests {
         });
         assert!(task.validate().is_err());
     }
+    /// 构造一个通过校验的还原任务，供「用户接受镜像」相关用例复用。
+    fn restore_task_with_image(sha256: &str, size_bytes: u64, index: u32) -> Task {
+        let mut task = Task::new(
+            Operation::RestoreExisting,
+            BootPlan {
+                mode: BootMode::ReturnExisting,
+                previous_bcd_sha256: Some("a".repeat(64)),
+                menu_name: None,
+                boot_sequence_requested: true,
+            },
+        );
+        task.source = Some(identity("source", 200));
+        task.workspace_volume = Some(identity("workspace", 200));
+        task.image = Some(ImageSpec {
+            volume: identity("image", 400),
+            absolute_path: None,
+            relative_path: "backup.wim".into(),
+            sha256: sha256.into(),
+            size_bytes,
+            index,
+            name: None,
+        });
+        task.target = Some(TargetSpec {
+            volume: identity("source", 200),
+            role: TargetRole::ExistingWindows,
+            boot_menu_name: None,
+            minimum_size_bytes: 100,
+        });
+        task.verify_hash = Some(true);
+        task
+    }
+
+    /// 问题 13：用户在准备阶段强制继续后，任务必须记下**接受时的真实哈希**，
+    /// 这样重启进恢复环境后同一份镜像仍能通过，而不是被旧副档值再次拒绝。
+    #[test]
+    fn accepted_image_survives_the_reboot_and_still_detects_later_tampering() {
+        let actual = "b".repeat(64);
+        let mut task = restore_task_with_image(&actual, 4096, 2);
+        task.image_acceptance = Some(ImageAcceptance {
+            accepted_sha256: actual.clone(),
+            accepted_size_bytes: 4096,
+            index: 2,
+            superseded_sidecar_sha256: Some("c".repeat(64)),
+            accepted_at: Utc::now(),
+        });
+        task.validate().unwrap();
+        let accepted = task.image_acceptance.as_ref().unwrap();
+        // 同一份镜像：例外适用，离线侧放行。
+        assert!(accepted.covers(2, &actual, 4096));
+        // 确认之后镜像再被改动（内容或大小任一变化）：例外不再适用。
+        assert!(!accepted.covers(2, &"d".repeat(64), 4096));
+        assert!(!accepted.covers(2, &actual, 4097));
+        // 换索引不复用这次确认。
+        assert!(!accepted.covers(1, &actual, 4096));
+    }
+
+    /// 例外必须始终绑在本任务自己的镜像记录上，不能被改成通用放行。
+    #[test]
+    fn image_acceptance_must_match_the_task_image_record() {
+        let actual = "b".repeat(64);
+        let base = restore_task_with_image(&actual, 4096, 2);
+        let accepted = ImageAcceptance {
+            accepted_sha256: actual.clone(),
+            accepted_size_bytes: 4096,
+            index: 2,
+            superseded_sidecar_sha256: None,
+            accepted_at: Utc::now(),
+        };
+
+        // 索引对不上。
+        let mut task = base.clone();
+        task.image_acceptance = Some(ImageAcceptance {
+            index: 1,
+            ..accepted.clone()
+        });
+        assert!(task.validate().is_err());
+
+        // 大小对不上。
+        let mut task = base.clone();
+        task.image_acceptance = Some(ImageAcceptance {
+            accepted_size_bytes: 8192,
+            ..accepted.clone()
+        });
+        assert!(task.validate().is_err());
+
+        // 哈希对不上任务镜像记录。
+        let mut task = base.clone();
+        task.image_acceptance = Some(ImageAcceptance {
+            accepted_sha256: "e".repeat(64),
+            ..accepted.clone()
+        });
+        assert!(task.validate().is_err());
+
+        // 非法哈希文本。
+        let mut task = base.clone();
+        task.image_acceptance = Some(ImageAcceptance {
+            accepted_sha256: "not-a-hash".into(),
+            ..accepted.clone()
+        });
+        assert!(task.validate().is_err());
+        let mut task = base.clone();
+        task.image_acceptance = Some(ImageAcceptance {
+            superseded_sidecar_sha256: Some("zz".into()),
+            ..accepted.clone()
+        });
+        assert!(task.validate().is_err());
+
+        // 仅大小模式的接受：哈希留空，合法。
+        let mut task = base.clone();
+        task.image_acceptance = Some(ImageAcceptance {
+            accepted_sha256: String::new(),
+            ..accepted.clone()
+        });
+        task.validate().unwrap();
+        assert!(
+            !task
+                .image_acceptance
+                .as_ref()
+                .unwrap()
+                .covers(2, &actual, 4096),
+            "空哈希的接受不得覆盖哈希判据"
+        );
+
+        // 没有镜像的任务不允许携带例外。
+        let mut task = backup_task();
+        task.image_acceptance = Some(accepted);
+        assert!(task.validate().is_err());
+    }
+
     #[test]
     fn task_rejects_incomplete_workspace_identity() {
         let mut task = backup_task();

@@ -43,13 +43,17 @@ const ENTRY_DESCRIPTION: &str = "BackupRestore task RE";
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReBootEntry {
+    /// 本条目所属任务的 ID。载荷目录按任务隔离后，续跑与清理都必须凭它定位
+    /// 自己那份载荷；**刻意不给默认值**，旧格式簿记会在反序列化时直接报错，
+    /// 而不是静默退回到以前所有任务共用的 `BackupRestoreRE\Winre.wim`。
+    pub task_id: String,
     /// 我们创建的 osloader 条目 GUID（带花括号）。
     pub loader_guid: String,
     /// 我们创建的设备选项对象 GUID（带花括号）。
     pub devopts_guid: String,
     /// 载荷 WIM 所在的卷身份（WinRE/桌面都用它按 GUID 解析盘符，绝不硬编码字母）。
     pub wim_volume: VolumeIdentity,
-    /// 载荷 WIM 的绝对路径，形如 `F:\BackupRestoreRE\Winre.wim`。
+    /// 载荷 WIM 的绝对路径，形如 `F:\BackupRestoreRE\<任务ID>\Winre.wim`。
     pub wim_path: String,
     /// 载荷 WIM 的 SHA-256（重武装前必须复核，防止被改动/截断）。
     pub wim_sha256: String,
@@ -242,16 +246,22 @@ fn any_usable_winre_template(log: &Path) -> Result<(String, String), TaskError> 
     ))
 }
 
-/// 把载荷 WIM 与 boot.sdi 摆到镜像卷的 `BackupRestoreRE\` 下，并校验哈希。
+/// 把载荷 WIM 与 boot.sdi 摆到镜像卷的 `BackupRestoreRE\<任务ID>\` 下，并校验哈希。
+///
+/// 目录按任务隔离：此前所有任务共用 `BackupRestoreRE\Winre.wim`，于是准备第二个
+/// 任务会覆盖第一个任务的载荷（第一个任务的 `rearm()` 随后必然因哈希不符放弃续跑），
+/// 清理任一任务又会删掉另一个任务仍需要的载荷。
 #[cfg(windows)]
 pub fn copy_into_staging(
     staged_wim: &Path,
     sdi_source: &Path,
     wim_volume: &VolumeIdentity,
+    task_id: &str,
     log: &Path,
 ) -> Result<(String, String), TaskError> {
+    let relative = crate::boot_cleanup::staging_relative_dir(task_id)?;
     let letter = ensure_volume_mounted(wim_volume, 'R', log)?;
-    let dir = PathBuf::from(format!(r"{letter}:\{RE_STAGING_DIR}"));
+    let dir = PathBuf::from(format!(r"{letter}:\{relative}"));
     fs::create_dir_all(&dir)?;
     let wim_path = dir.join("Winre.wim");
     let sdi_path = dir.join("boot.sdi");
@@ -290,9 +300,15 @@ pub fn create_entry(
     sdi_source: &Path,
     wim_volume: &VolumeIdentity,
     task_dir: &Path,
+    task_id: &str,
     log: &Path,
 ) -> Result<ReBootEntry, TaskError> {
     if let Some(existing) = ReBootEntry::read(task_dir)? {
+        if existing.task_id != task_id {
+            return Err(crate::err(
+                "recorded boot entry belongs to another task; refusing to reuse it",
+            ));
+        }
         crate::append_log(
             log,
             "new boot channel: entry already recorded; reusing it instead of creating",
@@ -300,7 +316,8 @@ pub fn create_entry(
         return Ok(existing);
     }
 
-    let (wim_path, wim_sha256) = copy_into_staging(staged_wim, sdi_source, wim_volume, log)?;
+    let (wim_path, wim_sha256) =
+        copy_into_staging(staged_wim, sdi_source, wim_volume, task_id, log)?;
     // 模板优先取「当前注册的 WinRE 条目」；它不可用（条目/设备选项对象已被 reagentc 删掉）
     // 时退回枚举所有 WinRE 条目，挑一个设备选项对象确实存在的。
     let (template_loader, template_devopts) = match registered_winre_templates(log) {
@@ -353,7 +370,11 @@ pub fn create_entry(
             ],
             log,
         )?;
-        let sdi = crate::text_parsing::staging_sdi_path(RE_STAGING_DIR);
+        // 和 copy_into_staging 落盘的目录同源（staging_relative_dir 是唯一构造点），
+        // 避免 BCD 写的路径与实际文件位置漂移。
+        let sdi = crate::text_parsing::staging_sdi_path(
+            &crate::boot_cleanup::staging_relative_dir(task_id)?,
+        );
         bcd_write(&["/set", &devopts, "ramdisksdipath", &sdi], log)?;
         if bcd_field(&devopts, "ramdisksdipath")? != sdi {
             return Err(crate::err("device options ramdisksdipath did not stick"));
@@ -423,6 +444,7 @@ pub fn create_entry(
     }
 
     let entry = ReBootEntry {
+        task_id: task_id.to_string(),
         loader_guid: loader,
         devopts_guid: devopts,
         wim_volume: wim_volume.clone(),
@@ -445,6 +467,12 @@ pub fn arm_one_shot(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         .map_err(|message| crate::err(&message))?;
     let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "arm device options")
         .map_err(|message| crate::err(&message))?;
+    // 一次性 bootsequence 是整台机器只有一份的资源。此前这里直接写，不看现状：
+    // 另一个未终结任务的请求、或 Windows 自己设下的请求（例如 reagentc /boottore、
+    // 系统更新）都会被静默夺走，下一次开机进的不是设置它的人期待的东西。
+    // 续跑路径的 rearm() 一直是严格拒绝的，两条路径本应一致。
+    let existing = crate::resume_safety::field(&bcd(&["/enum", BOOTMGR, "/v"])?, "bootsequence")?;
+    crate::resume_safety::allow_rearm(&existing, &loader)?;
     bcd(&["/bootsequence", &loader])?;
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed != loader {
@@ -515,10 +543,12 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         &crate::windows_prepare::volume_identity(letter)?,
         true,
     )?;
-    let path = crate::resume_safety::payload_path(&entry.wim_path, letter)?;
+    let path = crate::resume_safety::payload_path(&entry.wim_path, letter, &entry.task_id)?;
+    let segment = crate::boot_cleanup::staging_task_segment(&entry.task_id)?;
+    let staging = crate::boot_cleanup::staging_task_path(&root, &entry.task_id)?;
     for name in ["Winre.wim", "boot.sdi"] {
-        if !crate::pe_safety::probe_file(&root, &["BackupRestoreRE", name])?
-            || fs::metadata(root.join("BackupRestoreRE").join(name))?.len() == 0
+        if !crate::pe_safety::probe_file(&root, &[RE_STAGING_DIR, segment, name])?
+            || fs::metadata(staging.join(name))?.len() == 0
         {
             return Err(crate::err("续跑载荷缺失、为空或路径不可安全访问"));
         }
@@ -529,6 +559,7 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         &path,
         &devopts,
         letter,
+        &entry.task_id,
     )?;
     let wim = PathBuf::from(&path);
     if !wim.is_file() {
@@ -617,7 +648,7 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
             entry.wim_volume.drive_letter
         ),
     )?;
-    let dir = crate::boot_cleanup::remove_staging(&root)?;
+    let dir = crate::boot_cleanup::remove_staging(&root, &entry.task_id)?;
     crate::recovery_fault::checkpoint("cleanup-payload", log)?;
     crate::append_log(
         log,

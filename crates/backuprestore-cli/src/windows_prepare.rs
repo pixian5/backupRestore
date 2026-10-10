@@ -6,9 +6,9 @@
 //! plus the Windows inbox command-line tools that perform the OS operations.
 
 use backuprestore_core::{
-    BootMode, DestinationSpec, ImageSpec, Operation, PayloadManifest, TargetRole, TargetSpec, Task,
-    TaskError, TaskStore, VolumeIdentity, VolumeRoles, canonical_compression, sha256_file,
-    validate_absolute_path, validate_volume_roles, write_json_atomic,
+    BootMode, DestinationSpec, ImageAcceptance, ImageSpec, Operation, PayloadManifest, TargetRole,
+    TargetSpec, Task, TaskError, TaskStore, VolumeIdentity, VolumeRoles, canonical_compression,
+    sha256_file, validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
@@ -607,7 +607,7 @@ fn prepare_task(
     if let Some(conflict) = validate_volume_roles(&roles, options.operation, &recovery).err() {
         return Err(err(conflict.message()));
     }
-    validate_operation_inputs(
+    let image_acceptance = validate_operation_inputs(
         &source,
         &target,
         &image_volume,
@@ -675,16 +675,26 @@ fn prepare_task(
         Operation::RestoreExisting | Operation::CreateSecondary => {
             let path = image_path.as_ref().expect("restore image path validated");
             let file_size = fs::metadata(path)?.len();
-            // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像且未勾选 verify_hash 时填充合规占位，彻底避免重复读盘
-            let sha256 =
-                if let Ok(meta) = crate::read_index_metadata(Path::new(path), options.wim_index) {
-                    meta.image_sha256
-                } else if options.verify_hash {
-                    sha256_file(path)?
-                } else {
-                    "0".repeat(64)
-                };
+            // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像且未勾选 verify_hash 时填充合规占位，彻底避免重复读盘。
+            // 例外：用户已显式接受"与副档不符的当前镜像"时，权威值改成**接受时读到的真实哈希**。
+            // 否则任务里留着副档旧值 + verifyHash=true，重启后离线侧必然再次拒绝，
+            // 用户的强制继续被静默撤销（历史缺陷）。
+            let accepted_sha256 = image_acceptance
+                .as_ref()
+                .filter(|accepted| !accepted.accepted_sha256.is_empty())
+                .map(|accepted| accepted.accepted_sha256.clone());
+            let sha256 = if let Some(accepted) = accepted_sha256 {
+                accepted
+            } else if let Ok(meta) = crate::read_index_metadata(Path::new(path), options.wim_index)
+            {
+                meta.image_sha256
+            } else if options.verify_hash {
+                sha256_file(path)?
+            } else {
+                "0".repeat(64)
+            };
             task.verify_hash = Some(options.verify_hash);
+            task.image_acceptance = image_acceptance.clone();
             task.image = Some(ImageSpec {
                 volume: image_volume.clone(),
                 absolute_path: Some(path.clone()),
@@ -867,9 +877,16 @@ fn prepare_payload(
         &re_staging.boot_sdi,
         &re_staging.volume,
         task_dir.as_path(),
+        &task.task_id,
         log,
     )?;
-    crate::boot_entry::copy_into_staging(&staged, &re_staging.boot_sdi, &re_staging.volume, log)?;
+    crate::boot_entry::copy_into_staging(
+        &staged,
+        &re_staging.boot_sdi,
+        &re_staging.volume,
+        &task.task_id,
+        log,
+    )?;
     let staged_arg = staged.to_string_lossy().into_owned();
     let mount_arg = mount.to_string_lossy().into_owned();
     run_logged(
@@ -930,7 +947,13 @@ fn prepare_payload(
     // BCD 条目（条目本身在 DISM 之前就建好了，见上面的顺序要点）。
     // 注册位全程只是只读资产来源，因此迁出 / WINRE_HOME / 待回家收尾 / Plan D / F1·F3 全部不需要。
     // 依据：docs/20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md
-    crate::boot_entry::copy_into_staging(&staged, &re_staging.boot_sdi, &re_staging.volume, log)?;
+    crate::boot_entry::copy_into_staging(
+        &staged,
+        &re_staging.boot_sdi,
+        &re_staging.volume,
+        &task.task_id,
+        log,
+    )?;
     // ★ 把簿记里的载荷哈希刷新成**注入后**的实际值。
     // create_entry 在 DISM 注入之前就跑（顺序要点见上），那时的
     // copy_into_staging 复制的是干净原件，记下的是它的哈希；注入后载荷
@@ -1390,15 +1413,18 @@ fn rollback_boot_request(
     Ok(())
 }
 
+/// 返回 `Some(..)` 表示用户在本次准备中显式接受了「与副档不符的当前镜像」，
+/// 调用方必须把这份例外连同**接受时的真实哈希**一起写进任务，否则重启后
+/// 离线侧会拿旧副档值再次拒绝（历史缺陷，见 [`ImageAcceptance`]）。
 fn validate_operation_inputs(
     source: &VolumeIdentity,
     target: &VolumeIdentity,
     image: &VolumeIdentity,
     image_path: Option<&str>,
     options: &PrepareOptions,
-) -> Result<(), TaskError> {
+) -> Result<Option<ImageAcceptance>, TaskError> {
     match options.operation {
-        Operation::Probe => Ok(()),
+        Operation::Probe => Ok(None),
         Operation::Backup => {
             if image.same_partition(source) {
                 return Err(err("image volume must differ from backup source"));
@@ -1420,7 +1446,7 @@ fn validate_operation_inputs(
             if volume_free_bytes(image.drive_letter.unwrap())? < required {
                 return Err(err("backup destination free space is insufficient"));
             }
-            Ok(())
+            Ok(None)
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
             if !options.allow_destructive {
@@ -1452,21 +1478,46 @@ fn validate_operation_inputs(
             // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
             // 哈希校验与目标大小预检——DISM /Get-WimInfo 已确认 WIM 可读。
             let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
+            // 用户显式接受当前镜像时在这里产生例外记录；只有真正越过了副档判据才记，
+            // 正常通过校验的镜像不写例外（避免例外退化成默认状态）。
+            let mut acceptance: Option<ImageAcceptance> = None;
             if let Some(metadata) = &metadata {
                 let file_size = fs::metadata(path)?.len();
-                if metadata.image_size > 0
-                    && file_size != metadata.image_size
-                    && !options.force_restore_hash
-                {
+                let size_conflict = metadata.image_size > 0 && file_size != metadata.image_size;
+                if size_conflict && !options.force_restore_hash {
                     return Err(err("restore image size does not match metadata"));
                 }
                 // 用户要求：增加一个校验选项框，不勾选时仅对比大小，勾选时对比哈希
                 if options.verify_hash {
                     let expected = &metadata.image_sha256;
+                    // 这一次读盘是严格哈希模式本来就要付的代价；下面复用同一个值，
+                    // 不额外再读一遍 58GB 镜像。
                     let actual = sha256_file(path)?;
-                    if !actual.eq_ignore_ascii_case(expected) && !options.force_restore_hash {
+                    let hash_conflict = !actual.eq_ignore_ascii_case(expected);
+                    if hash_conflict && !options.force_restore_hash {
                         return Err(err("restore image hash does not match metadata"));
                     }
+                    if hash_conflict || size_conflict {
+                        // 记录"用户看过并接受的就是这份内容"。离线侧据此核验镜像
+                        // 未再变化，旧副档只留痕。
+                        acceptance = Some(ImageAcceptance {
+                            accepted_sha256: actual,
+                            accepted_size_bytes: file_size,
+                            index: options.wim_index,
+                            superseded_sidecar_sha256: Some(expected.clone()),
+                            accepted_at: Utc::now(),
+                        });
+                    }
+                } else if size_conflict {
+                    // 仅对比大小模式：用户接受的是"当前这个大小"，不为此多读一次全盘哈希。
+                    // 留空哈希表示本次例外不覆盖哈希判据，离线侧也只走大小校验。
+                    acceptance = Some(ImageAcceptance {
+                        accepted_sha256: String::new(),
+                        accepted_size_bytes: file_size,
+                        index: options.wim_index,
+                        superseded_sidecar_sha256: Some(metadata.image_sha256.clone()),
+                        accepted_at: Utc::now(),
+                    });
                 }
             }
             let minimum = metadata
@@ -1480,7 +1531,7 @@ fn validate_operation_inputs(
             if target.partition_size < minimum {
                 return Err(err("restore target is too small"));
             }
-            Ok(())
+            Ok(acceptance)
         }
     }
 }

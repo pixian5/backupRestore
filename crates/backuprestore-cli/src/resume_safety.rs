@@ -37,18 +37,25 @@ pub(crate) fn allow_rearm(sequence: &str, loader: &str) -> Result<(), TaskError>
     Ok(())
 }
 
-/// 准备期路径仅用于核对固定载荷位置，实际盘符必须来自现场卷身份。
-pub(crate) fn payload_path(saved: &str, letter: char) -> Result<String, TaskError> {
+/// 准备期路径仅用于核对载荷位置，实际盘符必须来自现场卷身份。
+///
+/// 载荷目录按任务隔离，所以这里要连任务 ID 一起核对：一条簿记只能指向**它自己**
+/// 那个子目录下的 `Winre.wim`，不能指到别的任务的载荷上去。
+pub(crate) fn payload_path(saved: &str, letter: char, task_id: &str) -> Result<String, TaskError> {
+    let expected = format!(
+        r"\{}\Winre.wim",
+        crate::boot_cleanup::staging_relative_dir(task_id)?
+    );
     let bytes = saved.as_bytes();
     if bytes.len() < 3
         || !bytes[0].is_ascii_alphabetic()
         || bytes[1] != b':'
-        || !saved[2..].eq_ignore_ascii_case(r"\BackupRestoreRE\Winre.wim")
+        || !saved[2..].eq_ignore_ascii_case(&expected)
         || !letter.is_ascii_alphabetic()
     {
         return Err(crate::err("续跑载荷路径不属于任务暂存目录"));
     }
-    Ok(format!(r"{letter}:\BackupRestoreRE\Winre.wim"))
+    Ok(format!("{letter}:{expected}"))
 }
 
 pub(crate) fn verify_chain(
@@ -57,15 +64,19 @@ pub(crate) fn verify_chain(
     wim: &str,
     devopts: &str,
     letter: char,
+    task_id: &str,
 ) -> Result<(), TaskError> {
     let device = crate::text_parsing::ramdisk_spec(wim, devopts);
+    // SDI 路径也随载荷目录按任务隔离；和 BCD 里的实际值必须同源同值。
+    let sdi =
+        crate::text_parsing::staging_sdi_path(&crate::boot_cleanup::staging_relative_dir(task_id)?);
     for (text, key, expected) in [
         (loader, "device", device.as_str()),
         (loader, "osdevice", device.as_str()),
         (loader, "path", r"\windows\system32\winload.efi"),
         (loader, "winpe", "Yes"),
         (options, "ramdisksdidevice", &format!("partition={letter}:")),
-        (options, "ramdisksdipath", r"\BackupRestoreRE\boot.sdi"),
+        (options, "ramdisksdipath", &sdi),
     ] {
         if !field(text, key)?.eq_ignore_ascii_case(expected) {
             return Err(crate::err(&format!("续跑启动链字段不符：{key}")));
@@ -151,29 +162,43 @@ mod tests {
         assert!(allow_rearm(ID, ID).is_ok());
         assert!(field("device one\ndevice two", "device").is_err());
     }
+    /// 载荷按任务隔离后，跨启动核验必须连任务 ID 一起对：
+    /// 同一台机器上另一个任务的载荷路径与 SDI 路径都不能被当成自己的。
     #[test]
     fn cross_boot_path_and_full_chain_are_verified() {
-        let wim = payload_path(r"F:\BackupRestoreRE\Winre.wim", 'G').unwrap();
+        const TASK: &str = "11111111-2222-4333-8444-555555555555";
+        const OTHER: &str = "99999999-8888-4777-8666-555555555555";
+        let wim =
+            payload_path(&format!(r"F:\BackupRestoreRE\{TASK}\Winre.wim"), 'G', TASK).unwrap();
+        assert_eq!(wim, format!(r"G:\BackupRestoreRE\{TASK}\Winre.wim"));
         let device = crate::text_parsing::ramdisk_spec(&wim, ID);
         let loader = format!(
             "device {device}\nosdevice {device}\npath \\windows\\system32\\winload.efi\nwinpe Yes"
         );
-        let options = "ramdisksdidevice partition=G:\nramdisksdipath \\BackupRestoreRE\\boot.sdi";
-        verify_chain(&loader, options, &wim, ID, 'G').unwrap();
+        let options = format!(
+            "ramdisksdidevice partition=G:\nramdisksdipath \\BackupRestoreRE\\{TASK}\\boot.sdi"
+        );
+        verify_chain(&loader, &options, &wim, ID, 'G', TASK).unwrap();
         for bad in [
             loader.replace("osdevice", "other"),
             loader.replace("winpe Yes", "winpe No"),
             loader.replace("[G:]", "[F:]"),
         ] {
-            assert!(verify_chain(&bad, options, &wim, ID, 'G').is_err());
+            assert!(verify_chain(&bad, &options, &wim, ID, 'G', TASK).is_err());
         }
-        assert!(verify_chain(&loader, &options.replace("G:", "C:"), &wim, ID, 'G').is_err());
+        assert!(verify_chain(&loader, &options.replace("G:", "C:"), &wim, ID, 'G', TASK).is_err());
+        // 另一个任务的 SDI 路径不得通过本任务的核验。
+        assert!(verify_chain(&loader, &options, &wim, ID, 'G', OTHER).is_err());
         for path in [
-            r"F:\BackupRestoreRE\..\Winre.wim",
-            r"F:\else\Winre.wim",
-            r"\\server\Winre.wim",
+            format!(r"F:\BackupRestoreRE\{TASK}\..\Winre.wim"),
+            format!(r"F:\BackupRestoreRE\{OTHER}\Winre.wim"),
+            r"F:\BackupRestoreRE\Winre.wim".into(),
+            r"F:\else\Winre.wim".into(),
+            r"\\server\Winre.wim".into(),
         ] {
-            assert!(payload_path(path, 'G').is_err());
+            assert!(payload_path(&path, 'G', TASK).is_err(), "{path} 应被拒绝");
         }
+        // 非法任务 ID 不得构造出任何路径。
+        assert!(payload_path(&format!(r"F:\BackupRestoreRE\{TASK}\Winre.wim"), 'G', "x").is_err());
     }
 }

@@ -18,23 +18,37 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
         return Err(crate::err("测试任务必须先成功"));
     }
     let original = store.task_dir(&task.task_id)?;
+    let task_id = task.task_id.clone();
     let dir = root.join("boot-fault-fixture");
     fs::create_dir(&dir)?;
     let log = dir.join("boot-fault.log");
     let volume = task
         .workspace_volume
         .ok_or_else(|| crate::err("缺少工作卷"))?;
-    let staging = crate::boot_cleanup::staging_volume_root(&volume)?.join("BackupRestoreRE");
-    if staging.try_exists()? {
+    // 前置条件仍按整个暂存父目录判断"卷上没有任何恢复载荷"；载荷按任务隔离后，
+    // 本夹具自己的那一份落在 BackupRestoreRE\<任务ID>\ 下。
+    let staging_root = crate::boot_cleanup::staging_volume_root(&volume)?;
+    if staging_root
+        .join(crate::boot_cleanup::RE_STAGING_DIR)
+        .try_exists()?
+    {
         return Err(crate::err("存在恢复载荷，禁止覆盖"));
     }
+    let staging = crate::boot_cleanup::staging_task_path(&staging_root, &task_id)?;
     let baseline = bcd(&["/enum", "all", "/v"])?;
     if !bcd_field(BOOTMGR, "bootsequence")?.is_empty() {
         return Err(crate::err("已有启动请求，拒绝测试"));
     }
     let sdi = PathBuf::from(std::env::var("SystemDrive").map_err(|_| crate::err("缺少系统盘"))?)
         .join("Recovery\\WindowsRE\\boot.sdi");
-    let entry = create_entry(&original.join("stage/Winre.wim"), &sdi, &volume, &dir, &log)?;
+    let entry = create_entry(
+        &original.join("stage/Winre.wim"),
+        &sdi,
+        &volume,
+        &dir,
+        &task_id,
+        &log,
+    )?;
     let wim = PathBuf::from(&entry.wim_path);
     let saved = wim.with_extension("wim.acceptance-backup");
     let before = bcd(&["/enum", "all", "/v"])?;
