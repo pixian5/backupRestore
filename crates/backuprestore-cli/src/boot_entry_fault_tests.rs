@@ -89,6 +89,14 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     // 问题 11：字段写入失败时必须留下半成品簿记，且统一补偿能据此清掉那两个对象。
     // 此前这两个 GUID 只出现在日志文本里，没有任何代码认得它们——界面上是
     // "准备失败"，机器上却静静留着两个 device/osdevice 从未写成功的 BCD 对象。
+    //
+    // ★ 夹具自 2.2.1 以来的缺陷（本轮实机首次执行才暴露）：前段成功的 create_entry
+    // 在同一目录留下了 boot-entry.json，末段再次调用会命中"复用已有条目"分支
+    // 直接返回 Ok，entry-fields 注入点根本不执行。必须先清掉簿记与本任务载荷，
+    // 让 create_entry 走全新创建路径。
+    fs::remove_file(dir.join(ENTRY_RECORD))?;
+    let staging_root2 = crate::boot_cleanup::staging_volume_root(&volume)?;
+    crate::boot_cleanup::remove_staging(&staging_root2, &task_id)?;
     crate::recovery_fault::configure(Some("acceptance:entry-fields:error"), &dir);
     let kept = create_entry(
         &original.join("stage/Winre.wim"),
@@ -104,13 +112,40 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     assert_eq!(residue.task_id, task_id);
     assert!(crate::text_parsing::is_guid(&residue.loader_guid));
     assert!(crate::text_parsing::is_guid(&residue.devopts_guid));
+    // 注入点位于 /copy 之后、字段改写（finish()）之前：KEEP 保留的对象是从注册
+    // WinRE 模板整体复制来的，**继承模板的全部字段**（device 仍指向 C: 注册位）。
+    // "从未写成功"的正确证据是：字段仍指向模板路径，而不是本任务载荷路径
+    // （H:\BackupRestoreRE\<任务ID>\）——若 finish() 真跑过，device 一定会被
+    // 改写成指向我们按任务隔离的载荷 WIM。
+    let loader_block = bcd(&["/enum", &residue.loader_guid, "/v"])?;
+    let devopts_block = bcd(&["/enum", &residue.devopts_guid, "/v"])?;
+    // bcdedit 的字段名随系统语言本地化（中文系统输出"标识符"而非 identifier，
+    // 2026-10-11 SYSTEM 通道实机确认）。存在性判断只能用语言无关的 GUID 本身。
     assert!(
-        !bcd(&["/enum", "all", "/v"])?.contains(&residue.loader_guid),
-        "注入失败发生在建对象之前，不应留下条目"
+        loader_block.contains(&residue.loader_guid),
+        "保留的诊断对象 loader 应仍存在"
+    );
+    let staging_marker = crate::boot_cleanup::staging_relative_dir(&task_id)?;
+    assert!(
+        !loader_block
+            .to_ascii_lowercase()
+            .contains(&staging_marker.to_ascii_lowercase()),
+        "半成品 loader 的 device 不得指向本任务载荷（说明 finish() 从未写入成功）"
+    );
+    assert!(
+        !devopts_block
+            .to_ascii_lowercase()
+            .contains(&staging_marker.to_ascii_lowercase()),
+        "半成品 devopts 的 ramdisksdipath 不得指向本任务载荷目录"
     );
     println!("FAULT_PASS entry-field-failure: residue recorded with exact GUIDs");
+    // 复现"统一补偿"收尾：清注入配置，按残留簿记的精确 GUID 删掉 KEEP 的两个
+    // 诊断对象，再回基线。真实路径里这由 compensate_prepare_failure 完成；
+    // 夹具内直接用同一 remove_entry_objects，保持安全边界一致。
     crate::recovery_fault::configure(None, &dir);
+    remove_entry_objects(&residue.loader_guid, &residue.devopts_guid, &log)?;
     crate::boot_record::ResidueRecord::clear(&dir)?;
     assert_eq!(baseline, bcd(&["/enum", "all", "/v"])?);
+    println!("FAULT_PASS entry-field-compensation: residue objects removed; baseline restored");
     Ok(())
 }
