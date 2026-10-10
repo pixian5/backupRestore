@@ -231,6 +231,12 @@ fn main() {
             let id = args.next().ok_or_else(|| err("task id is required"));
             root.and_then(|r| id.and_then(|id| resume_task(r, id)))
         }
+        #[cfg(windows)]
+        Some("abandon-task") => {
+            let root = args.next().ok_or_else(|| err("task root is required"));
+            let id = args.next().ok_or_else(|| err("task id is required"));
+            root.and_then(|r| id.and_then(|id| windows_prepare::abandon_task(r, id)))
+        }
         Some("recover-env") => args
             .next()
             .ok_or_else(|| err("RecoveryTask.env is required"))
@@ -1175,8 +1181,15 @@ fn resume_task(root: String, id: String) -> Result<(), TaskError> {
     if task.status == Stage::RecoveryComplete {
         return complete_recovery_cleanup(&store, &mut task, &log);
     }
-    if !stage_resumable_after_interruption(task.status) {
+    let explicitly_prepared = task.status == Stage::Prepared;
+    if !explicitly_prepared && !stage_resumable_after_interruption(task.status) {
         return Err(err("该任务不处于可续跑阶段"));
+    }
+    if explicitly_prepared {
+        // `prepare --no-reboot` leaves a complete task/payload and BCD template
+        // but intentionally does not arm it. Only an explicit user resume may
+        // turn that prepared task into a one-shot recovery boot.
+        store.write_transition(&mut task, Stage::BootRequested)?;
     }
     let entry = boot_entry::ReBootEntry::read(&dir)?.ok_or_else(|| err("任务缺少启动记录"))?;
     boot_entry::rearm(&entry, &log)?;

@@ -107,6 +107,29 @@ impl Stage {
                 | (RecoveryComplete, Success)
         )
     }
+    /// A task at one of these stages has not begun modifying its restore target,
+    /// so an explicit user abandonment may remove only its task-owned boot entry
+    /// and recovery payload before another task is prepared.
+    pub fn can_abandon_before_target_write(self) -> bool {
+        matches!(
+            self,
+            Self::Prepared | Self::BootRequested | Self::RecoveryStarted | Self::Preflight
+        )
+    }
+    /// A task past preparation may be resumed through its persisted boot entry.
+    pub fn can_resume_after_interruption(self) -> bool {
+        matches!(
+            self,
+            Self::BootRequested
+                | Self::RecoveryStarted
+                | Self::Preflight
+                | Self::Capturing
+                | Self::TargetErased
+                | Self::ImageApplied
+                | Self::BootRepaired
+                | Self::RecoveryComplete
+        )
+    }
     pub fn is_destructive_boundary(self) -> bool {
         matches!(
             self,
@@ -1177,6 +1200,64 @@ impl TaskStore {
         task.validate()?;
         Ok(task)
     }
+    /// Find every valid nonterminal task under this workspace.
+    ///
+    /// Preparation must not silently ignore an interrupted task: its boot entry,
+    /// payload, or target may still be needed for recovery. A malformed or split
+    /// task/status pair is an error rather than an empty result, so callers fail
+    /// closed and can show the user the task directory that needs inspection.
+    pub fn incomplete_tasks(&self) -> Result<Vec<Task>, TaskError> {
+        let tasks_root = self.root.join("tasks");
+        if !tasks_root.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut incomplete = Vec::new();
+        for entry in fs::read_dir(&tasks_root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
+                return Err(TaskError::Invalid(format!(
+                    "existing task directory has a non-Unicode name: {}",
+                    path.display()
+                )));
+            };
+            validate_task_id(id)?;
+            let task: Task = read_json(path.join("task.json")).map_err(|error| {
+                TaskError::Invalid(format!(
+                    "cannot inspect existing task {id} at {}: {error}",
+                    path.display()
+                ))
+            })?;
+            task.validate().map_err(|error| {
+                TaskError::Invalid(format!("existing task {id} is invalid: {error}"))
+            })?;
+            let status: StatusRecord = read_json(path.join("status.json")).map_err(|error| {
+                TaskError::Invalid(format!(
+                    "cannot inspect status for existing task {id} at {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if task.task_id != id
+                || status.task_id != task.task_id
+                || status.operation != task.operation
+                || status.stage != task.status
+            {
+                return Err(TaskError::Invalid(format!(
+                    "existing task {id} has inconsistent task/status records; inspect {} before creating another task",
+                    path.display()
+                )));
+            }
+            if task.status.is_incomplete() {
+                incomplete.push(task);
+            }
+        }
+        Ok(incomplete)
+    }
+
     pub fn write_transition(
         &self,
         task: &mut Task,
@@ -2062,6 +2143,44 @@ mod tests {
     }
 
     #[test]
+    fn pending_task_policy_only_abandons_before_target_writes_and_resumes_persisted_stages() {
+        for stage in [
+            Stage::Prepared,
+            Stage::BootRequested,
+            Stage::RecoveryStarted,
+            Stage::Preflight,
+        ] {
+            assert!(stage.can_abandon_before_target_write(), "{stage:?}");
+        }
+        for stage in [
+            Stage::Capturing,
+            Stage::TargetErased,
+            Stage::ImageApplied,
+            Stage::BootRepaired,
+            Stage::RecoveryComplete,
+            Stage::Success,
+            Stage::Failed,
+        ] {
+            assert!(!stage.can_abandon_before_target_write(), "{stage:?}");
+        }
+        for stage in [
+            Stage::BootRequested,
+            Stage::RecoveryStarted,
+            Stage::Preflight,
+            Stage::Capturing,
+            Stage::TargetErased,
+            Stage::ImageApplied,
+            Stage::BootRepaired,
+            Stage::RecoveryComplete,
+        ] {
+            assert!(stage.can_resume_after_interruption(), "{stage:?}");
+        }
+        assert!(!Stage::Prepared.can_resume_after_interruption());
+        assert!(!Stage::Success.can_resume_after_interruption());
+        assert!(!Stage::Failed.can_resume_after_interruption());
+    }
+
+    #[test]
     fn interrupted_state_transaction_replays_at_each_write_boundary() {
         for written_views in 0..=2 {
             let root = std::env::temp_dir().join(format!("br-state-{}", Uuid::new_v4()));
@@ -2145,6 +2264,47 @@ mod tests {
         assert!(store.load(&task.task_id).is_err());
         fs::remove_file(&journal).unwrap();
         assert_eq!(store.load(&task.task_id).unwrap(), task);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_tasks_lists_valid_pending_tasks_and_ignores_terminal_tasks() {
+        let root = std::env::temp_dir().join(format!("br-incomplete-{}", Uuid::new_v4()));
+        let store = TaskStore::new(&root);
+        let mut pending = backup_task();
+        store.create(&pending).unwrap();
+        store
+            .write_transition(&mut pending, Stage::BootRequested)
+            .unwrap();
+
+        let mut terminal = backup_task();
+        store.create(&terminal).unwrap();
+        store
+            .write_failure(&mut terminal, 9, "finished failure")
+            .unwrap();
+
+        let tasks = store.incomplete_tasks().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, pending.task_id);
+        assert_eq!(tasks[0].status, Stage::BootRequested);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_tasks_fails_closed_on_malformed_or_inconsistent_records() {
+        let root = std::env::temp_dir().join(format!("br-incomplete-invalid-{}", Uuid::new_v4()));
+        let store = TaskStore::new(&root);
+        let mut task = backup_task();
+        store.create(&task).unwrap();
+        store
+            .write_transition(&mut task, Stage::BootRequested)
+            .unwrap();
+        let status_path = store.status_path(&task.task_id).unwrap();
+        let mut status: StatusRecord = read_json(&status_path).unwrap();
+        status.stage = Stage::Prepared;
+        write_json_atomic(&status_path, &status).unwrap();
+        let error = store.incomplete_tasks().unwrap_err().to_string();
+        assert!(error.contains("inconsistent task/status"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 

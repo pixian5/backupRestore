@@ -535,6 +535,67 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     })
 }
 
+/// 显式放弃一个尚未写入目标卷的任务。只在 task/status 一致且仍处于
+/// Prepared/BootRequested/RecoveryStarted/Preflight 时允许；擦除开始后拒绝。
+#[cfg(windows)]
+pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskError> {
+    require_administrator()?;
+    let store = TaskStore::new(root);
+    let mut task = store.load(&task_id)?;
+    let dir = store.task_dir(&task_id)?;
+    let log = store.log_path(&task_id)?;
+    let status: backuprestore_core::StatusRecord =
+        backuprestore_core::read_json(store.status_path(&task_id)?)?;
+    if status.task_id != task.task_id
+        || status.stage != task.status
+        || status.operation != task.operation
+    {
+        return Err(err("任务状态记录不一致，拒绝放弃或清理"));
+    }
+    if !task.status.can_abandon_before_target_write() {
+        return Err(err(&format!(
+            "任务已进入 {:?} 阶段，可能已修改目标卷；不能从新任务对话框清理。请先继续原任务或人工恢复。",
+            task.status
+        )));
+    }
+    append_log(
+        &log,
+        &format!(
+            "User explicitly abandoned task before target writes; operation={:?} stage={:?}",
+            task.operation, task.status
+        ),
+    )?;
+    let efi = efi_identity(None)?;
+    compensate_prepare_failure(&dir, &efi, &log)?;
+    // create_entry can copy the WIM to staging before its final boot-entry
+    // record is durable. Re-check by stable volume identity and remove only
+    // this task's directory, even if no ReBootEntry record survived.
+    let staging_volume = task.image.as_ref().map(|image| &image.volume).or_else(|| {
+        task.destination
+            .as_ref()
+            .map(|destination| &destination.volume)
+    });
+    if let Some(volume) = staging_volume {
+        let root_path = crate::boot_cleanup::staging_volume_root(volume)?;
+        let actual =
+            volume_identity_at_path(&root_path.to_string_lossy(), volume.volume_guid.clone())?;
+        if !actual.same_partition(volume)
+            || actual.partition_offset != volume.partition_offset
+            || actual.partition_size != volume.partition_size
+        {
+            return Err(err("放弃任务时载荷卷身份不匹配，拒绝删除"));
+        }
+        crate::boot_cleanup::remove_staging(&root_path, &task.task_id)?;
+    }
+    store.write_failure(&mut task, 2, "用户在创建新任务前明确放弃")?;
+    store.cleanup_task_artifacts(&task.task_id)?;
+    append_log(
+        &log,
+        "Abandoned task cleanup completed; evidence records retained",
+    )?;
+    Ok(())
+}
+
 fn prepare_task(
     executable_dir: &Path,
     workspace: &VolumeIdentity,
@@ -634,6 +695,35 @@ fn prepare_task(
                 cleanup.skipped_mounted.len()
             ),
         )?;
+    }
+    // 一个工作区共用同一份 EFI BCD 的 bootsequence，无法安全并发两个未终结的
+    // 启动事务。载荷虽按 task ID 隔离，但那只防止文件互相覆盖，不解决 bootsequence
+    // 争用；因此新任务只要发现任何未终结任务，都先停下交给用户选择继续或清理。
+    // 这一步必须位于创建新 task.json、导出 BCD 和修改任何启动对象之前。
+    let pending = store.incomplete_tasks()?;
+    if !pending.is_empty() {
+        let details = pending
+            .iter()
+            .map(|task| {
+                let target = task
+                    .target
+                    .as_ref()
+                    .map(|spec| spec.volume.partition_guid.as_str())
+                    .unwrap_or("(无目标卷)");
+                format!(
+                    "id={} operation={:?} stage={:?} target={} created={}",
+                    task.task_id, task.operation, task.status, target, task.created
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        append_log(
+            &bootstrap_log,
+            &format!("new preparation blocked by incomplete tasks: {details}"),
+        )?;
+        return Err(err(&format!(
+            "检测到尚未终结的任务，未创建新任务或修改启动配置。请先继续原任务，或明确放弃并清理旧任务：{details}"
+        )));
     }
     ensure_workspace_capacity(workspace, &recovery)?;
 

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
 
+use crate::append_log;
 use crate::text_parsing::{
     WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, first_braced_guid, format_bytes,
     json_text, parse_wim_images, quote_argument,
@@ -84,10 +85,12 @@ const SW_MAXIMIZE: i32 = 3;
 const MB_OK: u32 = 0x00000000;
 const MB_ICONERROR: u32 = 0x00000010;
 const MB_YESNO: u32 = 0x00000004;
+const MB_YESNOCANCEL: u32 = 0x00000003;
 const MB_ICONWARNING: u32 = 0x00000030;
 const MB_ICONINFORMATION: u32 = 0x00000040;
 const MB_ICONQUESTION: u32 = 0x00000020;
 const IDYES: i32 = 6;
+const IDNO: i32 = 7;
 const IDOK: i32 = 1;
 const WM_APP_TEST_INSTALL: u32 = 0x8001;
 /// 在线备份/还原后台线程完成通知（结果在 ONLINE_RESULT 全局读）。
@@ -4307,6 +4310,221 @@ fn read_latest_launcher_error(executable_dir: &std::path::Path) -> Option<String
         .map(|s| s.to_string())
 }
 
+/// 返回 `Some(IDYES)` 表示用户明确要求清理未完成任务；返回 `Some(IDNO)` 或
+/// `None` 表示不能/不应继续。只读扫描失败也阻断，不猜测当前是否安全。
+unsafe fn incomplete_task_choice(
+    state: &State,
+    language: Language,
+) -> Option<(i32, backuprestore_core::Task)> {
+    let store = backuprestore_core::TaskStore::new(&state.executable_dir);
+    let tasks = match store.incomplete_tasks() {
+        Ok(tasks) => tasks,
+        Err(error) => {
+            append_gui_log(state, &format!("incomplete task scan failed: {error}"));
+            show_message(
+                state.root,
+                &format!("无法检查已有未完成任务：{error}"),
+                if language == Language::English {
+                    "Cannot inspect tasks"
+                } else {
+                    "无法检查任务"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return None;
+        }
+    };
+    if tasks.is_empty() {
+        return None;
+    }
+    let details = tasks
+        .iter()
+        .map(|task| {
+            let target = task
+                .target
+                .as_ref()
+                .map(|spec| spec.volume.partition_guid.as_str())
+                .unwrap_or("(无目标卷)");
+            format!(
+                "{} / {:?} / {:?} / target={target}",
+                task.task_id, task.operation, task.status
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    append_gui_log(
+        state,
+        &format!(
+            "incomplete task scan: count={} details={details}",
+            tasks.len()
+        ),
+    );
+    let text = if language == Language::English {
+        format!(
+            "An unfinished recovery task already exists:\n\n{details}\n\nYes = resume the oldest task, No = abandon and clean it (only before target writes), Cancel = do not create a new task."
+        )
+    } else {
+        format!(
+            "检测到尚未终结的任务：\n\n{details}\n\n选择“是”继续最早的旧任务；选择“否”放弃并清理（仅限未写入目标卷的任务）；选择“取消”不创建新任务。"
+        )
+    };
+    let title = if language == Language::English {
+        "Unfinished task exists"
+    } else {
+        "存在未完成任务"
+    };
+    let task = tasks.into_iter().next().expect("tasks 非空");
+    Some((
+        show_message(
+            state.root,
+            &format!("{text}\n\n是=继续最早的旧任务；否=放弃并清理；取消=不创建新任务。"),
+            title,
+            MB_YESNOCANCEL | MB_ICONWARNING,
+        ),
+        task,
+    ))
+}
+
+/// 清理用户明确放弃的未完成任务：只删除任务目录里的恢复工作树，并将任务标记为
+/// Failed 保留诊断记录。若任务已经进入破坏性阶段，拒绝 GUI 直接清理——这种任务
+/// 必须先走恢复/续跑，避免把“目标已擦除但还没应用镜像”的材料删掉。
+unsafe fn cleanup_incomplete_tasks_from_gui(
+    state: &State,
+    language: Language,
+) -> Result<(), String> {
+    let store = backuprestore_core::TaskStore::new(&state.executable_dir);
+    let tasks = store
+        .incomplete_tasks()
+        .map_err(|error| error.to_string())?;
+    // 先完整预检，避免多个任务中后面的危险任务导致前面的任务已经被部分清理。
+    if let Some(task) = tasks
+        .iter()
+        .find(|task| !task.status.can_abandon_before_target_write())
+    {
+        return Err(format!(
+            "任务 {} 已进入 {:?} 阶段，可能已修改目标卷；不能从新任务对话框直接清理。请先从恢复入口续跑或人工处理。",
+            task.task_id, task.status
+        ));
+    }
+    for task in tasks {
+        let dir = store
+            .task_dir(&task.task_id)
+            .map_err(|error| error.to_string())?;
+        let log = dir.join("recovery.log");
+        append_log(
+            &log,
+            &format!(
+                "User explicitly abandoned task from new-task dialog; operation={:?} stage={:?}",
+                task.operation, task.status
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+        let mut failed = task.clone();
+        store
+            .write_failure(&mut failed, 2, "用户在创建新任务前明确放弃旧任务")
+            .map_err(|error| error.to_string())?;
+        store
+            .cleanup_task_artifacts(&failed.task_id)
+            .map_err(|error| error.to_string())?;
+        append_gui_log(
+            state,
+            &format!(
+                "incomplete task abandoned and artifacts cleaned: {}",
+                failed.task_id
+            ),
+        );
+    }
+    let _ = language;
+    Ok(())
+}
+
+/// 启动一个需要管理员权限的旧任务续跑；`resume` 会验证载荷、重武装一次性
+/// 启动项，然后把同一任务送回 WinRE。这里只允许用户明确选择了某个 task ID。
+unsafe fn launch_explicit_resume(
+    state: &State,
+    task: &backuprestore_core::Task,
+    language: Language,
+) -> bool {
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            append_gui_log(state, &format!("resume launch failed: {error}"));
+            return false;
+        }
+    };
+    let args = [
+        "resume".to_string(),
+        state.executable_dir.to_string_lossy().into_owned(),
+        task.task_id.clone(),
+    ];
+    let params = args
+        .iter()
+        .map(|argument| crate::text_parsing::quote_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let executable_wide = wide(&executable.to_string_lossy());
+    let verb = wide("runas");
+    let params_wide = wide(&params);
+    let mut info = ShellExecuteInfoW {
+        cb_size: std::mem::size_of::<ShellExecuteInfoW>() as u32,
+        f_mask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: state.root,
+        lp_verb: verb.as_ptr(),
+        lp_file: executable_wide.as_ptr(),
+        lp_parameters: params_wide.as_ptr(),
+        lp_directory: null(),
+        n_show: SW_SHOWNORMAL,
+        h_inst_app: null_mut(),
+        lp_id_list: null_mut(),
+        lp_class: null(),
+        hkey_class: null_mut(),
+        dw_hot_key: 0,
+        h_icon: null_mut(),
+        h_process: null_mut(),
+    };
+    if ShellExecuteExW(&mut info) == 0 {
+        append_gui_log(
+            state,
+            &format!("resume launch failed: Windows error {}", GetLastError()),
+        );
+        return false;
+    }
+    if !info.h_process.is_null() {
+        let wait = WaitForSingleObject(info.h_process, 1500);
+        if wait == 0 {
+            let mut code = 0_u32;
+            GetExitCodeProcess(info.h_process, &mut code);
+            CloseHandle(info.h_process);
+            if code != 0 {
+                append_gui_log(state, &format!("resume launch exited early: code={code}"));
+                return false;
+            }
+        } else {
+            CloseHandle(info.h_process);
+        }
+    }
+    append_gui_log(
+        state,
+        &format!("explicit resume launched: task={}", task.task_id),
+    );
+    let text = if language == Language::English {
+        "The unfinished task was sent to Windows RE for explicit resumption."
+    } else {
+        "已将旧任务送入 Windows RE，继续执行原任务。"
+    };
+    show_message(
+        state.root,
+        text,
+        if language == Language::English {
+            "Resume task"
+        } else {
+            "继续旧任务"
+        },
+        MB_OK | MB_ICONINFORMATION,
+    );
+    true
+}
+
 unsafe fn create_task(state: &mut State) {
     if ONLINE_BUSY.is_busy() {
         show_message(
@@ -4329,6 +4547,39 @@ unsafe fn create_task(state: &mut State) {
     if operation == "install-pe-entry" {
         install_pe_entry(state);
         return;
+    }
+    // 在任何破坏性确认、镜像校验、提权或 prepare 之前检查未终结任务。
+    // 载荷目录按任务 ID 隔离只能防文件覆盖；同一工作区的 EFI bootsequence
+    // 仍是单资源。发现旧任务时让用户选择：继续原任务 / 清理并放弃旧任务 / 取消。
+    // “继续”只继续最早的任务；“清理”必须经过用户明确确认，不能静默删恢复材料。
+    if let Some((choice, task)) = incomplete_task_choice(state, language) {
+        if choice == IDYES {
+            if launch_explicit_resume(state, &task, language) {
+                return;
+            }
+            return;
+        }
+        if choice != IDNO {
+            append_gui_log(state, "GUI action cancelled: incomplete task remains");
+            return;
+        }
+        if let Err(error) = cleanup_incomplete_tasks_from_gui(state, language) {
+            append_gui_log(
+                state,
+                &format!("GUI action blocked: incomplete task cleanup failed: {error}"),
+            );
+            show_message(
+                state.root,
+                &error,
+                if language == Language::English {
+                    "Cleanup failed"
+                } else {
+                    "清理失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
     }
     let btn_task = GetDlgItem(state.root, ID_CREATE_TASK as i32);
     let current_btn_text = get_text(btn_task);
