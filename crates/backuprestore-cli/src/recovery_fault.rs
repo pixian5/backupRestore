@@ -36,6 +36,7 @@ pub(crate) fn valid(value: &str) -> bool {
             | "cleanup-payload"
             | "success-before"
             | "success-after"
+            | "entry-fields"
     ) && (matches!(mode, "error" | "error-once" | "hold" | "reboot")
         || point == "apply" && mode == "disk-full")
 }

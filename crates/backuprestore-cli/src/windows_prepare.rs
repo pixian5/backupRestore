@@ -872,56 +872,88 @@ fn prepare_payload(
     // 失败（报「指定的设备无效」，对象状态经 /enum 核验完全正确；换个进程立刻重试就成功）。
     // 而建条目只需要「镜像卷上有一个合法 WIM」——干净的注册 WIM 副本就够。
     // 一次性启动留到载荷注入并拷贝完成之后再武装（此时才允许人重启进来）。
-    let mut boot_entry = crate::boot_entry::create_entry(
-        &staged,
-        &re_staging.boot_sdi,
-        &re_staging.volume,
-        task_dir.as_path(),
-        &task.task_id,
-        log,
-    )?;
-    crate::boot_entry::copy_into_staging(
-        &staged,
-        &re_staging.boot_sdi,
-        &re_staging.volume,
-        &task.task_id,
-        log,
-    )?;
-    let staged_arg = staged.to_string_lossy().into_owned();
-    let mount_arg = mount.to_string_lossy().into_owned();
-    run_logged(
-        "dism.exe",
-        &[
-            "/Mount-Image",
-            &format!("/ImageFile:{staged_arg}"),
-            "/Index:1",
-            &format!("/MountDir:{mount_arg}"),
-        ],
-        log,
-    )?;
-    let result = winre_payload::inject_winre_payload(&mount, &payload);
-    if let Err(error) = result {
-        let _ = run_logged(
+    // ★ 问题 11：这一段（建 BCD 条目 → 载荷覆盖 → DISM 挂载/注入 → 卸载提交）
+    // 失败时以前直接 `?` 返回，界面上是"准备失败"，机器上却可能留着本任务的
+    // BCD 条目、镜像卷载荷，`boot-entry.json` 还指向它们，下一次重启进的不是
+    // 用户期待的东西。现在整段收进闭包，任一失败都先做统一补偿再返回原错误——
+    // 绝不为了"看起来干净"而把补偿失败盖成成功。
+    let boot_entry = (|| -> Result<crate::boot_entry::ReBootEntry, TaskError> {
+        let boot_entry = crate::boot_entry::create_entry(
+            &staged,
+            &re_staging.boot_sdi,
+            &re_staging.volume,
+            task_dir.as_path(),
+            &task.task_id,
+            log,
+        )?;
+        crate::boot_entry::copy_into_staging(
+            &staged,
+            &re_staging.boot_sdi,
+            &re_staging.volume,
+            &task.task_id,
+            log,
+        )?;
+        let staged_arg = staged.to_string_lossy().into_owned();
+        let mount_arg = mount.to_string_lossy().into_owned();
+        run_logged(
+            "dism.exe",
+            &[
+                "/Mount-Image",
+                &format!("/ImageFile:{staged_arg}"),
+                "/Index:1",
+                &format!("/MountDir:{mount_arg}"),
+            ],
+            log,
+        )?;
+        let result = winre_payload::inject_winre_payload(&mount, &payload);
+        if let Err(error) = result {
+            let _ = run_logged(
+                "dism.exe",
+                &[
+                    "/Unmount-Image",
+                    &format!("/MountDir:{mount_arg}"),
+                    "/Discard",
+                ],
+                log,
+            );
+            return Err(error);
+        }
+        run_logged(
             "dism.exe",
             &[
                 "/Unmount-Image",
                 &format!("/MountDir:{mount_arg}"),
-                "/Discard",
+                "/Commit",
             ],
             log,
-        );
-        return Err(error);
+        )?;
+        thread::sleep(Duration::from_secs(5));
+
+        Ok(boot_entry)
+    })();
+    if let Err(error) = &boot_entry {
+        // 真正执行统一补偿：撤销本任务已建的启动项、载荷，并把 BCD 恢复到
+        // 建条目之前导出的字节级快照。补偿本身失败时一并报出，不掩盖原错误。
+        append_log(
+            log,
+            &format!(
+                "[ERROR] preparation failed after boot entry was created ({error}); compensating"
+            ),
+        )?;
+        if let Err(cleanup) = compensate_prepare_failure(task_dir.as_path(), efi, log) {
+            append_log(
+                log,
+                &format!(
+                    "[ERROR] compensation incomplete after preparation failure ({error}); {cleanup}"
+                ),
+            )?;
+        }
+        return Err(err(&format!(
+            "preparation failed: {error}; boot entry and payload rolled back (see prepare.log)"
+        )));
     }
-    run_logged(
-        "dism.exe",
-        &[
-            "/Unmount-Image",
-            &format!("/MountDir:{mount_arg}"),
-            "/Commit",
-        ],
-        log,
-    )?;
-    thread::sleep(Duration::from_secs(5));
+    let mut boot_entry = boot_entry.expect("checked above");
+
     let staged_hash = sha256_file(&staged)?;
     let manifest = PayloadManifest {
         task_id: task.task_id.clone(),
@@ -961,13 +993,37 @@ fn prepare_payload(
     // 拿活载荷比对这份过期记录必然不符，整条续跑路被封死
     // （2026-09-30 实机：stage 卡在 image-applied/75，日志
     //  "payload WIM hash differs from the prepared one; refusing to re-arm"）。
-    crate::boot_entry::refresh_payload_hash(&mut boot_entry, task_dir.as_path(), log)?;
-    // 武装是「人可以重启了」的唯一开关，放在这一步：载荷已注入、已覆盖到镜像卷、
-    // 簿记已落盘。v1.7.14 之前它藏在 create_entry 里无条件执行，导致
-    // `--no-reboot` 也会改 bootmgr 的 bootsequence（实机证据见 boot_entry::arm_one_shot）。
-    crate::boot_entry::arm_one_shot(&boot_entry, log)?;
-    store.write_transition(task, backuprestore_core::Stage::BootRequested)?;
-    write_status_env(&task_dir, task, "boot-requested")?;
+    // ★ 问题 11（续）：`arm_one_shot` 之后同样要补偿。这一段失败比以前更危险——
+    // 武装成功但状态落盘失败时，机器带着一个一次性启动请求重启，却没有任何
+    // 持久状态说明这是谁设的，等于把人推进一个没人负责的任务环境。
+    // 因此这里也必须统一撤销（清 bootsequence、删对象、删载荷、恢复 BCD 快照）。
+    let armed = (|| -> Result<(), TaskError> {
+        crate::boot_entry::refresh_payload_hash(&mut boot_entry, task_dir.as_path(), log)?;
+        // 武装是「人可以重启了」的唯一开关，放在这一步：载荷已注入、已覆盖到镜像卷、
+        // 簿记已落盘。v1.7.14 之前它藏在 create_entry 里无条件执行，导致
+        // `--no-reboot` 也会改 bootmgr 的 bootsequence（实机证据见 boot_entry::arm_one_shot）。
+        crate::boot_entry::arm_one_shot(&boot_entry, log)?;
+        store.write_transition(task, backuprestore_core::Stage::BootRequested)?;
+        write_status_env(&task_dir, task, "boot-requested")?;
+        Ok(())
+    })();
+    if let Err(error) = armed {
+        append_log(
+            log,
+            &format!("[ERROR] failed while arming the boot request ({error}); compensating"),
+        )?;
+        if let Err(cleanup) = compensate_prepare_failure(task_dir.as_path(), efi, log) {
+            append_log(
+                log,
+                &format!(
+                    "[ERROR] compensation incomplete after arming failure ({error}); {cleanup}"
+                ),
+            )?;
+        }
+        return Err(err(&format!(
+            "preparation failed while arming the boot request: {error}; rolled back (see prepare.log)"
+        )));
+    }
     if options.test_fault.as_deref() == Some("power-loss-window") {
         append_log(
             log,
@@ -976,37 +1032,24 @@ fn prepare_payload(
         return Ok(());
     }
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
-        // 重启请求失败：撤销这条一次性启动与自建条目，别把机器留在
-        // 「下次开机进任务 RE，但没有人会来跑」的状态。
-        match crate::boot_entry::ReBootEntry::read(task_dir.as_path()) {
-            Ok(Some(entry)) => {
-                if let Err(cleanup_error) = crate::boot_entry::disarm(&entry, log) {
-                    append_log(
-                        log,
-                        &format!(
-                            "[ERROR] shutdown failed: {error}; RE rollback failed: {cleanup_error}; staged files or BCD objects may remain"
-                        ),
-                    )?;
-                }
-            }
-            Ok(None) => append_log(
-                log,
-                "[WARN] shutdown rollback: RE entry record missing; cleanup cannot be verified",
-            )?,
-            Err(read_error) => append_log(
-                log,
-                &format!("[ERROR] shutdown rollback: cannot read RE entry: {read_error}"),
-            )?,
-        }
-        if let Err(rollback_error) = rollback_boot_request(&task_dir, efi, log) {
+        // 重启请求失败：别把机器留在「下次开机进任务 RE，但没有人会来跑」的状态。
+        // 走与其它准备失败点**同一个**补偿路径（清 bootsequence → 删对象 →
+        // 删载荷 → 恢复 BCD 快照），避免两处清理逻辑各自漂移。
+        append_log(
+            log,
+            &format!("[ERROR] shutdown request failed ({error}); compensating"),
+        )?;
+        if let Err(cleanup) = compensate_prepare_failure(task_dir.as_path(), efi, log) {
             append_log(
                 log,
                 &format!(
-                    "[ERROR] shutdown failed: {error}; boot request rollback failed: {rollback_error}"
+                    "[ERROR] compensation incomplete after shutdown failure ({error}); {cleanup}"
                 ),
             )?;
         }
-        return Err(error);
+        return Err(err(&format!(
+            "shutdown request failed: {error}; boot entry and payload rolled back (see prepare.log)"
+        )));
     }
     Ok(())
 }
@@ -1354,6 +1397,83 @@ fn snapshot_raw_bcd(
             .status();
     }
     result
+}
+
+/// 准备失败的**统一补偿**：撤销本任务已产生的全部副作用。
+///
+/// ## 为什么需要它
+///
+/// 此前只有 `shutdown.exe` 那一步失败会走回滚。`create_entry`（写 BCD 对象）、
+/// DISM 挂载/注入、载荷覆盖到镜像卷、`refresh_payload_hash`、`arm_one_shot`、状态落盘
+/// 这几处失败都是直接 `?` 返回：界面报告"准备失败"，而机器上可能留着本任务的
+/// BCD 条目、一次性启动请求，或镜像卷上的载荷文件，`boot-entry.json` 还指向它们。
+/// 下一次重启进的不是用户期待的东西。
+///
+/// ## 补偿顺序与安全边界
+///
+/// 1. **先清一次性启动请求**：反向保证机器不会重启进任务 RE；
+/// 2. **删 BCD 对象**：只删本任务记录在案的那两个 GUID，绝不用描述字符串匹配——
+///    那会误删别的任务的对象（`{default}` 的事故就是这么来的）；
+/// 3. **删镜像卷上的载荷**：按任务 ID 定位，只删本任务那一份；
+/// 4. **恢复 BCD 快照**：`create_entry` 之前导出过字节级快照，此时才回到基线。
+///
+/// 只清理**已核验属于本任务**的对象；每一步都回读验证，任何一步失败都会
+/// 带着完整错误继续，最后汇总成一个 `Result`——补偿失败绝不能静默变成
+/// "准备失败但机器是干净的"。
+///
+/// 幂等：没有簿记（副作用还没建到那一步）时只做它能做的部分并返回成功。
+#[cfg(windows)]
+fn compensate_prepare_failure(
+    task_dir: &Path,
+    efi: &VolumeIdentity,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let mut problems: Vec<String> = Vec::new();
+    let record = crate::boot_entry::ReBootEntry::read(task_dir)?;
+    let residue = crate::boot_record::ResidueRecord::read(task_dir)?;
+    if record.is_none() && residue.is_none() {
+        // 副作用尚未进展到建 BCD 对象；这里仍要尝试恢复 BCD 快照，
+        // 因为导出快照本身不写 BCD，但没有对象也就没有可撤销的东西。
+        append_log(
+            log,
+            "preparation compensation: no boot entry recorded; nothing to disarm",
+        )?;
+    }
+    // 正式簿记：走完整 disarm（清启动请求 → 删对象 → 删本任务载荷）。
+    if let Some(entry) = record.as_ref()
+        && let Err(error) = crate::boot_entry::disarm(entry, log)
+    {
+        problems.push(format!("boot entry disarm: {error}"));
+    }
+    // 半成品簿记：它的 `device`/`osdevice` 从未写成功，载荷也未必已就位，
+    // 因此**只**删那两个 BCD 对象，不去核验启动链或删载荷——否则 disarm 会在
+    // 载荷校验处报错，把"对象其实已经删掉了"说成补偿失败。
+    if let Some(entry) = residue.as_ref() {
+        if let Err(error) =
+            crate::boot_entry::remove_entry_objects(&entry.loader_guid, &entry.devopts_guid, log)
+        {
+            problems.push(format!("residue objects removal: {error}"));
+        }
+        match crate::boot_record::ResidueRecord::clear(task_dir) {
+            Ok(()) => append_log(log, "preparation compensation: residue record cleared")?,
+            Err(error) => problems.push(format!("residue record cleanup: {error}")),
+        }
+    }
+    if let Err(error) = rollback_boot_request(task_dir, efi, log) {
+        problems.push(format!("BCD snapshot restore: {error}"));
+    }
+    if problems.is_empty() {
+        append_log(
+            log,
+            "preparation compensation: all task-owned side effects undone and verified",
+        )?;
+        Ok(())
+    } else {
+        Err(TaskError::Invalid(format!(
+            "preparation compensation incomplete: {}",
+            problems.join("; ")
+        )))
+    }
 }
 
 fn rollback_boot_request(

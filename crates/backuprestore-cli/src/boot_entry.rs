@@ -34,16 +34,7 @@ use crate::windows_prepare::ensure_volume_mounted;
 use crate::boot_cleanup::RE_STAGING_DIR;
 /// 任务目录里记录「本次自建启动项」的簿记文件名。
 const ENTRY_RECORD: &str = "boot-entry.json";
-/// 半成品条目的簿记文件名。
-///
-/// 刻意**与 [`ENTRY_RECORD`] 分开**：`create_entry` 在字段写入全部重试失败后会保留
-/// 已建的两个 BCD 对象供诊断（见那里的 KEEP 分支），但那两个对象的 `device`/`osdevice`
-/// 从未成功写入。若把它记进 `boot-entry.json`，下一次 `create_entry` 的"复用已有条目"
-/// 分支就会把这个**字段不全的条目**当成可用条目，`arm_one_shot` 随后武装它，机器
-/// 下次开机会进一个指不到载荷的启动项。记到独立文件里，既让统一补偿能按精确 GUID
-/// 清掉它（不靠描述字符串匹配，避免误删别的任务的对象），又不会被复用分支看见。
-const ENTRY_RESIDUE: &str = "boot-entry-residue.json";
-/// 一次性 `bootsequence` 只设在 bootmgr 上；绝不写 default / displayorder / timeout。
+
 const BOOTMGR: &str = "{bootmgr}";
 /// 目标系统自建条目在 BCD 里的描述前缀（便于人工排查与清理）。
 const ENTRY_DESCRIPTION: &str = "BackupRestore task RE";
@@ -88,31 +79,19 @@ impl ReBootEntry {
         write_json_atomic(Self::record_path(task_dir), self)
     }
 
-    fn residue_path(task_dir: &Path) -> PathBuf {
-        task_dir.join(ENTRY_RESIDUE)
-    }
-
-    /// 读取半成品条目簿记（见 [`ENTRY_RESIDUE`]）；没有则返回 `None`。
-    /// 统一补偿用它按精确 GUID 清理 `create_entry` 保留下来的对象。
-    pub(crate) fn read_residue(task_dir: &Path) -> Result<Option<Self>, TaskError> {
-        let path = Self::residue_path(task_dir);
-        if !path.is_file() {
-            return Ok(None);
-        }
-        read_json(path).map(Some)
-    }
-
-    /// 落盘半成品条目簿记。**不写 [`ENTRY_RECORD`]**，以免被"复用已有条目"分支当成可用条目。
-    pub(crate) fn write_residue(&self, task_dir: &Path) -> Result<(), TaskError> {
-        write_json_atomic(Self::residue_path(task_dir), self)
-    }
-
-    /// 补偿成功后清掉半成品簿记；文件不存在视为已清理。
-    pub(crate) fn clear_residue(task_dir: &Path) -> Result<(), TaskError> {
-        match fs::remove_file(Self::residue_path(task_dir)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
+    /// 转成半成品簿记，供统一补偿按精确 GUID 清理。
+    ///
+    /// 类型刻意不同（`boot_record::ResidueRecord` 而非本类型）：正式簿记会被
+    /// "复用已有条目"分支消费，半成品不会；让这个区别在编译期就成立。
+    /// 该模块是跨平台的，所以这些簿记语义的单测在 macOS 上也会跑。
+    pub(crate) fn to_residue(&self) -> crate::boot_record::ResidueRecord {
+        crate::boot_record::ResidueRecord {
+            task_id: self.task_id.clone(),
+            loader_guid: self.loader_guid.clone(),
+            devopts_guid: self.devopts_guid.clone(),
+            wim_volume: self.wim_volume.clone(),
+            wim_path: self.wim_path.clone(),
+            created: self.created.clone(),
         }
     }
 }
@@ -396,6 +375,9 @@ pub fn create_entry(
     bcd_object_exists(&devopts, log)?;
     bcd_object_exists(&loader, log)?;
     let finish = || -> Result<(), TaskError> {
+        // 显式验收注入点：让字段写入块整体失败，从而走到下面保留对象 + 落半成品
+        // 簿记 + 统一补偿的路径。正常任务不配置该值，`checkpoint` 直接返回。
+        crate::recovery_fault::checkpoint("entry-fields", log)?;
         let letter = ensure_volume_mounted(wim_volume, 'R', log)?;
         let spec = crate::text_parsing::ramdisk_spec(&wim_path, &devopts);
         bcd_write(
@@ -464,7 +446,7 @@ pub fn create_entry(
             wim_sha256: wim_sha256.clone(),
             created: chrono::Utc::now().to_rfc3339(),
         };
-        let note = match residue.write_residue(task_dir) {
+        let note = match residue.to_residue().write(task_dir) {
             Ok(()) => "recorded for compensation".to_string(),
             // 簿记写不下去不能掩盖原始错误，但必须明确说出"这两个对象没人认得了"。
             Err(write_error) => format!("RESIDUE RECORD FAILED: {write_error}"),
@@ -648,11 +630,18 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
 /// 「先清 bootsequence 再删对象」顺序很重要：反过来的话，若中途失败，
 /// 机器会带着一个指向不存在对象的一次性启动重启。
 #[cfg(windows)]
-pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
-    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "disarm loader")
+/// 清掉本任务的一次性启动请求，并删除它建的两个 BCD 对象，最后枚举回读确认。
+///
+/// `disarm` 与准备期统一补偿的残留分支共用这一步。抽出是因为两者的**安全边界
+/// 必须逐字一致**：只按精确 GUID 删，绝不用描述字符串匹配（那会误删别的任务的
+/// 对象）；别人的 `bootsequence` 一律不碰。
+#[cfg(windows)]
+pub fn remove_entry_objects(loader: &str, devopts: &str, log: &Path) -> Result<(), TaskError> {
+    let loader = crate::text_parsing::require_guid(loader, "remove loader")
         .map_err(|message| crate::err(&message))?;
-    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "disarm device options")
+    let devopts = crate::text_parsing::require_guid(devopts, "remove device options")
         .map_err(|message| crate::err(&message))?;
+
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed == loader {
         bcd(&["/deletevalue", BOOTMGR, "bootsequence"])?;
@@ -677,6 +666,16 @@ pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         return Err(crate::err("RE BCD objects still exist after cleanup"));
     }
     crate::append_log(log, "new boot channel: BCD objects removed and verified")?;
+
+    Ok(())
+}
+
+pub fn disarm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
+    let loader = crate::text_parsing::require_guid(&entry.loader_guid, "disarm loader")
+        .map_err(|message| crate::err(&message))?;
+    let devopts = crate::text_parsing::require_guid(&entry.devopts_guid, "disarm device options")
+        .map_err(|message| crate::err(&message))?;
+    remove_entry_objects(&loader, &devopts, log)?;
 
     crate::recovery_fault::checkpoint("cleanup-objects", log)?;
     // 启动簿记仍保存桌面盘符，不能传给优先信任缓存盘符的 ensure_volume_mounted。

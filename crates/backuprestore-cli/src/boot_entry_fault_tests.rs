@@ -85,5 +85,32 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     disarm(&entry, &log)?;
     assert_eq!(baseline, bcd(&["/enum", "all", "/v"])?);
     println!("FAULT_PASS cleanup-compensation-failure: retry succeeded; baseline BCD restored");
+
+    // 问题 11：字段写入失败时必须留下半成品簿记，且统一补偿能据此清掉那两个对象。
+    // 此前这两个 GUID 只出现在日志文本里，没有任何代码认得它们——界面上是
+    // "准备失败"，机器上却静静留着两个 device/osdevice 从未写成功的 BCD 对象。
+    crate::recovery_fault::configure(Some("acceptance:entry-fields:error"), &dir);
+    let kept = create_entry(
+        &original.join("stage/Winre.wim"),
+        &sdi,
+        &volume,
+        &dir,
+        &task_id,
+        &log,
+    );
+    assert!(kept.is_err(), "字段写入注入错误必须让建条目失败");
+    let residue = crate::boot_record::ResidueRecord::read(&dir)?
+        .ok_or_else(|| crate::err("失败后必须留下半成品簿记，否则没人认得那两个对象"))?;
+    assert_eq!(residue.task_id, task_id);
+    assert!(crate::text_parsing::is_guid(&residue.loader_guid));
+    assert!(crate::text_parsing::is_guid(&residue.devopts_guid));
+    assert!(
+        !bcd(&["/enum", "all", "/v"])?.contains(&residue.loader_guid),
+        "注入失败发生在建对象之前，不应留下条目"
+    );
+    println!("FAULT_PASS entry-field-failure: residue recorded with exact GUIDs");
+    crate::recovery_fault::configure(None, &dir);
+    crate::boot_record::ResidueRecord::clear(&dir)?;
+    assert_eq!(baseline, bcd(&["/enum", "all", "/v"])?);
     Ok(())
 }

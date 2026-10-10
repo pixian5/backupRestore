@@ -1117,7 +1117,6 @@ pub(crate) fn same_volume(left: &str, right: &str) -> bool {
     }
 }
 
-
 /// 取证/日志文件在 ESP 上的完整路径，基于**已核验的卷根**。
 ///
 /// `volume_root` 可以是 verbatim 卷路径（`\\?\Volume{GUID}\`）或带盘符的根
@@ -2142,7 +2141,6 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         let msg = "正在备份系统分区";
         assert_eq!(decode_windows_bytes(msg.as_bytes()), msg);
     }
-
 
     #[test]
     fn mountvol_listing_reports_volume_presence_from_l_not_s_exit_code() {

@@ -41,6 +41,10 @@ pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 mod boot_cleanup;
 #[cfg(windows)]
 mod boot_entry;
+/// 半成品启动项簿记：**跨平台**（`boot_entry` 是 Windows-only，其单测在 macOS 上
+/// 一次都不编译）。这里放纯数据与文件 I/O，让簿记语义有本机单测兜底。
+#[cfg(any(windows, test))]
+mod boot_record;
 #[cfg(windows)]
 mod native_gui;
 #[cfg(windows)]
