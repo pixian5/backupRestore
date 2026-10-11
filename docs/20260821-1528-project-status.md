@@ -3,13 +3,15 @@
 更新时间：2026-09-29
 当前开发版本：**`1.7.10`**（Cargo.toml×2 与 VERSION 已同步；产物 `BackupRestore.exe` = 1,763,840B）
 
+> **历史状态快照，非当前基线。后续结论更正（2026-10-11）**：下方 2026-09-27 项目符号将“任务副本 + BCD 重定向”整体判为 PoC 证伪，后来已被 09-29 PoC 修正。早期失败实验针对直接修改 ReAgent 登记对象、recoverysequence 或重注册等变体；后续 PoC 证明复制已注册 WinRE 条目后改指镜像卷 WIM 可行，产品再以自有任务 BCD 对象实现一次性启动。2.2.2 验收覆盖任务载荷启动和数据卷 `restore-existing` 链路；系统镜像 `BCDBoot` 不在该轮验收范围。当前状态见根 README 与文档索引顶部。
+
 > - **v1.7.10（2026-09-29）：WinRE 终态写回目标修错 + 桌面重注册收尾，测试卷实机闭环 PASS**——根因：迁出任务的 `RECOVERY_*` 指向 RE 暂存卷，终态把干净原件写到了暂存卷，而家卷（注册位真正所在）自 `reagentc /disable` 后再没有代码写文件 → 日志打印成功、目录却空着；且 `finalize_evacuated_winre` 被 `if finalize_success` 挡住（真实 WinRE 入口该参数恒为 false）成死代码。修复=新增 `WINRE_HOME_*` 家卷身份 + WinRE 内写回家卷并落「待回家」标记 + 桌面 `reagentc` 重注册（用 `/info` 的 `harddiskN\partitionM` 复核）+ 暂存卷回收 + 新 CLI `winre-rehome`。产物 1,763,840B / `9077e5e5…a2bd`，73 单测全绿。详见 docs/20260929-1035-winre-finalize-wrote-to-scratch-not-home.md。
 
 > **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [20260927-2015-winre-task-wim-phase2.md](20260927-2015-winre-task-wim-phase2.md) + [20260927-1047-winre-payload-and-p0-fix.md](20260927-1047-winre-payload-and-p0-fix.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >
 > 2026-09-27 关键事实速览：
 > - v1.7.6：WinRE 载荷更新 + F1/F3 第一段拒绝已交付（详见上述两文档）；
-> - **阶段 2 PoC 已完成并证伪「任务副本 + BCD 重定向」**：WinRE 强校验启动 ramdisk 路径必须等于 ReAgent 注册位置，共享 osloader 改路径 / 克隆对象 / recoverysequence 自洽 / reagentc /setreimage 四条路全部被拒（对照实验证明机制本身正常）；
+> - **当时的阶段 2 PoC 判读（后续已更正）**：早期直接修改 ReAgent 登记对象、recoverysequence 与重注册等实验变体未能启动；当时将其过度概括为任务副本 + BCD 整体不可行。后续 09-29 PoC 验证复制已注册 WinRE 条目后改指镜像卷 WIM 可行，见本文件顶部更正说明；
 > - **v1.7.7 方案 D「捕获前换回干净原件」已落地（代码 + 单测）+ 2026-09-28 实机闭环验证通过**：离线备份源 == WinRE 宿主不再被拒，捕获前把源卷注册 WIM 覆写回干净原件并校验哈希，一处修复同时解 F1/F3 两个 P0；VM 内以 P: 作承载 RE 的卷跑离线备份，prepare 无 F3 拒绝→重启 WinRE 捕获 18.9GB 镜像→挂载抽检镜像内 `\Recovery\WindowsRE\Winre.wim` 哈希 == `ORIGINAL_WINRE_SHA256`（1060a552…）→迁回 C: 复原，VM 已恢复干净态；
 > - **v1.7.8（2026-09-28）：注册 WinRE 状态机定型**——确立「注册位单位置双角色只能时间分片」策略，
 >   同时满足「不重启循环 / 断电续跑 / 幂等 / 镜像纯净」四个目标：①**回退** v1.7.7-晚临时加的「进入 WinRE

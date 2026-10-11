@@ -3,6 +3,20 @@
 本文件按主题提供文档作用说明与阅读顺序；包含全部文档的逐项说明见根目录 [文档索引.md](../文档索引.md)。
 产品需求原文在仓库根目录：`Windows 一键系统备份还原 V1——完整开发需求.md`。
 
+## 当前入口（2026-10-11）
+
+仓库版本为 **2.3.1**，本轮只整理文档；产品代码实机验收基线为 **2.3.0**。操作前先看当前进度和待办；历史验收只证明记录中的版本、环境与用例。
+
+| 文档 | 用途 |
+|---|---|
+| [本轮文档过时盘点](20261011-2032-文档过时盘点与整理-GPT-6.md) | 过时内容分类、处置范围和保留边界 |
+| [当前开发进度](20261011-2032-当前开发进度-GPT-6.md) | 文档整理结果与当前代码验收基线 |
+| [下一步待实现](20261011-2032-下一步待实现-GPT-6.md) | 当前未完成事项和推荐顺序 |
+| [2.3.0 产品实机复核](20261011-1940-2.3.0日志弹窗键盘焦点修复与复核-Fable5.md) | 最新产品实机证据；不含本轮文档版本变更 |
+| [PE 作第二系统实验结论](20261011-2140-PE作第二系统实验结论-Fable5.md) | 最新客体验证：纯 WinPE `boot.wim` 不能直接作为 `create-secondary` 的第二系统镜像；目标需要完整 Windows 映像 |
+
+证据优先级：用户最新指令与当前源码 > 对应版本实机证据 > 历史状态文档。新建重要文档使用 YYYYMMDD-HHMM-主题-模型名.md；历史文件名保留以便追溯，不批量改名。
+
 **优先级**：用户最新指令 > 源代码与已保存的实机证据 > 本文档。
 静态检查或历史记录不能替代实机证据——离线条目通过不等于 Windows/WinRE 实机通过。
 
@@ -13,7 +27,7 @@
 
 ---
 
-## 一、当前入口与历史基线
+## 一、历史版本与主题入口
 
 | 文档 | 作用 |
 |---|---|
@@ -47,11 +61,11 @@
 | [PE 实机界面测试报告](20261005-1050-PE实机界面测试-先格式化后谎报成功等五项缺陷-Opus5.md) | 历史实测：真实 PE 界面测试，复现 P0 数据丢失路径并确认四项缺陷 |
 | [2.1.1 当前开发进度](20261005-1050-当前开发进度-Opus5.md) | 详细版：环境隔离、快照清单、用例结果、五项缺陷证据、验证清单与边界 |
 | [2.1.1 下一步待实现](20261005-1050-下一步待实现-Opus5.md) | 详细版：四步修复顺序、改动位置与验收条件、待补实机测试 |
-| [统一决策与 PE 细化](20261001-1102-PE路径同源与系统探测三态化修复方案-Opus5.md) | 当前有效方案：D01～D10、角色矩阵、写许可、问题映射与补充验收；仅设计 |
+| [统一决策与 PE 细化](20261001-1102-PE路径同源与系统探测三态化修复方案-Opus5.md) | 2.0.8 历史设计：D01～D10、角色矩阵、写许可与补充验收；实施状态以当前源码和后续验收为准 |
 | [详细总体方案](可能的问题claude5.md) | W01～W12 唯一工作包体系、T01～T45 待验收设计及发布门槛 |
 | [2.0.8 当前开发进度](20261001-1102-当前开发进度-Opus5.md) | 历史文档整合结果及检查边界；产品代码未修 |
 | [2.0.8 下一步待实现](20261001-1102-下一步待实现-Opus5.md) | 已定决策、实施批次及快照纪律 |
-| [备份还原完整流程](20260930-1925-备份还原完整流程-GPT-6.md) | 当前代码的准备、备份、还原、清理、异常续跑，以及在线/WinRE/预装 PE 差异 |
+| [备份还原完整流程（v1.9.9 历史快照）](20260930-1925-备份还原完整流程-GPT-6.md) | v1.9.9 的准备、备份、还原、清理与入口差异；后续载荷隔离和启动事务已变化，执行前对照当前源码 |
 | [可能的问题GPT6.md](可能的问题GPT6.md) | 2026-10-01：按 2.0.4 代码复核原审查 14 项问题，记录现状、修复方案、验收条件与本轮 2.0.5 检查结果 |
 | [当前开发进度](20261001-1009-当前开发进度-GPT-6.md) | 历史：2.0.5 问题文档交付，区分仍存在、部分修复和原缺陷已修复；未改产品逻辑 |
 | [下一步待实现](20261001-1009-下一步待实现-GPT-6.md) | 历史 2.0.5：写盘安全、失败即停、续跑状态、启动事务和校验策略的实施顺序 |
@@ -60,7 +74,7 @@
 | [2.0.2 当前开发进度](20260930-2232-当前开发进度-DeepSeek-V4.1-Flash.md) | 历史：docs 文件名统一日期前缀与引用同步，产品行为未变 |
 | [2.0.2 下一步待实现](20260930-2232-下一步待实现-DeepSeek-V4.1-Flash.md) | 历史：文档索引抽查及 GUI/整系统/三入口统一策略验收项 |
 | [docs 文件名统一日期前缀](20260930-2232-docs文档统一日期前缀改名-DeepSeek-V4.1-Flash.md) | 本轮改名操作记录：规则、脚本、幂等教训与验证结果 |
-| [20260821-1528-project-status.md](20260821-1528-project-status.md) | 历史项目状态与用户决策；当前实现以最新流程和代码为准 |
+| [20260821-1528-project-status.md](20260821-1528-project-status.md) | v1.7.10 历史状态与用户决策；顶部更正 09-27 阶段性 PoC 判词，当前实现以最新流程和代码为准 |
 | [20260930-1003-当前开发进度.md](20260930-1003-当前开发进度.md) | 当日上午的进度记录：RE 分支完整备份闭环实测、GUI 选择故障及待验边界 |
 | [20260930-1003-下一步待实现.md](20260930-1003-下一步待实现.md) | 当日上午的计划：PE 进度窗口、剩余中断点、历史孤儿 BCD 条目清理 |
 | [20260916-2105-current-status.md](20260916-2105-current-status.md) | 2026-09-16 历史基线，不覆盖后续独立恢复副本方案与最新进度 |
@@ -74,8 +88,8 @@
 |---|---|
 | [20260828-0120-development-execution-protocol.md](20260828-0120-development-execution-protocol.md) | 接到开发/测试/清理任务时必须遵守的执行顺序（先建快照、先验证再部署等硬约束） |
 | [20260821-0918-continuation-handoff.md](20260821-0918-continuation-handoff.md) | 交接说明：后续开发者/AI 的实现边界与执行顺序。不重复记录会变的进度 |
-| [20260926-2337-development-roadmap.md](20260926-2337-development-roadmap.md) | 下一步开发路线图与风险排序。**只是规划，不代表已完成或已验收** |
-| [20260830-0146-testing-plan.md](20260830-0146-testing-plan.md) | 备份/还原的分层测试方案与用例矩阵：离线、准备、WinRE 实机、故障注入 |
+| [20260926-2337-development-roadmap.md](20260926-2337-development-roadmap.md) | v1.7.3 历史路线图；F1/F3 已处理，任务专属副本与自建一次性 BCD 的总体方向后来已实现，旧阶段和接口不可照搬 |
+| [20260830-0146-testing-plan.md](20260830-0146-testing-plan.md) | 历史分层测试方案与用例矩阵；执行前需按当前入口和产品行为复核 |
 | [20260819-2245-implementation-notes.md](20260819-2245-implementation-notes.md) | 实现细节、历史问题与验证边界的补充记录 |
 | [20260825-2004-systematic-audit.md](20260825-2004-systematic-audit.md) | 全项目系统性审计：架构、已修复根因、当前验证边界 |
 
@@ -85,7 +99,7 @@
 
 | 文档 | 作用 |
 |---|---|
-| [20260819-2245-windows-build.md](20260819-2245-windows-build.md) | **Windows ARM64/x64 构建与产物规则**。验收固定在 Win11 ARM64 VM：改代码必须重新编译并启动 GUI 前台检查，macOS 仅离线用途 |
+| [20260819-2245-windows-build.md](20260819-2245-windows-build.md) | 历史 Windows ARM64/x64 构建说明；旧构建流程已过时，当前入口以根 README 构建节为准 |
 | [20260825-2309-backuprestore-pe.md](20260825-2309-backuprestore-pe.md) | `BackupRestorePE.wim` 自定义 PE 的构建记录与产物说明 |
 | [20260926-2337-compression-options.md](20260926-2337-compression-options.md) | 压缩选项的收敛结论与当前产品行为边界 |
 
@@ -96,9 +110,9 @@
 | 文档 | 作用 |
 |---|---|
 | [20260927-1047-winre-payload-and-p0-fix.md](20260927-1047-winre-payload-and-p0-fix.md) | **v1.7.6**：WinRE 载荷从 v1.7.3 更新到 v1.7.6（测试盘重建 → 快照授权写回 → WinRE 实跑验证），F1/F3 两个 P0 的第一段拒绝（变更清单、测试盘验证、最终验收检查项、回滚方案、VM 提权执行通道经验） |
-| [20260927-2015-winre-task-wim-phase2.md](20260927-2015-winre-task-wim-phase2.md) | **阶段 2（路线已定，链路已验证）**：2A 原方案被证伪（WinRE 强校验 ramdisk 路径==注册位置，四路全部拒绝）；servicing 会静默冲掉载荷；**结论 = 注入副本必须坐进注册位置（为启动）+ Capture 排除/换回干净原件（为干净）+ 任务后离线重注册**；第 9 节为 WinRE 内 PoC：**WinRE 里没有 reagentc.exe，必须调用目标 OS 自带的 `%TARGET%\Windows\System32\reagentc.exe` 做 `/setreimage` + `/enable /osguid`**，`/disable` 在 PE 不支持、`bcdboot` 不会建 recoverysequence；含 RE/PE 严格区分、落地配方、bcdboot 事故教训、新候选方案 D |
+| [20260927-2015-winre-task-wim-phase2.md](20260927-2015-winre-task-wim-phase2.md) | 早期调查与 PoC 前历史结论；“注入注册位置、Capture 前换回原件、离线重注册”路线后来被镜像卷任务副本 + 自建 BCD 通道取代，按后续 PoC 与当前源码判断 |
 | [20260927-1005-winre-payload-and-p0-recon.md](20260927-1005-winre-payload-and-p0-recon.md) | 上一条的**勘察报告**：载荷现状盘点、F1/F3 触发条件与根因、Q1~Q7 待确认项（只读，未改任何代码/载荷/启动项） |
-| [20260925-1037-winre-repair-implementation-plan.md](20260925-1037-winre-repair-implementation-plan.md) | v1.6.8 审查后的**详细实施方案**（分阶段改动、函数清单、启动事务、故障注入、验收标准）。**仅为待实施方案，不代表已修复** |
+| [20260925-1037-winre-repair-implementation-plan.md](20260925-1037-winre-repair-implementation-plan.md) | v1.6.8 历史实施方案；其中多项缺陷已在后续版本处理，不能作为当前待办或实施合同 |
 | [20260916-2105-winre-payload-contract.md](20260916-2105-winre-payload-contract.md) | WinRE 与 WinPE 模板分离、载荷契约与回归防线（v1.6.0） |
 | [20260913-0505-winre-autostart-pitfalls.md](20260913-0505-winre-autostart-pitfalls.md) | WinRE 恢复路线端到端跑通时踩的坑（2026-09-13 实机验证） |
 | [20260916-0759-winre-bcd-loop-fix.md](20260916-0759-winre-bcd-loop-fix.md) | BCD 丢失导致引导循环的修复过程与 WinRE 引导结论 |
@@ -113,9 +127,9 @@
 
 | 文档 | 作用 |
 |---|---|
-| **[20260927-0016-vm-input-control-guide.md](20260927-0016-vm-input-control-guide.md)** | **操作 VM 的操作手册（最新，日常用这个）**：① 鼠标键盘**注入**——四条通道选择矩阵、全部命令、坐标系换算、生效判据、故障排查；② **提权命令通道**——`prlctl exec` 不加 `--current-user` 即 SYSTEM+管理员，DISM/reagentc/改 `C:\Recovery` 直接干，不用 runas 桥接 |
+| [20260927-0016-vm-input-control-guide.md](20260927-0016-vm-input-control-guide.md) | VM 键鼠与命令通道历史实测手册；GUI 通道、会话和权限结论需按当前环境重新验证，尤其注意 Session 0/1 窗口站隔离；真实鼠标交互尚待补验 |
 | [20260926-2020-vm-click-automation-inventory.md](20260926-2020-vm-click-automation-inventory.md) | VM 内 UI 自动化能力的**资产清单与考古记录**：有哪些脚本、怎么来的、踩过哪些坑。顶部已指向操作手册 |
-| [20260916-0759-operation-channels.md](20260916-0759-operation-channels.md) | 早期操作通道全指南（合并豆包/Trae 经验）。**历史全量记录，部分结论已被 `20260927-0016-vm-input-control-guide.md` 的 2026-09-26 实测更新**（如注入通道选型、DPI 坐标），冲突时以后者为准 |
+| [20260916-0759-operation-channels.md](20260916-0759-operation-channels.md) | 早期操作通道历史记录；其中“唯一权威”、鼠标通道全不可用及权限概括均已过时或不准确，不能作为操作手册 |
 | [20260925-0424-pd26-downgrade-vm-recovery.md](20260925-0424-pd26-downgrade-vm-recovery.md) | PD 27→26.4.2 降级后 VM 卡 UEFI 菜单的**修复手册**（NVRAM 重建、快照、ReAgent.xml 等） |
 | [20260913-0158-vm-boot-repair-newvm.md](20260913-0158-vm-boot-repair-newvm.md) | VM 引导修复的「新建 VM 挂旧盘」方案（2026-09-13） |
 | [20260913-0021-cleanup-dev-residue.md](20260913-0021-cleanup-dev-residue.md) | 开发残留清理清单与测试盘重建步骤 |
@@ -129,7 +143,7 @@
 | [20260928-2310-cleanup-test-volumes-and-disks.md](20260928-2310-cleanup-test-volumes-and-disks.md) | 🧹 测试卷/旧备份清理：删 br.hdd(E:)物理盘+3 个残留快照（device-del 被快照引用挡停机也报错的坑）、格式化 P:/T:、删 10 个旧任务目录；保留 F:c-real.wim 真实备份；含 rb3 真实还原被「目标分区承载 WinRE」防护拦截的记录（待设计迁出→还原→重建注册流程） |
 | [20260928-2330-winre-hosted-restore-solution.md](20260928-2330-winre-hosted-restore-solution.md) | 💡 **还原目标承载 WinRE 的解决方案（v2 已实现·待 VM 验收）**：根因=续跑启动源(Winre.wim 注册位)落在被格式化的 C: 上，掉电后续跑进不了 WinRE；解法=准备层把 payload WinRE 迁出到 RE 暂存卷(默认镜像卷、`--re-scratch-drive` 可改选)并 `reagentc /enable` 指向它→格式化 C: 安全→finalize 时写回干净原件并回收暂存卷；含备份场景澄清(§6.2)、不变量、代码对接点(已落地：windows_prepare.rs evacuate 触发 / main.rs evacuate_registered_winre / winre_role_conflict_at_execution 放宽 / finalize_evacuated_winre)、验证法 |
 | [20260929-1035-winre-finalize-wrote-to-scratch-not-home.md](20260929-1035-winre-finalize-wrote-to-scratch-not-home.md) | 🐛✅ **v1.7.10 修复并实机验证通过「日志宣称注册位已还原、实机 `C:\Recovery\WindowsRE` 却是空目录」**：根因三连——① 迁出任务 env 的 `RECOVERY_*` 指向 RE 暂存卷，终态把干净原件写到了暂存卷、家卷(C:)自 `reagentc /disable` 后没人再写；② `finalize_evacuated_winre` 两个调用点被 `finalize_success` 包住，而真实 WinRE 入口该参数恒为 false → 死代码；③ PE 内做不了 reagentc 重注册(`/disable` rc=50、Enabled 目标 `/setreimage` rc=183、无裸 reagentc)。修复=新增 `WINRE_HOME_*` 家卷身份 + WinRE 内写回家卷并落「待回家」标记 + 桌面 `reagentc` 重注册并用 `/info` 的 `harddiskN\partitionM` 复核 + 复活被 if 挡死的 finalize（且挪到写 Success 之前）；含实机证据与测试卷闭环结果（家卷终态哈希=1060a552…、桌面重注册+暂存卷回收、幂等）；另记录「备份方向迁出闸门是死代码（Plan D 压制 F3 冲突）」等三点待用户裁定 |
-| [20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md](20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md) | 🧪 **PoC 通过：「把原 RE 副本注入后放镜像卷 + 自建 BCD 条目启动」可行**——实机进 PE 并拉起载荷（`SYSTEMROOT=X:\windows`、`Recovery.exe` RC=0），C: 注册位与 BCD 零改动。**修正旧结论**：拦住绕法的不是「ramdisk 路径 == 注册位置」，而是「ReAgent 登记的那个对象 + `reagentc /boottore` 的 bootstatus」；因此迁出/回家/Plan D/F1/F3 那整套机制在新通道里可全部去掉。含 bcdedit 七个坑（`ramdisk=[…],{opts}` 无结尾 `]`、`{ramdiskoptions}` 是 Setup 对象、`/enum all` 不列它、PE 盘符重排等）与五项待验证（断电续跑/BCDBoot 影响/Secure Boot/目标系统 WinRE 语义/纯 PE 形态） |
+| [20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md](20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md) | 🧪 **PoC 通过**：镜像卷上的任务 WinRE 副本可由自建 BCD 条目启动，注册位与原 BCD 保持不变；修正 09-28 阶段性结论，具体实现及尚未验证的边界以当前源码和后续验收记录为准 |
 | [20260929-1730-pe-channel-bcdedit-device-ramdisk-blocker.md](20260929-1730-pe-channel-bcdedit-device-ramdisk-blocker.md) | 🚧 **v1.7.11 PE 式通道阻塞记录**：产品进程内 `bcdedit /set <loader> device ramdisk=…` 稳定报「指定的设备无效」，而同一条命令从 cmd/PowerShell 手工执行立刻成功；诊断电池列出 8 条调用结果（`description`/`path`/`device partition=` 都成功，只有 `device ramdisk=` 被拒），并逐一测量排除 DISM/cwd/调用形态/句柄继承(原生 CreateProcessW bInheritHandles=FALSE)/文件锁/程序名/执行顺序；给出下一步四条排查路径（完整环境对比、Process Monitor、非 Rust 子进程、一次性子进程） |
 | [20260929-2040-ramdisk-spec-root-cause-and-no-reboot-armed.md](20260929-2040-ramdisk-spec-root-cause-and-no-reboot-armed.md) | ✅ **ProcMon 抓出三个真因（v1.7.12/1.7.13/1.7.14）**：① `ramdisk=` 值畸形——`[` 只包卷、`]` 紧跟卷闭合，正确形态 `ramdisk=[F:]\BackupRestoreRE\Winre.wim,{devopts}`，此前被误判成「产品进程上下文」；ProcMon `Process Create` 的 Detail 列 `PID: n, Command line: ...` 是拿真实 argv 的唯一途径，且案例 A 一份 trace 同时含成功与失败，比原计划 A/B 对照更严格；② `{bootmgr}` 知名别名被 `require_guid` 拒（白名单式 `require_identifier`，绝不放宽以免 `{default}` 混入）；③ `create_entry` 无条件 `/bootsequence`，导致 `prepare --no-reboot` 也改 bootmgr（抽成显式 `arm_one_shot`）。另记：`#[cfg(windows)]` 单测在 macOS 不编译正是漏掉 bug 的原因（测试全搬去 `text_parsing.rs`）、宿主磁盘不足会让 `vm-snapshot.sh` 静默失败、SYSTEM 通道 `mountvol /S` 会挂起、`--current-user` 非提权、BCD 删除后须等 60~90 秒再软重启否则对象复活 |
 | [20260929-2130-mountvol-exit-code-liars-and-elevated-channel.md](20260929-2130-mountvol-exit-code-liars-and-elevated-channel.md) | 🎯 **v1.8.0：「S 盘老是自动打开」的直接机制 = `mountvol X: /S` 退出码说谎**。提权会话逐盘符实测：`Z:` 返回 1 但 ESP 已挂上；`Y/X/W` 返回 0 但只是重复挂同一个卷 → 旧代码换下一个盘符重挂 → 自动播放负责"打开"、反复重挂负责"老是"。修复=改用 `mountvol /L` 是否回显卷路径判定（纯函数+单测放 macOS 也编译的模块）、PE 侧 `pe_task_execute()` 收尾统一 `mountvol S: /D`、`letter as u8 as char` 改显式 ASCII 校验。同时**打通用户提权会话通道**（计划任务 `/rl highest /it`），据此**完整主路径首次在产品内跑通**（日志首行 `capturing bcdedit /store S:\EFI\Microsoft\Boot\BCD`、readback 值正确、终态无残留盘符）。附：删完 BCD 对象必须等 90 秒再软重启否则「复活」 |
@@ -171,7 +185,7 @@
 
 ## 八、子目录 `docs/开发方案/`
 
-按阶段拆分的开发方案包（2026-09-26 生成）：
+按阶段拆分的开发方案包（2026-09-26 生成）。以下条目是历史设计快照；阶段 2 的总体方向后来以不同实现落地，部分早期具体变体被实测否定。不要仅按方案文案判断当前状态或直接执行，先核对本文顶部进度与待办及当前源码：
 
 | 文档 | 作用 |
 |---|---|
@@ -194,11 +208,10 @@
 
 ## 九、建议阅读顺序（新接手时）
 
-1. `20260821-1528-project-status.md` —— 现在什么状态
-2. `20260821-1528-verification-matrix.md` —— 哪些真的验证过
-3. `20260828-0120-development-execution-protocol.md` —— 动手前要遵守什么
-4. `20260819-2245-windows-build.md` —— 怎么构建和验收
-5. `20260927-0016-vm-input-control-guide.md` —— 怎么驱动测试 VM
-6. `20260925-1037-winre-repair-implementation-plan.md` —— 当前待实施的改动
+1. 本文顶部“当前入口”里的进度、待办与最新产品实机记录。
+2. `20260930-1925-备份还原完整流程-GPT-6.md` —— v1.9.9 历史代码流程；仅用于追溯设计和比较行为。
+3. `文档索引.md` —— 按主题查找历史设计、专题和验收证据。
+4. `20260828-0120-development-execution-protocol.md` —— 开发和测试操作约束；如与用户最新约束冲突，以最新约束为准。
+5. 构建命令看根 README；VM 操作手册和旧设计方案仅作历史参考，执行前先核对当前环境与源码。
 
 需要排查具体故障时，按目录翻第六节（踩坑）和第四、五节（WinRE / VM 环境）的对应文档。
