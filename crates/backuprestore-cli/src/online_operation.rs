@@ -4,6 +4,7 @@ use backuprestore_core::{BackupMetadata, TaskError, VolumeIdentity, image_metada
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct OnlineOpParams {
     pub operation: String,
@@ -50,8 +51,11 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
             "ONLINE_RESTORE"
         }),
     ));
-    let result = log(&path, "STEP 1/4 校验参数和卷身份；在线操作不修改启动项")
-        .and_then(|()| execute_inner(params, &path));
+    let result = log(
+        &path,
+        "STEP 1/4 校验参数和卷身份；还原到另一 Windows 卷时会格式化并写入引导，但不改动主系统默认启动项",
+    )
+    .and_then(|()| execute_inner(params, &path));
     let mut success = result.is_ok();
     let final_message = match result {
         Ok(()) => "操作完成：命令、回读和副档簿记均已通过".to_string(),
@@ -139,15 +143,6 @@ fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskErr
             )
         }
         "restore-existing" => {
-            // 目标卷若本身就是一个完整的 Windows 安装，在线覆盖等于把一个系统覆盖成另一个系统：
-            // 在线路径不格式化、不修复引导，也没有状态机可在中断后续跑，
-            // 中途失败会留下「覆盖了一半的 Windows」。因此显式拒绝，引导用户走离线 WinRE 链。
-            if crate::pe_safety::target_is_windows_volume(&root)? {
-                return Err(crate::err(
-                    "目标卷包含 Windows 系统：在线还原既不格式化也不修复引导，且中断后无法续跑；\
-                     请改用「进入 Windows RE」离线还原",
-                ));
-            }
             let index: u32 = params
                 .index
                 .parse()
@@ -155,9 +150,15 @@ fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskErr
             if !indexes(image, log_path)?.contains(&index) {
                 return Err(crate::err("restore index missing from WIM"));
             }
+            // 目标若本身是另一个 Windows 卷：完整走 格式化 → 应用 → 修复引导，
+            // 与 PE 入口对齐（目标都是非当前运行的第二系统）。断电风险与 PE 相同——
+            // 第二系统即使中途失败也只是不可启动，主系统仍在，重新还原即可，故不引入状态机。
+            if crate::pe_safety::target_is_windows_volume(&root)? {
+                return restore_to_windows_volume(params, &root, identity, index, log_path);
+            }
             log(
                 log_path,
-                "STEP 2/4 还原镜像（在线覆盖，不格式化、不修复引导）",
+                "STEP 2/4 还原镜像（数据卷在线覆盖，不格式化、不修复引导）",
             )?;
             dism(
                 &[
@@ -191,6 +192,232 @@ fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskErr
         }
         _ => Err(crate::err("unsupported online operation")),
     }
+}
+
+/// 在线还原到一个「本身就是 Windows 卷」的目标：完整执行 格式化 → 应用镜像 → 修复引导，
+/// 与 PE 入口对齐（目标都是非当前运行的第二系统）。断电风险与 PE 相同——
+/// 第二系统即使中途失败也只是不可启动，主系统仍在，重新还原即可，故不引入状态机。
+fn restore_to_windows_volume(
+    params: &OnlineOpParams,
+    _root: &Path,
+    target: VolumeIdentity,
+    index: u32,
+    log_path: &Path,
+) -> Result<(), TaskError> {
+    let image: &Path = Path::new(&params.image_path);
+    let dir = log_path
+        .parent()
+        .ok_or_else(|| crate::err("日志目录缺失"))?;
+    let esp = crate::windows_prepare::esp_identity_without_drive_letter()?;
+    let esp_letter = crate::windows_prepare::ensure_volume_mounted(&esp, 'S', log_path)?;
+    crate::pe_safety::verify_binding(
+        &esp,
+        &crate::windows_prepare::volume_identity(esp_letter)?,
+        true,
+    )?;
+    let store = format!("{esp_letter}:\\EFI\\Microsoft\\Boot\\BCD");
+    log(
+        log_path,
+        "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷",
+    )?;
+    let before = run_bcd_edit(
+        &[
+            "/store".into(),
+            store.clone(),
+            "/enum".into(),
+            "{bootmgr}".into(),
+            "/v".into(),
+        ],
+        dir,
+    )?;
+    let old = crate::parse_boot_manager_state(&before)
+        .ok_or_else(|| crate::err("引导管理器状态未知，拒绝格式化"))?;
+    fs::copy(&store, dir.join("bcd-before"))?;
+    fs::write(dir.join("bootmgr-before.txt"), &before)?;
+
+    let script = crate::diskpart_format_script(target.disk_number, target.partition_number)?;
+    let script_path = dir.join("format.txt");
+    fs::write(&script_path, script)?;
+    run_capture(
+        "diskpart.exe",
+        &["/s".into(), script_path.to_string_lossy().into_owned()],
+        &cmd_out_file(dir),
+        true,
+    )?;
+    let after = crate::windows_prepare::refresh_identity(&target)?;
+    backuprestore_core::operation_safety::verify_formatted_volume(&target, &after)?;
+    let target_root = PathBuf::from(
+        after
+            .volume_path()
+            .ok_or_else(|| crate::err("目标卷缺少稳定 GUID 路径"))?,
+    );
+    fs::read_dir(&target_root)?;
+
+    log(
+        log_path,
+        "STEP 3/4 应用镜像（DISM /Apply-Image）并校验系统文件",
+    )?;
+    dism(
+        &[
+            "/English".into(),
+            "/Apply-Image".into(),
+            format!("/ImageFile:{}", image.display()),
+            format!("/Index:{index}"),
+            format!("/ApplyDir:{}", target_root.display()),
+            "/CheckIntegrity".into(),
+            "/Verify".into(),
+        ],
+        log_path,
+    )?;
+    for components in [
+        vec!["Windows", "System32", "config", "SYSTEM"],
+        vec!["Windows", "System32", "winload.efi"],
+        vec!["Windows", "System32", "ntoskrnl.exe"],
+    ] {
+        if !crate::pe_safety::probe_file(&target_root, &components)? {
+            return Err(crate::err("系统文件验证失败，不能降级为数据还原成功"));
+        }
+    }
+
+    log(
+        log_path,
+        "STEP 4/4 修复引导（bcdboot，保留主系统默认启动项）",
+    )?;
+    let target_letter = crate::windows_prepare::ensure_volume_mounted(&after, 'T', log_path)?;
+    crate::pe_safety::verify_binding(
+        &after,
+        &crate::windows_prepare::volume_identity(target_letter)?,
+        true,
+    )?;
+    let live = run_bcd_edit(
+        &[
+            "/store".into(),
+            store.clone(),
+            "/enum".into(),
+            "{bootmgr}".into(),
+            "/v".into(),
+        ],
+        dir,
+    )?;
+    if crate::parse_boot_manager_state(&live).as_ref() != Some(&old) {
+        return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
+    }
+    run_capture(
+        "bcdboot.exe",
+        &[
+            format!("{target_letter}:\\Windows"),
+            "/s".into(),
+            format!("{esp_letter}:"),
+            "/f".into(),
+            "UEFI".into(),
+            "/d".into(),
+        ],
+        &cmd_out_file(dir),
+        true,
+    )?;
+    let all = run_bcd_edit(
+        &[
+            "/store".into(),
+            store.clone(),
+            "/enum".into(),
+            "all".into(),
+            "/v".into(),
+        ],
+        dir,
+    )?;
+    let loader = crate::pe_safety::target_loader(&all, target_letter)?;
+    let description = if params.image_name.is_empty() {
+        "BackupRestore 第二系统".to_string()
+    } else {
+        params.image_name.clone()
+    };
+    run_bcd_edit(
+        &[
+            "/store".into(),
+            store.clone(),
+            "/set".into(),
+            loader.clone(),
+            "description".into(),
+            description,
+        ],
+        dir,
+    )?;
+    let mut order = old.display_order.clone();
+    if !order.iter().any(|id| id.eq_ignore_ascii_case(&loader)) {
+        order.push(loader.clone());
+    }
+    let mut args = vec!["/store".into(), store.clone(), "/displayorder".into()];
+    args.extend(order.iter().cloned());
+    run_bcd_edit(&args, dir)?;
+    run_bcd_edit(
+        &[
+            "/store".into(),
+            store.clone(),
+            "/set".into(),
+            "{bootmgr}".into(),
+            "default".into(),
+            old.default.clone(),
+        ],
+        dir,
+    )?;
+    let current = run_bcd_edit(
+        &[
+            "/store".into(),
+            store,
+            "/enum".into(),
+            "{bootmgr}".into(),
+            "/v".into(),
+        ],
+        dir,
+    )?;
+    if crate::parse_boot_manager_state(&current)
+        != Some(crate::BcdBootManagerState {
+            default: old.default.clone(),
+            display_order: order.clone(),
+            resume_object: old.resume_object.clone(),
+            loader_resume_objects: old.loader_resume_objects.clone(),
+        })
+    {
+        return Err(crate::err("第二系统默认项或菜单顺序不符合约定，拒绝报成功"));
+    }
+    // 注：在线（非 PE）入口不调用 winre_registration::repair——该修复拒绝非 PE 环境，
+    // 目标系统的 WinRE 注册应在其自身首次启动后用 reagentc 完成（W09 收敛项）。
+    log(
+        log_path,
+        "引导与启动菜单已写入；系统实际可启动性需另行启动验收",
+    )
+}
+
+/// 单调序号，保证每次外部命令的输出文件互不覆盖，便于事后排查。
+static CMD_SEQ: AtomicU64 = AtomicU64::new(0);
+fn cmd_out_file(dir: &Path) -> PathBuf {
+    let n = CMD_SEQ.fetch_add(1, Ordering::SeqCst);
+    dir.join(format!("cmd-{n}.out"))
+}
+
+/// 执行外部程序并读取其解码后的输出；失败（非零退出）时返回带输出的错误。
+fn run_capture(
+    program: &str,
+    args: &[String],
+    out: &Path,
+    long: bool,
+) -> Result<String, TaskError> {
+    let outcome = crate::windows_command::run_program(
+        program,
+        args,
+        Some(out),
+        if long { INFINITE } else { 60_000 },
+    );
+    let text = crate::pe_operation::decode_output(&fs::read(out)?)?;
+    if !outcome.is_success() {
+        return Err(crate::err(&format!("{program} 失败：{outcome}\n{text}")));
+    }
+    Ok(text)
+}
+
+/// 便捷封装：直接执行 bcdedit 并取回其文本输出。
+fn run_bcd_edit(args: &[String], dir: &Path) -> Result<String, TaskError> {
+    run_capture("bcdedit.exe", args, &cmd_out_file(dir), false)
 }
 
 /// 候选目录保留到事务完全成功；失败留下日志指定的副本，原镜像不受追加/清理失败影响。
