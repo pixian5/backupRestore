@@ -44,6 +44,8 @@ const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
 #[cfg(windows)]
 const GENERIC_READ: u32 = 0x8000_0000;
 #[cfg(windows)]
+const GENERIC_WRITE: u32 = 0x4000_0000;
+#[cfg(windows)]
 const FILE_SHARE_READ: u32 = 0x0000_0001;
 #[cfg(windows)]
 const FILE_SHARE_WRITE: u32 = 0x0000_0002;
@@ -1150,7 +1152,7 @@ pub fn write_json_atomic<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Res
         let handle = unsafe {
             CreateFileW(
                 to.as_ptr(),
-                GENERIC_READ,
+                GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 null_mut(),
                 OPEN_EXISTING,
