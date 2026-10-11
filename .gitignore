@@ -144,3 +144,12 @@ tools/confirm_and_reboot.ps1
 tools/drive_ascii.ps1
 tools/drive_flow_nobom.ps1
 
+Thumbs.db
+node_modules/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
