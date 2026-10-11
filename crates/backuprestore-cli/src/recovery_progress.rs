@@ -60,6 +60,10 @@ const WS_VSCROLL: u32 = 0x0020_0000;
 const WS_TABSTOP: u32 = 0x0001_0000;
 const EM_SETSEL: u32 = 0x00B1;
 const EM_SCROLLCARET: u32 = 0x00B7;
+const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
+const EM_LINESCROLL: u32 = 0x00B6;
+const SB_VERT: i32 = 1;
+const SIF_ALL: u32 = 0x0017;
 const SW_HIDE: i32 = 0;
 const SW_SHOW: i32 = 5;
 const SW_RESTORE: i32 = 9;
@@ -70,9 +74,9 @@ const LOG_VIEW_BYTES: u64 = 512 * 1024;
 /// 详细日志弹窗一次最多渲染的行数，避免超大日志把控件拖慢。
 const LOG_VIEW_LINES: usize = 3000;
 const WM_KEYDOWN: u32 = 0x0100;
-/// F3：无论焦点在哪个控件都能打开详细日志弹窗。
+/// L：无论焦点在哪个控件都能打开详细日志弹窗。
 /// WinRE 里鼠标并非总是可用，必须留一条纯键盘通路。
-const VK_F3: usize = 0x72;
+const VK_L: usize = 0x4C;
 const VK_ESCAPE: usize = 0x1B;
 /// 窗口类背景画刷：`COLOR_WINDOW + 1`。
 ///
@@ -198,6 +202,7 @@ unsafe extern "system" {
     fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
     fn GetParent(hwnd: Hwnd) -> Hwnd;
     fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
+    fn GetScrollInfo(hwnd: Hwnd, bar: i32, info: *mut ScrollInfo) -> i32;
 }
 
 /// Win32 `RECT`：`GetClientRect` 用它回填客户区尺寸，驱动最大化后的控件重排。
@@ -208,6 +213,19 @@ struct Rect {
     top: i32,
     right: i32,
     bottom: i32,
+}
+
+/// Win32 垂直滚动条状态，用于判断详细日志当前是否已经在底部。
+#[repr(C)]
+#[derive(Default)]
+struct ScrollInfo {
+    cb_size: u32,
+    f_mask: u32,
+    n_min: i32,
+    n_max: i32,
+    n_page: u32,
+    n_pos: i32,
+    n_track_pos: i32,
 }
 
 #[link(name = "comctl32")]
@@ -569,6 +587,22 @@ fn read_log_tail_text(shared: &ProgressShared) -> Option<String> {
     Some(text)
 }
 
+/// 判断多行编辑框的垂直滚动条是否已在底部。
+///
+/// 只有用户没有向上翻阅时才允许刷新后自动滚到底；用户拖到中间/顶部时，
+/// 每秒刷新也必须保持他们正在查看的历史位置。
+unsafe fn log_edit_is_at_bottom(edit: Hwnd) -> bool {
+    let mut info = ScrollInfo {
+        cb_size: std::mem::size_of::<ScrollInfo>() as u32,
+        f_mask: SIF_ALL,
+        ..Default::default()
+    };
+    if unsafe { GetScrollInfo(edit, SB_VERT, &mut info) } == 0 {
+        return true;
+    }
+    info.n_page == 0 || info.n_pos.saturating_add(info.n_page as i32) >= info.n_max
+}
+
 /// 刷新详细日志弹窗内容；窗口不存在或已隐藏时直接跳过，避免无谓开销。
 fn refresh_log_window(shared: &ProgressShared) {
     let handle = *shared.log_window.lock().unwrap();
@@ -588,11 +622,25 @@ fn refresh_log_window(shared: &ProgressShared) {
         if edit.is_null() {
             return;
         }
+        // 先记录用户当前滚动位置。只有本来就在底部时才跟随新日志滚动；
+        // 用户向上拖动查看历史后，刷新不能把他们强行拽回末尾。
+        let was_at_bottom = log_edit_is_at_bottom(edit);
+        let old_first_line = SendMessageW(edit, EM_GETFIRSTVISIBLELINE, 0, 0) as i32;
         SetWindowTextW(edit, encode(&text).as_ptr());
-        // 滚到末尾，让最新一行始终可见——"是否卡住"看的就是最后一行还在不在变。
-        let end = text.encode_utf16().count();
-        SendMessageW(edit, EM_SETSEL, end, end as isize);
-        SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+        if was_at_bottom {
+            let end = text.encode_utf16().count();
+            SendMessageW(edit, EM_SETSEL, end, end as isize);
+            SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+        } else {
+            // SetWindowText 可能重置首行，恢复到用户拖动前的首行。
+            let new_first_line = SendMessageW(edit, EM_GETFIRSTVISIBLELINE, 0, 0) as i32;
+            SendMessageW(
+                edit,
+                EM_LINESCROLL,
+                0,
+                (old_first_line - new_first_line) as isize,
+            );
+        }
     }
 }
 
@@ -921,7 +969,7 @@ unsafe extern "system" fn window_proc(
             let button = CreateWindowExW(
                 0,
                 encode("Button").as_ptr(),
-                encode("详细日志(F3)").as_ptr(),
+                encode("详细日志(L)").as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 0,
                 0,
@@ -1106,10 +1154,10 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             let msg_hwnd = (*msg.as_ptr()).hwnd;
             let msg_message = (*msg.as_ptr()).message;
             let msg_wparam = (*msg.as_ptr()).w_param;
-            // 键盘通路：WinRE 下鼠标未必可用，所以 F3 全局打开详细日志、
+            // 键盘通路：WinRE 下鼠标未必可用，所以 L 全局打开详细日志、
             // Esc 关闭弹窗，都在消息循环里拦截——焦点落在哪个子控件上都有效。
             if msg_message == WM_KEYDOWN {
-                if msg_wparam == VK_F3 {
+                if msg_wparam == VK_L {
                     open_log_window(hwnd, shared);
                     continue;
                 }
