@@ -198,6 +198,7 @@ unsafe extern "system" {
     fn MoveWindow(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
     fn DestroyWindow(hwnd: Hwnd) -> i32;
     fn SetForegroundWindow(hwnd: Hwnd) -> i32;
+    fn SetFocus(hwnd: Hwnd) -> Hwnd;
     fn IsWindowVisible(hwnd: Hwnd) -> i32;
     fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
     fn GetParent(hwnd: Hwnd) -> Hwnd;
@@ -727,6 +728,8 @@ unsafe fn open_log_window(main_hwnd: Hwnd, shared: &ProgressShared) {
             ShowWindow(window, SW_RESTORE);
             ShowWindow(window, SW_SHOW);
             SetForegroundWindow(window);
+            // 把焦点交给日志编辑框，否则纯键盘环境下 PageUp/方向键无处可去。
+            SetFocus(GetDlgItem(window, ID_LOG_EDIT));
         }
         refresh_log_window(shared);
         return;
@@ -778,6 +781,8 @@ unsafe fn open_log_window(main_hwnd: Hwnd, shared: &ProgressShared) {
     unsafe {
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
+        // 首次打开同样把焦点落到编辑框，保证键盘可以立刻翻阅日志。
+        SetFocus(GetDlgItem(window, ID_LOG_EDIT));
     }
     refresh_log_window(shared);
 }
@@ -798,10 +803,13 @@ unsafe extern "system" fn log_window_proc(
                 encode("Edit").as_ptr(),
                 null(),
                 // 自动换行：只保留纵向滚动条，长行折行显示而不是横向滚动。
+                // WS_TABSTOP 必须给：WinRE 下可能没有鼠标，编辑框拿不到焦点就
+                // 完全无法用 PageUp/方向键滚动日志，底部吸附也就永远用不上。
                 WS_CHILD
                     | WS_VISIBLE
                     | WS_BORDER
                     | WS_VSCROLL
+                    | WS_TABSTOP
                     | ES_MULTILINE
                     | ES_AUTOVSCROLL
                     | ES_READONLY,
