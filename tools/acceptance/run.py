@@ -14,6 +14,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 VM = 'Windows 11'
 
+# 与 recovery_fault::valid 保持同步；宿主先拒绝拼写错误，避免部署后才发现
+# 验收故障未启用。持续型 error 不允许和真实 --boot 结合，避免无人值守地把
+# 客体卡在 WinRE/Windows 的无限重试里。
+FAULTS = {
+    'acceptance:apply:disk-full', 'acceptance:apply:error',
+    'acceptance:apply:error-once', 'acceptance:bcdboot-running:hold',
+    'acceptance:boot-matrix:hold', 'acceptance:cleanup-matrix:hold',
+    'acceptance:entry-fields:error',
+}
+
+
+def validate_fault(fault, boot):
+    if fault not in FAULTS:
+        raise ValueError(f'未知验收故障 {fault!r}；允许值：{", ".join(sorted(FAULTS))}')
+    if boot and fault.endswith(':error'):
+        raise ValueError('--boot 禁止搭配持续型 error 故障；请使用 error-once 或 hold')
+
 
 def command(args, check=True):
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, errors='replace')
@@ -63,10 +80,19 @@ def main():
     parser.add_argument('--boot', action='store_true')
     parser.add_argument('--target-guid', default='{950bd694-9a12-43e5-ad52-98d04672091c}')
     parser.add_argument('--system-image', action='store_true')
+    parser.add_argument('--root-relative', default=None,
+                        help='客体工作卷上的相对目录（默认 BRRE-219-20261009\\<case>）')
     parser.add_argument('--checkpoint')
     args = parser.parse_args()
     if not re.fullmatch('[a-z0-9-]+', args.case) or not re.fullmatch('[a-z0-9-]+', args.run):
         parser.error('名称只允许小写字母、数字和连字符')
+    try:
+        validate_fault(args.fault, args.boot)
+    except ValueError as error:
+        parser.error(str(error))
+    root_relative = args.root_relative or f'BRRE-219-20261009\\{args.case}'
+    if not re.fullmatch(r'[A-Za-z0-9_.\\-]+', root_relative) or root_relative.startswith('\\'):
+        parser.error('--root-relative 只允许客体工作卷内的相对目录')
     evidence = ROOT / '.test-artifacts' / args.run / args.case
     evidence.mkdir(parents=True, exist_ok=True)
     if args.action == 'snapshot':
@@ -113,7 +139,7 @@ def main():
         config = {'case': args.case, 'fault': args.fault, 'boot': args.boot, 'systemImage': args.system_image,
                   'targetGuid': args.target_guid, 'workspaceGuid': '{0e68475f-4890-43f3-ab85-75e8339116ac}',
                   'imageGuid': '{f0753766-30a4-410e-944f-38d139113634}',
-                  'rootRelative': f'BRRE-219-20261009\\{args.case}', 'exeSha256': hashlib.sha256(exe.read_bytes()).hexdigest(),
+                  'rootRelative': root_relative, 'exeSha256': hashlib.sha256(exe.read_bytes()).hexdigest(),
                   'evidence': share + '\\' + str(evidence.relative_to(ROOT)).replace('/', '\\')}
         config_file.write_text(json.dumps(config), encoding='utf-8')
     config_share = share + '\\' + str(config_file.relative_to(ROOT)).replace('/', '\\')

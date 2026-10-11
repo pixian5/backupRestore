@@ -44,8 +44,43 @@ const ID_STAGE: i32 = 1;
 const ID_BAR: i32 = 2;
 const ID_DETAIL: i32 = 3;
 const ID_TIME_INFO: i32 = 4;
+/// 主界面常驻的日志尾部（固定显示最后 TAIL_LINES 行），不必点开弹窗即可判断是否卡住。
+const ID_TAIL: i32 = 5;
+/// 「详细日志」按钮，位于日志尾部右侧。
+const ID_LOG_BUTTON: i32 = 6;
+/// 详细日志弹窗内部的只读文本框。
+const ID_LOG_EDIT: i32 = 7;
 const SS_RIGHT: u32 = 0x0000_0002;
 const TIMER_ID: usize = 1;
+/// 详细日志弹窗的刷新定时器（与主窗口定时器区分）。
+const LOG_TIMER_ID: usize = 2;
+const WM_SIZE: u32 = 0x0005;
+const WM_COMMAND: u32 = 0x0111;
+const WS_VSCROLL: u32 = 0x0020_0000;
+const WS_TABSTOP: u32 = 0x0001_0000;
+const EM_SETSEL: u32 = 0x00B1;
+const EM_SCROLLCARET: u32 = 0x00B7;
+const SW_HIDE: i32 = 0;
+const SW_SHOW: i32 = 5;
+const SW_RESTORE: i32 = 9;
+/// 主界面日志尾部固定显示的行数（用户要求 3 行）。
+const TAIL_LINES: usize = 3;
+/// 详细日志弹窗一次最多回看的日志字节数；超出部分丢弃最早内容。
+const LOG_VIEW_BYTES: u64 = 512 * 1024;
+/// 详细日志弹窗一次最多渲染的行数，避免超大日志把控件拖慢。
+const LOG_VIEW_LINES: usize = 3000;
+const WM_KEYDOWN: u32 = 0x0100;
+/// F3：无论焦点在哪个控件都能打开详细日志弹窗。
+/// WinRE 里鼠标并非总是可用，必须留一条纯键盘通路。
+const VK_F3: usize = 0x72;
+const VK_ESCAPE: usize = 0x1B;
+/// 窗口类背景画刷：`COLOR_WINDOW + 1`。
+///
+/// 这个值必须给，不能留 `null`：类画刷为空时 Windows 不擦除客户区，
+/// 控件之间的空白会残留上一次画在那里的任何像素——表现就是「窗口透视」，
+/// 关掉详细日志弹窗后主界面空白处还留着弹窗的文字。
+/// 写法与 `native_gui.rs` 既有窗口类一致（小整数当 hbrBackground 传，系统自动取画刷）。
+const CLASS_BACKGROUND_BRUSH: Hwnd = 6usize as Hwnd;
 const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
 const FW_BOLD: i32 = 700;
 const CLEARTYPE_QUALITY: u32 = 5;
@@ -77,6 +112,9 @@ pub struct ProgressShared {
     pub cached_percent: Mutex<Option<u32>>,
     /// 缓存最近的详情日志行
     pub cached_details: Mutex<Vec<String>>,
+    /// 详细日志弹窗句柄（窗口线程内创建，关闭只隐藏以便重复打开）。
+    /// 与 `hwnd` 同样用 usize 存，避免裸指针不满足 Send。
+    pub log_window: Mutex<Option<usize>>,
 }
 
 impl ProgressShared {
@@ -152,6 +190,24 @@ unsafe extern "system" {
     fn LoadCursorW(instance: *mut c_void, name: *const u16) -> Hwnd;
     fn GetWindowLongPtrW(hwnd: Hwnd, index: i32) -> isize;
     fn SetWindowLongPtrW(hwnd: Hwnd, index: i32, value: isize) -> isize;
+    fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
+    fn MoveWindow(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
+    fn DestroyWindow(hwnd: Hwnd) -> i32;
+    fn SetForegroundWindow(hwnd: Hwnd) -> i32;
+    fn IsWindowVisible(hwnd: Hwnd) -> i32;
+    fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
+    fn GetParent(hwnd: Hwnd) -> Hwnd;
+    fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
+}
+
+/// Win32 `RECT`：`GetClientRect` 用它回填客户区尺寸，驱动最大化后的控件重排。
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
 }
 
 #[link(name = "comctl32")]
@@ -296,7 +352,7 @@ fn read_log_delta(shared: &ProgressShared) {
     if !new_details.is_empty() {
         let mut details = shared.cached_details.lock().unwrap();
         details.extend(new_details);
-        while details.len() > 4 {
+        while details.len() > TAIL_LINES {
             details.remove(0);
         }
     }
@@ -442,13 +498,314 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         if let Some(step) = latest_percent {
             body.push(format!("—— 当前进度 {step}% ——"));
         }
-        body.push(String::new());
-        body.extend(details.iter().cloned());
         if !body.is_empty() {
             let text = body.join("\r\n");
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             SetWindowTextW(GetDlgItem(hwnd, ID_DETAIL), wide.as_ptr());
         }
+
+        // 日志尾部独立成区：固定显示最后 TAIL_LINES 行，不必点开弹窗就能看出
+        // 日志是否还在推进（判断"是否卡住"的第一手依据）。不足 3 行时用空行占位，
+        // 保证控件高度与排版稳定。
+        let mut tail: Vec<String> = details
+            .iter()
+            .rev()
+            .take(TAIL_LINES)
+            .rev()
+            .cloned()
+            .collect();
+        while tail.len() < TAIL_LINES {
+            tail.insert(0, String::new());
+        }
+        let tail_text = tail.join("\r\n");
+        let tail_handle = GetDlgItem(hwnd, ID_TAIL);
+        SetWindowTextW(tail_handle, encode(&tail_text).as_ptr());
+        // 开启自动换行后，3 条日志可能折成更多视觉行；滚到末尾保证最新一行可见。
+        if !tail_handle.is_null() {
+            let end = tail_text.encode_utf16().count();
+            SendMessageW(tail_handle, EM_SETSEL, end, end as isize);
+            SendMessageW(tail_handle, EM_SCROLLCARET, 0, 0);
+        }
+    }
+
+    // 详细日志弹窗可见时同步刷新，保证弹窗内容跟着日志走。
+    refresh_log_window(shared);
+}
+
+/// 读取当前活动日志的尾部原文（最多 `LOG_VIEW_BYTES` 字节、`LOG_VIEW_LINES` 行）。
+///
+/// 与主界面的分类摘要不同，这里返回**未经筛选的原始日志**（含 DISM 百分比刷新行），
+/// 所以能看出进程到底停在哪一行。DISM 用 `\r` 原地刷新且重定向到文件时不带 `\n`，
+/// 必须把 `\r` 也当换行，否则整段会挤成一行。
+fn read_log_tail_text(shared: &ProgressShared) -> Option<String> {
+    let path = shared.log_path.lock().unwrap().clone();
+    let mut file = OpenOptions::new().read(true).open(&path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let start = size.saturating_sub(LOG_VIEW_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw).ok()?;
+    let decoded = crate::text_parsing::decode_windows_bytes(&raw);
+    let lines: Vec<&str> = decoded
+        .split(['\r', '\n'])
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let shown = if lines.len() > LOG_VIEW_LINES {
+        &lines[lines.len() - LOG_VIEW_LINES..]
+    } else {
+        &lines[..]
+    };
+    let mut text = String::new();
+    if start > 0 || lines.len() > LOG_VIEW_LINES {
+        text.push_str(&format!(
+            "（已省略更早内容，仅显示最近 {} 行；完整日志文件：{}）\r\n\r\n",
+            shown.len(),
+            path.display()
+        ));
+    } else {
+        text.push_str(&format!("（日志文件：{}）\r\n\r\n", path.display()));
+    }
+    text.push_str(&shown.join("\r\n"));
+    Some(text)
+}
+
+/// 刷新详细日志弹窗内容；窗口不存在或已隐藏时直接跳过，避免无谓开销。
+fn refresh_log_window(shared: &ProgressShared) {
+    let handle = *shared.log_window.lock().unwrap();
+    let Some(raw) = handle else { return };
+    if raw == 0 {
+        return;
+    }
+    let window = raw as Hwnd;
+    unsafe {
+        if IsWindowVisible(window) == 0 {
+            return;
+        }
+        let Some(text) = read_log_tail_text(shared) else {
+            return;
+        };
+        let edit = GetDlgItem(window, ID_LOG_EDIT);
+        if edit.is_null() {
+            return;
+        }
+        SetWindowTextW(edit, encode(&text).as_ptr());
+        // 滚到末尾，让最新一行始终可见——"是否卡住"看的就是最后一行还在不在变。
+        let end = text.encode_utf16().count();
+        SendMessageW(edit, EM_SETSEL, end, end as isize);
+        SendMessageW(edit, EM_SCROLLCARET, 0, 0);
+    }
+}
+
+/// 按当前客户区尺寸重排全部控件。
+///
+/// 必须有这个函数，最大化/拖拽改变大小才真正可用：控件原先是硬编码坐标，
+/// 窗口放大后内容仍挤在左上角。WM_CREATE 与 WM_SIZE 都调用它。
+unsafe fn layout_controls(hwnd: Hwnd) {
+    const MARGIN: i32 = 32;
+    const BUTTON_WIDTH: i32 = 148;
+    const GAP: i32 = 12;
+    let mut rect = Rect::default();
+    unsafe {
+        if GetClientRect(hwnd, &mut rect) == 0 {
+            return;
+        }
+    }
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 2 * MARGIN || height <= 260 {
+        return; // 最小化或尺寸异常时不动布局
+    }
+    let content = width - 2 * MARGIN;
+    // 顶部：阶段标题占左侧 55%，时间信息靠右占其余宽度。
+    let stage_width = (content * 55 / 100).max(240);
+    let time_width = content - stage_width - GAP;
+    // 日志尾部固定 3 行：按详情字体行高 26px 估算，加上边框留白。
+    let tail_height = 26 * TAIL_LINES as i32 + 16;
+    let bar_top = 92;
+    let detail_top = 144;
+    let tail_top = height - MARGIN - tail_height;
+    let detail_height = (tail_top - GAP - detail_top).max(80);
+    let tail_width = content - BUTTON_WIDTH - GAP;
+    unsafe {
+        MoveWindow(GetDlgItem(hwnd, ID_STAGE), MARGIN, 28, stage_width, 48, 1);
+        MoveWindow(
+            GetDlgItem(hwnd, ID_TIME_INFO),
+            MARGIN + stage_width + GAP,
+            28,
+            time_width.max(160),
+            48,
+            1,
+        );
+        MoveWindow(GetDlgItem(hwnd, ID_BAR), MARGIN, bar_top, content, 36, 1);
+        MoveWindow(
+            GetDlgItem(hwnd, ID_DETAIL),
+            MARGIN,
+            detail_top,
+            content,
+            detail_height,
+            1,
+        );
+        MoveWindow(
+            GetDlgItem(hwnd, ID_TAIL),
+            MARGIN,
+            tail_top,
+            tail_width.max(200),
+            tail_height,
+            1,
+        );
+        // 按钮与日志尾部同一行、贴在其右侧（用户指定位置）。
+        MoveWindow(
+            GetDlgItem(hwnd, ID_LOG_BUTTON),
+            MARGIN + tail_width.max(200) + GAP,
+            tail_top,
+            BUTTON_WIDTH,
+            tail_height,
+            1,
+        );
+    }
+}
+
+/// 打开（或重新激活）详细日志弹窗。
+///
+/// 关闭只隐藏不销毁，这样反复开关不会重复建窗；弹窗自身带最大化按钮和
+/// 双向滚动条，内容由 `refresh_log_window` 每秒跟随日志刷新。
+unsafe fn open_log_window(main_hwnd: Hwnd, shared: &ProgressShared) {
+    let existing = *shared.log_window.lock().unwrap();
+    if let Some(raw) = existing
+        && raw != 0
+    {
+        let window = raw as Hwnd;
+        unsafe {
+            ShowWindow(window, SW_RESTORE);
+            ShowWindow(window, SW_SHOW);
+            SetForegroundWindow(window);
+        }
+        refresh_log_window(shared);
+        return;
+    }
+    let class_name = encode("BackupRestoreProgressLogClass");
+    let class = WndClassExW {
+        cb_size: std::mem::size_of::<WndClassExW>() as u32,
+        style: 0,
+        wnd_proc: Some(log_window_proc),
+        cb_cls_extra: 0,
+        cb_wnd_extra: 0,
+        instance: unsafe { GetModuleHandleW(null()) },
+        icon: null_mut(),
+        cursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
+        brush: CLASS_BACKGROUND_BRUSH,
+        menu_name: null(),
+        class_name: class_name.as_ptr(),
+        icon_sm: null_mut(),
+    };
+    static LOG_REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*LOG_REGISTERED.get_or_init(|| unsafe { RegisterClassExW(&class) } != 0) {
+        return; // 注册失败时弹窗非关键，主界面仍有 3 行尾部可看
+    }
+    let window = unsafe {
+        CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            encode("BackupRestore 详细日志").as_ptr(),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            1000,
+            720,
+            null_mut(),
+            null_mut(),
+            GetModuleHandleW(null()),
+            null_mut(),
+        )
+    };
+    if window.is_null() {
+        return;
+    }
+    unsafe {
+        // 弹窗通过 GWL_USERDATA 记住主窗口，刷新时再从主窗口取共享状态，
+        // 避免第二份 Arc 裸指针带来的生命周期问题。
+        SetWindowLongPtrW(window, GWL_USERDATA, main_hwnd as isize);
+    }
+    *shared.log_window.lock().unwrap() = Some(window as usize);
+    unsafe {
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+    }
+    refresh_log_window(shared);
+}
+
+/// 详细日志弹窗的窗口过程。关闭时只隐藏，绝不 `PostQuitMessage`——
+/// 它与主进度窗口共用同一条消息循环，退出消息循环会连带关掉进度窗口。
+unsafe extern "system" fn log_window_proc(
+    hwnd: Hwnd,
+    message: u32,
+    w_param: WParam,
+    l_param: LParam,
+) -> LResult {
+    match message {
+        WM_CREATE => unsafe {
+            let font = create_font(-17, false);
+            let edit = CreateWindowExW(
+                0,
+                encode("Edit").as_ptr(),
+                null(),
+                // 自动换行：只保留纵向滚动条，长行折行显示而不是横向滚动。
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_BORDER
+                    | WS_VSCROLL
+                    | ES_MULTILINE
+                    | ES_AUTOVSCROLL
+                    | ES_READONLY,
+                12,
+                12,
+                960,
+                660,
+                hwnd,
+                ID_LOG_EDIT as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !edit.is_null() {
+                SendMessageW(edit, WM_SETFONT, font as usize, 1);
+            }
+            SetTimer(hwnd, LOG_TIMER_ID, 1000, None);
+            0
+        },
+        WM_SIZE => unsafe {
+            let mut rect = Rect::default();
+            if GetClientRect(hwnd, &mut rect) != 0 {
+                let width = (rect.right - rect.left - 24).max(80);
+                let height = (rect.bottom - rect.top - 24).max(80);
+                MoveWindow(GetDlgItem(hwnd, ID_LOG_EDIT), 12, 12, width, height, 1);
+            }
+            0
+        },
+        WM_TIMER => unsafe {
+            let main = GetWindowLongPtrW(hwnd, GWL_USERDATA) as Hwnd;
+            if !main.is_null() {
+                let shared_ptr = GetWindowLongPtrW(main, GWL_USERDATA) as *const ProgressShared;
+                if !shared_ptr.is_null() {
+                    refresh_log_window(&*shared_ptr);
+                }
+            }
+            0
+        },
+        WM_CLOSE => unsafe {
+            ShowWindow(hwnd, SW_HIDE);
+            // 隐藏后主动让主进度窗口重绘：弹窗盖过的区域需要立刻擦除重画。
+            let main = GetWindowLongPtrW(hwnd, GWL_USERDATA) as Hwnd;
+            if !main.is_null() {
+                InvalidateRect(main, null(), 1);
+                UpdateWindow(main);
+            }
+            0
+        },
+        WM_DESTROY => unsafe {
+            KillTimer(hwnd, LOG_TIMER_ID);
+            0
+        },
+        _ => unsafe { DefWindowProcW(hwnd, message, w_param, l_param) },
     }
 }
 
@@ -539,7 +896,61 @@ unsafe extern "system" fn window_proc(
             if !detail.is_null() {
                 SendMessageW(detail, WM_SETFONT, detail_font as usize, 1);
             }
+            // 日志尾部：常驻显示最后 3 行原始日志，不点开弹窗也能判断是否卡住。
+            let tail = CreateWindowExW(
+                0,
+                encode("Edit").as_ptr(),
+                null(),
+                // 自动换行（不加 ES_AUTOHSCROLL）：长日志行折到下一行而不是横向截断。
+                // 折行会让 3 条日志占到 3 行以上，所以每次刷新后把控件滚到末尾
+                // （见 refresh_from_log），保证最新一行始终可见。
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_READONLY,
+                32,
+                0,
+                640,
+                94,
+                hwnd,
+                ID_TAIL as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !tail.is_null() {
+                SendMessageW(tail, WM_SETFONT, create_font(-16, false) as usize, 1);
+            }
+            // 「详细日志」按钮：位于日志尾部右侧（用户指定）。
+            let button = CreateWindowExW(
+                0,
+                encode("Button").as_ptr(),
+                encode("详细日志(F3)").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0,
+                0,
+                148,
+                94,
+                hwnd,
+                ID_LOG_BUTTON as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !button.is_null() {
+                SendMessageW(button, WM_SETFONT, create_font(-19, true) as usize, 1);
+            }
+            layout_controls(hwnd);
             SetTimer(hwnd, TIMER_ID, 1000, None);
+            0
+        },
+        // 最大化/还原/拖拽改变大小后重排控件，否则放大后内容仍挤在左上角。
+        WM_SIZE => unsafe {
+            layout_controls(hwnd);
+            0
+        },
+        WM_COMMAND => unsafe {
+            if (w_param & 0xFFFF) as i32 == ID_LOG_BUTTON {
+                let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+                if !shared_ptr.is_null() {
+                    open_log_window(hwnd, &*shared_ptr);
+                }
+            }
             0
         },
         WM_TIMER => unsafe {
@@ -551,6 +962,17 @@ unsafe extern "system" fn window_proc(
         },
         WM_DESTROY => unsafe {
             KillTimer(hwnd, TIMER_ID);
+            // 先销毁详细日志弹窗：它的 GWL_USERDATA 指向本窗口，主窗口销毁后
+            // 再刷新会读到悬垂句柄。
+            let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+            if !shared_ptr.is_null() {
+                let taken = (*shared_ptr).log_window.lock().unwrap().take();
+                if let Some(raw) = taken
+                    && raw != 0
+                {
+                    DestroyWindow(raw as Hwnd);
+                }
+            }
             PostQuitMessage(0);
             0
         },
@@ -578,6 +1000,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
         operation: Mutex::new(operation.map(|s| s.to_string())),
+        log_window: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);
     let handle = thread::spawn(move || {
@@ -620,7 +1043,7 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
         instance: unsafe { GetModuleHandleW(null()) },
         icon: null_mut(),
         cursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
-        brush: null_mut(),
+        brush: CLASS_BACKGROUND_BRUSH,
         menu_name: null(),
         class_name: class_name.as_ptr(),
         icon_sm: null_mut(),
@@ -679,6 +1102,45 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             break;
         }
         unsafe {
+            // Msg 不是 Copy，按字段读取而不是整体复制。
+            let msg_hwnd = (*msg.as_ptr()).hwnd;
+            let msg_message = (*msg.as_ptr()).message;
+            let msg_wparam = (*msg.as_ptr()).w_param;
+            // 键盘通路：WinRE 下鼠标未必可用，所以 F3 全局打开详细日志、
+            // Esc 关闭弹窗，都在消息循环里拦截——焦点落在哪个子控件上都有效。
+            if msg_message == WM_KEYDOWN {
+                if msg_wparam == VK_F3 {
+                    open_log_window(hwnd, shared);
+                    continue;
+                }
+                if msg_wparam == VK_ESCAPE {
+                    let log = *shared.log_window.lock().unwrap();
+                    if let Some(raw) = log
+                        && raw != 0
+                    {
+                        let window = raw as Hwnd;
+                        // 焦点在弹窗自身或其子控件上时，Esc 才收起弹窗。
+                        if msg_hwnd == window || GetParent(msg_hwnd) == window {
+                            ShowWindow(window, SW_HIDE);
+                            // 弹窗让出屏幕后立即重绘主界面，不等下一次自然刷新。
+                            InvalidateRect(hwnd, null(), 1);
+                            UpdateWindow(hwnd);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // IsDialogMessageW 提供 Tab/Shift+Tab/空格/回车的控件导航，
+            // 否则带 WS_TABSTOP 的「详细日志」按钮在纯键盘环境下根本无法聚焦。
+            let target = if msg_hwnd == hwnd {
+                hwnd
+            } else {
+                let parent = GetParent(msg_hwnd);
+                if parent.is_null() { msg_hwnd } else { parent }
+            };
+            if IsDialogMessageW(target, msg.as_ptr()) != 0 {
+                continue;
+            }
             TranslateMessage(msg.as_ptr());
             DispatchMessageW(msg.as_ptr());
         }

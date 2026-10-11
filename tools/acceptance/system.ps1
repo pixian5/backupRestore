@@ -59,7 +59,15 @@ if($Action -eq 'created'){
  foreach($protected in @($primaryId,$primaryRe)){
   if($old[$protected] -cne $new[$protected]){throw 'Primary BCD object changed'}
  }
- foreach($key in @('default','timeout')){if((Field $old[$bootmgr] $key) -ne (Field $new[$bootmgr] $key)){throw 'Primary default or timeout changed'}}
+ foreach($key in @('default','timeout')){
+  $beforeValue = Field $old[$bootmgr] $key
+  $afterValue = Field $new[$bootmgr] $key
+  if($beforeValue -ne $afterValue){throw "Primary Boot Manager $key changed: $beforeValue -> $afterValue"}
+}
+# resumeobject 在旧 BCD 中可能不存在；两边必须保持同样的存在性和值，不能用 Field 强制虚构。
+$beforeResume = if($old[$bootmgr] -match '(?im)^resumeobject\s+') {Field $old[$bootmgr] 'resumeobject'} else {$null}
+$afterResume = if($new[$bootmgr] -match '(?im)^resumeobject\s+') {Field $new[$bootmgr] 'resumeobject'} else {$null}
+if($beforeResume -ne $afterResume){throw "Primary Boot Manager resumeobject changed: $beforeResume -> $afterResume"}
  function Order($block){
   $m=[regex]::Match($block,'(?ms)^displayorder\s+(.*?)(?=^\S|\z)')
   return @([regex]::Matches($m.Groups[1].Value,'\{[0-9a-fA-F-]{36}\}') | ForEach-Object {$_.Value})

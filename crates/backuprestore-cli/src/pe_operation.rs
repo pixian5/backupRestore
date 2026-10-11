@@ -738,6 +738,8 @@ impl RestoreBackend for Engine {
                 != Some(crate::BcdBootManagerState {
                     default: old.default,
                     display_order: order,
+                    resume_object: old.resume_object,
+                    loader_resume_objects: old.loader_resume_objects,
                 })
             {
                 return Err(crate::err("第二系统默认项或菜单顺序不符合约定，拒绝报成功"));

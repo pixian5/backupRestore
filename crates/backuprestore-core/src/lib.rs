@@ -11,6 +11,9 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+
+#[cfg(windows)]
+use std::ptr::null_mut;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -21,12 +24,37 @@ use std::os::windows::ffi::OsStrExt;
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: u32) -> i32;
+    fn CreateFileW(
+        file_name: *const u16,
+        desired_access: u32,
+        share_mode: u32,
+        security_attributes: *mut std::ffi::c_void,
+        creation_disposition: u32,
+        flags_and_attributes: u32,
+        template_file: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    fn FlushFileBuffers(file: *mut std::ffi::c_void) -> i32;
+    fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
 }
 
 #[cfg(windows)]
 const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 #[cfg(windows)]
 const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+#[cfg(windows)]
+const GENERIC_READ: u32 = 0x8000_0000;
+#[cfg(windows)]
+const FILE_SHARE_READ: u32 = 0x0000_0001;
+#[cfg(windows)]
+const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+#[cfg(windows)]
+const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+#[cfg(windows)]
+const OPEN_EXISTING: u32 = 3;
+#[cfg(windows)]
+const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+#[cfg(windows)]
+const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
 
 pub mod image_metadata;
 pub mod operation_safety;
@@ -1113,6 +1141,31 @@ pub fn write_json_atomic<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Res
             )
         } == 0
         {
+            return Err(io::Error::last_os_error().into());
+        }
+        // `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)` 刷新了重命名操作，
+        // 但终态断电验收仍观测到文件元数据已更新、内容回退的窗口；
+        // 对刚安装的最终文件再显式 FlushFileBuffers，确保 task/status
+        // 的 JSON 内容在返回成功前已经交给 NTFS 持久化。
+        let handle = unsafe {
+            CreateFileW(
+                to.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null_mut(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error().into());
+        }
+        let flushed = unsafe { FlushFileBuffers(handle) != 0 };
+        unsafe {
+            CloseHandle(handle);
+        }
+        if !flushed {
             return Err(io::Error::last_os_error().into());
         }
     }

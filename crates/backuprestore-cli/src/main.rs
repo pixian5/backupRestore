@@ -2989,6 +2989,13 @@ fn set_secondary_boot_menu(
 struct BcdBootManagerState {
     default: String,
     display_order: Vec<String>,
+    /// Boot Manager 自身的 resumeobject——BCDBoot 改写 `{bootmgr}` 时会把它指向
+    /// 新 loader 的休眠恢复程序，断电矩阵实测发现我们此前只恢复 default/displayorder，
+    /// 该字段被默默换掉且无人校验。主系统 loader 自己的 resumeobject 不受影响。
+    resume_object: Option<String>,
+    /// 快照中每个 Windows loader 到其 resumeobject 的映射，用来在替换第二系统时
+    /// 精确回收旧 loader 的孤儿 resume 对象；不按描述文字或“所有未引用对象”盲删。
+    loader_resume_objects: Vec<(String, String)>,
 }
 
 /// Read the original Boot Manager state from the BCD snapshot captured while
@@ -3065,6 +3072,22 @@ fn preserve_primary_boot_manager(
         ],
         log,
     )?;
+    if let Some(resume_object) = &previous.resume_object {
+        // BCDBoot 会把 {bootmgr}.resumeobject 换成新 loader 的恢复程序；快照里
+        // 有记录才恢复——旧 BCD 可能本来就没有该字段，不能凭空造一个出来。
+        run_logged(
+            "bcdedit.exe",
+            &[
+                "/store",
+                &store_arg,
+                "/set",
+                "{bootmgr}",
+                "resumeobject",
+                resume_object,
+            ],
+            log,
+        )?;
+    }
     let mut display_args = vec![
         "/store".to_string(),
         store_arg.clone(),
@@ -3080,7 +3103,13 @@ fn preserve_primary_boot_manager(
     )?;
     let verified = parse_boot_manager_state(&verified_text)
         .ok_or_else(|| err("Boot Manager state could not be read after preserving order"))?;
+    let resume_object_matches = match (&verified.resume_object, &previous.resume_object) {
+        (None, None) => true,
+        (Some(actual), Some(expected)) => actual.eq_ignore_ascii_case(expected),
+        _ => false,
+    };
     if verified.default != previous.default
+        || !resume_object_matches
         || verified.display_order.len() != expected_order.len()
         || verified
             .display_order
@@ -3092,6 +3121,7 @@ fn preserve_primary_boot_manager(
             "Boot Manager default or secondary display order could not be preserved",
         ));
     }
+    cleanup_orphaned_secondary_resume_objects(previous, &verified_text, log)?;
     append_log(
         log,
         &format!(
@@ -3100,6 +3130,48 @@ fn preserve_primary_boot_manager(
             expected_order.len().saturating_sub(1),
         ),
     )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn cleanup_orphaned_secondary_resume_objects(
+    previous: &BcdBootManagerState,
+    live: &str,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let normalized_live = live.replace("\r\n", "\n");
+    let live_blocks: Vec<&str> = normalized_live.split("\n\n").collect();
+    let live_ids: std::collections::BTreeSet<String> = live_blocks
+        .iter()
+        .filter_map(|block| block.lines().find_map(bcd_identifier_from_line))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let live_resume_refs: std::collections::BTreeSet<String> = live_blocks
+        .iter()
+        .flat_map(|block| block.lines())
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .to_ascii_lowercase()
+                .starts_with("resumeobject")
+                .then(|| bcd_value_from_line(trimmed).map(str::to_ascii_lowercase))
+                .flatten()
+        })
+        .collect();
+    for (loader, resume) in &previous.loader_resume_objects {
+        if live_ids.contains(&loader.to_ascii_lowercase())
+            || live_resume_refs.contains(&resume.to_ascii_lowercase())
+        {
+            continue;
+        }
+        let guid = crate::text_parsing::require_guid(resume, "remove orphan resume object")
+            .map_err(|message| err(&message))?;
+        run_logged("bcdedit.exe", &["/delete", &guid, "/f"], log)?;
+        append_log(
+            log,
+            &format!("Removed orphan resume object {guid} for replaced loader {loader}"),
+        )?;
+    }
     Ok(())
 }
 
@@ -3145,6 +3217,25 @@ fn parse_boot_manager_state(output: &str) -> Option<BcdBootManagerState> {
     // otherwise a secondary restore could put firmware entries in the
     // Windows loader menu.
     let output = output.replace("\r\n", "\n");
+    let loader_resume_objects = output
+        .split("\n\n")
+        .filter_map(|block| {
+            let lower = block.to_ascii_lowercase();
+            if !lower.contains("\\windows\\system32\\winload.efi") {
+                return None;
+            }
+            let loader = block.lines().find_map(bcd_identifier_from_line)?;
+            let resume = block.lines().find_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .to_ascii_lowercase()
+                    .starts_with("resumeobject")
+                    .then(|| bcd_value_from_line(trimmed).map(str::to_owned))
+                    .flatten()
+            })?;
+            Some((loader.to_owned(), resume))
+        })
+        .collect();
     let boot_manager = output.split("\n\n").find(|block| {
         block
             .lines()
@@ -3154,6 +3245,7 @@ fn parse_boot_manager_state(output: &str) -> Option<BcdBootManagerState> {
             })
     })?;
     let mut default = None;
+    let mut resume_object = None;
     let mut display_order = Vec::new();
     let mut reading_display_order = false;
     for line in boot_manager.lines() {
@@ -3161,6 +3253,11 @@ fn parse_boot_manager_state(output: &str) -> Option<BcdBootManagerState> {
         let lower = trimmed.to_ascii_lowercase();
         if lower.starts_with("default") || trimmed.starts_with("默认") {
             default = bcd_value_from_line(trimmed).map(str::to_owned);
+            reading_display_order = false;
+            continue;
+        }
+        if lower.starts_with("resumeobject") {
+            resume_object = bcd_value_from_line(trimmed).map(str::to_owned);
             reading_display_order = false;
             continue;
         }
@@ -3182,6 +3279,8 @@ fn parse_boot_manager_state(output: &str) -> Option<BcdBootManagerState> {
     Some(BcdBootManagerState {
         default: default?,
         display_order,
+        resume_object,
+        loader_resume_objects,
     })
 }
 
@@ -3325,6 +3424,8 @@ mod tests {
         let previous = super::BcdBootManagerState {
             default: primary.into(),
             display_order: vec![primary.into(), removed.into(), other.into()],
+            resume_object: None,
+            loader_resume_objects: Vec::new(),
         };
         let live = format!("identifier {primary}\n\n标识符 {secondary}\n\nidentifier {other}");
         assert_eq!(
@@ -3487,6 +3588,25 @@ mod tests {
             vec!["{default}"]
         );
         assert!(parse_boot_manager_state("default dangerous;value").is_none());
+    }
+
+    #[test]
+    fn boot_manager_state_parser_preserves_resume_object_and_loader_mapping() {
+        let state = parse_boot_manager_state(
+            "Windows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {11111111-2222-4333-8444-555555555555}\nresumeobject {aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}\ndisplayorder {11111111-2222-4333-8444-555555555555}\n\nWindows Boot Loader\nidentifier {11111111-2222-4333-8444-555555555555}\ndevice partition=C:\npath \\Windows\\system32\\winload.efi\nresumeobject {bbbbbbbb-2222-4333-8444-555555555555}",
+        )
+        .unwrap();
+        assert_eq!(
+            state.resume_object.as_deref(),
+            Some("{aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}")
+        );
+        assert_eq!(
+            state.loader_resume_objects,
+            vec![(
+                "{11111111-2222-4333-8444-555555555555}".into(),
+                "{bbbbbbbb-2222-4333-8444-555555555555}".into(),
+            )]
+        );
     }
 
     #[test]
