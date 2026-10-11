@@ -77,7 +77,9 @@ if($Action -eq 'retry'){
  foreach($f in $originals){if((Get-FileHash $f.Path).Hash -ne $f.Hash){throw 'Primary recovery original changed'}}
  $info=(& reagentc /info | Out-String).Trim()
  if($info -cne [IO.File]::ReadAllText("$r\winre-before.txt").Trim()){throw 'Primary recovery registration changed'}
- if($c.boot -and (Test-Path "$($w.DriveLetter):\BackupRestoreRE") -and !$c.systemImage){throw 'Task staging remains'}
+ # 按任务 ID 检查，避免共享卷上其它任务的残留导致误报。
+ $taskStaging = "$($w.DriveLetter):\BackupRestoreRE\$($task.taskId)"
+ if($c.boot -and (Test-Path $taskStaging) -and !$c.systemImage){throw "Task staging remains: $taskStaging"}
  $result=[pscustomobject]@{task=$task.taskId;status=$task.status;target=$t.Guid;fixturesVerified=(!$c.systemImage);systemVerificationRequired=$c.systemImage;primaryRecoveryUnchanged=$true;build=$c.exeSha256}
  $result | ConvertTo-Json | Set-Content -Encoding UTF8 "$r\verified.json"
  $result | ConvertTo-Json
