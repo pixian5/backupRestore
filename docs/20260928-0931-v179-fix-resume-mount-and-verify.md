@@ -2,8 +2,8 @@
 
 > 日期：2026-09-28
 > 性质：BUG 修复 + 实机闭环验证 **PASS**
-> 相关：[20260928-0850-v178-vm-verify-partial-and-bug.md](20260928-0850-v178-vm-verify-partial-and-bug.md)（BUG 发现）、
-> [20260928-0745-registered-winre-policy-and-resume-design.md](20260928-0745-registered-winre-policy-and-resume-design.md)（状态机设计）
+> 相关：[20260928-0850-v178-vm-verify-partial-and-bug.md](./20260928-0850-v178-vm-verify-partial-and-bug.md)（BUG 发现）、
+> [20260928-0745-registered-winre-policy-and-resume-design.md](./20260928-0745-registered-winre-policy-and-resume-design.md)（状态机设计）
 
 ## 1. 根因（比上一份文档的猜测更精确）
 

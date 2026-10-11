@@ -7,8 +7,8 @@
 > 原因：该改动与断电续跑存在真实冲突（注册位在入口被换成干净原版后，续跑重启会落进
 > 微软原版 WinRE、没有 `winpeshl` 钩子、`Recovery.exe` 不会自动跑 → 任务续不起来）。
 > 已证实这条暗契约：续跑**隐式依赖「注册位 = 注入件」**。
-> 详见 [20260928-0738-resume-vs-clean-winre-conflict.md](20260928-0738-resume-vs-clean-winre-conflict.md)（冲突定位）
-> 与 [20260928-0745-registered-winre-policy-and-resume-design.md](20260928-0745-registered-winre-policy-and-resume-design.md)（最终状态机设计）。
+> 详见 [20260928-0738-resume-vs-clean-winre-conflict.md](./20260928-0738-resume-vs-clean-winre-conflict.md)（冲突定位）
+> 与 [20260928-0745-registered-winre-policy-and-resume-design.md](./20260928-0745-registered-winre-policy-and-resume-design.md)（最终状态机设计）。
 > **现行做法**：不在入口翻转；注册位在会话期间保持注入件，仅「DISM 捕获前」翻转为干净原版，
 > 另在「断电续跑重武装之前」新增 `ensure_registered_is_payload` 保证续跑能落地。
 > 下文其余部分（澄清、代码位置梳理）作为历史记录保留。

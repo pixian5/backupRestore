@@ -1,15 +1,15 @@
 # BackupRestore 下一步开发路线图（2026-09-26）
 
-> **历史路线图（规划基线 v1.7.3）**。F1/F3 后续已处理；任务专属 WinRE 副本 + 自建一次性 BCD 启动项的总体方向后来以不同实现落地。09-29 PoC 验证了复制已注册 WinRE 条目后改指镜像卷 WIM 的可行性；2.2.2 后续验收任务载荷启动和数据卷 `restore-existing` 链路，系统镜像 `BCDBoot` 不在该轮验收范围。更早的失败实验针对直接修改 ReAgent 登记对象及相关 recoverysequence/重注册变体，不代表所有条目复制或自建启动项路线不可行。本文阶段状态、依赖、接口和风险排序均为当时快照，不可直接作为当前实施方案；当前状态见根 README 与文档索引顶部。
+> **历史路线图（规划基线 v1.7.3）**。F1/F3 后续已处理；任务专属 WinRE 副本 + 自建一次性 BCD 启动项的总体方向后来以不同实现落地。09-29 PoC 验证了复制已注册 WinRE 条目后改指镜像卷 WIM 的可行性；2.2.2 标签下有两份验收：19:10 数据卷链路（跳过 `BCDBoot`）与 22:00 系统卷链路（补齐并通过系统镜像 → `BCDBoot` → 第二系统实际启动）。更早的失败实验针对直接修改 ReAgent 登记对象及相关 recoverysequence/重注册变体，不代表所有条目复制或自建启动项路线不可行。本文阶段状态、依赖、接口和风险排序均为当时快照，不可直接作为当前实施方案；当前状态见根 README 与文档索引顶部。
 
 文档状态：**规划与风险排序文档，不包含代码改动，不代表任何未完成项已修复或已验收。**
 
 规划基线：源码 `v1.7.3`（commit `935becd`）+ 现有文档证据。
 主要依据：
-- [20260821-1528-project-status.md](20260821-1528-project-status.md)：当前进度、已完成与未完成项；
-- [20260925-1037-winre-repair-implementation-plan.md](20260925-1037-winre-repair-implementation-plan.md)：F1～F4 缺口与两段式修复方案（待实施）；
-- [20260825-1018-peer-comparison.md](20260825-1018-peer-comparison.md)：与同类成熟工具的能力差距；
-- [20260821-1528-verification-matrix.md](20260821-1528-verification-matrix.md)：逐项代码/离线/实机证据状态。
+- [20260821-1528-project-status.md](./20260821-1528-project-status.md)：当前进度、已完成与未完成项；
+- [20260925-1037-winre-repair-implementation-plan.md](./20260925-1037-winre-repair-implementation-plan.md)：F1～F4 缺口与两段式修复方案（待实施）；
+- [20260825-1018-peer-comparison.md](./20260825-1018-peer-comparison.md)：与同类成熟工具的能力差距；
+- [20260821-1528-verification-matrix.md](./20260821-1528-verification-matrix.md)：逐项代码/离线/实机证据状态。
 
 发生冲突时，优先级为：用户最新指令 > 源代码与已保存实机证据 > 本文。
 
@@ -43,7 +43,7 @@ BackupRestore 的安全模型（GUID 多重身份、状态机、`.partial`、Win
 
 ### 阶段 0：设计与决策冻结（无代码）
 - **目标**：确认 F1～F3 修复方案的两段式边界、任务 schema 版本隔离策略、以及「任务专用 WinRE 副本 + 独立一次性 BCD」技术选型。
-- **产出**：评审通过 [20260925-1037-winre-repair-implementation-plan.md](20260925-1037-winre-repair-implementation-plan.md) 第 3～6 节。
+- **产出**：评审通过 [20260925-1037-winre-repair-implementation-plan.md](./20260925-1037-winre-repair-implementation-plan.md) 第 3～6 节。
 - **验收**：用户确认方案；明确第一段/第二段可独立交付。
 - **依赖**：无。
 

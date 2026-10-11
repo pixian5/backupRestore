@@ -36,7 +36,7 @@
 
 ## 三、修复方法（macOS 宿主 + Parallels）
 
-操作通道遵循 [20260916-0759-operation-channels.md](20260916-0759-operation-channels.md)：`prlctl` 管 VM、
+操作通道遵循 [20260916-0759-operation-channels.md](./20260916-0759-operation-channels.md)：`prlctl` 管 VM、
 `vmkey.sh` 注入键盘、`type_text.sh` 逐字符打字（见 tools/win-clicker/）。
 
 1. 停 VM：`prlctl stop "Windows 11" --kill`。

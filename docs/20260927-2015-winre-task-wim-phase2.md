@@ -349,7 +349,7 @@ C: 注册 WIM = `1060a552`（v1.7.6 原件），`reagentc /info` 现可读（Win
 - **驱动姿势（必须）**：`prlctl exec "Windows 11" cmd.exe /c "命令"`（**多参数**，SYSTEM+管理员）；
   `whoami` 返回干净 `nt authority\system` 即通道活；结果一律用 **exec stdout 回传**（GBK 编码、
   多行/长输出正常），**不再依赖共享盘写**（VM→宿主 `\\Mac\...` 写入当前仍坏）。
-  详见 [`20260927-0016-vm-input-control-guide.md`](20260927-0016-vm-input-control-guide.md) 第十节（2026-09-27 23:30 修正版）。
+  详见 [`20260927-0016-vm-input-control-guide.md`](./20260927-0016-vm-input-control-guide.md) 第十节（2026-09-27 23:30 修正版）。
 
 **恢复后执行顺序**（每一步前确认上一步成功）：
 1. 握手：`prlctl exec "Windows 11" cmd.exe /c "whoami"` 应返回 `nt authority\system`；

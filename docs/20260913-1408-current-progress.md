@@ -1,7 +1,7 @@
 # BackupRestore 当前完整进度基线（2026-09-13）
 
 > **历史快照，不是当前执行合同。** 本文记录的版本是 `v1.5.10`。自 `v1.6.0` 起，当前
-> 入口、工作目录和验证边界以 [20260916-2105-current-status.md](20260916-2105-current-status.md)
+> 入口、工作目录和验证边界以 [20260916-2105-current-status.md](./20260916-2105-current-status.md)
 > 为准：产品 WinRE 只允许 `Recovery.exe recover-env`，自定义 PE 只允许
 > `Recovery.exe --pe-desktop`；二者不共享仓库模板，也不使用 `RecoveryLauncher.cmd`。
 
@@ -13,9 +13,9 @@
 测试环境：Parallels VM `Win11-repair`（Windows 11 ARM64 / UEFI / GPT）
 
 > 本文是 **v1.4.0 → v1.5.9 及本轮（2026-09-13）** 的完整增量基线 + 交接文档。
-> v1.3.3 及更早历史见 [20260909-2145-current-progress.md](20260909-2145-current-progress.md)；
-> v1.4.0 双启动模式见 [20260911-0102-current-progress.md](20260911-0102-current-progress.md)。
-> 本文件是**当前状态与待办唯一权威摘要**；接手 AI 必须先读本文件，再读 [20260821-0918-continuation-handoff.md](20260821-0918-continuation-handoff.md) 与 [20260825-2309-backuprestore-pe.md](20260825-2309-backuprestore-pe.md)。
+> v1.3.3 及更早历史见 [20260909-2145-current-progress.md](./20260909-2145-current-progress.md)；
+> v1.4.0 双启动模式见 [20260911-0102-current-progress.md](./20260911-0102-current-progress.md)。
+> 本文件是**当前状态与待办唯一权威摘要**；接手 AI 必须先读本文件，再读 [20260821-0918-continuation-handoff.md](./20260821-0918-continuation-handoff.md) 与 [20260825-2309-backuprestore-pe.md](./20260825-2309-backuprestore-pe.md)。
 
 ---
 
@@ -209,7 +209,7 @@
 
 ## G. 坑与经验大全（接手 AI 必读）
 
-详见 [20260825-2309-backuprestore-pe.md](20260825-2309-backuprestore-pe.md)（持续维护）。核心摘录：
+详见 [20260825-2309-backuprestore-pe.md](./20260825-2309-backuprestore-pe.md)（持续维护）。核心摘录：
 
 1. **bootsequence + PE 场景**：PE 整个在 RAM 盘跑，bootmgr 的 bootsequence 无法被消费回写 ESP BCD → 每次重启都进 PE。解法：PE 桌面启动时**自清 bootsequence** + 退出时显式设 default={current}。
 2. **Parallels bootsequence 不可靠**（时消费时不消费）→ 所有路径 default 兜底。
@@ -330,15 +330,15 @@ bcdedit /enum {bootmgr} | findstr default            # 查默认
 
 | 文档 | 内容 |
 |---|---|
-| [20260821-0918-continuation-handoff.md](20260821-0918-continuation-handoff.md) | 交接总入口（设计决策、代码边界、执行顺序） |
-| [20260821-1528-project-status.md](20260821-1528-project-status.md) | 状态摘要（本文的简短版） |
-| [20260909-2145-current-progress.md](20260909-2145-current-progress.md) | v1.3.3 及更早历史 |
-| [20260911-0102-current-progress.md](20260911-0102-current-progress.md) | v1.4.0 双启动模式增量 |
+| [20260821-0918-continuation-handoff.md](./20260821-0918-continuation-handoff.md) | 交接总入口（设计决策、代码边界、执行顺序） |
+| [20260821-1528-project-status.md](./20260821-1528-project-status.md) | 状态摘要（本文的简短版） |
+| [20260909-2145-current-progress.md](./20260909-2145-current-progress.md) | v1.3.3 及更早历史 |
+| [20260911-0102-current-progress.md](./20260911-0102-current-progress.md) | v1.4.0 双启动模式增量 |
 | **20260913-1408-current-progress.md（本文）** | **v1.5.8 当前权威基线 + 待办 + 用户偏好** |
-| [20260825-2309-backuprestore-pe.md](20260825-2309-backuprestore-pe.md) | PE 全部坑与经验（持续维护） |
-| [20260821-1528-verification-matrix.md](20260821-1528-verification-matrix.md) | 验收矩阵（**状态待同步，见 H9**） |
-| [20260830-0146-testing-plan.md](20260830-0146-testing-plan.md) | 测试计划（同上） |
-| [20260828-0120-development-execution-protocol.md](20260828-0120-development-execution-protocol.md) | 开发执行协议 |
+| [20260825-2309-backuprestore-pe.md](./20260825-2309-backuprestore-pe.md) | PE 全部坑与经验（持续维护） |
+| [20260821-1528-verification-matrix.md](./20260821-1528-verification-matrix.md) | 验收矩阵（**状态待同步，见 H9**） |
+| [20260830-0146-testing-plan.md](./20260830-0146-testing-plan.md) | 测试计划（同上） |
+| [20260828-0120-development-execution-protocol.md](./20260828-0120-development-execution-protocol.md) | 开发执行协议 |
 
 ---
 

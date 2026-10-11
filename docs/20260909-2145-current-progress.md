@@ -1,7 +1,7 @@
 # BackupRestore 当前完整进度基线
 
 > **历史快照（v1.3.3），不能作为当前执行说明。** 当前版本和入口合同见
-> [20260916-2105-current-status.md](20260916-2105-current-status.md)。仓库中已不再存在
+> [20260916-2105-current-status.md](./20260916-2105-current-status.md)。仓库中已不再存在
 > `windows/winpeshl.ini`；正常 WinRE 与自定义 PE 分别使用独立模板。
 
 更新时间：2026-09-09  

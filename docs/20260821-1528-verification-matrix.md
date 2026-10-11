@@ -2,18 +2,18 @@
 
 这份矩阵防止把静态代码检查误报为 Windows/WinRE 实机成功。状态只允许使用：
 
-当前版本基线：`1.6.6`。版本、失败根因和下一轮执行顺序见 [20260916-2105-current-status.md](20260916-2105-current-status.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
+当前版本基线：`1.6.6`。版本、失败根因和下一轮执行顺序见 [20260916-2105-current-status.md](./20260916-2105-current-status.md)；下方历史任务 ID 保留为证据，不等同于最新版已回归。
 
 > v1.3.6+ 已实机收口：bootsequence+PE 自清（v1.3.6）、配置驱动机制（v1.3.7，含 P: 真实分区备份/还原闭环）、PE 桌面三按钮接入 execute_pe_task_line + 4 新动作 + bcdboot default 恢复（v1.3.8→1.3.9）。三阶段断电（v1.3.3）实机回归证据见下 E-01 行，已收口。
 > v1.4.x 已实机收口：PE 恢复一键安装双模式（v1.4.0，RAM disk 目录 + 硬盘启动分区，两条目共存、启动项名按语言）；PE 恢复 tab UI 显示（v1.4.1/1.4.4，启动方式单选 + PE 目录名输入框 WS_BORDER + --tab）；test hook 自动安装 + 目录盘符放宽 + BCD 启动项名以文本框为准（v1.4.7，MyCustomPE 实机铁证）；PE 配置驱动真实磁盘备份/还原全链路（2026-09-12，P: 8G 卷 backup→delete→restore→verify，100% + P: 文件恢复确认 + bootsequence 自清回 Win11）。
 > **已知未实机项**：~~PE 桌面六按钮中「备份/还原/安装第二系统」的按钮真实点击~~ → **已实机收口（v1.4.8，2026-09-12）**：新增 `S:\pe-click.txt` 自动点击机制（PostMessage WM_COMMAND 等效鼠标点击、确认框自动接受、AUTO/AUTO:PE 参数解析、完成后自动恢复 BCD 回 Win11），「备份系统」按钮自动点击实测全链路通过（backup 100% + WIM 落盘 + BCD 恢复）；「还原/安装第二系统」按钮走同一 WM_COMMAND 分发路径与同一 handler 自动分支，机制同源，未单独重复实测。
-> v1.5.x 已实机收口（2026-09-13，细节见 [20260913-1408-current-progress.md](20260913-1408-current-progress.md)）：硬盘版 PE 分区启动（标准 PE boot.wim 到 F: + bcdboot，WinRE.wim 不可用）；PE 桌面 6 按钮新布局 + 「打开完整程序」（完整多 tab GUI 在 PE 内运行）+ 「重启」合并进「返回 Windows」；pe-click 新增 `main` 动作；智能分流实现（%SystemDrive% 判断 + 自绘 3 按钮弹窗 + 在线后台 DISM）；数据卷（T: 5G）备份/还原 fast 全链路闭环（备份 428KB/XPRESS、还原 100% 含格式化、bcdboot 跳过数据卷）；WIM 追加索引 + 索引名 + 保留最近 N 个全链实测（追加+keep 删除最旧+还原校验）；GUI 在线备份 exit=87 修复（索引名带空格加引号）+ 档案缺失/哈希不匹配降级为弹窗确认（--force-restore-hash）+ keep=0 全部保留；全量审计「拼字符串执行命令」类隐患（仅 PE diskpart 脚本路径加引号，其余安全）；键盘导航改造（Ctrl+B/R/P/O、F5、Tab、方向键；GetAsyncKeyState） + prlctl send-key-event 宿主导入通道 + VM 内注入器（clicker/run-in-session/activate/diag）。智能分流 RE 路（prepare 全链：任务创建+reagentc /boottore+自动重启）经 test hook `system_drive_choice=2` 验证；Parallels 固件不消费一次性 WinRE 启动属 VM 限制（真实硬件有效），PE 路与在线执行路待实机验证（H-P0）。
+> v1.5.x 已实机收口（2026-09-13，细节见 [20260913-1408-current-progress.md](./20260913-1408-current-progress.md)）：硬盘版 PE 分区启动（标准 PE boot.wim 到 F: + bcdboot，WinRE.wim 不可用）；PE 桌面 6 按钮新布局 + 「打开完整程序」（完整多 tab GUI 在 PE 内运行）+ 「重启」合并进「返回 Windows」；pe-click 新增 `main` 动作；智能分流实现（%SystemDrive% 判断 + 自绘 3 按钮弹窗 + 在线后台 DISM）；数据卷（T: 5G）备份/还原 fast 全链路闭环（备份 428KB/XPRESS、还原 100% 含格式化、bcdboot 跳过数据卷）；WIM 追加索引 + 索引名 + 保留最近 N 个全链实测（追加+keep 删除最旧+还原校验）；GUI 在线备份 exit=87 修复（索引名带空格加引号）+ 档案缺失/哈希不匹配降级为弹窗确认（--force-restore-hash）+ keep=0 全部保留；全量审计「拼字符串执行命令」类隐患（仅 PE diskpart 脚本路径加引号，其余安全）；键盘导航改造（Ctrl+B/R/P/O、F5、Tab、方向键；GetAsyncKeyState） + prlctl send-key-event 宿主导入通道 + VM 内注入器（clicker/run-in-session/activate/diag）。智能分流 RE 路（prepare 全链：任务创建+reagentc /boottore+自动重启）经 test hook `system_drive_choice=2` 验证；Parallels 固件不消费一次性 WinRE 启动属 VM 限制（真实硬件有效），PE 路与在线执行路待实机验证（H-P0）。
 
 > **v1.6.6 实机状态（2026-09-24）**：在当前 Parallels Windows 11 ARM64 VM（Desktop 27.0.2）上，prepare 全链路（任务创建、BCD 快照、payload 注入、`reagentc /boottore`、状态推进到 `boot-requested`）**已实机验证通过**。WinRE 执行层尚未跑通，但**原因已定位，不是"固件不消费启动项"**：
 > 1. `reagentc /boottore` 日志报「操作成功」，但随后枚举 `{bootmgr}` **没有 `bootsequence` 值**——属假成功，启动项压根没写进去；
 > 2. 手动 `bcdedit /set {bootmgr} bootsequence {9221dcc7-…}`（WinRE osloader 条目，注意 `{9221dcc8-…}` 是 ramdiskoptions 设备选项、**不是**可启动条目）后重启，bootmgr **确实尝试引导**（启动耗时约 5 分钟，且该条目随后从 `displayorder` 消失），但**加载 `ramdisk=[Y:]\Recovery\WindowsRE\Winre.wim`（808 MB）失败并回落 Windows**，任务仍停在 `boot-requested`、无 `Recovery.log`。
 >
-> 与 [20260916-0759-winre-bcd-loop-fix.md](20260916-0759-winre-bcd-loop-fix.md) 第四节一致：本 VM 的 bootmgr 从 **NTFS 卷加载 RAMDISK 大 WIM 失败**（同一 WIM 放 UDF/ISO 介质可成功）。可试方向：把 Recovery 分区格式化为 FAT32 后重注册。
+> 与 [20260916-0759-winre-bcd-loop-fix.md](./20260916-0759-winre-bcd-loop-fix.md) 第四节一致：本 VM 的 bootmgr 从 **NTFS 卷加载 RAMDISK 大 WIM 失败**（同一 WIM 放 UDF/ISO 介质可成功）。可试方向：把 Recovery 分区格式化为 FAT32 后重注册。
 >
 > **更正此前的错误结论**：本机历史上**多次**真实进入 WinRE（2026-08-21 probe 收口；2026-09-09 矩阵「WinRE 实机已验证」+ v1.3.3 三故障断电续跑；2026-09-13 白天 `20260913-0505-winre-autostart-pitfalls.md` 第 2 节「bootsequence 被消费（确实进过 WinRE）」）。「Parallels 固件不消费一次性 WinRE 启动」源自 2026-09-13 L.5 在**另一台新 VM `Win11-repair`** 上的实验，被错误推广到本机。真正的断裂点是 **2026-09-13 18:30 `diskpart` 从 C: 收缩 5GB 建 T: 测试分区导致的分区号重排**（原 `partition5`(R:/WinRE) 被挤到 `partition6`，`reagentc` 仍记 `partition5`），后经 09-16 引导循环事故放大。矩阵中标注「实机已验证（Win11 ARM64 probe）」的 WinRE 执行行系历史证据，v1.6.6 未在本 VM 复验，仍需真实硬件回归。
 
@@ -80,4 +80,4 @@
 3. 最后按默认单系统还原、可选双系统还原顺序执行，并在每项前确认快照、目标分区身份和破坏性授权范围。
 4. 每次实机测试结束后导出最小压缩证据：最终 `status.json`、`Recovery.log`、`prepare.log`、前后 WinRE/BCD hash 和关键截图；恢复快照后再开始下一项。
 
-当前进度和用户明确的下载授权规则见 [20260821-1528-project-status.md](20260821-1528-project-status.md)。
+当前进度和用户明确的下载授权规则见 [20260821-1528-project-status.md](./20260821-1528-project-status.md)。

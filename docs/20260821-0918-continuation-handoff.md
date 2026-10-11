@@ -1,6 +1,6 @@
 # BackupRestore V1 交接与继续开发说明
 
-> 开始工作前先阅读 [文档索引](README.md) 和 [当前进度与决策记录](20260821-1528-project-status.md)。后者是当前状态和用户最新工程约束的唯一摘要；本文件负责具体实现交接，不重复记录会变化的进度。
+> 开始工作前先阅读 [文档索引](README.md) 和 [当前进度与决策记录](./20260821-1528-project-status.md)。后者是当前状态和用户最新工程约束的唯一摘要；本文件负责具体实现交接，不重复记录会变化的进度。
 
 本文是给下一位开发者或 AI 的工作交接文件。它记录“为什么这样设计”、已经完成的代码边界、不能误报的验证结论，以及工具链可用后应该直接执行的顺序。若本文与源代码不一致，以源代码和最新测试结果为准，并在修复后同步更新本文。
 
@@ -32,12 +32,12 @@
 
 ## 2. 当前仓库与版本
 
-本轮最新事实基线见 [20260913-1408-current-progress.md](20260913-1408-current-progress.md)（v1.5.9，当前权威基线）。下面的历史说明用于保留交接背景；涉及 v1.3.3 的阶段续跑结论以 [20260909-2145-current-progress.md](20260909-2145-current-progress.md) 为准。
+本轮最新事实基线见 [20260913-1408-current-progress.md](./20260913-1408-current-progress.md)（v1.5.9，当前权威基线）。下面的历史说明用于保留交接背景；涉及 v1.3.3 的阶段续跑结论以 [20260909-2145-current-progress.md](./20260909-2145-current-progress.md) 为准。
 
 - 仓库：`https://github.com/pixian5/backupRestore`
 - 本地路径：`/Users/x/code/backupRestore`
 - 默认分支：`main`
-- 当前开发版本为 `1.6.6`（用户要求彻底测完、全部测试通过后再升，满十进一；下一版本 `1.6.7`）。根目录 `VERSION`、两个 Cargo manifest 和 `Cargo.lock` 必须同步；Windows 包的目录、`build-manifest.json` 和 GUI 标题必须一致，不能复用旧版本截图。最新状态与待办见 [20260916-2105-current-status.md](20260916-2105-current-status.md)。
+- 当前开发版本为 `1.6.6`（用户要求彻底测完、全部测试通过后再升，满十进一；下一版本 `1.6.7`）。根目录 `VERSION`、两个 Cargo manifest 和 `Cargo.lock` 必须同步；Windows 包的目录、`build-manifest.json` 和 GUI 标题必须一致，不能复用旧版本截图。最新状态与待办见 [20260916-2105-current-status.md](./20260916-2105-current-status.md)。
 - 最近 ARM64 实机结果：Rust prepare/Recovery 已完成自动 probe、非 C Capture 和多索引 Index 2 Apply；工作目录/目标同卷会在任何 BCD/WinRE 写入前被 Rust 拒绝，WinRE hash 保持不变。独立 EFI 首启动仍返回 Recovery `0xc0430001`，该功能仅开发测试。继续验证时仍禁止把 `C:` 作为备份源或还原目标，但可以读取其启动配置和 WinRE。v1.0.5 新增 DISM 文本回退的多索引详细字段解析，需在本轮 ARM64 包中复核。
 - v1.0.8 已从共享桌面源码重建 ARM64 包；提升权限 CLI 实读 `V:\multi-index-same-source-v1.0.5.wim` 返回索引 1/2。GUI 双索引下拉仍必须在客体中用真实输入完成截图后才能标记实机已验证，不能把 CLI 输出或旧截图当作本轮证据。
 - `v0.7.8` 二次 EFI 诊断仍返回 `0xc0430001`：E: BCD 已由管理员 `bcdboot U:\Windows /s E: /f UEFI /v` 重建，默认 loader 的 `device/osdevice` 均为 U:，但 hdd2 首启动仍失败。不要再把旧 BCD 残留当作已证实根因；下一轮应在隔离快照验证跨磁盘 UEFI/Secure Boot/分区关联，完成后恢复 `hdd0` 首启动并保持最新 GUI 前台。

@@ -7,7 +7,7 @@
 Windows 共享源码：`C:\Users\x\Desktop\BackupRestore`  
 目标平台：Windows 11 ARM64 / UEFI / GPT
 
-本文是 v1.3.4 → v1.3.9 的增量基线。v1.3.3 及之前的完整历史与执行顺序见 [20260909-2145-current-progress.md](20260909-2145-current-progress.md) 与 [20260821-1528-verification-matrix.md](20260821-1528-verification-matrix.md)。
+本文是 v1.3.4 → v1.3.9 的增量基线。v1.3.3 及之前的完整历史与执行顺序见 [20260909-2145-current-progress.md](./20260909-2145-current-progress.md) 与 [20260821-1528-verification-matrix.md](./20260821-1528-verification-matrix.md)。
 
 ## A. v1.4.0 增量（双启动模式 PE 恢复，2026-09-11 实机收口）
 

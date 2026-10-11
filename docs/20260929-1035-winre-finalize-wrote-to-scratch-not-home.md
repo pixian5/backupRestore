@@ -16,7 +16,7 @@
 
 ## 2. 根因：终态写回写到了「RE 暂存卷」，而注册位本身没被写
 
-v2「WinRE 迁出」（[20260928-2330-winre-hosted-restore-solution.md](20260928-2330-winre-hosted-restore-solution.md) §2.1）
+v2「WinRE 迁出」（[20260928-2330-winre-hosted-restore-solution.md](./20260928-2330-winre-hosted-restore-solution.md) §2.1）
 在 prepare 阶段做了三件事，其中第二、三件埋下了这个洞：
 
 1. payload 部署到 **RE 暂存卷**（默认=镜像卷，`--re-scratch-drive` 可改选）；
@@ -154,7 +154,7 @@ TARGET_PARTITION_NUMBER=4       # 还原目标 = C:，真正的注册位
    「`validate_volume_roles` 返回 `BackupSourceOnRegisteredWinre`」，而方案 D
    （`PLAN_D_RESTORE_CLEAN_WINRE_BEFORE_CAPTURE=true`）让备份方向**根本不返回这个冲突**
    → 备份永远走「非迁出」路径。这与
-   [20260928-2330-winre-hosted-restore-solution.md](20260928-2330-winre-hosted-restore-solution.md) §6.2
+   [20260928-2330-winre-hosted-restore-solution.md](./20260928-2330-winre-hosted-restore-solution.md) §6.2
    「备份同样走迁出、C: 注册位全程干净」的描述**不一致**；实际是「备份照旧把载荷注入注册位，
    靠捕获前翻回干净原件保证镜像干净」（= 方案 D 的原始设计）。
    本次实测的任务 `af2b11cd` 证实了这一点：`WINRE_EVACUATED` 未写入，`RECOVERY_*`=源卷。

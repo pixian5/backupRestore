@@ -2,8 +2,8 @@
 
 > 状态：**阻塞（未解决），改造代码已在 main 但不可用**。本文件记录完整的测量过程，
 > 供下次继续排查时直接从「还没排除什么」开始，不要再从头猜。
-> 关联：[20260929-130000-pe-channel-poc-*.md](20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md)（PoC 通过）、
-> [20260929-103500-*.md](20260929-1035-winre-finalize-wrote-to-scratch-not-home.md)（v1.7.10 修复）。
+> 关联：[20260929-130000-pe-channel-poc-*.md](./20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md)（PoC 通过）、
+> [20260929-103500-*.md](./20260929-1035-winre-finalize-wrote-to-scratch-not-home.md)（v1.7.10 修复）。
 
 ## 1. 现象
 

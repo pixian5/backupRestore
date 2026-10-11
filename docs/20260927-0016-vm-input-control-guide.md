@@ -288,7 +288,7 @@ prlctl exec "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\.test-artifa
 | 触发 `shutdown /r`（会真的重启 VM，注意后果） | ✅ |
 
 实例脚本（可直接抄）：`.test-artifacts/v176-step{1..7}-*.ps1`；
-说明见 [`20260927-1047-winre-payload-and-p0-fix.md`](20260927-1047-winre-payload-and-p0-fix.md) 第 9 节。
+说明见 [`20260927-1047-winre-payload-and-p0-fix.md`](./20260927-1047-winre-payload-and-p0-fix.md) 第 9 节。
 
 ---
 

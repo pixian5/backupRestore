@@ -3,7 +3,7 @@
 > 日期：2026-09-28
 > 结论：**v1.7.8 常规备份周期 VM 端到端通过（2 个完整任务）**；但**续跑修复路径（`ensure_registered_is_payload`）在实机上失败**，
 > 报错 `volume has no disk number`——这是一个真实 BUG，没有这次 VM 验证就会上线。
-> 相关：[20260928-0745-registered-winre-policy-and-resume-design.md](20260928-0745-registered-winre-policy-and-resume-design.md)
+> 相关：[20260928-0745-registered-winre-policy-and-resume-design.md](./20260928-0745-registered-winre-policy-and-resume-design.md)
 
 ## 一、已验证通过的部分（真实证据）
 

@@ -2,10 +2,20 @@
 
 > **历史经验，不能作为当前操作手册。** 文中的“唯一权威”、鼠标合成事件一律不可用及 `prlctl exec` 权限结论有过时或过度概括。当前已知 Session 0 与 Session 1 窗口站隔离会影响窗口枚举；GUI 真实鼠标交互仍列为待验。使用前请核对 `20261011-2032-下一步待实现-GPT-6.md` 与最新验收记录。
 
-> 本文是操作 Parallels 测试 VM 的**唯一权威手册**，合并了豆包与 Trae 两边全部实测经验。
-> 结论先行：**Parallels 会丢弃一切"程序合成"的鼠标事件**（无论该程序跑在 macOS 宿主
-> 还是 Win11 虚拟机内部），所以**鼠标通道彻底不可用**；可靠通道是**键盘注入 + 命令行 +
-> GUI 全键盘导航**（v1.5.9 起 BackupRestore GUI 已支持纯键盘操作）。
+> 本文是操作 Parallels 测试 VM 的**早期经验汇总**（基线约 v1.5.x~v1.6.x），**不是当前唯一权威手册**。
+> 结论先行（**原文照录，以下三条已被后续实践推翻或收窄**）：**Parallels 会丢弃一切"程序合成"的鼠标事件**
+> （无论该程序跑在 macOS 宿主还是 Win11 虚拟机内部），所以**鼠标通道彻底不可用**；可靠通道是
+> **键盘注入 + 命令行 + GUI 全键盘导航**（v1.5.9 起 BackupRestore GUI 已支持纯键盘操作）。
+
+> **正文就地更正（2026-10-11）**：上面两段**不要照抄执行**，逐条修正如下。
+> ① "唯一权威手册"——不成立。后续已有 `tools/win-clicker/br-gui.sh`（VM 内注入，约 1.4s/步）
+> 与 `tools/win-clicker/br-agent.sh`（常驻批量，约 0.2s/步）两条通道，本文未覆盖。
+> ② "合成鼠标事件一律不可用"——过度概括。真实边界是**窗口站隔离**：`prlctl exec` 起在 Session 0 服务窗口站，
+> GUI 在 Session 1 `WinSta0`，跨站 `EnumWindows`/`SetCursorPos` 会失败或被 UIPI 拦；同一会话内注入仍可用。
+> ③ "`prlctl exec` 不能提权"——不成立。不加 `--current-user` 即为 SYSTEM + 管理员
+> （`whoami` = `nt authority\system`），DISM 挂载/提交、`reagentc`、写 `C:\Recovery` 均可直接执行。
+> ④ 键盘通道（`vmkey.sh`）覆盖面最广的结论**依然成立**，WinRE/PE/BIOS 菜单里它是唯一可用通道。
+> 当前真实鼠标交互是否可用仍列为待验，执行前先看 [下一步待实现](./20261011-2032-下一步待实现-GPT-6.md)。
 
 ---
 
@@ -148,7 +158,7 @@ F1=59 F2=60 F3=61 F4=62 F5=63 F6=64 F7=65 F8=66 F9=67 F10=68 F11=87 F12=88
 ## 七、WinRE / BCD 修复通道（VM 进不了 Windows 时）
 
 当 VM 引导循环 / BCD 丢条目标时，用 **Windows 安装 ISO 引导 WinPE + bcdboot 重建**
-（详见 [20260916-0759-winre-bcd-loop-fix.md](20260916-0759-winre-bcd-loop-fix.md)）：
+（详见 [20260916-0759-winre-bcd-loop-fix.md](./20260916-0759-winre-bcd-loop-fix.md)）：
 
 1. ISO：`~/Downloads/Win11_25H2_Chinese_Simplified_Arm64_v2.iso`。
 2. 停 VM → `--device-set cdrom0 --image <iso> --connect` → `--device-bootorder "cdrom0 hdd0"`。

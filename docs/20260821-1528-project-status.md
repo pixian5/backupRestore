@@ -7,7 +7,7 @@
 
 > - **v1.7.10（2026-09-29）：WinRE 终态写回目标修错 + 桌面重注册收尾，测试卷实机闭环 PASS**——根因：迁出任务的 `RECOVERY_*` 指向 RE 暂存卷，终态把干净原件写到了暂存卷，而家卷（注册位真正所在）自 `reagentc /disable` 后再没有代码写文件 → 日志打印成功、目录却空着；且 `finalize_evacuated_winre` 被 `if finalize_success` 挡住（真实 WinRE 入口该参数恒为 false）成死代码。修复=新增 `WINRE_HOME_*` 家卷身份 + WinRE 内写回家卷并落「待回家」标记 + 桌面 `reagentc` 重注册（用 `/info` 的 `harddiskN\partitionM` 复核）+ 暂存卷回收 + 新 CLI `winre-rehome`。产物 1,763,840B / `9077e5e5…a2bd`，73 单测全绿。详见 docs/20260929-1035-winre-finalize-wrote-to-scratch-not-home.md。
 
-> **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [20260927-2015-winre-task-wim-phase2.md](20260927-2015-winre-task-wim-phase2.md) + [20260927-1047-winre-payload-and-p0-fix.md](20260927-1047-winre-payload-and-p0-fix.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
+> **2026-09-27 起的当前状态以根 [README.md](../README.md) 第七节 + [20260927-2015-winre-task-wim-phase2.md](./20260927-2015-winre-task-wim-phase2.md) + [20260927-1047-winre-payload-and-p0-fix.md](./20260927-1047-winre-payload-and-p0-fix.md) 为准**。本文第 3 节以下停留在 v1.6.6 时代，仅作历史证据保留，不得用于判断当前完成度。
 >
 > 2026-09-27 关键事实速览：
 > - v1.7.6：WinRE 载荷更新 + F1/F3 第一段拒绝已交付（详见上述两文档）；
@@ -18,17 +18,17 @@
 >   就立即还原干净 RE」（它与断电续跑真实冲突，属回归）；②新增 `ensure_registered_is_payload()`，在
 >   `resume_pending_boot_task` 重武装之前确保注册位是本任务注入件（已是则跳过，幂等），使**捕获期间或
 >   翻转过程中断电都能正确续跑**（此漏洞在旧设计中同样存在）；③续跑被压制（同 stage 二次中断）时恢复
->   干净注册位，避免机器带着 payload 被搁置。交叉编译通过、core 28 单测全绿。设计：[20260928-0745-registered-winre-policy-and-resume-design.md](20260928-0745-registered-winre-policy-and-resume-design.md)；
+>   干净注册位，避免机器带着 payload 被搁置。交叉编译通过、core 28 单测全绿。设计：[20260928-0745-registered-winre-policy-and-resume-design.md](./20260928-0745-registered-winre-policy-and-resume-design.md)；
 > - **v1.7.9（2026-09-28）：续跑挂载 BUG 修复 + 实机闭环 PASS**——v1.7.8 实机验证抓到 `volume has no disk number`：
 >   根因=读取端（`recovery_volume_from_env`）丢弃 env 已有的 volume_guid/disk_number 等字段 + 挂载端
 >   （`ensure_volume_mounted`）单路依赖 DiskPart。修复=读取端补齐字段 + 挂载端三级降级（盘符 GUID 复用 →
 >   `mountvol` 按卷 GUID 挂载 → DiskPart 兜底）。同一任务日志前后对比：v1.7.8 两次 `abandoned` →
 >   v1.7.9 修复→重武装→WinRE 自动跑完→success 100%→终态注册位回干净原件。**断电续跑场景实机闭环通过**。
->   [20260928-0931-v179-fix-resume-mount-and-verify.md](20260928-0931-v179-fix-resume-mount-and-verify.md)；
+>   [20260928-0931-v179-fix-resume-mount-and-verify.md](./20260928-0931-v179-fix-resume-mount-and-verify.md)；
 > - **Windows servicing 会静默替换注册 Winre.wim**（当天部署的 v1.7.6 载荷被累积更新冲掉为官方原版），已重新注入恢复；载荷持久性成为新的部署风险项；
 > - 「不动 C:」边界更新：只是不用程序备份/还原 C，其它操作（更新载荷、reagentc、写 C:\Recovery）都允许；测试卷 workspace=H:\brwork、image=E:\brimg、source=T:、target=P:。
 
-每轮执行均遵守[开发执行协议](20260828-0120-development-execution-protocol.md)：先规划、自审，再执行和验证。程序目录内的日志位置、格式和保留边界也以该文档为准。
+每轮执行均遵守[开发执行协议](./20260828-0120-development-execution-protocol.md)：先规划、自审，再执行和验证。程序目录内的日志位置、格式和保留边界也以该文档为准。
 
 ## 1. 产品目标与 V1 范围
 
@@ -43,7 +43,7 @@ V1 已设计的任务包括：
 | `restore-existing` | 将镜像还原到原 Windows 分区并修复引导 | 是 |
 | `create-secondary` | 将镜像还原到独立分区并加入第二启动项 | 是 |
 
-V1 已实现自定义 PE 作为恢复环境（RAM disk 不占分区 / 硬盘启动独立分区两种模式，见 [20260911-0102-current-progress.md](20260911-0102-current-progress.md)）；不包含分区布局重构、网络备份、增量/差异镜像、Legacy BIOS 或自动修改 BitLocker。任何恢复测试只能在可回滚的虚拟机快照中进行。
+V1 已实现自定义 PE 作为恢复环境（RAM disk 不占分区 / 硬盘启动独立分区两种模式，见 [20260911-0102-current-progress.md](./20260911-0102-current-progress.md)）；不包含分区布局重构、网络备份、增量/差异镜像、Legacy BIOS 或自动修改 BitLocker。任何恢复测试只能在可回滚的虚拟机快照中进行。
 
 ## 1.1 用户期望流程对照
 
@@ -98,7 +98,7 @@ pwsh -NoLogo -NoProfile -NonInteractive -Command '$files=@("windows/BackupRestor
 git diff --check
 ```
 
-历史结果：macOS 本机 CLI 5 项 + core 17 项、Windows ARM64 v1.3.0 CLI 11 项 + core 17 项曾通过。当前 v1.3.3 的最新离线结果为 CLI 8/8、core 17/17、Clippy、运行时边界审计和差异检查全部通过；ARM64 Release 构建曾成功。共享桌面源码目录不能作为 Cargo 测试目标目录，必须使用客体本地 `C:\BackupRestoreBuild\test-target-v<版本>`。详细当前口径见 [20260909-2145-current-progress.md](20260909-2145-current-progress.md)。
+历史结果：macOS 本机 CLI 5 项 + core 17 项、Windows ARM64 v1.3.0 CLI 11 项 + core 17 项曾通过。当前 v1.3.3 的最新离线结果为 CLI 8/8、core 17/17、Clippy、运行时边界审计和差异检查全部通过；ARM64 Release 构建曾成功。共享桌面源码目录不能作为 Cargo 测试目标目录，必须使用客体本地 `C:\BackupRestoreBuild\test-target-v<版本>`。详细当前口径见 [20260909-2145-current-progress.md](./20260909-2145-current-progress.md)。
 
 2026-08-25 `v0.7.7` 前置重叠校验：`BackupRestore.exe prepare` 现在在解析工作目录所在卷和镜像卷身份之后、开始 WinRE 注入、BCD 导出或设置一次性恢复启动之前，拒绝非 probe 任务的“工作目录所在卷 = 镜像卷”。Rust GUI 也在用户点击创建任务时立即拒绝同一盘符组合。核心任务模型原有的 GUID 分区重叠检查保留为第二层防线。这样错误参数不再可能先重启进入 WinRE，再由 `validate-task` 拒绝。ARM64 实机以 `B:` 工作目录所在卷、`U:` 源卷和 `B:\...wim` 镜像路径验证：子进程退出码为 1，注册 WinRE SHA-256 前后均为 `0CBC86...6FDA1`。
 

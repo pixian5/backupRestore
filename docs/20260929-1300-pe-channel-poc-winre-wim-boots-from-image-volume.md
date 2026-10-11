@@ -46,7 +46,7 @@
 ### 3.2 新增/必须自己负责
 
 - **BCD 条目生命周期**：创建/复用/一次性 `bootsequence` 重武装/终态清理/与既有一次性启动冲突检测
-  （[20260925-1037-winre-repair-implementation-plan.md §6](20260925-1037-winre-repair-implementation-plan.md)
+  （[20260925-1037-winre-repair-implementation-plan.md §6](./20260925-1037-winre-repair-implementation-plan.md)
    已经写过这套设计，但**从未实现、也从未有任务走过 PE 通道**）。
 - **按卷 GUID 定位，不能硬编码盘符**：本次 PoC 里 PE 的 `F:` 实际是 Windows 的 `H:` 卷（marker 落到了 `H:\pe-poc`）。
 - 镜像卷常驻 ~700 MB（迁出方案本来也要，不是新增成本）。
