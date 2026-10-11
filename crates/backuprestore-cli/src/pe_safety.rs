@@ -143,6 +143,14 @@ pub(crate) fn probe_file(root: &Path, components: &[&str]) -> Result<bool, TaskE
     probe_file_inner(root, components, true)
 }
 
+/// 目标卷是否为完整的 Windows 安装：以 SYSTEM hive 是否存在为判据，
+/// 与离线侧分叉 bcdboot 的判据保持一致（见 `main.rs` 恢复流程）。
+/// 复用 `probe_file` 以继承"拒绝重解析点穿越"的保护。
+/// 放在本模块是因为 `online_operation` 是 `#[cfg(windows)]`，这里可在本机单测。
+pub(crate) fn target_is_windows_volume(root: &Path) -> Result<bool, TaskError> {
+    probe_file(root, &["Windows", "System32", "config", "SYSTEM"])
+}
+
 /// 活动 BCD 可能由系统独占；这里只验证类型和祖先，内容可读性由 bcdedit 回读验证。
 #[cfg(windows)]
 pub(crate) fn probe_file_metadata(root: &Path, components: &[&str]) -> Result<bool, TaskError> {
@@ -472,5 +480,33 @@ mod tests {
         assert!(probe_file(&dir, &["directory"]).is_err());
         assert!(!probe_file(&dir, &["absent"]).unwrap());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    // 锁住"目标是不是另一个 Windows 卷"的判据：只有真正存在 SYSTEM hive 才算，
+    // 空目录或只有目录骨架的数据卷不能被误拒（在线还原必须放行）。
+    #[test]
+    fn windows_volume_detected_only_with_system_hive() {
+        let dir = std::env::temp_dir().join(format!("br-winvol-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("Windows").join("System32").join("config")).unwrap();
+        assert!(!target_is_windows_volume(&dir).unwrap());
+
+        fs::write(
+            dir.join("Windows")
+                .join("System32")
+                .join("config")
+                .join("SYSTEM"),
+            b"hive",
+        )
+        .unwrap();
+        assert!(target_is_windows_volume(&dir).unwrap());
+
+        let empty = std::env::temp_dir().join(format!("br-winvol-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&empty);
+        fs::create_dir_all(&empty).unwrap();
+        assert!(!target_is_windows_volume(&empty).unwrap());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&empty);
     }
 }

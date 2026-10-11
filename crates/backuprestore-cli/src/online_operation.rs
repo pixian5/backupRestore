@@ -139,6 +139,15 @@ fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskErr
             )
         }
         "restore-existing" => {
+            // 目标卷若本身就是一个完整的 Windows 安装，在线覆盖等于把一个系统覆盖成另一个系统：
+            // 在线路径不格式化、不修复引导，也没有状态机可在中断后续跑，
+            // 中途失败会留下「覆盖了一半的 Windows」。因此显式拒绝，引导用户走离线 WinRE 链。
+            if crate::pe_safety::target_is_windows_volume(&root)? {
+                return Err(crate::err(
+                    "目标卷包含 Windows 系统：在线还原既不格式化也不修复引导，且中断后无法续跑；\
+                     请改用「进入 Windows RE」离线还原",
+                ));
+            }
             let index: u32 = params
                 .index
                 .parse()
