@@ -273,14 +273,27 @@ fn repair_with_mode(
             crate::recovery_fault::checkpoint(point, self.log)
         }
         fn preflight(&mut self) -> Result<(), TaskError> {
-            capture_logged(
-                "reg.exe",
-                &["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\MiniNT"],
-                self.log,
-            )
-            .map_err(|_| crate::err("离线 WinRE 注册只允许在 PE 中执行"))?;
+            // 离线注册要求「纯恢复环境」，但恢复环境有两种形态，二者都合法：
+            //   · WinRE —— 有 Control\MiniNT 键（纯恢复环境专属标记）；
+            //   · WinPE —— 无 MiniNT，但有 wpeutil.exe（PE 自带工具）。
+            // 早先只认 MiniNT，把 PE 入口也挡在外面，于是「PE 作第二系统」会在
+            // 目标卷已经格式化、镜像已经应用之后才失败（pe_operation 的 boot() 在
+            // bcdboot 之后才调这里），白白毁掉目标卷。
+            let is_winre = std::process::Command::new("reg.exe")
+                .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\MiniNT"])
+                .output()
+                .is_ok_and(|out| out.status.success());
+            let is_winpe = std::path::Path::new(r"X:\Windows\System32\wpeutil.exe").is_file()
+                || std::path::Path::new(r"C:\Windows\System32\wpeutil.exe").is_file();
+            if !is_winre && !is_winpe {
+                return Err(crate::err("离线 WinRE 注册只允许在恢复环境（WinRE/WinPE）中执行"));
+            }
             // 自定义 WinPE 入口可能绕过 wpeinit；让系统工具读取本次真实固件类型。
-            capture_logged("wpeutil.exe", &["UpdateBootInfo"], self.log)?;
+            // wpeutil.exe 只有 WinPE 附带，纯 WinRE 环境没有它——那一支已经能自己
+            // 判定固件类型，硬调会因「找不到程序」失败，故只在 PE 形态下执行。
+            if is_winpe {
+                capture_logged("wpeutil.exe", &["UpdateBootInfo"], self.log)?;
+            }
             let firmware = capture_logged(
                 "reg.exe",
                 &[

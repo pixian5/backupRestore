@@ -1390,8 +1390,12 @@ pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, Task
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            // 不在这里猜：多个 ESP 时选错会把引导写进另一块磁盘的 BCD。
+            // 早先的提示写「pass --efi-drive to choose one」，但该参数从未实现，
+            // 用户照着做只会得到「unrecognized option」。如实说明现状。
             Err(err(&format!(
-                "multiple EFI system partitions found ({list}); pass --efi-drive to choose one"
+                "检测到多个含 BCD 的 EFI 系统分区（{list}）；\
+                 当前版本尚不支持选择目标 ESP，请避免多 ESP 布局后重试"
             )))
         }
     }
