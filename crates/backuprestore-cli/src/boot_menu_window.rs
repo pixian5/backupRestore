@@ -270,7 +270,11 @@ pub(crate) unsafe fn open_editor(owner: Hwnd, session: Arc<BootMenuSession>) -> 
         if hwnd.is_null() {
             return hwnd;
         }
-        let boxed = Box::new(State { session, cursor: 0 });
+        // 光标默认落在"正在还原的系统"上，而不是硬编码的第 0 项。
+        // discover 把还原目标排在**最后**，若光标停在 0，用户打开窗口直接输入名字
+        // 再按保存，改的是第一个既有系统（通常就是主系统）的名字。
+        let cursor = session.snapshot().0.restore_target_index().unwrap_or(0);
+        let boxed = Box::new(State { session, cursor });
         SetWindowLongPtrW(hwnd, USERDATA, Box::into_raw(boxed) as isize);
         let children = [
             (

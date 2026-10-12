@@ -103,20 +103,65 @@ fn indexes(image: &Path, log_path: &Path) -> Result<Vec<u32>, TaskError> {
 
 /// 从镜像副档里拼出带版本号的菜单名，如 `Windows 11 Pro 26100.9549`。
 ///
-/// 副档是备份时记录的真实版本，比盘符/日期信息量大；缺失或字段为空时返回 None，
-/// 调用方依次退化成"读目标卷版本"与"通用名"。第三方 WIM 没有副档，属正常情况。
+/// 副档是备份时记录的真实版本，比盘符/日期信息量大；缺失、为空或是占位值时
+/// 返回 None，调用方依次退化成"读目标卷版本"与"通用名"。
+///
+/// **必须过滤占位值 `unknown`**：本程序自己写副档时，`windows_edition` /
+/// `windows_build` 目前全是硬编码的 `"unknown"`（online_operation.rs 的 capture、
+/// image_metadata.rs 的默认值，以及 main.rs 那个没有任何生产者的
+/// `context_value("WINDOWS_EDITION", "unknown")`）。不过滤的话这里会拼出字面的
+/// "unknown unknown" 并写进启动菜单——比不起名更糟。
 fn read_image_version_name(image: &Path, index: u32) -> Option<String> {
-    let metadata = im::read_index_metadata(image, index).ok()?;
-    let edition = metadata.windows_edition.trim();
-    let build = metadata.windows_build.trim();
-    let name = match (edition.is_empty(), build.is_empty()) {
-        (false, false) => format!("{edition} {build}"),
-        (false, true) => edition.to_string(),
-        (true, false) => format!("Windows {build}"),
-        (true, true) => return None,
+    /// 判断字段是否是可用的真实值（非空、非占位）。
+    fn usable(value: &str) -> bool {
+        !value.is_empty()
+            && !value.eq_ignore_ascii_case("unknown")
+            && !value.eq_ignore_ascii_case("n/a")
+    }
+    /// 把 edition/build 两段拼成菜单名，两段都不可用时返回 None。
+    fn combine(edition: &str, build: &str) -> Option<String> {
+        let name = match (usable(edition), usable(build)) {
+            (true, true) => format!("{edition} {build}"),
+            (true, false) => edition.to_string(),
+            (false, true) => format!("Windows {build}"),
+            (false, false) => return None,
+        };
+        let trimmed = name.trim();
+        (!trimmed.is_empty()).then(|| trimmed.chars().take(60).collect())
+    }
+    // 先试副档（备份时记录的）。本程序当前写的是占位值，所以多半会落空。
+    if let Ok(metadata) = im::read_index_metadata(image, index)
+        && let Some(name) = combine(
+            metadata.windows_edition.trim(),
+            metadata.windows_build.trim(),
+        )
+    {
+        return Some(name);
+    }
+    // 退到 WIM 本身：DISM /Get-WimInfo 报的 Version/Edition 来自映像内部，
+    // 不依赖我们备份时写了什么，对第三方 WIM 同样有效。
+    let output = run_capture(
+        "dism.exe",
+        &[
+            "/English".into(),
+            "/Get-WimInfo".into(),
+            format!("/WimFile:{}", image.display()),
+            format!("/Index:{index}"),
+        ],
+        &std::env::temp_dir().join(format!("br-wiminfo-{}.out", std::process::id())),
+        false,
+    )
+    .ok()?;
+    // 这里只要 Version/Edition 两行，用不着完整 JSON 解析。
+    let field = |label: &str| -> String {
+        output
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(key, _)| key.trim().eq_ignore_ascii_case(label))
+            .map(|(_, value)| value.trim().to_string())
+            .unwrap_or_default()
     };
-    // 菜单名上限 60 字，超长在这里就截断，避免拖到写入 BCD 才失败。
-    (!name.trim().is_empty()).then(|| name.trim().chars().take(60).collect())
+    combine(&field("Edition"), &field("Version"))
 }
 /// `progress` 用于在第二阶段发布引导修复会话（还原到另一个 Windows 卷时）。
 fn execute_inner(
@@ -396,6 +441,21 @@ fn restore_to_windows_volume(
             ],
             dir,
         )?;
+    } else {
+        // 快照里本来就没有 resumeobject（未开休眠/快速启动，或 ESP 是本工具新建的）。
+        // bcdboot 刚刚给 {bootmgr} 写了一个指向新系统的值，不删掉的话：
+        // STEP 4 的预检与终检都会判定 resume_object 变了而报失败，而且休眠恢复
+        // 会指向错误的系统。删除失败是良性的（本来就没有这个值）。
+        let _ = run_bcd_edit(
+            &[
+                "/store".into(),
+                store.clone(),
+                "/deletevalue".into(),
+                "{bootmgr}".into(),
+                "resumeobject".into(),
+            ],
+            dir,
+        );
     }
 
     log(
@@ -437,7 +497,11 @@ fn restore_to_windows_volume(
         ],
         dir,
     )?;
-    let loader = crate::pe_safety::target_loader(&all, target_letter)?;
+    // 用 boot_menu 的解析器而不是 pe_safety::target_loader：后者只认英文
+    // device/osdevice/path，在中文 Windows 上会直接判定"目标引导加载器不唯一或
+    // 设备字段不完整"而失败，连 apply 都走不到。
+    let loader = crate::boot_menu::loader_identifier_for_partition(&all, target_letter)?
+        .ok_or_else(|| crate::err("bcdboot 后找不到第二系统的启动加载器"))?;
     // 上面的 bcdboot 已把第二系统 loader 建好；引导方案此刻冻结，由 boot_menu::apply
     // 统一写入菜单名称、顺序、默认项、休眠引用与显示时间，并逐项回读校验。
     // 原先这里手写一套 description/displayorder/default/resumeobject，与 apply 职责

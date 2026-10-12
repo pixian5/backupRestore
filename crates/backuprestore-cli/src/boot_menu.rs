@@ -23,6 +23,13 @@ pub(crate) struct BootMenuEntry {
     /// 把用户给已有系统起的名字覆盖成 "Windows (C:)" 这类默认值。
     #[serde(default)]
     pub existing_name: Option<String>,
+    /// 该卷的 loader 当前是 `{bootmgr}` 的默认启动项。
+    ///
+    /// 这一项同样不能取消：取消后 apply 会把 `/displayorder` 写成不含它的列表，
+    /// 默认项随之漂移到刚还原的系统，而在线路径的验收又要求默认项不变——
+    /// 结果是 BCD 已被改坏、操作却报失败且无回滚。在能取消之前就拦住。
+    #[serde(default)]
+    pub is_current_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,11 +39,15 @@ pub(crate) struct BootMenuPlan {
 }
 
 impl BootMenuPlan {
+    /// 该条目是否被钉住（不可取消勾选）：本次还原的目标，或当前的默认启动项。
+    fn is_pinned(entry: &BootMenuEntry) -> bool {
+        entry.is_restore_target || entry.is_current_default
+    }
     pub(crate) fn toggle(&mut self, index: usize) -> bool {
         let Some(entry) = self.entries.get_mut(index) else {
             return false;
         };
-        if entry.is_restore_target {
+        if Self::is_pinned(entry) {
             return false;
         }
         entry.selected = !entry.selected;
@@ -86,6 +97,25 @@ impl BootMenuPlan {
         if self.timeout_seconds > TIMEOUT_MAX {
             return Err(crate::err("启动菜单等待时间超出范围"));
         }
+        // 当前默认启动项（通常是主系统）不能被取消：它一旦从 displayorder 里消失，
+        // 默认项就会漂移到刚还原的系统。toggle 已拦住交互路径，这里再守一道，
+        // 防止落盘的方案被改过后绕过去。
+        if self
+            .entries
+            .iter()
+            .any(|e| e.is_current_default && !e.selected)
+        {
+            return Err(crate::err("当前默认启动的系统不能从启动菜单中移除"));
+        }
+        // 名字重复会让启动菜单出现两个同名项，用户无法区分该选哪个。
+        for (i, entry) in self.entries.iter().enumerate() {
+            if self.entries[..i]
+                .iter()
+                .any(|e| e.selected && entry.selected && e.display_name == entry.display_name)
+            {
+                return Err(crate::err("启动菜单出现同名项，请改名以便区分"));
+            }
+        }
         for (i, entry) in self.entries.iter().enumerate() {
             if entry.display_name.trim().is_empty()
                 || entry.display_name.chars().any(char::is_control)
@@ -122,29 +152,34 @@ fn existing_boot_menu_names(log: &Path) -> Option<String> {
 
 /// 判断一个 bcdedit 对象块是否是"指向该分区的 Windows 加载器"。
 ///
-/// 判据必须严：`device` 与 `osdevice` **都要在**且都指向该分区，`path` 还要是
-/// winload.efi。只要求其一会把 resume 对象、ramdisk 选项误认成 loader
-/// （它们往往只带其中一个字段），按枚举顺序猜就会把用户引导到错误系统。
-/// 字段名兼容本地化：`device`/`设备`、`osdevice`/`操作系统设备`、`path`/`路径`。
+/// 判据：`path` 必须是 winload.efi，且**至少一个**设备类字段指向该分区，
+/// 同时不能带 `ramdiskdevice`（ramdisk 选项也有 winload 路径特征，但不是分区加载器）。
+///
+/// 这里刻意用"至少一个设备字段"而不是"device 与 osdevice 都要有"：
+/// 本地化字段名无法穷举（中文 bcdedit 的 osdevice 实测写法是「os 设备」——
+/// 带空格，见 main.rs 里已实战验证的解析器；曾误写成「操作系统设备」），
+/// 一旦某个拼法猜错，AND 语义会让该语言下**所有** loader 都匹配不上，
+/// 引导修复直接全线失效。OR 语义下猜错一个标签只是少一项证据，仍能工作。
+/// 行首匹配也用 starts_with 而非精确相等，兼容「os 设备」这种含空格的键名。
 fn block_is_loader_for(block: &str, needle: &str) -> bool {
     let lower = block.to_ascii_lowercase();
-    let fields: Vec<_> = lower
-        .lines()
-        .filter_map(|line| {
-            let (key, value) = line.trim().split_once(char::is_whitespace)?;
-            Some((key, value.trim()))
-        })
-        .collect();
-    let has = |names: &[&str]| {
-        fields
-            .iter()
-            .any(|(k, v)| names.contains(k) && *v == needle)
-    };
-    has(&["device", "设备"])
-        && has(&["osdevice", "操作系统设备"])
-        && fields
-            .iter()
-            .any(|(k, v)| matches!(*k, "path" | "路径") && v.ends_with("\\winload.efi"))
+    let lines: Vec<&str> = lower.lines().map(str::trim).collect();
+    // ramdisk 条目：设备字段是 ramdiskdevice，不是分区加载器，必须先排除。
+    if lines.iter().any(|line| line.starts_with("ramdiskdevice")) {
+        return false;
+    }
+    let is_loader = lines.iter().any(|line| {
+        (line.starts_with("path") || line.starts_with("路径")) && line.ends_with("\\winload.efi")
+    });
+    let targets_partition = lines.iter().any(|line| {
+        (line.starts_with("device")
+            || line.starts_with("osdevice")
+            || line.starts_with("设备")
+            || line.starts_with("os 设备")
+            || line.starts_with("操作系统设备"))
+            && line.contains(needle)
+    });
+    is_loader && targets_partition
 }
 
 /// 从 PE 头部字节里取出资源目录（`RT_VERSION`）的 RVA 与大小。
@@ -208,7 +243,16 @@ fn pe_rva_to_offset(head: &[u8], rva: u32) -> Option<usize> {
 ///
 /// 目录是三层：类型 → 名字 → 语言。每层条目 `(id/name 标志, 偏移)`，
 /// 偏移最高位为 1 表示指向下一层目录，为 0 表示指向数据入口。
+///
+/// `base` 既是层号也是深度上限：PE 规范只有三层，超过就认定目录畸形。
+/// 必须有这个上限 + "子节点偏移必须前进"的检查：这些字节来自目标卷上的文件，
+/// 一个损坏或被构造的 ntoskrnl.exe 只要让某层条目指回自身，无界递归就会
+/// 栈溢出并 abort 整个进程——而这段代码跑在格式化之前的 discover 里，
+/// 等于让一个坏文件直接终止还原，而不是退化成 "Windows (X:)" 兜底名。
 fn pe_version_resource_offset(resource: &[u8], base: usize, node: usize) -> Option<usize> {
+    if base > 2 {
+        return None;
+    }
     let header = resource.get(node..node + 16)?;
     let named = u16::from_le_bytes(header[12..14].try_into().ok()?) as usize;
     let identified = u16::from_le_bytes(header[14..16].try_into().ok()?) as usize;
@@ -223,6 +267,10 @@ fn pe_version_resource_offset(resource: &[u8], base: usize, node: usize) -> Opti
         }
         if offset & 0x8000_0000 != 0 {
             let child = (offset & 0x7FFF_FFFF) as usize;
+            // 子节点必须严格向前，否则自指/回指的畸形目录会无限递归。
+            if child <= node {
+                continue;
+            }
             if let Some(found) = pe_version_resource_offset(resource, base + 1, child) {
                 return Some(found);
             }
@@ -323,7 +371,10 @@ fn volume_build_tag(root: &Path) -> Option<String> {
 ///
 /// 返回 `None` 表示该分区**没有** loader（将新建），此时才该由我们起名。
 /// 既有条目的名字必须原样保留，否则会把用户自己起的名字覆盖掉。
-/// 字段名同样兼容本地化：英文 `description`、中文「说明」。
+///
+/// 本地化标签无法穷举，所以这里列出已知的几种拼法（「说明」「描述」），
+/// 且**读不到名字不等于没有条目**——调用方据 `block_is_loader_for` 判定条目存在性，
+/// 本函数返回 None 时 apply 会走"按需写入"而不是"覆盖"，不会误删用户的名字。
 pub(crate) fn loader_description_for_partition(output: &str, letter: char) -> Option<String> {
     let needle = format!("partition={}: ", letter.to_ascii_lowercase());
     let needle = needle.trim_end();
@@ -337,7 +388,8 @@ pub(crate) fn loader_description_for_partition(output: &str, letter: char) -> Op
             let Some((key, value)) = trimmed.split_once(char::is_whitespace) else {
                 continue;
             };
-            if matches!(key, "description" | "说明") {
+            let key_lower = key.to_ascii_lowercase();
+            if matches!(key_lower.as_str(), "description" | "说明" | "描述") {
                 return Some(value.trim().to_string());
             }
         }
@@ -535,14 +587,15 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
     let target_letter = target
         .drive_letter
         .ok_or_else(|| crate::err("还原目标盘符缺失"))?;
-    // 既有 loader 的当前名字要从 BCD 读。拿不到（ESP 不可达等）不阻断——
-    // 退化成"没有既有名字"，apply 就按用户是否改过名来决定写不写。
-    let bcd_all = existing_boot_menu_names(log);
     // 默认顺序沿用既有约定：原有系统在前，本次还原的目标追加在后。
     // （早先版本把目标放在首位，导致启动菜单第一项变成新系统、而默认启动项仍是
     // 主系统，两者不一致会让用户困惑；现在默认与 run10 验收过的行为一致，
     // 用户想置前可用「上移」自己调整。）
-    let mut entries = Vec::new();
+    //
+    // 候选卷要先全部挂上盘符，再统一读 BCD：没有盘符的 Windows 卷在 bcdedit
+    // 里显示成 `device partition=\Device\HarddiskVolume4`，按盘符去查必然查不到，
+    // 于是被误判成"没有条目"，apply 就会覆盖掉用户给它起的名字。
+    let mut mounted = Vec::new();
     let paths = crate::windows_prepare::native_volume_paths()?;
     for path in paths {
         let identity = match crate::windows_prepare::volume_identity_at_path(&path, path.clone()) {
@@ -575,10 +628,30 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
         let letter = crate::windows_prepare::ensure_volume_mounted(&identity, 'U', log)?;
         let actual = crate::windows_prepare::volume_identity(letter)?;
         let volume = crate::pe_safety::rebind_after_boot(&identity, &actual, false)?;
+        mounted.push((letter, volume, path.clone()));
+    }
+    // 所有候选卷都挂好盘符之后才读 BCD，这样 bcdedit 报的是 `partition=X:`
+    // 而不是 \Device\HarddiskVolumeN，既有条目才查得到。
+    // 读不到（ESP 不可达等）不阻断：退化成"没有既有名字"，apply 按需写入。
+    let bcd_all = existing_boot_menu_names(log);
+    let default_id = bcd_all
+        .as_deref()
+        .and_then(crate::parse_boot_manager_state)
+        .map(|state| state.default);
+    let mut entries = Vec::new();
+    for (letter, volume, path) in mounted {
+        let root = Path::new(&path);
         // 该卷已有 loader 就用它当前的名字，不要另起一个——用户可能特意命名过。
         let existing = bcd_all
             .as_deref()
             .and_then(|output| loader_description_for_partition(output, letter));
+        // 这一项是不是当前的默认启动系统：是就钉住，不允许取消勾选
+        // （取消会让默认项漂移到刚还原的系统）。
+        let is_current_default = match (&bcd_all, &default_id) {
+            (Some(output), Some(default)) => loader_identifier_for_partition(output, letter)?
+                .is_some_and(|id| id.eq_ignore_ascii_case(default)),
+            _ => false,
+        };
         // 没有条目的（硬盘上有 Windows 但启动菜单里没有它）：按用户要求起一个
         // 带版本号的名字，避免多个未登记系统只差盘符、用户分不清。
         // 读不到版本才退化成带盘符的名字，保证永不为空。
@@ -592,6 +665,7 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             is_restore_target: false,
             volume,
             existing_name: existing,
+            is_current_default,
         });
     }
     // 还原目标放在最后：保持「原有系统在前」的默认顺序，且它是必选项不能取消。
@@ -604,7 +678,27 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
         is_restore_target: true,
         volume: target.clone(),
         existing_name: None,
+        is_current_default: false,
     });
+    // 默认名可能撞车（两个同补丁级别的未登记系统会得到同一个版本串）。
+    // 撞了就补盘符区分，否则启动菜单里出现两个一模一样的项，用户没法选。
+    // validate 会拒绝重名，所以这里必须在返回前消解掉。
+    for index in 0..entries.len() {
+        let name = entries[index].display_name.clone();
+        let duplicated = entries[..index].iter().any(|e| e.display_name == name);
+        if duplicated {
+            let letter = entries[index].drive_letter;
+            let disambiguated = format!("{name} ({letter}:)");
+            entries[index].display_name = disambiguated.chars().take(NAME_MAX_CHARS).collect();
+            crate::append_log(
+                log,
+                &format!(
+                    "引导菜单默认名重复，已加盘符区分：{name} -> {}",
+                    entries[index].display_name
+                ),
+            )?;
+        }
+    }
     Ok(BootMenuPlan {
         entries,
         timeout_seconds: TIMEOUT_DEFAULT,
@@ -747,6 +841,21 @@ pub(crate) fn apply(
             &["/store", &store, "/set", "{bootmgr}", "resumeobject", id],
             log,
         )?;
+    } else {
+        // 快照里没有 resumeobject 时必须删掉 bcdboot 新写的值，否则回读校验
+        // （resume_object 必须等于快照值 None）判定不一致而报失败，
+        // 且休眠恢复会指向错误的系统。删除失败是良性的（本来就没有）。
+        let _ = crate::run_logged(
+            "bcdedit.exe",
+            &[
+                "/store",
+                &store,
+                "/deletevalue",
+                "{bootmgr}",
+                "resumeobject",
+            ],
+            log,
+        );
     }
     let mut args = vec!["/store", store.as_str(), "/displayorder"];
     args.extend(selected.iter().map(String::as_str));
@@ -842,6 +951,8 @@ mod tests {
     /// 默认顺序与 `discover()` 一致：原有系统在前，本次还原的目标在最后。
     /// 首项模拟"BCD 里已有条目且用户起过名"（existing_name = Some），
     /// 末项模拟"还没有条目、该由我们起名"（existing_name = None）。
+    /// 首项刻意**不是**当前默认项，以便测试勾选的正常路径；
+    /// 需要测"默认项被钉住"的用例自行把 is_current_default 置 true。
     fn plan() -> BootMenuPlan {
         BootMenuPlan {
             entries: vec![
@@ -852,6 +963,7 @@ mod tests {
                     is_restore_target: false,
                     volume: identity(0, 1, 'C'),
                     existing_name: Some("我的工作系统".into()),
+                    is_current_default: false,
                 },
                 BootMenuEntry {
                     drive_letter: 'E',
@@ -860,6 +972,7 @@ mod tests {
                     is_restore_target: true,
                     volume: identity(2, 5, 'E'),
                     existing_name: None,
+                    is_current_default: false,
                 },
             ],
             timeout_seconds: TIMEOUT_DEFAULT,
@@ -980,11 +1093,52 @@ mod tests {
     }
 
     #[test]
-    fn loader_description_ignores_ramdisk_and_incomplete_objects() {
-        // ramdisk 选项、缺 osdevice 的对象都不是分区加载器，不能拿它们的 description。
-        let output = "Windows Boot Loader\r\nidentifier {11111111-1111-1111-1111-111111111111}\r\ndescription 恢复环境\r\npath \\Windows\\system32\\winload.efi\r\nramdiskdevice partition=E:\r\n\r\nWindows Boot Loader\r\nidentifier {22222222-2222-2222-2222-222222222222}\r\ndescription 不完整项\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\n\r\n";
-        assert_eq!(loader_description_for_partition(output, 'e'), None);
-        assert_eq!(loader_description_for_partition(output, 'c'), None);
+    fn loader_description_ignores_ramdisk_and_resume_objects() {
+        // 两类必须排除的对象，形态取自仓库里已验证的真实夹具
+        // （main.rs::secondary_loader_selection_ignores_resume_object）：
+        // - ramdisk 条目：设备字段是 ramdiskdevice，不是分区加载器；
+        // - 休眠恢复对象：path 是 winresume.efi 而非 winload.efi，且只带 device。
+        //   正因为 path 不同，判据对设备字段用 OR 语义是安全的——不必强求
+        //   device 与 osdevice 都在（那样会在本地化标签猜错时漏掉全部 loader）。
+        let output = "Windows Boot Loader\r\nidentifier {11111111-1111-1111-1111-111111111111}\r\ndescription 恢复环境\r\npath \\Windows\\system32\\winload.efi\r\nramdiskdevice partition=E:\r\n\r\nWindows Resume Application\r\nidentifier {22222222-2222-2222-2222-222222222222}\r\ndescription 休眠恢复\r\npath \\Windows\\system32\\winresume.efi\r\ndevice partition=C:\r\n\r\n";
+        assert_eq!(
+            loader_description_for_partition(output, 'e'),
+            None,
+            "ramdisk 条目不是分区加载器"
+        );
+        assert_eq!(
+            loader_description_for_partition(output, 'c'),
+            None,
+            "winresume.efi 的休眠恢复对象不是系统加载器"
+        );
+    }
+
+    #[test]
+    fn loader_lookup_survives_a_missing_osdevice_label() {
+        // 只有 device、没有 osdevice（本地化标签未被识别时就是这种观感）：
+        // 必须仍然能认出这是 C: 的加载器，否则该语言下引导修复全线失效。
+        let output = "Windows Boot Loader\r\nidentifier {33333333-3333-4333-8333-333333333333}\r\ndescription 我的系统\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\n\r\n";
+        assert_eq!(
+            loader_description_for_partition(output, 'c').as_deref(),
+            Some("我的系统")
+        );
+        assert_eq!(
+            loader_identifier_for_partition(output, 'c')
+                .unwrap()
+                .as_deref(),
+            Some("{33333333-3333-4333-8333-333333333333}")
+        );
+    }
+
+    #[test]
+    fn loader_lookup_accepts_chinese_os_device_with_space() {
+        // 中文 bcdedit 的 osdevice 实测写法是「os 设备」（带空格），
+        // 用 split_once(whitespace) 取键名会把它截成 "os"，必须用 starts_with 兼容。
+        let output = "Windows Boot Loader\r\n标识符 {44444444-4444-4444-8444-444444444444}\r\n说明 中文系统\r\n路径 \\Windows\\system32\\winload.efi\r\n设备 partition=C:\r\nos 设备 partition=C:\r\n\r\n";
+        assert_eq!(
+            loader_description_for_partition(output, 'c').as_deref(),
+            Some("中文系统")
+        );
     }
 
     /// 手工搭一个最小的 PE 头 + 资源目录 + `VS_VERSIONINFO`，
@@ -1083,6 +1237,33 @@ mod tests {
     }
 
     #[test]
+    fn current_default_entry_cannot_be_unselected() {
+        // 取消当前默认启动项会让默认项漂移到刚还原的系统，而在线路径的验收
+        // 又要求默认项不变 —— 结果是 BCD 已改坏却报失败且无回滚。必须在此拦住。
+        let mut p = plan();
+        p.entries[0].is_current_default = true;
+        assert!(!p.toggle(0), "当前默认启动项必须拒绝取消");
+        assert!(p.entries[0].selected, "状态不能被改变");
+        // 即使绕过 toggle（例如落盘的方案被改过），validate 也要拒绝。
+        p.entries[0].selected = false;
+        p.validate()
+            .expect_err("默认项未选中的方案必须被 validate 拒绝");
+    }
+
+    #[test]
+    fn duplicate_menu_names_are_rejected() {
+        // 两个同名项在启动菜单里无法区分，用户不知道该选哪个。
+        let mut p = plan();
+        p.entries[1].display_name = p.entries[0].display_name.clone();
+        p.validate().expect_err("同名项必须被拒绝");
+        // 未勾选的项不参与重名判定（它不会进菜单）。
+        let mut q = plan();
+        q.entries[0].selected = false;
+        q.entries[1].display_name = q.entries[0].display_name.clone();
+        q.validate().expect("未勾选项不该触发重名拒绝");
+    }
+
+    #[test]
     fn existing_name_keeps_original_and_only_new_entries_get_named() {
         // 这是命名契约的核心：既有条目名字没变时一个字都不写，
         // 用户改过名或条目是新建的才写。
@@ -1122,24 +1303,32 @@ mod tests {
     }
 
     #[test]
-    fn default_names_are_distinct_and_versioned() {
-        // 用户要求避免 win1/win2 或重名：默认名必须互不相同且带可区分信息。
+    fn versioned_names_satisfy_the_menu_constraints() {
+        // 不自己编造名字再断言它们不同（那样的断言永不失败）。
+        // 这里验证的是真实契约：版本化名字必须能通过 validate 的全部约束，
+        // 而撞名必须被拒绝——discover 返回前的去重逻辑就是据此设计的。
         let mut p = plan();
-        // 模拟 discover 的默认命名：既有条目用原名，新条目用带版本/日期的名字。
-        p.entries[0].display_name = "Windows 11 26100".into();
-        p.entries[0].existing_name = Some("Windows 11 26100".into());
-        p.entries[1].display_name = "Windows 11 20261012".into();
-        let names: Vec<&str> = p.entries.iter().map(|e| e.display_name.as_str()).collect();
-        let unique: std::collections::HashSet<_> = names.iter().collect();
-        assert_eq!(unique.len(), names.len(), "默认名不允许重复");
-        for name in &names {
-            assert!(!name.trim().is_empty(), "默认名不能为空");
-            assert!(
-                name.chars().count() <= NAME_MAX_CHARS,
-                "默认名不能超过 {NAME_MAX_CHARS} 字"
-            );
+        p.entries[0].display_name = "Windows 11 26100.9549".into();
+        p.entries[0].existing_name = Some("Windows 11 26100.9549".into());
+        p.entries[1].display_name = "Windows 11 Pro 26100.9549".into();
+        p.validate().expect("版本化名字应通过全部校验");
+        for entry in &p.entries {
+            assert!(!entry.display_name.trim().is_empty());
+            assert!(entry.display_name.chars().count() <= NAME_MAX_CHARS);
+            assert!(!entry.display_name.chars().any(char::is_control));
         }
-        assert!(p.validate().is_ok(), "带版本/日期默认名的方案应通过校验");
+        // 同补丁级别的两个未登记系统会生成同一个版本串，必须被拒绝，
+        // 从而迫使 discover 加盘符区分。
+        let mut collided = p.clone();
+        collided.entries[1].display_name = collided.entries[0].display_name.clone();
+        collided
+            .validate()
+            .expect_err("相同版本串必须被当作重名拒绝");
+        // 加盘符区分后应恢复合法。
+        let letter = collided.entries[1].drive_letter;
+        collided.entries[1].display_name =
+            format!("{} ({letter}:)", collided.entries[0].display_name);
+        collided.validate().expect("加盘符区分后应通过");
     }
 
     #[test]

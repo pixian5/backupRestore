@@ -2687,13 +2687,6 @@ fn recover_windows(
                 if let Some(entry) = &resume_entry {
                     boot_entry::rearm(entry, log)?;
                 }
-                // 映像已经完整落盘，冻结用户最终选择并一次性应用到 ESP。
-                // 目标系统是必选项；其它系统按弹窗选择，既有 PE 入口由 apply 保留。
-                let boot_menu_plan = boot_menu_session
-                    .as_ref()
-                    .ok_or_else(|| err("Windows 系统卷缺少引导修复方案"))?
-                    .freeze()?;
-                crate::boot_menu::apply(&boot_menu_plan, &efi, log, resume_entry.as_ref())?;
                 recovery_fault::checkpoint("bcdboot-before", log)?;
                 run_logged("bcdboot.exe", &bcd_refs, log)?;
                 recovery_fault::checkpoint("bcdboot-after", log)?;
@@ -2723,6 +2716,18 @@ fn recover_windows(
                         log,
                     )?;
                 }
+                // 引导修复必须是**最后**一个写 BCD 的步骤：用户在弹窗里选的名字、
+                // 顺序、勾选与菜单秒数是最终意图。早先放在 bcdboot 之前时，
+                // 后面的 set_secondary_boot_menu 会用 task.boot_menu_name 覆盖掉改名，
+                // preserve_primary_boot_manager 又会按快照顺序重写 displayorder，
+                // 把用户的排序和取消勾选一起丢掉——与弹窗里
+                // "本列表就是还原完成后的最终启动菜单顺序"的承诺直接矛盾。
+                // 目标系统是必选项；其它系统按勾选处理，既有 PE 入口由 apply 保留。
+                let boot_menu_plan = boot_menu_session
+                    .as_ref()
+                    .ok_or_else(|| err("Windows 系统卷缺少引导修复方案"))?
+                    .freeze()?;
+                crate::boot_menu::apply(&boot_menu_plan, &efi, log, resume_entry.as_ref())?;
                 if finalize_success {
                     append_log(log, "STEP 4/4 清理re启动项/配置")?;
                     store.write_transition(task, Stage::Success)?;
