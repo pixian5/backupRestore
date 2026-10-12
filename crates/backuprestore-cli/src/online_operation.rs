@@ -100,6 +100,24 @@ fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
 fn indexes(image: &Path, log_path: &Path) -> Result<Vec<u32>, TaskError> {
     crate::wim_indexes(image, log_path)
 }
+
+/// 从镜像副档里拼出带版本号的菜单名，如 `Windows 11 Pro 26100.9549`。
+///
+/// 副档是备份时记录的真实版本，比盘符/日期信息量大；缺失或字段为空时返回 None，
+/// 调用方依次退化成"读目标卷版本"与"通用名"。第三方 WIM 没有副档，属正常情况。
+fn read_image_version_name(image: &Path, index: u32) -> Option<String> {
+    let metadata = im::read_index_metadata(image, index).ok()?;
+    let edition = metadata.windows_edition.trim();
+    let build = metadata.windows_build.trim();
+    let name = match (edition.is_empty(), build.is_empty()) {
+        (false, false) => format!("{edition} {build}"),
+        (false, true) => edition.to_string(),
+        (true, false) => format!("Windows {build}"),
+        (true, true) => return None,
+    };
+    // 菜单名上限 60 字，超长在这里就截断，避免拖到写入 BCD 才失败。
+    (!name.trim().is_empty()).then(|| name.trim().chars().take(60).collect())
+}
 /// `progress` 用于在第二阶段发布引导修复会话（还原到另一个 Windows 卷时）。
 fn execute_inner(
     params: &OnlineOpParams,
@@ -224,6 +242,13 @@ fn restore_to_windows_volume(
         true,
     )?;
     let store = format!("{esp_letter}:\\EFI\\Microsoft\\Boot\\BCD");
+    // 给"本次还原的目标"起名的首选来源是镜像副档里的 windows_edition +
+    // windows_build（备份时记录的真实版本，如 "Windows 11 Pro" + "26100.9549"）。
+    // 这比读盘符/日期信息量大得多，且此刻目标卷还没格式化，读不到 ntoskrnl。
+    let versioned_name = read_image_version_name(image, index);
+    if let Some(name) = &versioned_name {
+        log(log_path, &format!("引导菜单将使用镜像版本名：{name}"))?;
+    }
     // 引导修复方案必须在格式化前准备好：格式化后目标卷是空卷，探测不到任何系统。
     // 这里只落盘候选、不写 BCD；实际写入延后到 STEP 4 映像应用完成之后。
     // task_id 用日志目录名：同一次在线操作只有一个目录，足够唯一定位 boot-menu-plan.json。
@@ -234,14 +259,15 @@ fn restore_to_windows_volume(
             .unwrap_or_else(|| "online-restore".to_string()),
         dir,
         log_path,
+        versioned_name.as_deref(),
     )?;
-    // 默认菜单名沿用调用方给的镜像名，保持既有行为；用户可在弹窗里改。
+    // 调用方显式指定了镜像名时以它为准（用户自己的命名优先于自动版本名）。
     // 目标下标不硬编码：默认顺序里它在最后，用户也可能上移。
     if !params.image_name.is_empty() {
         let name = params.image_name.clone();
         boot_menu_session.edit(move |plan| {
-            if let Some(index) = plan.restore_target_index() {
-                plan.rename(index, &name);
+            if let Some(position) = plan.restore_target_index() {
+                plan.rename(position, &name);
             }
         });
     }

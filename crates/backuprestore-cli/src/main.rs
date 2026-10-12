@@ -2526,11 +2526,15 @@ fn recover_windows(
             // 第二阶段按钮需要在目标身份确认后尽早出现；方案落盘并不修改 BCD，
             // 实际写入延后到映像应用完成后的引导修复阶段。
             let boot_menu_session = if pe_safety::target_is_windows_volume(&target_root)? {
+                // 优先用任务里记录的第二系统菜单名（用户在准备阶段自己起的）；
+                // 没有它才由 BootMenuSession 按镜像副档版本自动起名。
+                let preferred_name = target.boot_menu_name.clone();
                 let session = crate::boot_menu::BootMenuSession::prepare(
                     &target.volume,
                     &task.task_id,
                     &store.task_dir(&task.task_id)?,
                     log,
+                    preferred_name.as_deref(),
                 )?;
                 if let Some(p) = progress {
                     p.set_boot_menu(Arc::clone(&session));
