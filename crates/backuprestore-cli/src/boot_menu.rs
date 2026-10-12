@@ -49,6 +49,13 @@ impl BootMenuPlan {
         self.entries.swap(index, index + 1);
         true
     }
+    /// 本次还原目标在菜单里的下标。默认顺序下它在最后，但用户可上移，
+    /// 所以调用方一律用本方法定位，不要硬编码 0。
+    pub(crate) fn restore_target_index(&self) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.is_restore_target)
+    }
     pub(crate) fn rename(&mut self, index: usize, name: &str) -> bool {
         let trimmed = name.trim();
         if trimmed.is_empty()
@@ -110,9 +117,10 @@ pub(crate) fn loader_identifier_for_partition(
             .collect();
         // 中文本地化的 bcdedit 用「路径」而不是 path；只认英文会在中文机器上
         // 漏掉全部加载器，引导修复因此永远找不到候选（实机前由单测拦住）。
-        if !fields.iter().any(|(k, v)| {
-            matches!(*k, "path" | "路径") && v.ends_with("\\winload.efi")
-        }) {
+        if !fields
+            .iter()
+            .any(|(k, v)| matches!(*k, "path" | "路径") && v.ends_with("\\winload.efi"))
+        {
             continue;
         }
         if !fields
@@ -283,13 +291,11 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
     let target_letter = target
         .drive_letter
         .ok_or_else(|| crate::err("还原目标盘符缺失"))?;
-    let mut entries = vec![BootMenuEntry {
-        drive_letter: target_letter,
-        display_name: "本次还原的 Windows".into(),
-        selected: true,
-        is_restore_target: true,
-        volume: target.clone(),
-    }];
+    // 默认顺序沿用既有约定：原有系统在前，本次还原的目标追加在后。
+    // （早先版本把目标放在首位，导致启动菜单第一项变成新系统、而默认启动项仍是
+    // 主系统，两者不一致会让用户困惑；现在默认与 run10 验收过的行为一致，
+    // 用户想置前可用「上移」自己调整。）
+    let mut entries = Vec::new();
     let paths = crate::windows_prepare::native_volume_paths()?;
     for path in paths {
         let identity = match crate::windows_prepare::volume_identity_at_path(&path, path.clone()) {
@@ -330,6 +336,14 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             volume,
         });
     }
+    // 还原目标放在最后：保持「原有系统在前」的默认顺序，且它是必选项不能取消。
+    entries.push(BootMenuEntry {
+        drive_letter: target_letter,
+        display_name: "本次还原的 Windows".into(),
+        selected: true,
+        is_restore_target: true,
+        volume: target.clone(),
+    });
     Ok(BootMenuPlan {
         entries,
         timeout_seconds: TIMEOUT_DEFAULT,
@@ -526,16 +540,10 @@ mod tests {
         }
     }
 
+    /// 默认顺序与 `discover()` 一致：原有系统在前，本次还原的目标在最后。
     fn plan() -> BootMenuPlan {
         BootMenuPlan {
             entries: vec![
-                BootMenuEntry {
-                    drive_letter: 'E',
-                    display_name: "本次还原的 Windows".into(),
-                    selected: true,
-                    is_restore_target: true,
-                    volume: identity(2, 5, 'E'),
-                },
                 BootMenuEntry {
                     drive_letter: 'C',
                     display_name: "Windows (C:)".into(),
@@ -543,20 +551,40 @@ mod tests {
                     is_restore_target: false,
                     volume: identity(0, 1, 'C'),
                 },
+                BootMenuEntry {
+                    drive_letter: 'E',
+                    display_name: "本次还原的 Windows".into(),
+                    selected: true,
+                    is_restore_target: true,
+                    volume: identity(2, 5, 'E'),
+                },
             ],
             timeout_seconds: TIMEOUT_DEFAULT,
         }
     }
 
     #[test]
+    fn restore_target_index_finds_the_mandatory_entry() {
+        // 默认顺序里目标在最后；用户上移后仍必须定位正确，故禁止硬编码下标 0。
+        let p = plan();
+        assert_eq!(p.restore_target_index(), Some(1));
+        let mut moved = plan();
+        assert!(moved.move_up(1), "目标可被上移");
+        assert_eq!(moved.restore_target_index(), Some(0), "上移后下标要跟着变");
+        let mut empty = plan();
+        empty.entries.clear();
+        assert_eq!(empty.restore_target_index(), None);
+    }
+
+    #[test]
     fn restore_target_cannot_be_unselected() {
         let mut p = plan();
-        assert!(!p.toggle(0), "还原目标是必选项，勾选必须被拒绝");
-        assert!(p.entries[0].selected, "必选项状态不能被改变");
-        assert!(p.toggle(1), "其它系统可以取消");
-        assert!(!p.entries[1].selected);
-        assert!(p.toggle(1));
-        assert!(p.entries[1].selected, "再次勾选应恢复选中");
+        assert!(!p.toggle(1), "还原目标是必选项，勾选必须被拒绝");
+        assert!(p.entries[1].selected, "必选项状态不能被改变");
+        assert!(p.toggle(0), "其它系统可以取消");
+        assert!(!p.entries[0].selected);
+        assert!(p.toggle(0));
+        assert!(p.entries[0].selected, "再次勾选应恢复选中");
         assert!(!p.toggle(9), "越界下标不得 panic");
     }
 
@@ -565,9 +593,9 @@ mod tests {
         let mut p = plan();
         assert!(!p.move_up(0), "首项上移应无效");
         assert!(p.move_down(0), "首项下移应生效");
-        assert_eq!(p.entries[0].drive_letter, 'C', "下移后首项应变成原第二项");
+        assert_eq!(p.entries[0].drive_letter, 'E', "下移后首项应变成原第二项");
         assert!(p.move_up(1));
-        assert_eq!(p.entries[0].drive_letter, 'E', "上移后应还原");
+        assert_eq!(p.entries[0].drive_letter, 'C', "上移后应还原");
         assert!(!p.move_down(1), "末项下移应无效");
         assert!(!p.move_down(9), "越界下标不得 panic");
     }
@@ -582,20 +610,24 @@ mod tests {
         assert!(!p.rename(9, "越界"), "越界下标不得 panic");
         let long = "长".repeat(NAME_MAX_CHARS + 5);
         assert!(p.rename(1, &long));
-        assert_eq!(p.entries[1].display_name.chars().count(), NAME_MAX_CHARS, "超长名称应截断");
+        assert_eq!(
+            p.entries[1].display_name.chars().count(),
+            NAME_MAX_CHARS,
+            "超长名称应截断"
+        );
     }
 
     #[test]
     fn validate_requires_exactly_one_selected_target() {
         let mut p = plan();
         p.validate().expect("默认方案应通过");
-        p.entries.remove(0);
+        p.entries.remove(1);
         p.validate().expect_err("缺少还原目标必须拒绝");
         let mut p = plan();
-        p.entries[0].selected = false;
+        p.entries[1].selected = false;
         p.validate().expect_err("还原目标被取消必须拒绝");
         let mut p = plan();
-        p.entries[1].is_restore_target = true;
+        p.entries[0].is_restore_target = true;
         p.validate().expect_err("两个必选项必须拒绝");
     }
 
@@ -625,7 +657,9 @@ mod tests {
         let output = "\
 Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nidentifier {11111111-2222-3333-4444-555555555555}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\n";
         assert_eq!(
-            loader_identifier_for_partition(output, 'c').unwrap().as_deref(),
+            loader_identifier_for_partition(output, 'c')
+                .unwrap()
+                .as_deref(),
             Some("{11111111-2222-3333-4444-555555555555}")
         );
         assert_eq!(loader_identifier_for_partition(output, 'd').unwrap(), None);
@@ -636,7 +670,9 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
         // 中文 Windows 的 bcdedit 用「设备」「操作系统设备」标签，字段名解析不能因此失效。
         let output = "Windows Boot Loader\r\n标识符 {aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}\r\n路径 \\Windows\\system32\\winload.efi\r\n设备 partition=C:\r\n操作系统设备 partition=C:\r\n\r\n";
         assert_eq!(
-            loader_identifier_for_partition(output, 'C').unwrap().as_deref(),
+            loader_identifier_for_partition(output, 'C')
+                .unwrap()
+                .as_deref(),
             Some("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}")
         );
     }
@@ -658,14 +694,17 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
 
     #[test]
     fn render_entries_marks_cursor_target_and_selection() {
+        // 光标落在下标 1，即默认顺序里的还原目标（原有系统在前）。
         let rendered = render_entries(&plan(), 1);
         let lines: Vec<&str> = rendered.split("\r\n").collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with(' '), "非焦点行用空格占位保持排版稳定");
         assert!(lines[0].contains("[√]"), "选中项显示勾选");
-        assert!(lines[0].contains("[本次还原·必选]"), "还原目标必须标注");
-        assert!(lines[0].ends_with("[本次还原·必选]"), "必选标注在行尾");
+        assert!(lines[0].contains("(C:)"), "首行是原有系统");
+        assert!(!lines[0].contains("必选"), "非目标行不得标注必选");
         assert!(lines[1].starts_with('>'), "光标行以 > 指示");
-        assert!(lines[1].contains("2. "), "第二项序号为 2（序号从 1 起算）");
+        assert!(lines[1].contains("[本次还原·必选]"), "还原目标必须标注");
+        assert!(lines[1].ends_with("[本次还原·必选]"), "必选标注在行尾");
+        assert!(lines[1].contains("(E:)"), "目标行带盘符");
     }
 }

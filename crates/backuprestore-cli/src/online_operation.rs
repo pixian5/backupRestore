@@ -55,7 +55,7 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
         &path,
         "STEP 1/4 校验参数和卷身份；还原到另一 Windows 卷时会格式化并写入引导，但不改动主系统默认启动项",
     )
-    .and_then(|()| execute_inner(params, &path));
+    .and_then(|()| execute_inner(params, &path, &progress.0));
     let mut success = result.is_ok();
     let final_message = match result {
         Ok(()) => "操作完成：命令、回读和副档簿记均已通过".to_string(),
@@ -100,7 +100,12 @@ fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
 fn indexes(image: &Path, log_path: &Path) -> Result<Vec<u32>, TaskError> {
     crate::wim_indexes(image, log_path)
 }
-fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskError> {
+/// `progress` 用于在第二阶段发布引导修复会话（还原到另一个 Windows 卷时）。
+fn execute_inner(
+    params: &OnlineOpParams,
+    log_path: &Path,
+    progress: &std::sync::Arc<crate::recovery_progress::ProgressShared>,
+) -> Result<(), TaskError> {
     backuprestore_core::validate_absolute_path(&params.image_path)?;
     let image = Path::new(&params.image_path);
     let affected = drive(if params.operation == "backup" {
@@ -154,7 +159,9 @@ fn execute_inner(params: &OnlineOpParams, log_path: &Path) -> Result<(), TaskErr
             // 与 PE 入口对齐（目标都是非当前运行的第二系统）。断电风险与 PE 相同——
             // 第二系统即使中途失败也只是不可启动，主系统仍在，重新还原即可，故不引入状态机。
             if crate::pe_safety::target_is_windows_volume(&root)? {
-                return restore_to_windows_volume(params, &root, identity, index, log_path);
+                return restore_to_windows_volume(
+                    params, &root, identity, index, log_path, progress,
+                );
             }
             log(
                 log_path,
@@ -203,6 +210,7 @@ fn restore_to_windows_volume(
     target: VolumeIdentity,
     index: u32,
     log_path: &Path,
+    progress: &std::sync::Arc<crate::recovery_progress::ProgressShared>,
 ) -> Result<(), TaskError> {
     let image: &Path = Path::new(&params.image_path);
     let dir = log_path
@@ -216,10 +224,29 @@ fn restore_to_windows_volume(
         true,
     )?;
     let store = format!("{esp_letter}:\\EFI\\Microsoft\\Boot\\BCD");
-    log(
+    // 引导修复方案必须在格式化前准备好：格式化后目标卷是空卷，探测不到任何系统。
+    // 这里只落盘候选、不写 BCD；实际写入延后到 STEP 4 映像应用完成之后。
+    // task_id 用日志目录名：同一次在线操作只有一个目录，足够唯一定位 boot-menu-plan.json。
+    let boot_menu_session = crate::boot_menu::BootMenuSession::prepare(
+        &target,
+        &dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "online-restore".to_string()),
+        dir,
         log_path,
-        "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷",
     )?;
+    // 默认菜单名沿用调用方给的镜像名，保持既有行为；用户可在弹窗里改。
+    // 目标下标不硬编码：默认顺序里它在最后，用户也可能上移。
+    if !params.image_name.is_empty() {
+        let name = params.image_name.clone();
+        boot_menu_session.edit(move |plan| {
+            if let Some(index) = plan.restore_target_index() {
+                plan.rename(index, &name);
+            }
+        });
+    }
+    progress.set_boot_menu(std::sync::Arc::clone(&boot_menu_session));
+    log(log_path, "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷")?;
     let before = run_bcd_edit(
         &[
             "/store".into(),
@@ -335,60 +362,17 @@ fn restore_to_windows_volume(
         dir,
     )?;
     let loader = crate::pe_safety::target_loader(&all, target_letter)?;
-    let description = if params.image_name.is_empty() {
-        "BackupRestore 第二系统".to_string()
-    } else {
-        params.image_name.clone()
-    };
-    run_bcd_edit(
-        &[
-            "/store".into(),
-            store.clone(),
-            "/set".into(),
-            loader.clone(),
-            "description".into(),
-            description,
-        ],
-        dir,
+    // 上面的 bcdboot 已把第二系统 loader 建好；引导方案此刻冻结，由 boot_menu::apply
+    // 统一写入菜单名称、顺序、默认项、休眠引用与显示时间，并逐项回读校验。
+    // 原先这里手写一套 description/displayorder/default/resumeobject，与 apply 职责
+    // 完全重叠且不给用户选择权，故整体替换（原四项断言保留在下方作最终验收）。
+    let boot_plan = boot_menu_session.freeze()?;
+    crate::boot_menu::apply(
+        &boot_plan,
+        &PathBuf::from(format!("{esp_letter}:\\")),
+        log_path,
+        None,
     )?;
-    let mut order = old.display_order.clone();
-    if !order.iter().any(|id| id.eq_ignore_ascii_case(&loader)) {
-        order.push(loader.clone());
-    }
-    let mut args = vec!["/store".into(), store.clone(), "/displayorder".into()];
-    args.extend(order.iter().cloned());
-    run_bcd_edit(&args, dir)?;
-    run_bcd_edit(
-        &[
-            "/store".into(),
-            store.clone(),
-            "/set".into(),
-            "{bootmgr}".into(),
-            "default".into(),
-            old.default.clone(),
-        ],
-        dir,
-    )?;
-    // bcdboot 会把 bootmgr 的 resumeobject 改写成新 loader 的恢复对象；按「保留主系统默认启动项」约定须复原为快照值。
-    let resume_args: Vec<String> = if let Some(r) = old.resume_object.clone() {
-        vec![
-            "/store".into(),
-            store.clone(),
-            "/set".into(),
-            "{bootmgr}".into(),
-            "resumeobject".into(),
-            r,
-        ]
-    } else {
-        vec![
-            "/store".into(),
-            store.clone(),
-            "/deletevalue".into(),
-            "{bootmgr}".into(),
-            "resumeobject".into(),
-        ]
-    };
-    run_bcd_edit(&resume_args, dir)?;
     let current = run_bcd_edit(
         &[
             "/store".into(),
@@ -403,17 +387,26 @@ fn restore_to_windows_volume(
         Some(c) => c,
         None => return Err(crate::err("无法解析还原后的引导管理器状态，拒绝报成功")),
     };
-    // 验收：主系统默认启动项保留、启动菜单顺序合理（原顺序 + 新 loader）、
-    // bootmgr 的 resume_object 恢复为主系统的快照值；原有 loader 的恢复对象映射
-    // 不得被破坏，但允许 bcdboot 为第二系统新建的 loader 存在。
+    // 验收：主系统默认启动项保留、bootmgr 的 resume_object 恢复为主系统的快照值；
+    // 原有 loader 的恢复对象映射不得被破坏；原菜单里已有的项必须一个不少地保留
+    // （引导修复只允许追加/改名/改序，不允许弄丢既有入口）。
     if cur.default != old.default {
         return Err(crate::err("第二系统默认启动项不符合约定，拒绝报成功"));
     }
-    if cur.display_order != order {
-        return Err(crate::err("启动菜单顺序不符合约定，拒绝报成功"));
+    if !old
+        .display_order
+        .iter()
+        .all(|id| cur.display_order.iter().any(|cur_id| cur_id == id))
+    {
+        return Err(crate::err("原有启动菜单项丢失，拒绝报成功"));
+    }
+    if !cur.display_order.iter().any(|id| id == &loader) {
+        return Err(crate::err("第二系统启动项未进入菜单，拒绝报成功"));
     }
     if cur.resume_object != old.resume_object {
-        return Err(crate::err("bootmgr resume_object 未恢复为主系统，拒绝报成功"));
+        return Err(crate::err(
+            "bootmgr resume_object 未恢复为主系统，拒绝报成功",
+        ));
     }
     for (l, r) in &old.loader_resume_objects {
         if !cur
