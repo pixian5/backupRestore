@@ -84,7 +84,20 @@ if [ "$1" = "--deploy" ]; then
   # 两个文件名（BackupRestore.exe / Recovery.exe）全部刷新并逐个比对哈希。
   # 清理步骤的失败都是良性的（进程本来没在跑、文件本来不存在），
   # 用 exit /b 0 收尾，避免良性退出码在 set -e 下中断部署。
-  prl_exec_retry "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe & taskkill /f /im Recovery.exe & if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package & if not exist H:\\brwork\\NUL mkdir H:\\brwork & del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd & exit /b 0"
+  #
+  # ⚠️ 2026-10-12 实测教训：不要把 mkdir/del/taskkill 串成一长串 `&` 命令。
+  # 那条 400+ 字符的长链经 prlctl exec 传递时会**静默失败**——命令返回 0、
+  # 不报任何错，但 mkdir 实际没执行，于是 H:\brwork 建不起来，后续 copy 失败，
+  # 部署假失败。现场表现：脚本打印"部署到 VM"后什么输出都没有就结束。
+  # 拆成独立短调用后每次都能确认结果；mkdir 不加 `|| true`，
+  # 因为它失败必须让部署中止（后面 copy 到不存在的目录必然失败）。
+  # 1) 停掉可能在跑的旧进程（找不到进程是常态，良性）
+  prl_exec_retry "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe & taskkill /f /im Recovery.exe & exit /b 0" || true
+  # 2) 建两个目标目录（各一次独立调用，确认真的建起来了）
+  prl_exec_retry "Windows 11" cmd /d /c "if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package"
+  prl_exec_retry "Windows 11" cmd /d /c "if not exist H:\\brwork\\NUL mkdir H:\\brwork"
+  # 3) 清掉包目录里的旧启动件（文件本来就不存在是常态，良性）
+  prl_exec_retry "Windows 11" cmd /d /c "del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd & exit /b 0" || true
   DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\Recovery.exe && echo DEPLOYED")
   if ! echo "$DEPLOY_OUTPUT" | grep -q '^DEPLOYED'; then
     echo "部署失败：客体未返回 DEPLOYED 成功标记" >&2
