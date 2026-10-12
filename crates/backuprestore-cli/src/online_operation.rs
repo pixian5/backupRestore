@@ -360,6 +360,26 @@ fn restore_to_windows_volume(
         ],
         dir,
     )?;
+    // bcdboot 会把 bootmgr 的 resumeobject 改写成新 loader 的恢复对象；按「保留主系统默认启动项」约定须复原为快照值。
+    let resume_args: Vec<String> = if let Some(r) = old.resume_object.clone() {
+        vec![
+            "/store".into(),
+            store.clone(),
+            "/set".into(),
+            "{bootmgr}".into(),
+            "resumeobject".into(),
+            r,
+        ]
+    } else {
+        vec![
+            "/store".into(),
+            store.clone(),
+            "/deletevalue".into(),
+            "{bootmgr}".into(),
+            "resumeobject".into(),
+        ]
+    };
+    run_bcd_edit(&resume_args, dir)?;
     let current = run_bcd_edit(
         &[
             "/store".into(),

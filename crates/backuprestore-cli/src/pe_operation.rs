@@ -716,24 +716,44 @@ impl RestoreBackend for Engine {
                 &[
                     "/store".into(),
                     store.clone(),
-                    "/set".into(),
-                    "{bootmgr}".into(),
-                    "default".into(),
-                    old.default.clone(),
-                ],
-                false,
-            )?;
-            let current = self.command(
-                "bcdedit.exe",
-                &[
-                    "/store".into(),
-                    store,
-                    "/enum".into(),
-                    "{bootmgr}".into(),
-                    "/v".into(),
-                ],
-                false,
-            )?;
+                "/set".into(),
+                "{bootmgr}".into(),
+                "default".into(),
+                old.default.clone(),
+            ],
+            false,
+        )?;
+        // bcdboot 会改写 bootmgr.resumeobject；按约定复原为快照值（无则删除）。
+        let resume_args: Vec<String> = if let Some(r) = old.resume_object.clone() {
+            vec![
+                "/store".into(),
+                store.clone(),
+                "/set".into(),
+                "{bootmgr}".into(),
+                "resumeobject".into(),
+                r,
+            ]
+        } else {
+            vec![
+                "/store".into(),
+                store.clone(),
+                "/deletevalue".into(),
+                "{bootmgr}".into(),
+                "resumeobject".into(),
+            ]
+        };
+        self.command("bcdedit.exe", &resume_args, false)?;
+        let current = self.command(
+            "bcdedit.exe",
+            &[
+                "/store".into(),
+                store,
+                "/enum".into(),
+                "{bootmgr}".into(),
+                "/v".into(),
+            ],
+            false,
+        )?;
             if crate::parse_boot_manager_state(&current)
                 != Some(crate::BcdBootManagerState {
                     default: old.default,
