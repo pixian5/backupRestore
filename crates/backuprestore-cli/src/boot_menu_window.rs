@@ -120,7 +120,8 @@ unsafe fn repaint(hwnd: Hwnd, s: &mut State) {
         SetWindowTextW(
             GetDlgItem(hwnd, HINT),
             wide(if editable {
-                "还原继续运行；选择即时保存。名称/秒数修改后按保存。无倒计时。"
+                "还原继续运行，选择即时保存。此处显示的顺序就是还原完成后的最终启动菜单；\
+                 标有「Step 4生效」的是正在还原的系统。名称/秒数修改后按保存。无倒计时。"
             } else {
                 "映像应用完成，方案已锁定并执行；关闭窗口即可。"
             })
@@ -274,7 +275,7 @@ pub(crate) unsafe fn open_editor(owner: Hwnd, session: Arc<BootMenuSession>) -> 
         let children = [
             (
                 "STATIC",
-                "本次还原系统必选；其它默认选择。空格勾选，Shift+↑↓排序，F2改名，Esc关闭。",
+                "本列表就是还原完成后的最终启动菜单顺序。正在还原的系统不可取消；空格勾选，Shift+↑↓排序，F2改名，Esc关闭。",
                 0,
                 12,
                 12,

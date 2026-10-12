@@ -152,7 +152,7 @@ pub(crate) fn render_entries(plan: &BootMenuPlan, cursor: usize) -> String {
                 e.display_name,
                 e.drive_letter,
                 if e.is_restore_target {
-                    " [本次还原·必选]"
+                    " [当前正在还原中的系统·Step 4生效]"
                 } else {
                     ""
                 }
@@ -358,6 +358,18 @@ pub(crate) fn apply(
     resume: Option<&crate::boot_entry::ReBootEntry>,
 ) -> Result<(), TaskError> {
     plan.validate()?;
+    // 盘符是临时参数、不是身份。从方案准备好到真正写入 BCD 之间，目标卷可能被
+    // 重新挂到别的盘符（在线路径 STEP 3.5 就挂到 T:），所以这里必须按稳定 GUID
+    // 重新取当前盘符。用 prepare 时记的旧盘符去找 loader，会一个都找不到——
+    // 这正是 2026-10-12 在线路径接入后第四步必败的根因。
+    let mut plan = plan.clone();
+    for entry in &mut plan.entries {
+        let letter =
+            crate::windows_prepare::ensure_volume_mounted(&entry.volume, entry.drive_letter, log)?;
+        let actual = crate::windows_prepare::volume_identity(letter)?;
+        entry.volume = crate::pe_safety::rebind_after_boot(&entry.volume, &actual, false)?;
+        entry.drive_letter = letter;
+    }
     let store = esp
         .join("EFI\\Microsoft\\Boot\\BCD")
         .to_string_lossy()
@@ -703,8 +715,14 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
         assert!(lines[0].contains("(C:)"), "首行是原有系统");
         assert!(!lines[0].contains("必选"), "非目标行不得标注必选");
         assert!(lines[1].starts_with('>'), "光标行以 > 指示");
-        assert!(lines[1].contains("[本次还原·必选]"), "还原目标必须标注");
-        assert!(lines[1].ends_with("[本次还原·必选]"), "必选标注在行尾");
+        assert!(
+            lines[1].contains("[当前正在还原中的系统·Step 4生效]"),
+            "还原目标必须标注"
+        );
+        assert!(
+            lines[1].ends_with("[当前正在还原中的系统·Step 4生效]"),
+            "必选标注在行尾"
+        );
         assert!(lines[1].contains("(E:)"), "目标行带盘符");
     }
 }

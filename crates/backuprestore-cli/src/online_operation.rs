@@ -321,6 +321,57 @@ fn restore_to_windows_volume(
     // 离线路径在 bcdboot 前做同一件事（main.rs 的 CreateSecondary 分支），此处对齐。
     crate::secondary_registry::repair(&target_root, target_letter, &after, log_path)?;
 
+    // 用户要求：还原进行中就要能在真实启动菜单里看到这一项（占位），
+    // 最后 STEP 4 再按用户在弹窗里的选择补成正式项。
+    // 时机选在 DISM 应用完成 + 盘符绑定之后：此刻目标卷已是完整 Windows
+    // （winload.efi / SYSTEM hive 都在），用 bcdboot 建的 loader 属性完整、
+    // 真的能启动，不是坏项。/addlast 只追加到菜单末尾，不动默认启动项。
+    // 若不提前建，用户等待几十分钟期间重启，菜单里看不到正在还原的系统。
+    log(
+        log_path,
+        "STEP 3.6/4 预建还原系统启动项（等待期间即可在启动菜单看到并选择）",
+    )?;
+    run_capture(
+        "bcdboot.exe",
+        &[
+            format!("{target_letter}:\\Windows"),
+            "/s".into(),
+            format!("{esp_letter}:"),
+            "/f".into(),
+            "UEFI".into(),
+            "/addlast".into(),
+        ],
+        &cmd_out_file(dir),
+        true,
+    )?;
+    // 立刻把默认启动项与休眠引用恢复成快照值：bcdboot 会把 {bootmgr}.resumeobject
+    // 改写成新 loader 的恢复对象，若用户此刻重启，休眠恢复会指向错误系统。
+    // 菜单顺序留给 STEP 4 按用户选择写入，这里只保证"主系统仍是默认、休眠引用不变"。
+    run_bcd_edit(
+        &[
+            "/store".into(),
+            store.clone(),
+            "/set".into(),
+            "{bootmgr}".into(),
+            "default".into(),
+            old.default.clone(),
+        ],
+        dir,
+    )?;
+    if let Some(resume) = old.resume_object.clone() {
+        run_bcd_edit(
+            &[
+                "/store".into(),
+                store.clone(),
+                "/set".into(),
+                "{bootmgr}".into(),
+                "resumeobject".into(),
+                resume,
+            ],
+            dir,
+        )?;
+    }
+
     log(
         log_path,
         "STEP 4/4 修复引导（bcdboot，保留主系统默认启动项）",
@@ -336,21 +387,20 @@ fn restore_to_windows_volume(
         dir,
     )?;
     if crate::parse_boot_manager_state(&live).as_ref() != Some(&old) {
-        return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
+        // STEP 3.6 已有意把新 loader 追加进 displayorder，所以这里不能再要求
+        // 与快照完全一致；真正要守住的是「主系统仍是默认启动项、休眠引用未被改写」。
+        let parsed = crate::parse_boot_manager_state(&live);
+        let unchanged = parsed.as_ref().is_some_and(|now| {
+            now.default == old.default && now.resume_object == old.resume_object
+        });
+        if !unchanged {
+            return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
+        }
     }
-    run_capture(
-        "bcdboot.exe",
-        &[
-            format!("{target_letter}:\\Windows"),
-            "/s".into(),
-            format!("{esp_letter}:"),
-            "/f".into(),
-            "UEFI".into(),
-            "/d".into(),
-        ],
-        &cmd_out_file(dir),
-        true,
-    )?;
+    // 不再无条件 bcdboot：STEP 3.6 已经建好 loader 并追加进菜单。此处再跑一次
+    // 会为同一分区建出第二个 loader，而 boot_menu::apply 对「同卷多个加载器」
+    // 一律拒绝猜测（按枚举顺序猜会把用户引导到错误系统）。apply 内部只在
+    // 确实找不到 loader 时才兜底 bcdboot。
     let all = run_bcd_edit(
         &[
             "/store".into(),
