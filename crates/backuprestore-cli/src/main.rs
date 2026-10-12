@@ -2523,6 +2523,24 @@ fn recover_windows(
                     (target.volume.disk_number, target.volume.partition_number),
                 ),
             )?;
+            // 第二阶段按钮需要在目标身份确认后尽早出现；方案落盘并不修改 BCD，
+            // 实际写入延后到映像应用完成后的引导修复阶段。
+            let boot_menu_session = if pe_safety::target_is_windows_volume(&target_root)? {
+                let session = crate::boot_menu::BootMenuSession::prepare(
+                    &target.volume,
+                    &task.task_id,
+                    &store.task_dir(&task.task_id)?,
+                    log,
+                )?;
+                if let Some(p) = progress {
+                    p.set_boot_menu(Arc::clone(&session));
+                }
+                append_log(log, "引导修复候选已准备：第二阶段显示编辑按钮")?;
+                Some(session)
+            } else {
+                append_log(log, "目标卷不是 Windows 系统卷，跳过引导修复候选探测")?;
+                None
+            };
             append_log(log, "STEP 1/4 挂载卷、校验")?;
             if let Some(p) = progress {
                 p.reset_start_time();
@@ -2645,12 +2663,7 @@ fn recover_windows(
                 // snapshot before BCDBoot.  It remains available even if a
                 // power failure occurs after BCDBoot changes the live store.
                 let previous_boot_manager = if target.role == TargetRole::NewWindows {
-                    secondary_registry::repair(
-                        &target_root,
-                        target_letter,
-                        &target.volume,
-                        log,
-                    )?;
+                    secondary_registry::repair(&target_root, target_letter, &target.volume, log)?;
                     Some(boot_manager_state_from_task_snapshot(store, task, log)?)
                 } else {
                     None
@@ -2670,6 +2683,13 @@ fn recover_windows(
                 if let Some(entry) = &resume_entry {
                     boot_entry::rearm(entry, log)?;
                 }
+                // 映像已经完整落盘，冻结用户最终选择并一次性应用到 ESP。
+                // 目标系统是必选项；其它系统按弹窗选择，既有 PE 入口由 apply 保留。
+                let boot_menu_plan = boot_menu_session
+                    .as_ref()
+                    .ok_or_else(|| err("Windows 系统卷缺少引导修复方案"))?
+                    .freeze()?;
+                crate::boot_menu::apply(&boot_menu_plan, &efi, log, resume_entry.as_ref())?;
                 recovery_fault::checkpoint("bcdboot-before", log)?;
                 run_logged("bcdboot.exe", &bcd_refs, log)?;
                 recovery_fault::checkpoint("bcdboot-after", log)?;

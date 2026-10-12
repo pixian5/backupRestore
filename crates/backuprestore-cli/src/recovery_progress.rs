@@ -134,6 +134,11 @@ impl ProgressShared {
         *offset_guard = initial_offset;
     }
 
+    /// 在第二阶段候选探测完成后发布引导修复会话，进度窗会显示按钮。
+    pub fn set_boot_menu(&self, session: Arc<crate::boot_menu::BootMenuSession>) {
+        *self.boot_menu.lock().unwrap() = Some(session);
+    }
+
     /// 将已用时间的计时起点重置为当前时刻（在写入 STEP 1/4 时对齐）。
     pub fn reset_start_time(&self) {
         self.start_time_aligned.store(true, Ordering::SeqCst);
@@ -400,6 +405,12 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     let progress = shared.steps.lock().unwrap().snapshot();
 
     unsafe {
+        // 只有第二阶段已经完成候选系统探测后才开放引导修复；无会话时隐藏，避免用户误点。
+        let boot_menu_ready = shared.boot_menu.lock().unwrap().is_some();
+        ShowWindow(
+            GetDlgItem(hwnd, ID_BOOT_MENU),
+            if boot_menu_ready { SW_SHOW } else { SW_HIDE },
+        );
         // 用户要求：阶段大标题保持精简（如 "1/4 挂载卷、校验"、"2/4 还原镜像（时间长）"），
         // 且绝对不能被 DISM 控制台的 "正在还原系统分区…" 过程日志覆盖。
         let current_step_title = if let Some(current_idx) = progress.current {
@@ -655,7 +666,7 @@ fn refresh_log_window(shared: &ProgressShared) {
 /// 窗口放大后内容仍挤在左上角。WM_CREATE 与 WM_SIZE 都调用它。
 unsafe fn layout_controls(hwnd: Hwnd) {
     const MARGIN: i32 = 32;
-    const BUTTON_WIDTH: i32 = 148;
+    const BUTTON_WIDTH: i32 = 120;
     const GAP: i32 = 12;
     let mut rect = Rect::default();
     unsafe {
@@ -678,7 +689,7 @@ unsafe fn layout_controls(hwnd: Hwnd) {
     let detail_top = 144;
     let tail_top = height - MARGIN - tail_height;
     let detail_height = (tail_top - GAP - detail_top).max(80);
-    let tail_width = content - BUTTON_WIDTH - GAP;
+    let tail_width = content - 2 * BUTTON_WIDTH - 2 * GAP;
     unsafe {
         MoveWindow(GetDlgItem(hwnd, ID_STAGE), MARGIN, 28, stage_width, 48, 1);
         MoveWindow(
@@ -715,11 +726,11 @@ unsafe fn layout_controls(hwnd: Hwnd) {
             tail_height,
             1,
         );
-        // 引导修复按钮置于详细日志按钮下方；会话未准备好时保持隐藏。
+        // 引导修复按钮与详细日志按钮并排，避免挤压日志尾部。
         MoveWindow(
             GetDlgItem(hwnd, ID_BOOT_MENU),
-            MARGIN + tail_width.max(200) + GAP,
-            tail_top + tail_height + GAP,
+            MARGIN + tail_width.max(200) + GAP + BUTTON_WIDTH + GAP,
+            tail_top,
             BUTTON_WIDTH,
             tail_height,
             1,
@@ -1004,6 +1015,25 @@ unsafe extern "system" fn window_proc(
             if !button.is_null() {
                 SendMessageW(button, WM_SETFONT, create_font(-19, true) as usize, 1);
             }
+            // 引导修复按钮默认隐藏，主线程在 STEP 2 候选会话准备完成后打开。
+            let boot_button = CreateWindowExW(
+                0,
+                encode("Button").as_ptr(),
+                encode("引导修复").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0,
+                0,
+                120,
+                94,
+                hwnd,
+                ID_BOOT_MENU as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !boot_button.is_null() {
+                SendMessageW(boot_button, WM_SETFONT, create_font(-19, true) as usize, 1);
+                ShowWindow(boot_button, SW_HIDE);
+            }
             layout_controls(hwnd);
             SetTimer(hwnd, TIMER_ID, 1000, None);
             0
@@ -1014,10 +1044,24 @@ unsafe extern "system" fn window_proc(
             0
         },
         WM_COMMAND => unsafe {
-            if (w_param & 0xFFFF) as i32 == ID_LOG_BUTTON {
+            let command_id = (w_param & 0xFFFF) as i32;
+            if command_id == ID_LOG_BUTTON {
                 let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
                 if !shared_ptr.is_null() {
                     open_log_window(hwnd, &*shared_ptr);
+                }
+            } else if command_id == ID_BOOT_MENU {
+                let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+                if !shared_ptr.is_null() {
+                    if let Some(session) = (*shared_ptr).boot_menu.lock().unwrap().clone() {
+                        let editor = crate::boot_menu::open_editor(hwnd, session);
+                        if editor.is_null() {
+                            let _ = crate::append_log(
+                                &*(*shared_ptr).log_path.lock().unwrap(),
+                                "引导修复编辑窗口创建失败",
+                            );
+                        }
+                    }
                 }
             }
             0
@@ -1199,6 +1243,19 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
                         }
                     }
                 }
+            }
+            // 引导修复编辑器与进度窗共用消息循环；先拦截其快捷键，再交给对话框导航。
+            // 消息可能发给编辑器本身，也可能发给其子控件，因此沿父链尝试。
+            let mut key_target = msg_hwnd;
+            while !key_target.is_null() {
+                if crate::boot_menu::handle_key(key_target, &*msg.as_ptr()) {
+                    break;
+                }
+                let parent = GetParent(key_target);
+                if parent.is_null() || parent == hwnd {
+                    break;
+                }
+                key_target = parent;
             }
             // IsDialogMessageW 提供 Tab/Shift+Tab/空格/回车的控件导航，
             // 否则带 WS_TABSTOP 的「详细日志」按钮在纯键盘环境下根本无法聚焦。
