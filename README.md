@@ -6,7 +6,7 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 自动拉起 `Recovery.exe` 离线捕获/应用 WIM → 系统还原时修复引导 → 清理临时启动配置 → 重启回 Windows。
 非当前系统卷由界面在线执行；预装 PE 是另一条简化路径，能力差异见完整流程文档。
 
-当前仓库版本 **2.3.8**。在线还原到第二个 Windows 卷：STEP 1→4 引导写入**已通过独立核验**（`default`/`resume_object`/`displayorder` 三项正确），**但重启后第二系统桌面无法启动**——`dwm.exe`/`LogonUI.exe` 崩溃循环，对照实验证明镜像本体无问题，根因待定位。
+当前仓库版本 **2.3.8**。在线还原到第二个 Windows 卷：STEP 1→4 引导写入**已通过独立核验**（`default`/`resume_object`/`displayorder` 三项正确），**但重启后第二系统桌面无法启动**（`dwm.exe`/`LogonUI.exe` 崩溃循环）。**根因已定位：在线路径漏调 `secondary_registry::repair()`（系统盘符绑定），离线路径在调、在线没调——同款故障在 10-09 已解决过一次**。
 
 > **⚠️ 跑实机测试前必读（磁盘空间硬规则）**：
 > [Parallels 快照吃满磁盘根因与空间硬规则](./docs/20261012-1320-Parallels快照吃满磁盘根因与空间硬规则-GPT-5.md)
