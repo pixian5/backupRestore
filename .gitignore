@@ -153,3 +153,10 @@ venv/
 .coverage
 htmlcov/
 *.egg-info/
+
+# 编译产物与本机测试残留
+target/
+# Parallels 同步用的临时源码副本
+Documents/br-src/
+Documents/br-s238/
+Documents/cargo-sync/

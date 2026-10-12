@@ -390,15 +390,30 @@ fn restore_to_windows_volume(
         ],
         dir,
     )?;
-    if crate::parse_boot_manager_state(&current)
-        != Some(crate::BcdBootManagerState {
-            default: old.default.clone(),
-            display_order: order.clone(),
-            resume_object: old.resume_object.clone(),
-            loader_resume_objects: old.loader_resume_objects.clone(),
-        })
-    {
-        return Err(crate::err("第二系统默认项或菜单顺序不符合约定，拒绝报成功"));
+    let cur = match crate::parse_boot_manager_state(&current) {
+        Some(c) => c,
+        None => return Err(crate::err("无法解析还原后的引导管理器状态，拒绝报成功")),
+    };
+    // 验收：主系统默认启动项保留、启动菜单顺序合理（原顺序 + 新 loader）、
+    // bootmgr 的 resume_object 恢复为主系统的快照值；原有 loader 的恢复对象映射
+    // 不得被破坏，但允许 bcdboot 为第二系统新建的 loader 存在。
+    if cur.default != old.default {
+        return Err(crate::err("第二系统默认启动项不符合约定，拒绝报成功"));
+    }
+    if cur.display_order != order {
+        return Err(crate::err("启动菜单顺序不符合约定，拒绝报成功"));
+    }
+    if cur.resume_object != old.resume_object {
+        return Err(crate::err("bootmgr resume_object 未恢复为主系统，拒绝报成功"));
+    }
+    for (l, r) in &old.loader_resume_objects {
+        if !cur
+            .loader_resume_objects
+            .iter()
+            .any(|(cl, cr)| cl == l && cr == r)
+        {
+            return Err(crate::err("原有系统恢复对象被破坏，拒绝报成功"));
+        }
     }
     // 注：在线（非 PE）入口不调用 winre_registration::repair——该修复拒绝非 PE 环境，
     // 目标系统的 WinRE 注册应在其自身首次启动后用 reagentc 完成（W09 收敛项）。

@@ -41,6 +41,10 @@ pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 mod boot_cleanup;
 #[cfg(windows)]
 mod boot_entry;
+/// 还原末期的引导修复：候选枚举与方案编辑是**跨平台**纯逻辑（有本机单测），
+/// 对话框与实际 bcdboot/bcdedit 执行在 Windows 侧。
+#[cfg(any(windows, test))]
+mod boot_menu;
 /// 半成品启动项簿记：**跨平台**（`boot_entry` 是 Windows-only，其单测在 macOS 上
 /// 一次都不编译）。这里放纯数据与文件 I/O，让簿记语义有本机单测兜底。
 #[cfg(any(windows, test))]
@@ -217,6 +221,8 @@ fn main() {
                 .ok_or_else(|| err("WIM image path is required"))
                 .and_then(|image_path| windows_prepare::wim_info(image_path, skip_hash))
         }
+        #[cfg(windows)]
+        Some("online") => online_cli(args.collect()),
         Some("recover") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));
@@ -252,6 +258,77 @@ fn main() {
         record_launch_error(&error);
         eprintln!("error: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(windows)]
+fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
+    let mut operation = String::new();
+    let mut source_drive = String::new();
+    let mut target_drive = String::new();
+    let mut image_path = String::new();
+    let mut index = String::new();
+    let mut compress = String::new();
+    let mut image_name = String::new();
+    let mut keep_indexes: Option<u32> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--operation" => {
+                i += 1;
+                operation = args.get(i).cloned().unwrap_or_default();
+            }
+            "--source-drive" => {
+                i += 1;
+                source_drive = args.get(i).cloned().unwrap_or_default();
+            }
+            "--target-drive" => {
+                i += 1;
+                target_drive = args.get(i).cloned().unwrap_or_default();
+            }
+            "--image-path" => {
+                i += 1;
+                image_path = args.get(i).cloned().unwrap_or_default();
+            }
+            "--index" => {
+                i += 1;
+                index = args.get(i).cloned().unwrap_or_default();
+            }
+            "--compress" => {
+                i += 1;
+                compress = args.get(i).cloned().unwrap_or_default();
+            }
+            "--image-name" => {
+                i += 1;
+                image_name = args.get(i).cloned().unwrap_or_default();
+            }
+            "--keep-indexes" => {
+                i += 1;
+                keep_indexes = args.get(i).and_then(|v| v.parse().ok());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if operation.is_empty() {
+        return Err(err("online requires --operation"));
+    }
+    let params = crate::online_operation::OnlineOpParams {
+        operation,
+        source_drive,
+        target_drive,
+        image_path,
+        index,
+        compress,
+        image_name,
+        keep_indexes,
+    };
+    let result = crate::online_operation::execute(&params);
+    println!("{}", result.detail);
+    if result.success {
+        Ok(())
+    } else {
+        Err(err("online operation did not complete successfully"))
     }
 }
 

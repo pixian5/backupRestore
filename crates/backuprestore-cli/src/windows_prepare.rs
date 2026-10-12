@@ -968,21 +968,19 @@ fn prepare_payload(
     // 用户期待的东西。现在整段收进闭包，任一失败都先做统一补偿再返回原错误——
     // 绝不为了"看起来干净"而把补偿失败盖成成功。
     let boot_entry = (|| -> Result<crate::boot_entry::ReBootEntry, TaskError> {
-        let boot_entry = crate::boot_entry::create_entry(
-            &staged,
-            &re_staging.boot_sdi,
-            &re_staging.volume,
-            task_dir.as_path(),
-            &task.task_id,
-            log,
-        )?;
-        crate::boot_entry::copy_into_staging(
-            &staged,
-            &re_staging.boot_sdi,
-            &re_staging.volume,
-            &task.task_id,
-            log,
-        )?;
+        // ★ 2026-10-12 实测修复：载荷与 RecoveryTask.env 必须**先**注入 staged，
+        // 再建 BCD 条目 / 把 staged 复制到镜像卷暂存区（create_entry 与
+        // copy_into_staging 都会把 staged 拷到 devopts 实际启动的暂存 WIM）。
+        // 原顺序是「create_entry + copy_into_staging → DISM 注入」，于是 devopts
+        // 启动的暂存 WIM 保留的是**注册位里的旧 env**——而 env 是任务相关的
+        // （含 TASK_ID）。RE 用 winpeshl 拉起 Recovery.exe 读到的就是上一个任务的
+        // env，表现为两种故障：① 注册位没 env 时 os error 2（文件不存在）；
+        // ② 注册位有旧 env 时 "task is already terminal at stage Failed"（读到了
+        // 上一个已终态的任务）。注入必须先于任何拷贝，否则 devopts 永远带着陈旧 env。
+        // 风险注：DISM 在本进程跑过后紧接着 bcdedit 校验镜像卷 WIM 历史上偶发
+        // 「指定的设备无效」；这里 DISM 针对的是 F: 上的 staged，提交后 sleep 5s
+        // 再拷贝到 H: 并校验，实测未复现（若复现，把 copy_into_staging 与
+        // create_entry 拆开、bcdedit 校验放最前即可）。
         let staged_arg = staged.to_string_lossy().into_owned();
         let mount_arg = mount.to_string_lossy().into_owned();
         run_logged(
@@ -1019,6 +1017,21 @@ fn prepare_payload(
         )?;
         thread::sleep(Duration::from_secs(5));
 
+        let boot_entry = crate::boot_entry::create_entry(
+            &staged,
+            &re_staging.boot_sdi,
+            &re_staging.volume,
+            task_dir.as_path(),
+            &task.task_id,
+            log,
+        )?;
+        crate::boot_entry::copy_into_staging(
+            &staged,
+            &re_staging.boot_sdi,
+            &re_staging.volume,
+            &task.task_id,
+            log,
+        )?;
         Ok(boot_entry)
     })();
     if let Err(error) = &boot_entry {
@@ -2579,13 +2592,28 @@ fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskErr
     if trimmed.is_empty() {
         return Err(err("volume GUID is empty"));
     }
+    // `mountvol <letter>: <name>` 要求卷名为 `\\?\Volume{GUID}\` 形式。
+    // 但 `VolumeIdentity.volume_guid` 在不同来源下格式不一：从盘符读回的是
+    // `\\?\Volume{GUID}\`，而 `esp_identity_without_drive_letter` 走 verbatim
+    // 路径得到的是裸 `{GUID}`。后者直接喂给 mountvol 会被当成非法名称而失败，
+    // 进而落到 diskpart 兜底、在首选盘符被占用时彻底报错（见 2026-10-12 在线还原
+    // 首跑失败）。这里统一规整为 mountvol 期望的形式，保证 GUID 挂载路径可用。
+    let upper = trimmed.to_uppercase();
+    let mount_arg = if upper.starts_with("\\\\?\\VOLUME{") {
+        format!("{trimmed}\\")
+    } else if trimmed.starts_with('{') {
+        format!("\\\\?\\Volume{trimmed}\\")
+    } else {
+        format!("{trimmed}\\")
+    };
+    let mount_target = mount_arg.trim_end_matches('\\').to_string();
     let mut last_error = None;
     for letter in identity_drive_candidates(preferred) {
         if !is_drive_letter_available(letter) {
             continue;
         }
         let output = match Command::new("mountvol.exe")
-            .args([format!("{letter}:"), trimmed.clone()])
+            .args([format!("{letter}:"), mount_arg.clone()])
             .stdin(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .output()
@@ -2611,13 +2639,13 @@ fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskErr
                     .volume_guid
                     .trim()
                     .trim_end_matches('\\')
-                    .eq_ignore_ascii_case(&trimmed) =>
+                    .eq_ignore_ascii_case(&mount_target) =>
             {
                 return Ok(letter);
             }
             Ok(actual) => {
                 last_error = Some(err(&format!(
-                    "mountvol assigned {letter}: to {}, expected {trimmed}",
+                    "mountvol assigned {letter}: to {}, expected {mount_target}",
                     actual.volume_guid
                 )));
             }
