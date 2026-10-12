@@ -101,35 +101,95 @@ fn indexes(image: &Path, log_path: &Path) -> Result<Vec<u32>, TaskError> {
     crate::wim_indexes(image, log_path)
 }
 
-/// 从镜像副档里拼出带版本号的菜单名，如 `Windows 11 Pro 26100.9549`。
+/// 跑一次 `dism /Get-WimInfo` 并取回原始输出。
 ///
-/// 副档是备份时记录的真实版本，比盘符/日期信息量大；缺失、为空或是占位值时
-/// 返回 None，调用方依次退化成"读目标卷版本"与"通用名"。
+/// 与其它 DISM 调用**共用同一次执行**是硬要求：DISM 读 WIM 需要独占访问，
+/// 前一个 DISM 主进程退出后句柄未必立刻释放，紧接着再对同一 WIM 跑一次会报
+/// "另一个程序正在使用此文件"（2026-10-12 实机还原在 STEP 1 之后 2 毫秒踩到）。
+/// `index` 为 Some 时带 `/Index:N`，DISM 才会输出 Edition/Version 等完整字段。
+fn run_dism_wim_info(
+    image: &Path,
+    index: Option<u32>,
+    log_path: &Path,
+) -> Result<String, TaskError> {
+    let out_file = cmd_out_file(
+        log_path
+            .parent()
+            .ok_or_else(|| crate::err("日志目录缺失"))?,
+    );
+    let mut args = vec![
+        "/English".to_string(),
+        "/Get-WimInfo".to_string(),
+        format!("/WimFile:{}", image.display()),
+    ];
+    if let Some(index) = index {
+        args.push(format!("/Index:{index}"));
+    }
+    run_capture("dism.exe", &args, &out_file, false)
+}
+
+/// 从 DISM 输出里取出全部索引号，拒绝空列表或含 0 的结果。
+fn parse_wim_index_list(output: &str) -> Result<Vec<u32>, TaskError> {
+    let mut list = crate::windows_prepare::parse_dism_images(output)?
+        .iter()
+        .filter_map(|image| image.get("ImageIndex").and_then(serde_json::Value::as_u64))
+        .filter_map(|index| u32::try_from(index).ok())
+        .collect::<Vec<_>>();
+    list.sort_unstable();
+    list.dedup();
+    if list.is_empty() || list.contains(&0) {
+        return Err(crate::err("DISM returned invalid WIM indexes"));
+    }
+    Ok(list)
+}
+
+/// 列出全部索引，同时取回**带 `/Index:N` 的完整输出**（含 Edition/Version 行）。
+///
+/// 必须带 `/Index:N`：不带它 DISM 只输出摘要（Index/Name/Description/Size），
+/// 没有版本字段，版本名就无从解析。2026-10-12 实机因此拿到
+/// `versioned_name = None`，白丢一次拿到 "Professional 10.0.26200" 的机会。
+fn indexes_with_info(
+    image: &Path,
+    log_path: &Path,
+    index: u32,
+) -> Result<(Vec<u32>, String), TaskError> {
+    let output = run_dism_wim_info(image, Some(index), log_path)?;
+    Ok((parse_wim_index_list(&output)?, output))
+}
+
+/// 从 WIM 本身解析版本化菜单名，如 `Professional 10.0.26200`。
+///
+/// 数据源按优先级：先镜像副档（备份时记录），副档是占位值时退到 WIM 自身的
+/// Edition/Version（映像内部带的，不依赖我们备份时写了什么，对第三方 WIM 同样有效）。
+///
+/// `wim_info` 是 `indexes_with_info()` 已经抓到的 DISM 输出，传进来只为解析，
+/// **不再自己跑 DISM**：DISM 读 WIM 需要独占访问，紧邻的第二次调用会报
+/// "另一个程序正在使用此文件"（2026-10-12 实机还原打完版本名后 2 毫秒即失败）。
 ///
 /// **必须过滤占位值 `unknown`**：本程序自己写副档时，`windows_edition` /
-/// `windows_build` 目前全是硬编码的 `"unknown"`（online_operation.rs 的 capture、
-/// image_metadata.rs 的默认值，以及 main.rs 那个没有任何生产者的
-/// `context_value("WINDOWS_EDITION", "unknown")`）。不过滤的话这里会拼出字面的
-/// "unknown unknown" 并写进启动菜单——比不起名更糟。
-fn read_image_version_name(image: &Path, index: u32) -> Option<String> {
+/// `windows_build` 目前全是硬编码的 `"unknown"`（capture、image_metadata.rs 的
+/// 默认值，以及 main.rs 那个没有任何生产者的 `context_value("WINDOWS_EDITION", ...)`）。
+/// 不过滤的话这里会拼出字面的 "unknown unknown" 并写进启动菜单——比不起名更糟。
+fn read_image_version_name(image: &Path, index: u32, wim_info: &str) -> Option<String> {
     /// 判断字段是否是可用的真实值（非空、非占位）。
     fn usable(value: &str) -> bool {
+        let value = value.trim().trim_matches(|c| c == '<' || c == '>');
         !value.is_empty()
             && !value.eq_ignore_ascii_case("unknown")
             && !value.eq_ignore_ascii_case("n/a")
+            && !value.eq_ignore_ascii_case("undefined")
     }
     /// 把 edition/build 两段拼成菜单名，两段都不可用时返回 None。
     fn combine(edition: &str, build: &str) -> Option<String> {
         let name = match (usable(edition), usable(build)) {
             (true, true) => format!("{edition} {build}"),
-            (true, false) => edition.to_string(),
-            (false, true) => format!("Windows {build}"),
+            (true, false) => edition.trim().to_string(),
+            (false, true) => format!("Windows {}", build.trim()),
             (false, false) => return None,
         };
         let trimmed = name.trim();
         (!trimmed.is_empty()).then(|| trimmed.chars().take(60).collect())
     }
-    // 先试副档（备份时记录的）。本程序当前写的是占位值，所以多半会落空。
     if let Ok(metadata) = im::read_index_metadata(image, index)
         && let Some(name) = combine(
             metadata.windows_edition.trim(),
@@ -138,31 +198,48 @@ fn read_image_version_name(image: &Path, index: u32) -> Option<String> {
     {
         return Some(name);
     }
-    // 退到 WIM 本身：DISM /Get-WimInfo 报的 Version/Edition 来自映像内部，
-    // 不依赖我们备份时写了什么，对第三方 WIM 同样有效。
-    let output = run_capture(
-        "dism.exe",
-        &[
-            "/English".into(),
-            "/Get-WimInfo".into(),
-            format!("/WimFile:{}", image.display()),
-            format!("/Index:{index}"),
-        ],
-        &std::env::temp_dir().join(format!("br-wiminfo-{}.out", std::process::id())),
-        false,
-    )
-    .ok()?;
-    // 这里只要 Version/Edition 两行，用不着完整 JSON 解析。
-    let field = |label: &str| -> String {
-        output
+    // 副档是占位值，退到 WIM 自身。
+    //
+    // **必须跳过输出最前面 DISM 自己的版本行**（"Version: 10.0.26100.9549" 出现在
+    // "Details for image" 之前）：那一行是 dism.exe 这个程序的版本，不是镜像版本。
+    // 实机测试曾因此把菜单名写成 "Professional 10.0.26100.9549"。
+    let details = wim_info
+        .split_once("Details for image")
+        .map(|(_, rest)| rest)
+        .unwrap_or(wim_info);
+    let text_field = |label: &str| -> String {
+        details
             .lines()
             .filter_map(|line| line.split_once(':'))
             .find(|(key, _)| key.trim().eq_ignore_ascii_case(label))
             .map(|(_, value)| value.trim().to_string())
             .unwrap_or_default()
     };
-    combine(&field("Edition"), &field("Version"))
+    // DISM 也可能输出 JSON（本项目 parse_dism_images 消费的形态）。
+    let json_field = |label: &str| -> String {
+        serde_json::from_str::<serde_json::Value>(wim_info)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("images")
+                    .and_then(|images| images.as_array())
+                    .and_then(|images| images.first().cloned())
+                    .and_then(|image| image.get(label).cloned())
+            })
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default()
+    };
+    let edition = [text_field("Edition"), json_field("EditionId")]
+        .into_iter()
+        .find(|value| usable(value))
+        .unwrap_or_default();
+    let build = [text_field("Version"), json_field("ImageVersion")]
+        .into_iter()
+        .find(|value| usable(value))
+        .unwrap_or_default();
+    combine(&edition, &build)
 }
+
 /// `progress` 用于在第二阶段发布引导修复会话（还原到另一个 Windows 卷时）。
 fn execute_inner(
     params: &OnlineOpParams,
@@ -215,7 +292,8 @@ fn execute_inner(
                 .index
                 .parse()
                 .map_err(|_| crate::err("invalid restore index"))?;
-            if !indexes(image, log_path)?.contains(&index) {
+            let (wim_indexes, wim_info) = indexes_with_info(image, log_path, index)?;
+            if !wim_indexes.contains(&index) {
                 return Err(crate::err("restore index missing from WIM"));
             }
             // 目标若本身是另一个 Windows 卷：完整走 格式化 → 应用 → 修复引导，
@@ -223,7 +301,7 @@ fn execute_inner(
             // 第二系统即使中途失败也只是不可启动，主系统仍在，重新还原即可，故不引入状态机。
             if crate::pe_safety::target_is_windows_volume(&root)? {
                 return restore_to_windows_volume(
-                    params, &root, identity, index, log_path, progress,
+                    params, &root, identity, index, log_path, progress, &wim_info,
                 );
             }
             log(
@@ -274,6 +352,7 @@ fn restore_to_windows_volume(
     index: u32,
     log_path: &Path,
     progress: &std::sync::Arc<crate::recovery_progress::ProgressShared>,
+    wim_info: &str,
 ) -> Result<(), TaskError> {
     let image: &Path = Path::new(&params.image_path);
     let dir = log_path
@@ -290,7 +369,7 @@ fn restore_to_windows_volume(
     // 给"本次还原的目标"起名的首选来源是镜像副档里的 windows_edition +
     // windows_build（备份时记录的真实版本，如 "Windows 11 Pro" + "26100.9549"）。
     // 这比读盘符/日期信息量大得多，且此刻目标卷还没格式化，读不到 ntoskrnl。
-    let versioned_name = read_image_version_name(image, index);
+    let versioned_name = read_image_version_name(image, index, wim_info);
     if let Some(name) = &versioned_name {
         log(log_path, &format!("引导菜单将使用镜像版本名：{name}"))?;
     }
@@ -516,7 +595,7 @@ fn restore_to_windows_volume(
     let current = run_bcd_edit(
         &[
             "/store".into(),
-            store,
+            store.clone(),
             "/enum".into(),
             "{bootmgr}".into(),
             "/v".into(),
@@ -530,13 +609,58 @@ fn restore_to_windows_volume(
     // 验收：主系统默认启动项保留、bootmgr 的 resume_object 恢复为主系统的快照值；
     // 原有 loader 的恢复对象映射不得被破坏；原菜单里已有的项必须一个不少地保留
     // （引导修复只允许追加/改名/改序，不允许弄丢既有入口）。
-    if cur.default != old.default {
+    //
+    // **不能直接比对 GUID 文本**：bcdedit 会把默认项显示成 `{current}`、工具项显示成
+    // `{memdiag}` 这类别名。2026-10-12 实机还原就在这里误报——默认项其实没变
+    // （{current} 展开就是原主系统 loader，device 都是 partition=C:），
+    // 但字符串比对认为 {12e3701c...} != {current}，于是把一次成功的还原判成失败。
+    // 默认项改用「指向哪个分区」判断：主系统在活动卷，第二系统才是目标卷。
+    let active_letter = std::env::var("SystemDrive")
+        .ok()
+        .and_then(|value| value.chars().next())
+        .unwrap_or('C');
+    let default_is_primary = match cur.default.to_ascii_lowercase().as_str() {
+        // 别名 {current} 就是"当前正在运行的 Windows"，天然是主系统。
+        "{current}" | "{default}" => true,
+        identifier => {
+            let object = run_bcd_edit(
+                &[
+                    "/store".into(),
+                    store.clone(),
+                    "/enum".into(),
+                    identifier.to_string(),
+                    "/v".into(),
+                ],
+                dir,
+            )?;
+            let device = object
+                .lines()
+                .filter_map(|line| line.split_once(char::is_whitespace))
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case("device"))
+                .map(|(_, value)| value.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            device.starts_with(&format!("partition={active_letter}:"))
+        }
+    };
+    if !default_is_primary {
         return Err(crate::err("第二系统默认启动项不符合约定，拒绝报成功"));
     }
-    if !old
-        .display_order
+    // 原有菜单项一个都不能少。同样不能直接比 GUID 文本：bcdedit 可能把其中某项
+    // 显示成 {current}/{memdiag} 之类的别名。把两边的常见别名都展开成真实 GUID
+    // 再比（{current}/{default} 展开为默认项）。
+    let expand = |ids: &[String]| -> Vec<String> {
+        ids.iter()
+            .map(|id| match id.to_ascii_lowercase().as_str() {
+                "{current}" | "{default}" => cur.default.clone(),
+                _ => id.clone(),
+            })
+            .collect()
+    };
+    let expected = expand(&old.display_order);
+    let actual = expand(&cur.display_order);
+    if !expected
         .iter()
-        .all(|id| cur.display_order.iter().any(|cur_id| cur_id == id))
+        .all(|id| actual.iter().any(|cur_id| cur_id == id))
     {
         return Err(crate::err("原有启动菜单项丢失，拒绝报成功"));
     }
@@ -585,7 +709,23 @@ fn run_capture(
         Some(out),
         if long { INFINITE } else { 60_000 },
     );
-    let text = crate::pe_operation::decode_output(&fs::read(out)?)?;
+    // run_program 用作业对象约束子进程树，返回时子进程的 stdout 句柄未必已经释放，
+    // 立刻 read 会撞上"另一个程序正在使用此文件"。DISM 尤其明显：它退出后仍可能
+    // 有 worker 在收尾。2026-10-12 实机还原在 STEP 1 之后的第一次 DISM 就撞上，
+    // 间隔只有 50 毫秒。短暂重试是 Windows 上处理这种竞态的标准做法。
+    let mut attempt = 0;
+    let raw = loop {
+        attempt += 1;
+        match fs::read(out) {
+            Ok(raw) => break raw,
+            Err(error) if attempt < 20 => {
+                let _ = error;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let text = crate::pe_operation::decode_output(&raw)?;
     if !outcome.is_success() {
         return Err(crate::err(&format!("{program} 失败：{outcome}\n{text}")));
     }
@@ -866,6 +1006,124 @@ pub(crate) fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn version_name_parses_real_dism_text_output() {
+        // 夹具是 2026-10-12 实机 `dism /Get-WimInfo /WimFile:H:\c-backup\c-system.wim /Index:1`
+        // 的真实输出（副本，只留相关行）。副档在这台机器上是 "unknown"，
+        // 所以这条后备路是实际生效的那一条。
+        let output = "\
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.9549
+
+Details for image : H:\\c-backup\\c-system.wim
+
+Index : 1
+Name : Windows Backup
+Description : <undefined>
+Size : 92,995,766,369 bytes
+WIM Bootable : No
+Architecture : arm64
+Hal : COMPUTER\\Generic
+Version : 10.0.26200
+ServicePack Build : 9550
+ServicePack Level : 0
+Edition : Professional
+
+The operation completed successfully.";
+        assert_eq!(
+            read_image_version_name(Path::new("H:\\c-backup\\c-system.wim"), 1, output).as_deref(),
+            Some("Professional 10.0.26200"),
+            "必须用映像内部的 Edition + Version，不能是副档里的 unknown"
+        );
+    }
+
+    #[test]
+    fn version_name_requires_the_index_qualified_output() {
+        // 不带 /Index:N 时 DISM 只输出摘要，没有 Edition/Version 行。
+        // 产品代码必须带 /Index: 调用，否则版本名白丢。实机 2026-10-12 正是如此：
+        // 夹具带 /Index: 所以单测通过，而代码跑的是不带 /Index: 的命令，
+        // 于是 versioned_name = None。
+        let summary = "\
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.9549
+
+Details for image : H:\\c-backup\\c-system.wim
+
+Index : 1
+Name : Windows Backup
+Description : <undefined>
+Size : 92,995,766,369 bytes
+
+The operation completed successfully.";
+        assert_eq!(
+            read_image_version_name(Path::new("x.wim"), 1, summary),
+            None,
+            "摘要形态里没有版本信息，必须返回 None 让调用方降级"
+        );
+    }
+
+    #[test]
+    fn version_name_ignores_dism_own_version_line() {
+        // 输出最前面的 "Version: 10.0.26100.9549" 是 dism.exe 程序自己的版本，
+        // 不是镜像版本。误拿它会让菜单名写成 dism 的版本号。
+        let output = "\
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.9549
+
+Details for image : H:\\c-backup\\c-system.wim
+
+Index : 1
+Edition : Professional
+Version : 10.0.26200";
+        assert_eq!(
+            read_image_version_name(Path::new("x.wim"), 1, output).as_deref(),
+            Some("Professional 10.0.26200"),
+            "必须取 Details for image 之后的镜像版本"
+        );
+    }
+
+    #[test]
+    fn version_name_falls_back_to_json_shape() {
+        // DISM 也可能输出 JSON（本项目 parse_dism_images 消费的形态）。
+        let output = r#"{"images":[{"ImageIndex":1,"ImageName":"Windows Backup","Architecture":"arm64","EditionId":"Professional","ImageVersion":"10.0.26200"}]}"#;
+        assert_eq!(
+            read_image_version_name(Path::new("x.wim"), 1, output).as_deref(),
+            Some("Professional 10.0.26200")
+        );
+    }
+
+    #[test]
+    fn version_name_rejects_placeholders() {
+        // 副档/映像里的占位值必须被拒，否则菜单名会变成字面的 "unknown unknown"。
+        for output in [
+            "Index : 1\nEdition : unknown\nVersion : unknown",
+            "Index : 1\nEdition : <undefined>\nVersion : <undefined>",
+            "Index : 1\n",
+            "",
+        ] {
+            assert_eq!(
+                read_image_version_name(Path::new("x.wim"), 1, output),
+                None,
+                "占位值或缺失字段必须返回 None，让调用方继续降级"
+            );
+        }
+    }
+
+    #[test]
+    fn version_name_uses_whichever_field_is_present() {
+        // 只有一个字段可用时也要给出可区分的名字，而不是放弃。
+        assert_eq!(
+            read_image_version_name(Path::new("x.wim"), 1, "Index : 1\nEdition : Professional")
+                .as_deref(),
+            Some("Professional")
+        );
+        assert_eq!(
+            read_image_version_name(Path::new("x.wim"), 1, "Index : 1\nVersion : 10.0.26200")
+                .as_deref(),
+            Some("Windows 10.0.26200")
+        );
+    }
+
     #[test]
     fn drive_validation_rejects_command_text() {
         assert_eq!(drive("d:").unwrap(), 'D');

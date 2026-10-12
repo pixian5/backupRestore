@@ -694,9 +694,24 @@ pub(crate) fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    // Windows：必须显式放开 Read/Write 共享。进度窗线程正以只读方式持有同一个
+    // 日志文件（recovery_progress 每秒读增量），默认的独占语义会让这里报
+    // "另一个程序正在使用此文件"。2026-10-12 在线还原接上引导修复后必现于此：
+    // prepare 里的 discover 要写日志，而 WinRE 路径原本没有进度窗在读。
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    let mut file = options.open(path)?;
     writeln!(file, "[{}] {message}", Utc::now().to_rfc3339())?;
-    file.sync_all()?;
+    // 不再 sync_all：它在 Windows 上等价于 FlushFileBuffers，需要写权限独占，
+    // 会把并发读日志的进度窗挤掉。日志的价值在于内容可见，落盘时机交给文件系统。
+    file.flush()?;
     Ok(())
 }
 

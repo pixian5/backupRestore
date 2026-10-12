@@ -477,8 +477,10 @@ impl BootMenuSession {
         suggested_target_name: Option<&str>,
     ) -> Result<std::sync::Arc<Self>, TaskError> {
         let path = dir.join("boot-menu-plan.json");
-        let mut plan = if path.try_exists()? {
-            let saved: SavedPlan = backuprestore_core::read_json(&path)?;
+        // 不用 try_exists()：它在 Windows 上对"拒绝访问"和"不存在"都报错，
+        // 而这里只是想知道有没有上次留下的方案。直接读，读不到就当没有。
+        let saved = backuprestore_core::read_json::<SavedPlan>(&path).ok();
+        let mut plan = if let Some(saved) = saved {
             if saved.task_id != task_id
                 || !saved
                     .plan
@@ -601,7 +603,7 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
         let identity = match crate::windows_prepare::volume_identity_at_path(&path, path.clone()) {
             Ok(identity) => identity,
             Err(error) => {
-                crate::append_log(log, &format!("引导候选卷身份不可读：{path}；{error}"))?;
+                crate::append_log(log, &format!("引导候选卷身份不可读，跳过：{path}；{error}"))?;
                 continue;
             }
         };
@@ -612,13 +614,41 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             continue;
         }
         let root = Path::new(&path);
-        if !crate::pe_safety::target_is_windows_volume(root)?
-            || !crate::pe_safety::probe_file(root, &["Windows", "System32", "winload.efi"])?
-        {
+        // 探测失败（而不是"探测结果是否"）时跳过该候选卷，不让整个还原失败。
+        //
+        // 实机（2026-10-12 在线还原）踩过：枚举到当前运行的系统卷 C: 时，
+        // probe_file 里的 fs::symlink_metadata 对活动卷根报共享违例
+        // （ERROR_SHARING_VIOLATION），而 probe_file 把它当 Err 传播。
+        // 此前这段只在 WinRE 路径运行，候选里从来不含活动卷，所以没暴露。
+        // C: 本来就在启动菜单里，跳过它不影响功能，但能读到的卷仍要正常登记。
+        let is_windows = match crate::pe_safety::target_is_windows_volume(root) {
+            Ok(is_windows) => is_windows,
+            Err(error) => {
+                crate::append_log(log, &format!("引导候选卷探测失败，跳过：{path}；{error}"))?;
+                continue;
+            }
+        };
+        let has_loader =
+            match crate::pe_safety::probe_file(root, &["Windows", "System32", "winload.efi"]) {
+                Ok(has_loader) => has_loader,
+                Err(error) => {
+                    crate::append_log(log, &format!("引导候选卷探测失败，跳过：{path}；{error}"))?;
+                    continue;
+                }
+            };
+        if !is_windows || !has_loader {
             continue;
         }
         // 常规系统必须含离线恢复组件；硬盘版 PE 保留现有入口，不重新登记。
-        if !crate::pe_safety::probe_file(root, &["Windows", "System32", "reagentc.exe"])? {
+        let has_reagentc =
+            match crate::pe_safety::probe_file(root, &["Windows", "System32", "reagentc.exe"]) {
+                Ok(has_reagentc) => has_reagentc,
+                Err(error) => {
+                    crate::append_log(log, &format!("引导候选卷探测失败，跳过：{path}；{error}"))?;
+                    continue;
+                }
+            };
+        if !has_reagentc {
             crate::append_log(
                 log,
                 &format!("卷缺少常规 Windows 恢复组件，保留现有入口：{path}"),
