@@ -639,15 +639,26 @@ fn restore_to_windows_volume(
                 .find(|(key, _)| key.trim().eq_ignore_ascii_case("device"))
                 .map(|(_, value)| value.trim().to_ascii_lowercase())
                 .unwrap_or_default();
-            device.starts_with(&format!("partition={active_letter}:"))
+            // device 已转小写，active_letter 也必须转小写后再比，
+            // 否则 "partition=c:".starts_with("partition=C:") 永远为 false。
+            device.starts_with(&format!(
+                "partition={}:",
+                active_letter.to_ascii_lowercase()
+            ))
         }
     };
     if !default_is_primary {
         return Err(crate::err("第二系统默认启动项不符合约定，拒绝报成功"));
     }
     // 原有菜单项一个都不能少。同样不能直接比 GUID 文本：bcdedit 可能把其中某项
-    // 显示成 {current}/{memdiag} 之类的别名。把两边的常见别名都展开成真实 GUID
-    // 再比（{current}/{default} 展开为默认项）。
+    // 显示成 {current}/{memdiag}/{default} 之类的别名。把两边的常见别名都展开成
+    // 真实 GUID 再比（{current}/{default} 展开为默认项）。
+    //
+    // **例外：目标卷原来的 loader 允许被本次新建的取代。** 还原到 E: 时，
+    // bcdboot 会把 E: 的旧 loader 换成指向新镜像的新 loader——这正是"还原"该有的
+    // 行为。2026-10-12 实机在这里误报：旧的 {556b9391}（E:）被新的 {2f72105a}（E:）
+    // 取代，断言认为"原有菜单项丢失"，可那恰恰是成功的还原。
+    // 所以只要求**非目标卷**的原有项一个不少。
     let expand = |ids: &[String]| -> Vec<String> {
         ids.iter()
             .map(|id| match id.to_ascii_lowercase().as_str() {
@@ -658,10 +669,43 @@ fn restore_to_windows_volume(
     };
     let expected = expand(&old.display_order);
     let actual = expand(&cur.display_order);
-    if !expected
+    let missing: Vec<String> = expected
         .iter()
-        .all(|id| actual.iter().any(|cur_id| cur_id == id))
-    {
+        .filter(|id| !actual.iter().any(|cur_id| cur_id == *id))
+        .cloned()
+        .collect();
+    // 丢掉的项如果本来就指向目标卷（被新 loader 取代），属正常；
+    // 丢的是别的卷（例如主系统）才是真问题。
+    let lost_foreign = missing.iter().any(|id| {
+        let object = run_bcd_edit(
+            &[
+                "/store".into(),
+                store.clone(),
+                "/enum".into(),
+                (*id).to_string(),
+                "/v".into(),
+            ],
+            dir,
+        );
+        // 查不到该项（已被删）时，只要目标卷换了新 loader 就认它属于目标卷。
+        match object {
+            Err(_) => true,
+            Ok(text) => {
+                let device = text
+                    .lines()
+                    .filter_map(|line| line.split_once(char::is_whitespace))
+                    .find(|(key, _)| key.trim().eq_ignore_ascii_case("device"))
+                    .map(|(_, value)| value.trim().to_ascii_lowercase())
+                    .unwrap_or_default();
+                // 指向目标卷（不是主系统所在的活动卷）的才算"被取代也无妨"。
+                !device.starts_with(&format!(
+                    "partition={}:",
+                    active_letter.to_ascii_lowercase()
+                ))
+            }
+        }
+    });
+    if lost_foreign {
         return Err(crate::err("原有启动菜单项丢失，拒绝报成功"));
     }
     if !cur.display_order.iter().any(|id| id == &loader) {
@@ -1107,6 +1151,51 @@ Version : 10.0.26200";
                 "占位值或缺失字段必须返回 None，让调用方继续降级"
             );
         }
+    }
+
+    #[test]
+    fn bcd_aliases_expand_to_the_real_default_identifier() {
+        // bcdedit 的 displayorder 里会出现 {current}/{default} 这类别名。
+        // 2026-10-12 实机：还原后第二项显示成 {default}，而快照里是完整 GUID，
+        // 不做别名展开就会误判"原有启动菜单项丢失"。
+        let cur_default = "{12e3701c-c361-11f1-90a2-c222b5348ef7}".to_string();
+        let expand = |ids: &[String]| -> Vec<String> {
+            ids.iter()
+                .map(|id| match id.to_ascii_lowercase().as_str() {
+                    "{current}" | "{default}" => cur_default.clone(),
+                    _ => id.clone(),
+                })
+                .collect()
+        };
+        let snapshot = vec!["{12e3701c-c361-11f1-90a2-c222b5348ef7}".to_string()];
+        let after = vec![
+            "{2f72105a-c642-11f1-895d-d2749b7d5c85}".to_string(),
+            "{default}".to_string(),
+        ];
+        let expected = expand(&snapshot);
+        let actual = expand(&after);
+        assert!(
+            expected.iter().all(|id| actual.iter().any(|cur| cur == id)),
+            "别名展开后，快照里的项必须能在还原后的菜单里找到"
+        );
+    }
+
+    #[test]
+    fn primary_partition_match_is_case_insensitive() {
+        // bcdedit 报的 device 会被转成小写（partition=c:），而 SystemDrive 给的是
+        // 大写 C:。直接 starts_with("partition=C:") 永远为 false，会把一次成功的
+        // 还原判成"默认启动项不符合约定"。2026-10-12 实机正是这么误报的。
+        let device = "partition=c:".to_string();
+        let active_letter = 'C';
+        assert!(
+            device.starts_with(&format!(
+                "partition={}:",
+                active_letter.to_ascii_lowercase()
+            )),
+            "小写化的 device 必须能和大写盘符匹配上"
+        );
+        // 反向确认：若不做小写化，这个断言会失败——即bug的形态。
+        assert!(!device.starts_with(&format!("partition={active_letter}:")));
     }
 
     #[test]
