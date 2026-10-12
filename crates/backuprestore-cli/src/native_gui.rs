@@ -4818,8 +4818,13 @@ unsafe fn create_task(state: &mut State) {
             "模式：{operation_label}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
         )
     };
-    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
-        && show_message(
+    // 测试钩子（--test-hook + auto_install）下自动接受确认框，与 PE 安装确认同策略：
+    // 自动化验收环境无法精确点击弹窗按钮，卡在这里等于流程永远走不下去。
+    let destructive_answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
+        append_gui_log(state, "test hook: destructive confirmation auto-accepted");
+        IDYES
+    } else {
+        show_message(
             state.root,
             &if language == Language::English {
                 format!("{summary}\n\nThe target partition will be overwritten. Continue?")
@@ -4832,7 +4837,10 @@ unsafe fn create_task(state: &mut State) {
                 "破坏性确认"
             },
             MB_YESNO | MB_ICONWARNING,
-        ) != IDYES
+        )
+    };
+    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+        && destructive_answer != IDYES
     {
         append_gui_log(
             state,
@@ -4923,8 +4931,16 @@ unsafe fn create_task(state: &mut State) {
         } else {
             (String::new(), String::new())
         };
-        if !prompt.is_empty()
-            && show_message(state.root, &prompt, &title, MB_YESNO | MB_ICONWARNING) != IDYES
+        // 测试钩子下同样自动接受（否则档案缺失弹窗会卡住自动验收）。
+        let metadata_answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
+            append_gui_log(state, "test hook: metadata confirmation auto-accepted");
+            IDYES
+        } else if prompt.is_empty() {
+            IDYES
+        } else {
+            show_message(state.root, &prompt, &title, MB_YESNO | MB_ICONWARNING)
+        };
+        if !prompt.is_empty() && metadata_answer != IDYES
         {
             append_gui_log(
                 state,

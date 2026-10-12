@@ -659,16 +659,52 @@ fn restore_to_windows_volume(
     // 行为。2026-10-12 实机在这里误报：旧的 {556b9391}（E:）被新的 {2f72105a}（E:）
     // 取代，断言认为"原有菜单项丢失"，可那恰恰是成功的还原。
     // 所以只要求**非目标卷**的原有项一个不少。
+    // 把别名解析成真实 GUID。
+    //
+    // **不能图省事用 `cur.default` 顶替**：`{bootmgr}` 的 `default` 字段自身就可能是
+    // `{default}` 这个自引用别名（2026-10-12 实机正是如此），那样替换完还是别名，
+    // 与快照里的完整 GUID 永远不相等，于是一次成功的还原被误判成"菜单项丢失"。
+    // 正解是问 bcdedit 要这个别名的真实标识符。
+    let resolve_alias = |alias: &str| -> Option<String> {
+        let text = run_bcd_edit(
+            &[
+                "/store".into(),
+                store.clone(),
+                "/enum".into(),
+                alias.to_string(),
+                "/v".into(),
+            ],
+            dir,
+        )
+        .ok()?;
+        text.lines().find_map(|line| {
+            let trimmed = line.trim();
+            let (key, value) = trimmed.split_once(char::is_whitespace)?;
+            (key.eq_ignore_ascii_case("identifier") || key == "标识符")
+                .then(|| crate::bcd_identifier_from_line(value.trim()).map(str::to_owned))
+                .flatten()
+        })
+    };
     let expand = |ids: &[String]| -> Vec<String> {
         ids.iter()
             .map(|id| match id.to_ascii_lowercase().as_str() {
-                "{current}" | "{default}" => cur.default.clone(),
+                "{current}" | "{default}" => resolve_alias(id).unwrap_or_else(|| id.clone()),
                 _ => id.clone(),
             })
             .collect()
     };
     let expected = expand(&old.display_order);
     let actual = expand(&cur.display_order);
+    // BCDEdit 可能把显示顺序中的合法条目写成同一行的多个值；状态解析器
+    // 已按字段边界收集续行。这里统一大小写，避免 GUID 大小写差异造成误报。
+    let expected: Vec<String> = expected
+        .into_iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect();
+    let actual: Vec<String> = actual
+        .into_iter()
+        .map(|id| id.to_ascii_lowercase())
+        .collect();
     let missing: Vec<String> = expected
         .iter()
         .filter(|id| !actual.iter().any(|cur_id| cur_id == *id))
@@ -676,6 +712,22 @@ fn restore_to_windows_volume(
         .collect();
     // 丢掉的项如果本来就指向目标卷（被新 loader 取代），属正常；
     // 丢的是别的卷（例如主系统）才是真问题。
+    //
+    // 2026-10-13 实机根因（三轮同错）：连续第二次还原时，上一轮建的 E: 旧 loader
+    // （{cdf9efe4}）会被本轮的新 loader（{d146fb01}）取代并**删除**——这正是还原
+    // 该有的行为。可旧代码把"bcdedit 查不到该项"（对象已删）直接当成"丢失外来项"
+    // 报错，注释写的意图恰好相反。正解：对象被删=被取代（apply 只删目标卷的旧
+    // loader，新 loader 在菜单里另有断言）；对象仍存在时看 device 指向，指向目标卷
+    // 之外的卷才算真丢失。
+    // 门禁判定全程落日志：连续四轮同错后不再接受"黑盒判定"——缺失清单、
+    // 每个对象的枚举结果、device 指向与最终判定值都必须可事后核对。
+    log(
+        log_path,
+        &format!(
+            "门禁对账：快照菜单 {:?}；现菜单 {:?}；缺失 {:?}",
+            expected, actual, missing
+        ),
+    )?;
     let lost_foreign = missing.iter().any(|id| {
         let object = run_bcd_edit(
             &[
@@ -687,21 +739,28 @@ fn restore_to_windows_volume(
             ],
             dir,
         );
-        // 查不到该项（已被删）时，只要目标卷换了新 loader 就认它属于目标卷。
         match object {
-            Err(_) => true,
+            // 对象已被删：按"目标卷旧 loader 已被取代"处理，不算丢失。
+            Err(_) => {
+                let _ = log(log_path, &format!("门禁对象 {id} 已被删（被取代），不算丢失"));
+                false
+            }
             Ok(text) => {
                 let device = text
                     .lines()
                     .filter_map(|line| line.split_once(char::is_whitespace))
-                    .find(|(key, _)| key.trim().eq_ignore_ascii_case("device"))
-                    .map(|(_, value)| value.trim().to_ascii_lowercase())
+                    .find(|(key, _)| {
+                        let key = key.trim();
+                        key.eq_ignore_ascii_case("device") || key == "设备"
+                    })
+                    .map(|(_, value)| value.trim().to_string())
                     .unwrap_or_default();
-                // 指向目标卷（不是主系统所在的活动卷）的才算"被取代也无妨"。
-                !device.starts_with(&format!(
-                    "partition={}:",
-                    active_letter.to_ascii_lowercase()
-                ))
+                let verdict = missing_entry_is_foreign(&text, target_letter);
+                let _ = log(
+                    log_path,
+                    &format!("门禁对象 {id} 仍存在 device={device:?} 判定丢失={verdict}"),
+                );
+                verdict
             }
         }
     });
@@ -731,6 +790,46 @@ fn restore_to_windows_volume(
         log_path,
         "引导与启动菜单已写入；系统实际可启动性需另行启动验收",
     )
+}
+
+/// 判定一个从菜单里消失的既有项是否属于"外来卷被误删"。
+///
+/// 输入是该对象当前的 bcdedit /enum 输出与目标盘符。调用方已保证对象仍存在
+/// （被删的情形由调用方按"被取代"处理，不走这里）。
+/// - device 指向目标卷：旧 loader 被新 loader 取代，正常，返回 false。
+/// - device 指向其它任何卷（含主系统活动卷、ramdisk PE 项）或读不到 device：
+///   视为真丢失，返回 true。
+/// 中文系统里 device 字段名显示为"设备"，必须与英文一同识别
+/// （2026-10-12 已在 boot_menu 踩过同样的本地化坑）。
+#[cfg(any(windows, test))]
+fn missing_entry_is_foreign(object_text: &str, target_letter: char) -> bool {
+    // 对象不存在：bcdedit 查一个已删除的对象时**退出码为 0**（2026-10-13 实测），
+    // 只输出本地化文案（中文"没有匹配的对象或存储为空"、英文"The element was
+    // not found"等）。文案不可枚举，改用结构性判据：全文没有任何 BCD 标识符
+    // （{guid}）即视为对象不存在=被新 loader 取代，不算丢失。
+    let has_identifier = object_text
+        .lines()
+        .any(|line| crate::bcd_identifier_from_line(line).is_some());
+    if !has_identifier {
+        return false;
+    }
+    let device = object_text
+        .lines()
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .find(|(key, _)| {
+            let key = key.trim();
+            key.eq_ignore_ascii_case("device") || key == "设备"
+        })
+        .map(|(_, value)| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    // 对象存在但读不到 device：按真丢失处理（保守，交人工排查）。
+    if device.is_empty() {
+        return true;
+    }
+    !device.starts_with(&format!(
+        "partition={}:",
+        target_letter.to_ascii_lowercase()
+    ))
 }
 
 /// 单调序号，保证每次外部命令的输出文件互不覆盖，便于事后排查。
@@ -1151,6 +1250,99 @@ Version : 10.0.26200";
                 "占位值或缺失字段必须返回 None，让调用方继续降级"
             );
         }
+    }
+
+    #[test]
+    fn deleted_old_target_loader_is_replaced_not_lost() {
+        // 2026-10-13 实机（连续第二轮还原）：上一轮建的 E: 旧 loader 被本轮新
+        // loader 取代并删除。关键实测：bcdedit /enum {已删对象} **退出码为 0**，
+        // 只输出本地化文案"没有匹配的对象或存储为空。"——Err 分支根本不会触发，
+        // 空文案会走 Ok 分支。必须靠"全文无 BCD 标识符"识别对象不存在。
+        for text in [
+            "没有匹配的对象或存储为空。\r\n",
+            "The element data store is not present.\r\n",
+        ] {
+            assert!(
+                !missing_entry_is_foreign(text, 'E'),
+                "对象不存在（退出码 0 + 空文案）必须按被取代处理：{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enum_error_also_counts_as_replaced() {
+        // 进程失败（Err）分支同样按被取代处理——调用方 Err(_) => false。
+        // 这里只确认正常对象文本不会误进该路径。
+        let object = "标识符                  {8b55181a-c666-11f1-895d-d2749b7d5c85}\r\ndevice                  partition=E:";
+        assert!(!missing_entry_is_foreign(object, 'E'));
+    }
+
+    #[test]
+    fn missing_entry_pointing_at_target_volume_is_replaced() {
+        // 仍存在且指向目标卷 E: 的缺项=被新 loader 取代，正常。
+        let object = "Windows 启动加载器
+-------------------
+标识符                  {cdf9efe4-c657-11f1-895d-d2749b7d5c85}
+device                  partition=E:
+path                    \\Windows\\system32\\winload.efi
+description             Professional 10.0.26200
+osdevice                partition=E:";
+        assert!(!missing_entry_is_foreign(object, 'E'));
+    }
+
+    #[test]
+    fn missing_entry_pointing_at_primary_is_really_lost() {
+        // 指向主系统 C: 的项从菜单消失=真问题，必须拦下。
+        let object = "Windows 启动加载器
+-------------------
+标识符                  {12e3701c-c361-11f1-90a2-c222b5348ef7}
+device                  partition=C:
+path                    \\Windows\\system32\\winload.efi";
+        assert!(missing_entry_is_foreign(object, 'E'));
+    }
+
+    #[test]
+    fn missing_entry_accepts_chinese_device_label() {
+        // 中文系统 device 显示为"设备"，大小写与本地化都不能漏判。
+        let object = "Windows 启动加载器
+-------------------
+标识符                  {d0a5dda3-c644-11f1-895d-d2749b7d5c85}
+设备                    partition=E:
+路径                    \\Windows\\system32\\winload.efi";
+        assert!(!missing_entry_is_foreign(object, 'E'));
+        // 同样是中文标签但指向别的卷，仍算丢失。
+        let foreign = object.replace("partition=E:", "partition=F:");
+        assert!(missing_entry_is_foreign(&foreign, 'E'));
+    }
+
+    #[test]
+    fn missing_entry_without_device_line_is_lost() {
+        // 读不到 device 的对象按保守处理：算丢失，交人工排查。
+        let object = "Windows 启动加载器
+-------------------
+标识符                  {deadbeef-c644-11f1-895d-d2749b7d5c85}
+description             something";
+        assert!(missing_entry_is_foreign(object, 'E'));
+    }
+
+    #[test]
+    fn self_referential_default_alias_must_not_expand_to_itself() {
+        // `{bootmgr}` 的 default 字段自身就可能是 `{default}` 这个自引用别名
+        // （2026-10-12 实机正是如此）。若展开逻辑写成
+        // `"{default}" => cur.default.clone()`，替换完还是 `{default}`，
+        // 与快照里的完整 GUID 永远不相等，会把成功的还原误判成"菜单项丢失"。
+        // 正解是问 bcdedit 要该别名的真实标识符（实测展开为 {12e3701c-...}）。
+        let snapshot = "{12e3701c-c361-11f1-90a2-c222b5348ef7}".to_string();
+        let after = "{default}".to_string();
+        // 错误的展开：自指，替换后毫无变化。
+        let broken = after.clone();
+        assert_ne!(
+            broken, snapshot,
+            "若展开结果仍等于别名本身，就永远匹配不上快照 —— 这就是 bug 的形态"
+        );
+        // 正确的展开：别名 -> 真实 GUID（由 bcdedit /enum {别名} 提供）。
+        let resolved = "{12e3701c-c361-11f1-90a2-c222b5348ef7}".to_string();
+        assert_eq!(resolved, snapshot, "解析后的 GUID 必须与快照一致");
     }
 
     #[test]

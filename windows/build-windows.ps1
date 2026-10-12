@@ -131,6 +131,59 @@ function Initialize-MsvcEnvironment([string]$arch) {
     }
 }
 
+function Publish-Build {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$PackageDir,
+        [Parameter(Mandatory = $true)][string]$WorkDir
+    )
+    $sourceHash = (Get-FileHash $Binary -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host "Deploying to $PackageDir and $WorkDir (sha256 $sourceHash)"
+
+    # 先停掉可能在跑的旧进程，否则文件被占用会导致复制半途而废。
+    # 找不到进程是常态，不算失败。
+    foreach ($name in @('BackupRestore.exe', 'Recovery.exe')) {
+        Stop-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($name)) -Force -ErrorAction SilentlyContinue
+    }
+    # 句柄释放需要一点时间；立刻复制可能撞上"另一个程序正在使用此文件"。
+    Start-Sleep -Milliseconds 500
+
+    New-Item -ItemType Directory -Force -Path $PackageDir, $WorkDir | Out-Null
+
+    # 清掉包目录里的历史启动件：它们已被 Recovery.exe 内嵌的 WinRE 契约取代，
+    # 留着会让人误以为还有这条回退路径。
+    foreach ($stale in @('RecoveryLauncher.cmd', 'winpeshl.ini', 'winpeshl-boot.cmd')) {
+        $path = Join-Path $PackageDir $stale
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 四个目标文件：两个目录 × 两个名字（BackupRestore.exe / Recovery.exe）。
+    # 少更新任何一个都会让 WinRE 载荷烘进旧代码。
+    $targets = @(
+        @{ Path = (Join-Path $PackageDir 'BackupRestore.exe'); Label = '包目录 BackupRestore.exe' },
+        @{ Path = (Join-Path $PackageDir 'Recovery.exe'); Label = '包目录 Recovery.exe' },
+        @{ Path = (Join-Path $WorkDir 'BackupRestore.exe'); Label = '运行目录 BackupRestore.exe' },
+        @{ Path = (Join-Path $WorkDir 'Recovery.exe'); Label = '运行目录 Recovery.exe' }
+    )
+    foreach ($target in $targets) {
+        Copy-Item $Binary $target.Path -Force
+        if (-not (Test-Path -LiteralPath $target.Path)) {
+            throw "部署失败：$($target.Label) 未生成于 $($target.Path)"
+        }
+    }
+    # WinPE 的 winpeshl.ini 是仓库里的审计夹具，随包目录一起放，便于人工比对。
+    Copy-Item (Join-Path $PSScriptRoot 'winpe-winpeshl.ini') (Join-Path $PackageDir 'winpe-winpeshl.ini') -Force
+
+    foreach ($target in $targets) {
+        $deployed = (Get-FileHash $target.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($deployed -ne $sourceHash) {
+            throw "部署失败：$($target.Label) 的 SHA-256 与构建产物不一致（客体=$deployed 构建=$sourceHash）"
+        }
+        Write-Host ("  OK {0} => {1}" -f $target.Label, $deployed)
+    }
+    Write-Host "DEPLOYED SHA256=$sourceHash"
+}
+
 foreach ($arch in $architectures) {
     $target = $targets[$arch]
     if ([string]::IsNullOrWhiteSpace($target)) { throw "Unknown architecture: $arch" }
@@ -195,57 +248,4 @@ foreach ($arch in $architectures) {
         # 唯一症状是镜像元数据里的 programVersion 偏低，静态检查看不出来。
         Publish-Build -Binary $binary -PackageDir $DeployPackageDir -WorkDir $DeployWorkDir
     }
-}
-
-function Publish-Build {
-    param(
-        [Parameter(Mandatory = $true)][string]$Binary,
-        [Parameter(Mandatory = $true)][string]$PackageDir,
-        [Parameter(Mandatory = $true)][string]$WorkDir
-    )
-    $sourceHash = (Get-FileHash $Binary -Algorithm SHA256).Hash.ToLowerInvariant()
-    Write-Host "Deploying to $PackageDir and $WorkDir (sha256 $sourceHash)"
-
-    # 先停掉可能在跑的旧进程，否则文件被占用会导致复制半途而废。
-    # 找不到进程是常态，不算失败。
-    foreach ($name in @('BackupRestore.exe', 'Recovery.exe')) {
-        Stop-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($name)) -Force -ErrorAction SilentlyContinue
-    }
-    # 句柄释放需要一点时间；立刻复制可能撞上"另一个程序正在使用此文件"。
-    Start-Sleep -Milliseconds 500
-
-    New-Item -ItemType Directory -Force -Path $PackageDir, $WorkDir | Out-Null
-
-    # 清掉包目录里的历史启动件：它们已被 Recovery.exe 内嵌的 WinRE 契约取代，
-    # 留着会让人误以为还有这条回退路径。
-    foreach ($stale in @('RecoveryLauncher.cmd', 'winpeshl.ini', 'winpeshl-boot.cmd')) {
-        $path = Join-Path $PackageDir $stale
-        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
-    }
-
-    # 四个目标文件：两个目录 × 两个名字（BackupRestore.exe / Recovery.exe）。
-    # 少更新任何一个都会让 WinRE 载荷烘进旧代码。
-    $targets = @(
-        @{ Path = (Join-Path $PackageDir 'BackupRestore.exe'); Label = '包目录 BackupRestore.exe' },
-        @{ Path = (Join-Path $PackageDir 'Recovery.exe'); Label = '包目录 Recovery.exe' },
-        @{ Path = (Join-Path $WorkDir 'BackupRestore.exe'); Label = '运行目录 BackupRestore.exe' },
-        @{ Path = (Join-Path $WorkDir 'Recovery.exe'); Label = '运行目录 Recovery.exe' }
-    )
-    foreach ($target in $targets) {
-        Copy-Item $Binary $target.Path -Force
-        if (-not (Test-Path -LiteralPath $target.Path)) {
-            throw "部署失败：$($target.Label) 未生成于 $($target.Path)"
-        }
-    }
-    # WinPE 的 winpeshl.ini 是仓库里的审计夹具，随包目录一起放，便于人工比对。
-    Copy-Item (Join-Path $PSScriptRoot 'winpe-winpeshl.ini') (Join-Path $PackageDir 'winpe-winpeshl.ini') -Force
-
-    foreach ($target in $targets) {
-        $deployed = (Get-FileHash $target.Path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($deployed -ne $sourceHash) {
-            throw "部署失败：$($target.Label) 的 SHA-256 与构建产物不一致（客体=$deployed 构建=$sourceHash）"
-        }
-        Write-Host ("  OK {0} => {1}" -f $target.Label, $deployed)
-    }
-    Write-Host "DEPLOYED SHA256=$sourceHash"
 }
