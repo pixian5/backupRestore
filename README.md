@@ -102,43 +102,68 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 构建目标是 **Windows ARM64**（`aarch64-pc-windows-msvc`），静态链接 CRT。
 
-> **📌 用户 2026-10-12 决定：后续一律在宿主机（macOS）交叉编译，不走 VM 内编译。**
-> 理由：快一倍（8.16s vs 15.24s）、不依赖客体开机与共享目录在线。
-> VM 内编译只在需要"编完立刻实机验证"时偶发使用，不是常规路径。
+> **📌 用户 2026-10-12 决定：构建与测试的主路径都在 VM 内（Windows 侧）。**
+>
+> **推翻同日早先"一律宿主机交叉编译"的决定。** 原因是实测发现那个决定的核心理由
+> 不成立：clean 后全量构建 macOS 只快 1.8 倍（4.60s vs 8.24s，绝对差 3.6 秒），
+> 对开发循环没有意义；而代价是质变的——**macOS 有 59% 的代码根本编译不到**
+> （8 个 `#[cfg(windows)]` 模块共 15696 行），那 138 项绿灯对它们证明力为零。
+> 2026-10-12 引导修复实机验证时，**每一个阻断缺陷都在 macOS 编译不到的文件里**。
 
-### 常规构建（宿主机）
+### 常规构建 + 部署 + 核对（VM 内，一条命令）
+
+```powershell
+# 在 VM 的 Windows 11 里执行
+& X:\windows\build-windows.ps1 -Architecture arm64 -Deploy
+```
+
+一条命令完成：构建 → 打包 → 部署到两个运行目录 → 逐个核对 4 个 SHA-256。
+不部署就去掉 `-Deploy`。
+
+部署目标与判据：
+
+| 目标 | 文件 |
+|---|---|
+| 包目录 `C:\Users\Public\backupRestore-package\` | `BackupRestore.exe` + `Recovery.exe` + `winpe-winpeshl.ini` |
+| 运行目录 `H:\brwork\` | `BackupRestore.exe` + `Recovery.exe` |
+
+**复制成功不算数**，判据只有"四个文件的 SHA-256 与刚构建的成品逐个相等"。
+2026-09-30 踩过「只更新包目录、运行目录还是旧件」的坑，唯一症状是镜像元数据里的
+`programVersion` 偏低，静态检查看不出来。
+
+可用 `-CargoTargetDir` / `-OutputRoot` / `-DeployPackageDir` / `-DeployWorkDir` 覆盖默认路径。
+
+### 跑测试
+
+```powershell
+cargo test --manifest-path X:\Cargo.toml            # 全量
+cargo test --manifest-path X:\Cargo.toml -p backuprestore-cli
+```
+
+> ⚠️ **macOS 侧 `cargo test` 的绿灯不能作为这些代码的验证依据。**
+> `online_operation`、`native_gui`、`windows_prepare`、`windows_command`、
+> `recovery_progress`、`pe_operation`、`boot_entry`、`recovery_fault`
+> 八个模块都是 `#[cfg(windows)]`，macOS 上静默跳过。
+> 改到它们必须在 Windows 侧跑一遍测试——macOS 抓不到的错包括类型不匹配、
+> borrow 检查、以及本会话全部 7 个阻断缺陷。
+
+### macOS 交叉编译（保留，仅作快速 sanity check）
 
 ```bash
 ./build-win.sh              # 只构建
-./build-win.sh --deploy     # 构建 + 部署到 VM + 逐一核对 SHA-256
+./build-win.sh --deploy     # 构建 + 部署 + 核对（经 UNC 路径 \\Mac\backupRestore）
 ```
 
-产物：`target/aarch64-pc-windows-msvc/release/BackupRestore.exe`
-
-**产物怎么进 VM**：通过 Parallels 共享文件夹（Host Shared Folders）。
-宿主 `/Users/x/code/backupRestore` 被设为共享，客体侧用 **UNC 路径
-`\\Mac\backupRestore`** 访问——不用盘符 `X:`，因为 `prlctl exec` 默认走
-SYSTEM 账户（Session 0），看不到用户会话的盘符映射，而 UNC 在 SYSTEM 下可读写。
-部署由客体侧 `copy` 命令从 UNC 路径拉到两个目标目录（包目录
-`C:\Users\Public\backupRestore-package\` 与运行目录 `H:\brwork\`），
-每个目录都要同时刷新 `BackupRestore.exe` 与 `Recovery.exe`，
-最后逐一比对 4 个 SHA-256 才算成功。
-
-### VM 内原生编译（备选，仅实机验证需要时）
-
-客体内执行，**`+crt-static` 必须显式带**：
-
-```bash
-set "CARGO_TARGET_DIR=C:\BackupRestoreBuild\target" && set "RUSTFLAGS=-C target-feature=+crt-static" && cargo build --release --manifest-path X:\Cargo.toml --target aarch64-pc-windows-msvc
-```
-
-> ⚠️ **别手打裸 `cargo build`**：漏了 `+crt-static`，产物会依赖
-> `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，进不了精简 WinRE/PE
-> （退出码 0xC0000135）。2026-10-12 实测犯过这个错，靠核对 DLL 依赖列表才发现。
-
-两条路径的实测对比（同版本、同 rustc 1.98.1：时间 8.16s vs 15.24s、
-产物大小差 16KB、两边均 14 个 DLL 且零 CRT 外部依赖）见
+只在改 `backuprestore-core` 这类**跨平台**代码、需要快速确认"没把公共库改崩"时用。
+产物质量与 Windows 侧等同（两边均 14 个 DLL、零 CRT 外部依赖、大小差 16KB），
+实测对比见
 [macOS 交叉编译与 VM 内原生编译实测对比](./docs/20261012-1640-macOS交叉编译与VM内原生编译实测对比-Fable5.md)。
+**它不能替代 Windows 侧测试。**
+
+> ⚠️ **无论哪条路径，`+crt-static` 都不能漏**：漏了产物会依赖
+> `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，进不了精简 WinRE/PE
+> （退出码 0xC0000135）。`build-windows.ps1` 与 `build-win.sh` 都已内置，
+> 手打裸 `cargo build` 才会踩到。
 
 构建规则、静态 CRT、Windows SDK 路径等细节见 `docs/20260819-2245-windows-build.md`；
 VM 内编译环境与踩坑见 [2.3.9 引导修复与 VM 原生编译路径](./docs/20261012-1510-2.3.9引导修复与VM原生编译路径-Fable5.md)。
@@ -152,7 +177,7 @@ VM 内编译环境与踩坑见 [2.3.9 引导修复与 VM 原生编译路径](./d
 | `crates/` | 产品源码（Rust，唯一产品语言） |
 | `docs/` | 流程、开发进度、操作记录及历史方案，索引见 `docs/README.md` |
 | `tools/win-clicker/` | 测试脚手架：操控 VM 键鼠的自动化通道（PowerShell，不进产品） |
-| `build-win.sh` | ARM64 交叉构建 + 部署 + 哈希核对 |
+| `build-win.sh` | macOS 交叉构建 + 部署 + 哈希核对（**已降级为快速 sanity check**，主路径是 `windows/build-windows.ps1 -Deploy`） |
 | `artifacts/` | PE 构建产物（`BackupRestorePE.iso/wim`、`BaseWinPE.iso`） |
 | `pe-assets/` | PE 源 WIM / SDI |
 | `windows/` | Windows 侧辅助脚本与 `winpeshl.ini` |
