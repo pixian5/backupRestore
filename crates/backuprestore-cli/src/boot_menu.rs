@@ -2,6 +2,7 @@
 
 use backuprestore_core::{TaskError, VolumeIdentity};
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
 
 pub(crate) const TIMEOUT_MAX: u32 = 999;
@@ -107,10 +108,11 @@ pub(crate) fn loader_identifier_for_partition(
                 Some((key, value.trim()))
             })
             .collect();
-        if !fields
-            .iter()
-            .any(|(k, v)| *k == "path" && v.ends_with("\\winload.efi"))
-        {
+        // 中文本地化的 bcdedit 用「路径」而不是 path；只认英文会在中文机器上
+        // 漏掉全部加载器，引导修复因此永远找不到候选（实机前由单测拦住）。
+        if !fields.iter().any(|(k, v)| {
+            matches!(*k, "path" | "路径") && v.ends_with("\\winload.efi")
+        }) {
             continue;
         }
         if !fields
@@ -152,6 +154,8 @@ pub(crate) fn render_entries(plan: &BootMenuPlan, cursor: usize) -> String {
         .join("\r\n")
 }
 
+/// 落盘的引导方案：带上 task_id 防止拿上一个任务的候选来改本次还原。
+#[cfg(windows)]
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedPlan {
     task_id: String,
@@ -502,9 +506,166 @@ pub(crate) use window::{handle_key, open_editor};
 
 #[cfg(test)]
 mod tests {
-    // 集成测试只为确保方案结构能构造；字段语义由上方纯函数测试覆盖。
+    use super::*;
+    use backuprestore_core::VolumeIdentity;
+
+    /// 构造完整卷身份（`is_complete` 要求全部稳定字段都在）。
+    fn identity(disk: u8, partition: u8, letter: char) -> VolumeIdentity {
+        VolumeIdentity {
+            disk_guid: format!("{{dg-{disk}}}"),
+            partition_guid: format!("{{pg-{partition}}}"),
+            volume_guid: format!("{{vg-{disk}-{partition}}}"),
+            partition_type_guid: "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}".into(),
+            disk_number: Some(u32::from(disk)),
+            partition_number: Some(u32::from(partition)),
+            partition_offset: u64::from(partition) * 1_000_000,
+            partition_size: 500_000_000_000,
+            filesystem: "NTFS".into(),
+            volume_serial: format!("{disk:08x}{partition:08x}"),
+            drive_letter: Some(letter),
+        }
+    }
+
+    fn plan() -> BootMenuPlan {
+        BootMenuPlan {
+            entries: vec![
+                BootMenuEntry {
+                    drive_letter: 'E',
+                    display_name: "本次还原的 Windows".into(),
+                    selected: true,
+                    is_restore_target: true,
+                    volume: identity(2, 5, 'E'),
+                },
+                BootMenuEntry {
+                    drive_letter: 'C',
+                    display_name: "Windows (C:)".into(),
+                    selected: true,
+                    is_restore_target: false,
+                    volume: identity(0, 1, 'C'),
+                },
+            ],
+            timeout_seconds: TIMEOUT_DEFAULT,
+        }
+    }
+
     #[test]
-    fn boot_menu_module_compiles() {
-        assert!(super::TIMEOUT_DEFAULT > 0);
+    fn restore_target_cannot_be_unselected() {
+        let mut p = plan();
+        assert!(!p.toggle(0), "还原目标是必选项，勾选必须被拒绝");
+        assert!(p.entries[0].selected, "必选项状态不能被改变");
+        assert!(p.toggle(1), "其它系统可以取消");
+        assert!(!p.entries[1].selected);
+        assert!(p.toggle(1));
+        assert!(p.entries[1].selected, "再次勾选应恢复选中");
+        assert!(!p.toggle(9), "越界下标不得 panic");
+    }
+
+    #[test]
+    fn ordering_moves_entries_within_bounds() {
+        let mut p = plan();
+        assert!(!p.move_up(0), "首项上移应无效");
+        assert!(p.move_down(0), "首项下移应生效");
+        assert_eq!(p.entries[0].drive_letter, 'C', "下移后首项应变成原第二项");
+        assert!(p.move_up(1));
+        assert_eq!(p.entries[0].drive_letter, 'E', "上移后应还原");
+        assert!(!p.move_down(1), "末项下移应无效");
+        assert!(!p.move_down(9), "越界下标不得 panic");
+    }
+
+    #[test]
+    fn rename_trims_and_rejects_unusable_names() {
+        let mut p = plan();
+        assert!(p.rename(1, "  第二系统  "));
+        assert_eq!(p.entries[1].display_name, "第二系统", "首尾空白应被去掉");
+        assert!(!p.rename(1, "   "), "纯空白名称必须拒绝");
+        assert!(!p.rename(1, "带\x07控制字符"), "控制字符必须拒绝");
+        assert!(!p.rename(9, "越界"), "越界下标不得 panic");
+        let long = "长".repeat(NAME_MAX_CHARS + 5);
+        assert!(p.rename(1, &long));
+        assert_eq!(p.entries[1].display_name.chars().count(), NAME_MAX_CHARS, "超长名称应截断");
+    }
+
+    #[test]
+    fn validate_requires_exactly_one_selected_target() {
+        let mut p = plan();
+        p.validate().expect("默认方案应通过");
+        p.entries.remove(0);
+        p.validate().expect_err("缺少还原目标必须拒绝");
+        let mut p = plan();
+        p.entries[0].selected = false;
+        p.validate().expect_err("还原目标被取消必须拒绝");
+        let mut p = plan();
+        p.entries[1].is_restore_target = true;
+        p.validate().expect_err("两个必选项必须拒绝");
+    }
+
+    #[test]
+    fn validate_rejects_incomplete_identity_and_duplicates() {
+        let mut p = plan();
+        p.entries[1].volume.volume_guid = String::new();
+        p.validate().expect_err("卷身份不完整必须拒绝");
+        let mut p = plan();
+        p.entries[1].volume.disk_guid = p.entries[0].volume.disk_guid.clone();
+        p.entries[1].volume.partition_guid = p.entries[0].volume.partition_guid.clone();
+        p.validate().expect_err("重复系统分区必须拒绝");
+        let mut p = plan();
+        p.entries[1].display_name = String::new();
+        p.validate().expect_err("空名称必须拒绝");
+        let mut p = plan();
+        p.timeout_seconds = TIMEOUT_MAX + 1;
+        p.validate().expect_err("菜单时间超上限必须拒绝");
+        let mut p = plan();
+        p.timeout_seconds = TIMEOUT_MAX;
+        p.validate().expect("恰好上限应通过");
+    }
+
+    #[test]
+    fn loader_identifier_finds_the_unique_loader() {
+        // 两个对象块：只有 C 分区的那个同时满足 winload.efi + 设备字段。
+        let output = "\
+Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nidentifier {11111111-2222-3333-4444-555555555555}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\n";
+        assert_eq!(
+            loader_identifier_for_partition(output, 'c').unwrap().as_deref(),
+            Some("{11111111-2222-3333-4444-555555555555}")
+        );
+        assert_eq!(loader_identifier_for_partition(output, 'd').unwrap(), None);
+    }
+
+    #[test]
+    fn loader_identifier_accepts_localized_device_labels() {
+        // 中文 Windows 的 bcdedit 用「设备」「操作系统设备」标签，字段名解析不能因此失效。
+        let output = "Windows Boot Loader\r\n标识符 {aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}\r\n路径 \\Windows\\system32\\winload.efi\r\n设备 partition=C:\r\n操作系统设备 partition=C:\r\n\r\n";
+        assert_eq!(
+            loader_identifier_for_partition(output, 'C').unwrap().as_deref(),
+            Some("{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}")
+        );
+    }
+
+    #[test]
+    fn loader_identifier_refuses_to_guess_between_two_loaders() {
+        // 同卷两个加载器：按枚举顺序猜会把用户引导到错误系统，必须报错。
+        let output = "Windows Boot Loader\r\nidentifier {11111111-1111-1111-1111-111111111111}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\nWindows Boot Loader\r\nidentifier {22222222-2222-2222-2222-222222222222}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\n";
+        assert!(loader_identifier_for_partition(output, 'c').is_err());
+    }
+
+    #[test]
+    fn loader_identifier_ignores_ramdisk_and_incomplete_objects() {
+        // ramdisk 选项与 resume 对象也带 winload 路径特征，但设备字段不是分区加载器。
+        let output = "Windows Boot Loader\r\nidentifier {ramdisk}\r\npath \\Windows\\system32\\winload.efi\r\nramdiskdevice partition=E:\r\n\r\nWindows Boot Loader\r\nidentifier {no-osdevice}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\n\r\n";
+        assert_eq!(loader_identifier_for_partition(output, 'e').unwrap(), None);
+        assert_eq!(loader_identifier_for_partition(output, 'c').unwrap(), None);
+    }
+
+    #[test]
+    fn render_entries_marks_cursor_target_and_selection() {
+        let rendered = render_entries(&plan(), 1);
+        let lines: Vec<&str> = rendered.split("\r\n").collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with(' '), "非焦点行用空格占位保持排版稳定");
+        assert!(lines[0].contains("[√]"), "选中项显示勾选");
+        assert!(lines[0].contains("[本次还原·必选]"), "还原目标必须标注");
+        assert!(lines[0].ends_with("[本次还原·必选]"), "必选标注在行尾");
+        assert!(lines[1].starts_with('>'), "光标行以 > 指示");
+        assert!(lines[1].contains("2. "), "第二项序号为 2（序号从 1 起算）");
     }
 }
