@@ -2645,7 +2645,12 @@ fn recover_windows(
                 // snapshot before BCDBoot.  It remains available even if a
                 // power failure occurs after BCDBoot changes the live store.
                 let previous_boot_manager = if target.role == TargetRole::NewWindows {
-                    secondary_registry::repair(&target_root, &target.volume, log)?;
+                    secondary_registry::repair(
+                        &target_root,
+                        target_letter,
+                        &target.volume,
+                        log,
+                    )?;
                     Some(boot_manager_state_from_task_snapshot(store, task, log)?)
                 } else {
                     None

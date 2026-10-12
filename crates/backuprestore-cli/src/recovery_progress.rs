@@ -50,6 +50,8 @@ const ID_TAIL: i32 = 5;
 const ID_LOG_BUTTON: i32 = 6;
 /// 详细日志弹窗内部的只读文本框。
 const ID_LOG_EDIT: i32 = 7;
+/// 「引导修复」按钮：第二阶段开始后打开系统选择与排序窗口。
+const ID_BOOT_MENU: i32 = 8;
 const SS_RIGHT: u32 = 0x0000_0002;
 const TIMER_ID: usize = 1;
 /// 详细日志弹窗的刷新定时器（与主窗口定时器区分）。
@@ -119,6 +121,8 @@ pub struct ProgressShared {
     /// 详细日志弹窗句柄（窗口线程内创建，关闭只隐藏以便重复打开）。
     /// 与 `hwnd` 同样用 usize 存，避免裸指针不满足 Send。
     pub log_window: Mutex<Option<usize>>,
+    /// 第二阶段准备好的引导修复会话；按钮在会话存在后显示。
+    pub boot_menu: Mutex<Option<Arc<crate::boot_menu::BootMenuSession>>>,
 }
 
 impl ProgressShared {
@@ -711,6 +715,15 @@ unsafe fn layout_controls(hwnd: Hwnd) {
             tail_height,
             1,
         );
+        // 引导修复按钮置于详细日志按钮下方；会话未准备好时保持隐藏。
+        MoveWindow(
+            GetDlgItem(hwnd, ID_BOOT_MENU),
+            MARGIN + tail_width.max(200) + GAP,
+            tail_top + tail_height + GAP,
+            BUTTON_WIDTH,
+            tail_height,
+            1,
+        );
     }
 }
 
@@ -1057,6 +1070,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         hwnd: Mutex::new(None),
         operation: Mutex::new(operation.map(|s| s.to_string())),
         log_window: Mutex::new(None),
+        boot_menu: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);
     let handle = thread::spawn(move || {

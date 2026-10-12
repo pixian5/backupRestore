@@ -281,13 +281,22 @@ fn restore_to_windows_volume(
 
     log(
         log_path,
-        "STEP 4/4 修复引导（bcdboot，保留主系统默认启动项）",
+        "STEP 3.5/4 绑定第二系统盘符（离线 SYSTEM/SOFTWARE，主系统不受影响）",
     )?;
     let target_letter = crate::windows_prepare::ensure_volume_mounted(&after, 'T', log_path)?;
     crate::pe_safety::verify_binding(
         &after,
         &crate::windows_prepare::volume_identity(target_letter)?,
         true,
+    )?;
+    // 镜像里的 MountedDevices 仍把原系统盘符绑在主系统分区上。不重绑则新系统启动后
+    // 注册表与服务里的绝对路径全部指向别的卷，服务初始化失败（LogonUI/dwm 崩溃循环）。
+    // 离线路径在 bcdboot 前做同一件事（main.rs 的 CreateSecondary 分支），此处对齐。
+    crate::secondary_registry::repair(&target_root, target_letter, &after, log_path)?;
+
+    log(
+        log_path,
+        "STEP 4/4 修复引导（bcdboot，保留主系统默认启动项）",
     )?;
     let live = run_bcd_edit(
         &[

@@ -84,16 +84,14 @@ fn with_hive<T>(
 #[cfg(windows)]
 pub(crate) fn repair(
     target: &std::path::Path,
+    // 目标卷当前挂载后的盘符。`target` 可能是 `\\?\Volume{…}\` 这类无盘符的 GUID 路径
+    // （在线入口按卷身份取根路径时就是这种），此时不能从路径首字符推断盘符，故显式传入。
+    letter: char,
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
 ) -> Result<(), TaskError> {
     use crate::{capture_logged, pe_safety, windows_prepare as wp};
     use std::fs;
-    let letter = target
-        .to_string_lossy()
-        .chars()
-        .next()
-        .ok_or_else(|| crate::err("目标盘符缺失"))?;
     pe_safety::verify_binding(expected, &wp::volume_identity(letter)?, false)?;
     let running = std::env::var("SystemDrive").map_err(|_| crate::err("当前系统盘未知"))?;
     if running.eq_ignore_ascii_case(&format!("{letter}:")) {
@@ -250,6 +248,7 @@ mod tests {
         );
         repair(
             &std::path::PathBuf::from(format!("{letter}:\\")),
+            letter,
             &expected,
             &std::path::PathBuf::from(std::env::var("BR_SECONDARY_MAPPING_LOG").unwrap()),
         )
