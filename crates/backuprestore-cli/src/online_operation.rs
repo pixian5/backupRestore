@@ -358,6 +358,20 @@ fn restore_to_windows_volume(
     let dir = log_path
         .parent()
         .ok_or_else(|| crate::err("日志目录缺失"))?;
+    // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会
+    // "格式化之后才失败"（STEP 3.5 盘符绑定需要完整 Windows 注册表）。
+    // 与 prepare 链共用同一判据：缺 reagentc.exe 或 SYSTEM hive 直接拒绝。
+    match crate::windows_prepare::wim_full_windows_probe(&params.image_path, index)? {
+        crate::windows_prepare::ProbeOutcome::FullWindows => {
+            log(log_path, "镜像完整性预检：只读挂载确认完整 Windows")?;
+        }
+        crate::windows_prepare::ProbeOutcome::HeuristicPass => {
+            log(
+                log_path,
+                "镜像完整性预检：挂载探测不可用（如本机有附加 VHD），按镜像名启发式放行；恢复期注册检查兜底",
+            )?;
+        }
+    }
     let esp = crate::windows_prepare::esp_identity_without_drive_letter()?;
     let esp_letter = crate::windows_prepare::ensure_volume_mounted(&esp, 'S', log_path)?;
     crate::pe_safety::verify_binding(
@@ -740,26 +754,35 @@ fn restore_to_windows_volume(
             dir,
         );
         match object {
-            // 对象已被删：按"目标卷旧 loader 已被取代"处理，不算丢失。
+            // 进程失败（bcdedit 未跑起来）：与对象被删同样按被取代处理，
+            // 不让探测通道的偶发故障拦下一次成功的还原。
             Err(_) => {
-                let _ = log(log_path, &format!("门禁对象 {id} 已被删（被取代），不算丢失"));
+                let _ = log(log_path, &format!("门禁对象 {id} 枚举失败（按被取代处理）"));
                 false
             }
             Ok(text) => {
-                let device = text
-                    .lines()
-                    .filter_map(|line| line.split_once(char::is_whitespace))
-                    .find(|(key, _)| {
-                        let key = key.trim();
-                        key.eq_ignore_ascii_case("device") || key == "设备"
-                    })
-                    .map(|(_, value)| value.trim().to_string())
-                    .unwrap_or_default();
                 let verdict = missing_entry_is_foreign(&text, target_letter);
-                let _ = log(
-                    log_path,
-                    &format!("门禁对象 {id} 仍存在 device={device:?} 判定丢失={verdict}"),
-                );
+                if object_exists_in_enum(&text) {
+                    let device = text
+                        .lines()
+                        .filter_map(|line| line.split_once(char::is_whitespace))
+                        .find(|(key, _)| {
+                            let key = key.trim();
+                            key.eq_ignore_ascii_case("device") || key == "设备"
+                        })
+                        .map(|(_, value)| value.trim().to_string())
+                        .unwrap_or_default();
+                    let _ = log(
+                        log_path,
+                        &format!("门禁对象 {id} 仍存在 device={device:?} 判定丢失={verdict}"),
+                    );
+                } else {
+                    // 退出码 0 + 空文案（"没有匹配的对象"）= 对象已被删。
+                    let _ = log(
+                        log_path,
+                        &format!("门禁对象 {id} 已被删（枚举无标识符，被取代），不算丢失"),
+                    );
+                }
                 verdict
             }
         }
@@ -801,16 +824,24 @@ fn restore_to_windows_volume(
 ///   视为真丢失，返回 true。
 /// 中文系统里 device 字段名显示为"设备"，必须与英文一同识别
 /// （2026-10-12 已在 boot_menu 踩过同样的本地化坑）。
+/// 枚举输出里是否存在 BCD 标识符（{guid}）。
+///
+/// bcdedit 查一个**已删除**的对象时退出码为 0（2026-10-13 实测），只输出
+/// 本地化文案（中文"没有匹配的对象或存储为空"、英文"The element data store
+/// is not present"等）。文案不可枚举，结构性判据是唯一稳的：全文没有任何
+/// BCD 标识符即视为对象不存在。判定与日志措辞共用这一判据，避免再出现
+/// "对象已被删却打印'仍存在'"的歧义（2.4.1 验收遗留小项）。
+#[cfg(any(windows, test))]
+fn object_exists_in_enum(object_text: &str) -> bool {
+    object_text
+        .lines()
+        .any(|line| crate::bcd_identifier_from_line(line).is_some())
+}
+
 #[cfg(any(windows, test))]
 fn missing_entry_is_foreign(object_text: &str, target_letter: char) -> bool {
-    // 对象不存在：bcdedit 查一个已删除的对象时**退出码为 0**（2026-10-13 实测），
-    // 只输出本地化文案（中文"没有匹配的对象或存储为空"、英文"The element was
-    // not found"等）。文案不可枚举，改用结构性判据：全文没有任何 BCD 标识符
-    // （{guid}）即视为对象不存在=被新 loader 取代，不算丢失。
-    let has_identifier = object_text
-        .lines()
-        .any(|line| crate::bcd_identifier_from_line(line).is_some());
-    if !has_identifier {
+    // 对象不存在 = 被新 loader 取代，不算丢失（判据见 object_exists_in_enum）。
+    if !object_exists_in_enum(object_text) {
         return false;
     }
     let device = object_text

@@ -1346,6 +1346,128 @@ fn physical_volume_identity_at(
     })
 }
 
+/// 镜像完整性预检（2.4.2）：还原类操作要求的"完整 Windows"标记探测。
+///
+/// 背景（2026-10-11 实验，docs/20261011-2140）：纯 WinPE `boot.wim` 走
+/// create-secondary 会在**目标卷已被格式化、镜像已应用之后**才死在离线 WinRE
+/// 注册前置检查（缺 `reagentc.exe` 与 `SYSTEM` hive）——目标白毁。
+/// 这里把同样的判据前移到**擦除之前**：只读挂载镜像探测两个标记文件，
+/// 纯 PE 直接拒绝并提示改用「PE 恢复」（那才是装 PE 的正路）。
+///
+/// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件；
+/// 探测自身的失败（挂载不上等）也报错——探测不可用就不放行破坏性操作。
+pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<ProbeOutcome, TaskError> {
+    match wim_mount_markers(image_path, index) {
+        // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝。
+        Ok(false) => Err(err(
+            "镜像不是完整 Windows（缺少 reagentc.exe 或 SYSTEM 注册表），\
+             还原/新增第二系统需要完整 Windows 镜像。要安装 PE，请改用\
+             「PE 恢复」功能（内存版或硬盘版），它才是为 PE 设计的路径。本次\
+             未格式化任何卷、未写入引导。",
+        )),
+        Ok(true) => Ok(ProbeOutcome::FullWindows),
+        // 挂载本身失败：不硬拦。2026-10-13 实测本机在**有 VHD 附加**时
+        // DISM /Mount-Wim 一律报 87（参数无效），挂载探测在该环境不可用；
+        // 若把这种情况判失败，合法还原会被误杀。降级为镜像名启发式：
+        // 标准纯 PE 镜像的名称特征（"Microsoft Windows PE"/"WindowsPE"）
+        // 命中即拒绝，未命中放行——恢复阶段的离线注册前置检查仍是硬兜底。
+        Err(_) => {
+            let name = wim_image_display_name(image_path, index)?;
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("windows pe") || lower.contains("winpe") {
+                return Err(err(&format!(
+                    "镜像\"{name}\"是 Windows PE，不是完整 Windows；\
+                     要安装 PE 请改用「PE 恢复」功能。本次未格式化任何卷、未写入引导。"
+                )));
+            }
+            Ok(ProbeOutcome::HeuristicPass)
+        }
+    }
+}
+
+/// 探测结果：FullWindows=挂载后权威确认；HeuristicPass=挂载不可用、按镜像名
+/// 启发式放行（调用方应记录这一降级，便于事后核查）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeOutcome {
+    FullWindows,
+    HeuristicPass,
+}
+
+/// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
+/// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
+fn wim_mount_markers(image_path: &str, index: u32) -> Result<bool, TaskError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mount_dir = std::env::temp_dir().join(format!("br-wimprobe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&mount_dir);
+    std::fs::create_dir_all(&mount_dir)?;
+    let run = |args: &[&str]| -> Result<std::process::Output, TaskError> {
+        std::process::Command::new("dism.exe")
+            .arg("/English")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(TaskError::from)
+    };
+    let mounted = run(&[
+        "/Mount-Wim",
+        &format!("/ImageFile:{image_path}"),
+        &format!("/Index:{index}"),
+        "/ReadOnly",
+        &format!("/MountDir:{}", mount_dir.display()),
+    ])?;
+    if !mounted.status.success() {
+        let _ = std::fs::remove_dir_all(&mount_dir);
+        return Err(err("mount failed"));
+    }
+    let has_reagentc = mount_dir.join(r"Windows\System32\reagentc.exe").is_file();
+    let has_system_hive = mount_dir
+        .join(r"Windows\System32\config\SYSTEM")
+        .is_file();
+    // 无论判定结果如何都先卸载；卸载失败会锁住镜像，必须如实报错。
+    let unmounted = run(&[
+        "/Unmount-Wim",
+        &format!("/MountDir:{}", mount_dir.display()),
+        "/Discard",
+    ])?;
+    let _ = std::fs::remove_dir_all(&mount_dir);
+    if !unmounted.status.success() {
+        return Err(err("unmount failed"));
+    }
+    Ok(has_reagentc && has_system_hive)
+}
+
+/// 读取镜像指定索引的显示名（Name 行；缺失时退回 Description）。
+fn wim_image_display_name(image_path: &str, index: u32) -> Result<String, TaskError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("dism.exe")
+        .args([
+            "/English",
+            "/Get-WimInfo",
+            // 注意：/Get-WimInfo 的参数是 /WimFile（/ImageFile 是 Mount/Apply 的）。
+            &format!("/WimFile:{image_path}"),
+            &format!("/Index:{index}"),
+        ])
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    if !output.status.success() {
+        return Err(err("Get-WimInfo failed for image name"));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("name") && !value.trim().is_empty() {
+            return Ok(value.trim().to_string());
+        }
+    }
+    Ok(String::new())
+}
+
 /// 原生枚举包括已挂载卷；验证 EFI 类型及 BCD，多个候选或探测错误均拒绝猜测。
 pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, TaskError> {
     let mut matches: Vec<VolumeIdentity> = Vec::new();
@@ -1379,6 +1501,15 @@ pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, Task
         0 => Err(last_error.unwrap_or_else(|| err("未发现具有可读取 BCD 的 GPT EFI 分区"))),
         1 => Ok(matches.remove(0)),
         _ => {
+            // 多 ESP 自动识别（2.4.2）：不再一律拒绝。判据是**活动 BCD 指纹**——
+            // `bcdedit`（不带 /store）枚举的就是本次引导实际使用的 BCD；把每个
+            // 候选 ESP 的 {bootmgr} 状态（default/displayorder/resumeobject）与它
+            // 比对，**恰好一个**全等即认定该 ESP 是引导 ESP，安全选用。
+            // 指纹不匹配的 ESP 属于别的系统/磁盘，写它会把引导改到错误的链上；
+            // 指纹全等的候选不止一个（克隆盘）时仍然拒绝猜测——保护不变。
+            if let Some(active) = active_esp_by_store_fingerprint(&matches) {
+                return Ok(active.identity);
+            }
             let list = matches
                 .iter()
                 .map(|identity| {
@@ -1390,15 +1521,91 @@ pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, Task
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            // 不在这里猜：多个 ESP 时选错会把引导写进另一块磁盘的 BCD。
-            // 早先的提示写「pass --efi-drive to choose one」，但该参数从未实现，
-            // 用户照着做只会得到「unrecognized option」。如实说明现状。
             Err(err(&format!(
-                "检测到多个含 BCD 的 EFI 系统分区（{list}）；\
-                 当前版本尚不支持选择目标 ESP，请避免多 ESP 布局后重试"
+                "检测到多个含 BCD 的 EFI 系统分区（{list}），且无法唯一确定本次引导\
+                 使用的是哪一个（BCD 指纹比对无唯一匹配）。请避免多 ESP 布局，\
+                 或仅保留引导磁盘上的 ESP 后重试"
             )))
         }
     }
+}
+
+/// 按活动 BCD 指纹在多个 ESP 候选里挑出引导 ESP。
+///
+/// 返回 `None` 表示无法唯一确定（活动指纹读不到 / 无匹配 / 多于一个匹配）。
+fn active_esp_by_store_fingerprint(candidates: &[VolumeIdentity]) -> Option<ActiveEspPick> {
+    let active = boot_manager_fingerprint(None)?;
+    let mut hit: Option<ActiveEspPick> = None;
+    for identity in candidates {
+        // volume_guid 字段存的是完整路径（\\?\Volume{GUID}\），先剥成裸 {GUID} 再拼。
+        let Some(guid) = crate::text_parsing::bare_volume_guid(&identity.volume_guid) else {
+            continue;
+        };
+        let store = format!(r"\\?\Volume{guid}\EFI\Microsoft\Boot\BCD");
+        let Some(fingerprint) = boot_manager_fingerprint(Some(&store)) else {
+            continue;
+        };
+        if fingerprint != active {
+            continue;
+        }
+        if hit.is_some() {
+            // 克隆盘：两个 ESP 的 BCD 内容一致，仍拒绝猜测。
+            return None;
+        }
+        hit = Some(ActiveEspPick {
+            identity: identity.clone(),
+            fingerprint,
+        });
+    }
+    hit
+}
+
+/// 读取一个 BCD store 的 {bootmgr} 指纹；`store=None` 时读活动系统 store。
+/// 指纹取 (default, display_order, resume_object) 的小写归一元组——这三个字段
+/// 足以区分"本次引导链"与"别的系统的 BCD"，且复用既有解析器
+/// （`parse_boot_manager_state` 已有本地化与别名相关单测）。
+fn boot_manager_fingerprint(store: Option<&str>) -> Option<(String, Vec<String>, String)> {
+    let mut arguments: Vec<String> = Vec::new();
+    if let Some(store) = store {
+        arguments.push("/store".into());
+        arguments.push(store.to_string());
+    }
+    arguments.extend(["/enum".into(), "{bootmgr}".into(), "/v".into()]);
+    let output = run_bcdedit_quiet(&arguments).ok()?;
+    let state = crate::parse_boot_manager_state(&output)?;
+    Some((
+        state.default.to_ascii_lowercase(),
+        state
+            .display_order
+            .iter()
+            .map(|id| id.to_ascii_lowercase())
+            .collect(),
+        state.resume_object.unwrap_or_default().to_ascii_lowercase(),
+    ))
+}
+
+/// 无日志副作用的 bcdedit 调用（ESP 识别属探测路径，不该污染任务日志）。
+fn run_bcdedit_quiet(arguments: &[String]) -> Result<String, TaskError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("bcdedit.exe")
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        return Err(err(&format!("bcdedit failed with {}", output.status)));
+    }
+    Ok(text)
+}
+
+/// `active_esp_by_store_fingerprint` 的命中结果（持有克隆，避免借用纠缠）。
+struct ActiveEspPick {
+    identity: VolumeIdentity,
+    #[allow(dead_code)] // 指纹留着便于将来落日志；当前仅用于唯一性判定。
+    fingerprint: (String, Vec<String>, String),
 }
 
 /// 直接枚举卷 GUID，不解析 mountvol 的本地化提示，不分配盘符。
@@ -1700,6 +1907,8 @@ fn validate_operation_inputs(
                     &format!("/Index:{}", options.wim_index),
                 ],
             )?;
+            // 擦除前确认镜像是完整 Windows（纯 PE 走这里会在格式化后才失败）。
+            wim_full_windows_probe(path, options.wim_index)?;
             // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 完整性；
             // 优先比对物理文件大小，避免在提权准备阶段对 58GB 镜像再次耗时 2 分钟重复读盘计算哈希。
             // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
