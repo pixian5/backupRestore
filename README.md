@@ -99,17 +99,28 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 ## 三、构建
 
-构建目标是 **Windows ARM64**（`aarch64-pc-windows-msvc`），静态链接 CRT，链接本机 `~/win-sdk-arm64`：
+构建目标是 **Windows ARM64**（`aarch64-pc-windows-msvc`），静态链接 CRT。有两条路径，产物质量等同：
 
-```bash
-./build-win.sh
-```
+| 路径 | 命令 | 特点 |
+|---|---|---|
+| macOS 交叉编译 | `./build-win.sh` | 快一倍（8.16s）、不依赖客体在线；import libs 用宿主副本 `~/win-sdk-arm64`（需定期从 VM 同步，会漂移） |
+| VM 内原生编译 | 客体内 `cargo build --release --target aarch64-pc-windows-msvc`，**必须带** `RUSTFLAGS=-C target-feature=+crt-static` | 用 Windows 自带 SDK（不漂移）；**编完能立刻实机验证** |
 
-产物：`target/aarch64-pc-windows-msvc/release/BackupRestore.exe`
+产物：macOS 侧 `target/aarch64-pc-windows-msvc/release/BackupRestore.exe`；
+VM 侧 `C:\BackupRestoreBuild\target\aarch64-pc-windows-msvc\release\backuprestore-cli.exe`。
 （增加 `--deploy` 才会部署到客体包目录及 `H:\brwork\`，分别更新
-`BackupRestore.exe` 和 `Recovery.exe`，并逐一核对 SHA-256）。
+`BackupRestore.exe` 和 `Recovery.exe`，并逐一核对 SHA-256。）
 
-构建规则、静态 CRT、Windows SDK 路径等细节见 `docs/20260819-2245-windows-build.md`。
+> ⚠️ **VM 内编译别手打 cargo 参数**：漏了 `+crt-static` 产物会依赖
+> `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，进不了精简 WinRE/PE
+> （退出码 0xC0000135）。2026-10-12 实测犯过这个错，靠核对 DLL 依赖列表才发现。
+
+实测对比数据（同版本、同 rustc 1.98.1）见
+[macOS 交叉编译与 VM 内原生编译实测对比](./docs/20261012-1640-macOS交叉编译与VM内原生编译实测对比-Fable5.md)：
+两边均 14 个 DLL、零 CRT 外部依赖、大小差 16KB（0.67%）。
+
+构建规则、静态 CRT、Windows SDK 路径等细节见 `docs/20260819-2245-windows-build.md`；
+VM 内编译环境与踩坑见 [2.3.9 引导修复与 VM 原生编译路径](./docs/20261012-1510-2.3.9引导修复与VM原生编译路径-Fable5.md)。
 
 ---
 
