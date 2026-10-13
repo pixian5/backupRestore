@@ -70,8 +70,11 @@ unsafe extern "system" {
         overlapped: *mut c_void,
     ) -> i32;
     fn CloseHandle(handle: *mut c_void) -> i32;
+    fn FlushFileBuffers(handle: *mut c_void) -> i32;
     fn GetLastError() -> u32;
 }
+
+const GENERIC_WRITE: u32 = 0x4000_0000;
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const FILE_SHARE_READ: u32 = 0x0000_0001;
@@ -822,12 +825,20 @@ fn prepare_task(
     task.boot_plan.previous_bcd_sha256 = Some(sha256_file(&bootstrap_bcd)?);
     task.boot_plan.boot_sequence_requested = true;
     task.validate()?;
-    // 新启动通道：载荷放到**系统卷**（re_staging），注册位只读。
-    // 2026-10-12 实测根因（docs/20261012-1935）：bootmgr 只解析系统卷（C:）的盘符，
-    // 镜像卷等数据卷的盘符在 bootmgr 阶段解析不了，ramdisk 载荷必然加载失败、回落默认项；
-    // 载荷放系统卷后 BCD 写 ramdisk=[C:] 即可正常进入 WinRE。
+    // 新启动通道：载荷放到**镜像卷**（re_staging），注册位只读，不污染系统卷。
+    //
+    // 2026-10-13 修正（docs/20261013-1936 对照实验 + 单变量矩阵 A/B/C）：
+    // 1935 的「bootmgr 只解析系统卷盘符」结论不完整——真正的情况是
+    // **盘符形式**的 ramdisk 规格只对系统卷生效，数据卷必须写
+    // \Device\HarddiskVolumeN 设备路径形式（bcdedit 显示层两种都规范化成 [X:]，
+    // 存储层不同，所以从回读看不出差别）。设备路径形式在数据卷上实测可引导
+    // （GUID 目录 + 隐藏/系统属性 + 设备路径 = 成功；同结构换成盘符 = 回落）。
+    // 修复落在 boot_entry（写规格时解析设备路径），载荷因此可以留在镜像卷：
+    // 不污染 C:，单系统还原格式化目标卷也不会抹掉断电续跑的载荷。
+    // 2.4.5 曾把载荷改到系统卷作权宜——那会污染 C: 且 restore-existing 断电后
+    // 无法续跑，本轮回退。
     let re_staging = ReStaging {
-        volume: recovery.clone(),
+        volume: image_volume.clone(),
         boot_sdi: PathBuf::from(format!(
             r"{}:\Recovery\WindowsRE\boot.sdi",
             ensure_volume_mounted(&recovery, 'R', &prepare_log)?
@@ -1136,6 +1147,34 @@ fn prepare_payload(
             "Development test fault: stopped after durable boot-requested state; no shutdown requested",
         )?;
         return Ok(());
+    }
+    // ★ 首启回落修复（2026-10-13 E2E 实测，见 flush_volume 注释）：武装成功后、
+    // 请求重启前，把载荷卷与 ESP 的卷缓存显式落盘。失败与 shutdown 失败同样
+    // 走统一补偿（此刻 bootsequence 已武装，绝不能留一个"可能读不到载荷"的
+    // 一次性启动给下次开机）。
+    let flush_before_reboot = (|| -> Result<(), TaskError> {
+        let staging = crate::windows_prepare::ensure_volume_mounted(&boot_entry.wim_volume, 'R', log)?;
+        flush_volume(staging, "载荷卷", log)?;
+        let esp_letter = ensure_volume_mounted(&efi, 'S', log)?;
+        flush_volume(esp_letter, "ESP/BCD", log)?;
+        Ok(())
+    })();
+    if let Err(error) = flush_before_reboot {
+        append_log(
+            log,
+            &format!("[ERROR] pre-reboot volume flush failed ({error}); compensating"),
+        )?;
+        if let Err(cleanup) = compensate_prepare_failure(task_dir.as_path(), efi, log) {
+            append_log(
+                log,
+                &format!(
+                    "[ERROR] compensation incomplete after flush failure ({error}); {cleanup}"
+                ),
+            )?;
+        }
+        return Err(err(&format!(
+            "preparation failed at pre-reboot flush: {error}; rolled back (see prepare.log)"
+        )));
     }
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
         // 重启请求失败：别把机器留在「下次开机进任务 RE，但没有人会来跑」的状态。
@@ -1477,6 +1516,48 @@ fn wim_image_display_name(image_path: &str, index: u32) -> Result<String, TaskEr
         }
     }
     Ok(String::new())
+}
+
+/// 把一个卷的文件系统缓存强制落盘（打开卷设备句柄 + FlushFileBuffers）。
+///
+/// 2026-10-13 E2E 实测（docs/20261013-20xx 单变量矩阵 + 重武装复验）：prepare 在
+/// 722MB 载荷被 DISM 注入原地覆写、bootsequence 武装完成后 **25 秒内** `shutdown /r /t 0`，
+/// 首次引导 bootmgr 加载 ramdisk 失败而回落；**同一条目、同一载荷** 4 分钟后重新武装
+/// 再启（Windows 已完整运行、缓存自然落盘）一次成功。优雅关机理论上会刷缓存，但
+/// 虚拟化层写回缓存 + `/t 0` 极短窗口下实测不可靠。武装后、请求重启前对**载荷卷**
+/// 与 **ESP**（BCD 也在这两个卷上）显式刷盘，堵掉这个窗口。
+/// 刷盘失败按准备失败处理并走统一补偿——宁可不来这次任务，也不留"下次开机
+/// 一次性启动被静默丢弃"的不可预期状态。
+#[cfg(windows)]
+fn flush_volume(letter: char, label: &str, log: &Path) -> Result<(), TaskError> {
+    let path: Vec<u16> = format!(r"\\.\\{}:", letter.to_ascii_uppercase())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle as isize == -1 {
+        return Err(err(&format!(
+            "卷刷盘失败：无法打开 {letter}:（{label}），GetLastError={}",
+            unsafe { GetLastError() }
+        )));
+    }
+    let ok = unsafe { FlushFileBuffers(handle) };
+    unsafe { CloseHandle(handle) };
+    if ok == 0 {
+        return Err(err(&format!("卷刷盘失败：FlushFileBuffers({letter}:) 返回 0（{label}）")));
+    }
+    append_log(log, &format!("卷缓存已强制落盘：{letter}:（{label}）"))?;
+    Ok(())
 }
 
 /// 原生枚举包括已挂载卷；验证 EFI 类型及 BCD，多个候选或探测错误均拒绝猜测。

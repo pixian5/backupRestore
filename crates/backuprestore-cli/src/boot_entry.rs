@@ -268,6 +268,45 @@ fn any_usable_winre_template(log: &Path) -> Result<(String, String), TaskError> 
 /// 任务会覆盖第一个任务的载荷（第一个任务的 `rearm()` 随后必然因哈希不符放弃续跑），
 /// 清理任一任务又会删掉另一个任务仍需要的载荷。
 #[cfg(windows)]
+/// 查询盘符对应的 NT 设备路径（`F:` -> `\Device\HarddiskVolume11`）。
+///
+/// 2026-10-13 单变量矩阵实测（docs/20261013-1936）：ramdisk 规格里**盘符形式**
+/// 只对系统卷生效；数据卷必须写设备路径形式才能被 bootmgr 加载。bcdedit 对两种
+/// 写入的显示都规范化成 `[X:]`，所以差别只在存储层、回读看不出来。
+#[cfg(windows)]
+fn dos_device_of(letter: char) -> Result<String, TaskError> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn QueryDosDeviceW(device_name: *const u16, target_path: *mut u16, max: u32) -> u32;
+    }
+    let name: Vec<u16> = format!("{}:", letter.to_ascii_uppercase())
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut buffer = vec![0u16; 1024];
+    // 返回值含结尾 NUL 的字符数；0 = 失败。
+    let written = unsafe { QueryDosDeviceW(name.as_ptr(), buffer.as_mut_ptr(), 1024) };
+    if written == 0 {
+        return Err(crate::err(&format!(
+            "QueryDosDevice({letter}:) 失败：卷的 NT 设备路径未知，拒绝写盘符形式规格"
+        )));
+    }
+    // 返回的是 NUL 结尾（可能多条以 NUL 分隔）的 UTF-16；只取第一条，且必须
+    // 截到首个 NUL 为止——多带一个 NUL 字节会让命令参数直接被拒
+    // （2026-10-13 E2E 实测报 "nul byte found in provided data"）。
+    let end = buffer
+        .iter()
+        .position(|c| *c == 0)
+        .unwrap_or(written as usize);
+    let text = String::from_utf16_lossy(&buffer[..end]);
+    if !text.starts_with("\\\\?\\") && text.starts_with("\\Device\\") {
+        return Ok(text);
+    }
+    Err(crate::err(&format!(
+        "盘符 {letter}: 的设备路径形态非预期：{text}"
+    )))
+}
+
 pub fn copy_into_staging(
     staged_wim: &Path,
     sdi_source: &Path,
@@ -379,14 +418,19 @@ pub fn create_entry(
         // 簿记 + 统一补偿的路径。正常任务不配置该值，`checkpoint` 直接返回。
         crate::recovery_fault::checkpoint("entry-fields", log)?;
         let letter = ensure_volume_mounted(wim_volume, 'R', log)?;
-        let spec = crate::text_parsing::ramdisk_spec(&wim_path, &devopts);
+        // 2026-10-13 定案：ramdisk 规格一律写 \Device\HarddiskVolumeN 设备路径形式。
+        // 盘符形式只对系统卷生效（数据卷盘符 bootmgr 解析不了，一次性启动被静默
+        // 丢弃后回落默认项）；设备路径形式在系统卷与数据卷上都实测可引导。
+        // bcdedit 显示层会把两种形式都规范化成 [X:]，因此下方第 3 步的回读校验
+        // 仍然用盘符形式作期望值，不受影响。
+        let dos_volume = dos_device_of(letter)?;
+        let inside = wim_path
+            .strip_prefix(&format!("{}:", letter.to_ascii_uppercase()))
+            .or_else(|| wim_path.strip_prefix(&format!("{}:", letter.to_ascii_lowercase())))
+            .unwrap_or(wim_path.as_str());
+        let spec = format!("ramdisk=[{dos_volume}]{inside},{devopts}");
         bcd_write(
-            &[
-                "/set",
-                &devopts,
-                "ramdisksdidevice",
-                &format!("partition={letter}:"),
-            ],
+            &["/set", &devopts, "ramdisksdidevice", &format!("partition={dos_volume}")],
             log,
         )?;
         // 和 copy_into_staging 落盘的目录同源（staging_relative_dir 是唯一构造点），
