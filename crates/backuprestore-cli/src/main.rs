@@ -2703,8 +2703,12 @@ fn recover_windows(
                     // 用户每次开机被拖进去，只能离线改 BCD 才能救
                     // （docs/20261013-0945）。/d = 保留现有默认启动项，是官方
                     // 为"新增第二系统"给的用法（bcdboot c:\windows /d /addlast）。
-                    // 这样 default 从头到尾不被动，preserve_primary_boot_manager
-                    // 退化为幂等的安全网，而不是唯一的补救点。
+                    // ⚠️ 2026-10-13 实测注意：本项目所有 bcdboot 都带 /s 自定义 ESP，
+                    // 而 BFSVC 会警告 "AddBootmgrLast and PreserveBootOrder options
+                    // are ignored when custom volume is specified"——即 /d 与
+                    // /addlast 在 /s 场景下**可能被忽略**。因此真正承重的防线是
+                    // 紧随其后的 assert_boot_default_preserved（回读+自愈）；
+                    // /d 保留在不带 /s 的环境下生效，是零成本的多一层。
                     // 单系统还原（RestoreExisting）不加 /d：那是重建唯一系统，
                     // default 本就该指向新 loader。
                     bcd_args.push("/d".to_string());
