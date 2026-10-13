@@ -71,7 +71,31 @@ D 组结束后已彻底清理：C: 上的副本删除、`C:\Recovery\WindowsRE\W
 即：注入件多出/替换了 3 个文件，且 `Recovery.exe` 大了约 75 KB。**这些差异中哪一个让 bootmgr 拒绝加载 ramdisk，
 尚未定因** —— 不要在下一轮直接断言。
 
-## 五之二、逐项剔除实验：**三个文件单独注入都能启动**
+| E4 | **什么都不注入**，只做 `/Mount-Image` → `/Unmount-Image /Commit` 往返，并尝试删 `OBSOLETE_WINRE_FILES` | ✅ **进 WinRE** | 截图 `elicit-obsolete-gpt61.png`（与 B 组字节一致）。**注意：`removed=` 为空——本机注册位 WIM 里根本没有那三个旧文件，删除步骤是空操作，可直接排除** |
+
+**结论**：五个对照组（原版件、+env、+Recovery.exe、+task.json、纯 DISM 往返）**全部能进 WinRE**；
+产品 WIM（三者同时注入）不能。**触发者 = 三个文件同时注入的组合效应**，而不是任何单个文件、
+不是删除旧文件、不是 DISM 提交往返。
+
+## 五之四、下一步（唯一定因实验）
+
+在"能启动的那格"上做 2/2 组合，各一次重启：
+
+1. **env + Recovery.exe**（不放 task.json）
+2. **env + task.json**（不换 Recovery.exe）
+3. （若 1、2 都 ✅）**Recovery.exe + task.json**（不放 env）
+
+预期只有"三者齐"才失败；若某个 2/2 就先失败，触发组合直接定位。
+一个值得先验证的猜想：**E2 单独替换 `Recovery.exe` 时 WIM 里的 env 仍是旧的**，
+所以 2.4.6 的 Recovery.exe 还没被"env↔Recovery.exe 哈希对应"这条链路检验过；
+而产品 WIM 三者齐时，env 声明的 `recoverySha256` 与 WIM 内 Recovery.exe 是匹配的。
+若 2/2 组合里出现"能启动但 Recovery 报错"，说明失败点在 Recovery 内部而非引导。
+
+## 五之五、待清理（E4 现场，未及清）
+
+- BCD 对象 **`{889cf431}`（loader）+ `{889cf430}`（devopts）**
+- 载荷目录 `F:\BackupRestoreRE\d4246c84-182c-4955-9cfe-b41fd4722004`
+- 脚本复用 `.test-artifacts/ramdisk-elicit-cleanup-gpt61.ps1`
 
 以「能启动的那格」为底（原版件副本 + 镜像卷 F: + 设备路径形式），每次**只加一个文件**：
 
