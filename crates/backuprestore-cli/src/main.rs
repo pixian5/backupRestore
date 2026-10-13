@@ -2696,7 +2696,31 @@ fn recover_windows(
                     "/v".to_string(),
                 ];
                 if target.role == TargetRole::NewWindows {
+                    // /addlast 只管固件条目的添加位置，**不保护默认启动项**。
+                    // bcdboot 的默认行为是把新建 loader 设为 {bootmgr}.default，
+                    // 于是一旦后续步骤失败（2026-10-13 实测：repair_secondary 报
+                    // 「目标缺少离线注册组件」），default 就留在半成品系统上，
+                    // 用户每次开机被拖进去，只能离线改 BCD 才能救
+                    // （docs/20261013-0945）。/d = 保留现有默认启动项，是官方
+                    // 为"新增第二系统"给的用法（bcdboot c:\windows /d /addlast）。
+                    // 这样 default 从头到尾不被动，preserve_primary_boot_manager
+                    // 退化为幂等的安全网，而不是唯一的补救点。
+                    // 单系统还原（RestoreExisting）不加 /d：那是重建唯一系统，
+                    // default 本就该指向新 loader。
+                    bcd_args.push("/d".to_string());
                     bcd_args.push("/addlast".to_string());
+                    // 顺带给新条目一个可读名字。最终命名仍由引导修复
+                    // （boot_menu::apply，最后一个写 BCD 的步骤）按用户意图覆盖；
+                    // 但那一步之前若失败，菜单里留下的就是 BCDBoot 的默认描述
+                    // （实测为 "Windows PreInstallation Environment"），用户分不清
+                    // 这是哪一项。先写上任务里的名字，失败态也能辨认。
+                    if let Some(name) = target.boot_menu_name.as_deref() {
+                        let name = name.trim();
+                        if !name.is_empty() {
+                            bcd_args.push("/description".to_string());
+                            bcd_args.push(name.to_string());
+                        }
+                    }
                 }
                 let bcd_refs: Vec<&str> = bcd_args.iter().map(String::as_str).collect();
                 if let Some(entry) = &resume_entry {
@@ -2705,6 +2729,13 @@ fn recover_windows(
                 recovery_fault::checkpoint("bcdboot-before", log)?;
                 run_logged("bcdboot.exe", &bcd_refs, log)?;
                 recovery_fault::checkpoint("bcdboot-after", log)?;
+                // /d 只在"现有默认启动项有效"时才保留它；这里立刻回读确认，
+                // 被改了就当场改回。放在这个位置是因为此刻环境已知良好
+                // （bcdboot 刚成功、ESP 仍挂载），比等流程失败后在未知状态下
+                // 补救可靠得多。
+                if let Some(previous) = &previous_boot_manager {
+                    assert_boot_default_preserved(&efi, previous, log)?;
+                }
                 if let Some(entry) = &resume_entry {
                     boot_entry::rearm(entry, log)?;
                 }
@@ -3168,6 +3199,68 @@ fn boot_manager_state_from_store(
     )?;
     parse_boot_manager_state(&output)
         .ok_or_else(|| err("existing Boot Manager state is missing or invalid"))
+}
+
+/// 新增第二系统时确认 BCDBoot 没有改动默认启动项；被改了就当场改回主系统。
+///
+/// 背景（2026-10-13 实机，docs/20261013-0945）：BCDBoot 的默认行为是把新建
+/// loader 设成 `{bootmgr}.default`。恢复它的 `preserve_primary_boot_manager`
+/// 排在 `winre_registration::repair_secondary` **之后**，于是 repair 一失败
+/// （实测"目标缺少离线注册组件"）就永远到不了恢复那一步——默认启动项留在
+/// 半成品第二系统上，用户每次开机被拖进去，只能进 WinPE 离线改 BCD 才能救。
+///
+/// 第一道防线是给 BCDBoot 加 `/d`（保留现有默认启动项，官方给新增第二系统的
+/// 用法）。但 `/d` 的前提是现有 default 有效；极端情况下（store 里没有可用
+/// default）BCDBoot 仍会设新项。本函数就是那层确认：只比对并修正 `default`
+/// 一项，不动 `displayorder`——菜单里多一个条目只是"看得见、选了会失败"，
+/// 而 default 指错会直接让用户开不了机，两者严重性差一个量级。
+#[cfg(windows)]
+fn assert_boot_default_preserved(
+    efi_root: &Path,
+    previous: &BcdBootManagerState,
+    log: &Path,
+) -> Result<(), TaskError> {
+    let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
+    let store_arg = store.to_string_lossy().into_owned();
+    // `/enum {bootmgr} /v`：/v 才输出 GUID 而非 {bootmgr}/{default} 别名，
+    // 解析器与别名比对都依赖这一点（2026-10-13 实测确认）。
+    // 这里只取 default 字段，loader_resume_objects 为空不影响判断。
+    let read_default = |log: &Path| -> Result<String, TaskError> {
+        let text = capture_logged(
+            "bcdedit.exe",
+            &["/store", &store_arg, "/enum", "{bootmgr}", "/v"],
+            log,
+        )?;
+        parse_boot_manager_state(&text)
+            .map(|state| state.default)
+            .ok_or_else(|| err("BCDBoot 后启动管理器状态无法解析"))
+    };
+    let current = read_default(log)?;
+    if current.eq_ignore_ascii_case(&previous.default) {
+        append_log(log, "BCDBoot /d 已生效：默认启动项仍指向原主系统")?;
+        return Ok(());
+    }
+    append_log(
+        log,
+        &format!(
+            "BCDBoot 改动了默认启动项（{} -> {current}），立即改回；\
+             否则后续任一步失败都会让用户每次开机进入半成品系统",
+            previous.default
+        ),
+    )?;
+    run_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/default", &previous.default],
+        log,
+    )?;
+    let after = read_default(log)?;
+    if !after.eq_ignore_ascii_case(&previous.default) {
+        return Err(err(
+            "无法把默认启动项改回原主系统，拒绝继续后续破坏性步骤",
+        ));
+    }
+    append_log(log, "默认启动项已改回原主系统")?;
+    Ok(())
 }
 
 /// 保留原默认系统和仍存在的菜单项，再追加第二系统；不复活 BCDBoot 删除的旧编号。

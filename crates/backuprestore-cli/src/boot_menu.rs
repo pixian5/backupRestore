@@ -787,6 +787,10 @@ pub(crate) fn apply(
                     &esp.to_string_lossy(),
                     "/f",
                     "UEFI",
+                    // /d 保留现有默认启动项：这里是给"用户勾选但还没有 loader 的
+                    // 系统"补建条目，无论如何都不该顺手改默认启动项。本函数末尾
+                    // 自己会按方案决定 default（原 default 仍在菜单则保留）。
+                    "/d",
                     "/addlast",
                 ],
                 log,

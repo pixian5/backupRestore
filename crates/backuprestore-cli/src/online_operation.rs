@@ -489,8 +489,14 @@ fn restore_to_windows_volume(
     // 最后 STEP 4 再按用户在弹窗里的选择补成正式项。
     // 时机选在 DISM 应用完成 + 盘符绑定之后：此刻目标卷已是完整 Windows
     // （winload.efi / SYSTEM hive 都在），用 bcdboot 建的 loader 属性完整、
-    // 真的能启动，不是坏项。/addlast 只追加到菜单末尾，不动默认启动项。
+    // 真的能启动，不是坏项。
     // 若不提前建，用户等待几十分钟期间重启，菜单里看不到正在还原的系统。
+    //
+    // 2026-10-13 更正：原注释写「/addlast 只追加到菜单末尾，不动默认启动项」
+    // 是**错的**——/addlast 管的是固件条目位置，与 default 无关；bcdboot 默认
+    // 就会把新 loader 设成 {bootmgr}.default。下面紧跟的快照恢复能补回来，
+    // 但那是"事后"补偿：在 bcdboot 与恢复之间重启/断电，用户就会进半成品系统。
+    // 加 /d（保留现有默认启动项）从源头不改，补偿退化为安全网。
     log(
         log_path,
         "STEP 3.6/4 预建还原系统启动项（等待期间即可在启动菜单看到并选择）",
@@ -503,6 +509,7 @@ fn restore_to_windows_volume(
             format!("{esp_letter}:"),
             "/f".into(),
             "UEFI".into(),
+            "/d".into(),
             "/addlast".into(),
         ],
         &cmd_out_file(dir),
