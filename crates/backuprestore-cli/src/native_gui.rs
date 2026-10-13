@@ -166,12 +166,12 @@ const ID_PE_SYSINFO_TEXT: usize = 1420;
 const ID_PE_TITLE: usize = 1407;
 const ID_PE_VERSION: usize = 1408;
 const ID_PE_CLOCK: usize = 1409;
-// 主窗口「PE 恢复」tab 的"重启进入 PE"按钮（PE 桌面无独立重启按钮，
+// 主窗口「安装 PE」tab 的"重启进入 PE"按钮（PE 桌面无独立重启按钮，
 // 「重启」已合并进「返回 Windows」）
 const ID_PE_REBOOT_MAIN: usize = 1410;
-// 主窗口「PE 恢复」tab 的"创建桌面快捷方式"按钮
+// 主窗口「安装 PE」tab 的"创建桌面快捷方式"按钮
 const ID_PE_SHORTCUT: usize = 1411;
-// 「PE 恢复」tab 启动方式单选（RAM disk / 硬盘启动）与 PE 目录名输入
+// 「安装 PE」tab 启动方式单选（RAM disk / 硬盘启动）与 PE 目录名输入
 const ID_PE_MODE_RAM: usize = 1412;
 const ID_PE_MODE_DISK: usize = 1413;
 const ID_PE_DIR_LABEL: usize = 1414;
@@ -710,10 +710,10 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "浏览并选择 PE 存放目录路径，PE 镜像（boot.wim）将复制到该目录。"
         }
         (Language::Chinese, "pe_reboot_main") => {
-            "部署完成后立即重启进入 PE 恢复环境，验证 PE 能否正常启动。注意：Parallels 等虚拟机的 bootsequence 可能不被固件消费，真实硬件路径有效。"
+            "部署完成后立即重启进入已安装的 PE 环境，验证 PE 能否正常启动。注意：Parallels 等虚拟机的 bootsequence 可能不被固件消费，真实硬件路径有效。"
         }
         (Language::Chinese, "pe_shortcut") => {
-            "在桌面创建「打开 PE 恢复」快捷方式，方便以后手动进入 PE 恢复环境。"
+            "在桌面创建「打开 安装 PE」快捷方式，方便以后手动进入已安装的 PE 环境。"
         }
         (Language::Chinese, "pe_mode_ram") => {
             "RAM disk 模式（适合临时验证）：PE 镜像临时复制到内存盘启动，不占用独立分区、不改变现有分区布局。"
@@ -780,7 +780,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "Reboot immediately into the PE environment after deploy to verify it boots. Note: bootsequence may not be consumed by Parallels firmware; the real-hardware path works."
         }
         (Language::English, "pe_shortcut") => {
-            "Create an 'Open PE Recovery' shortcut on the desktop for easy entry later."
+            "Create an 'Open Installed PE' shortcut on the desktop for easy entry later."
         }
         (Language::English, "pe_mode_ram") => {
             "RAM disk mode (good for quick testing): the PE image is loaded into a memory drive, no partition used, existing layout untouched."
@@ -874,9 +874,9 @@ fn ui_text(language: Language, key: &str) -> &'static str {
              • 效果：重启后开机菜单可自由选择进入任一系统，适合双系统共存场景。\n\n\
              说明：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
         }
-        (Language::Chinese, "pe") => "PE 恢复",
+        (Language::Chinese, "pe") => "安装 PE",
         (Language::Chinese, "pe_hint") => {
-            "「PE 恢复」部署一个自包含的 PE 备份/恢复环境，作为开机可选启动项：\n\n\
+            "「安装 PE」部署一个自包含的 PE 备份/恢复环境，作为开机可选启动项：\n\n\
              • 启动方式：RAM disk（不占分区，镜像临时复制到内存盘启动）或硬盘启动（独立分区，更稳定）；\n\
              • PE 目录路径 / 目标卷：指定放置 PE 镜像（boot.wim）的目录或分区；启动项名称可自定义；\n\
              • 部署后新增 BCD 启动项「Windows PE (BackupRestore)」，不改变当前 Windows 默认启动；\n\
@@ -918,9 +918,9 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "secondary_hint") => {
             "Second system deploys another image as a bootable system while keeping the current Windows.\n\n• Target volume: pick a spare partition (not the current system) to write the image;\n• Boot name: customize the name shown in the boot menu; Chinese is supported;\n• Flow: format the target offline → DISM Apply → BCDBoot adds a boot entry;\n• Result: after reboot the boot menu lets you choose either system; ideal for dual-boot.\n\nNote: the target volume is overwritten; confirm it holds nothing you need to keep."
         }
-        (Language::English, "pe") => "PE recovery",
+        (Language::English, "pe") => "Install PE",
         (Language::English, "pe_hint") => {
-            "Install PE recovery deploys a self-contained PE backup/restore environment as an optional boot entry.\n\n• Boot mode: RAM disk (no partition; image loaded into a memory drive) or hard-disk boot (own partition, more stable);\n• PE folder path / target volume: where the PE image (boot.wim) is placed; boot name is customizable;\n• Adds a BCD entry \"Windows PE (BackupRestore)\" without changing the current Windows default boot;\n• Purpose: when the system cannot boot, enter PE to back up, restore, install a second system, open the full program, or return to Windows;\n• Enable 'Reboot into PE' to verify it boots; PE uses the bundled standard PE image (not WinRE)."
+            "Install PE deploys a self-contained PE backup/restore environment as an optional boot entry.\n\n• Boot mode: RAM disk (no partition; image loaded into a memory drive) or hard-disk boot (own partition, more stable);\n• PE folder path / target volume: where the PE image (boot.wim) is placed; boot name is customizable;\n• Adds a BCD entry \"Windows PE (BackupRestore)\" without changing the current Windows default boot;\n• Purpose: when the system cannot boot, enter PE to back up, restore, install a second system, open the full program, or return to Windows;\n• Enable 'Reboot into PE' to verify it boots; PE uses the bundled standard PE image (not WinRE)."
         }
         _ => "",
     }
@@ -1121,12 +1121,12 @@ fn operation_display(language: Language, operation: &str) -> &'static str {
         (Language::Chinese, "backup") => "备份",
         (Language::Chinese, "restore-existing") => "单系统还原",
         (Language::Chinese, "create-secondary") => "新增第二系统",
-        (Language::Chinese, "install-pe-entry") => "安装 PE 恢复环境",
+        (Language::Chinese, "install-pe-entry") => "安装 PE",
         (Language::English, "probe") => "Inspect",
         (Language::English, "backup") => "Backup",
         (Language::English, "restore-existing") => "Restore",
         (Language::English, "create-secondary") => "Second system",
-        (Language::English, "install-pe-entry") => "Install PE recovery",
+        (Language::English, "install-pe-entry") => "Install PE",
         _ => "",
     }
 }
@@ -1160,7 +1160,7 @@ unsafe fn set_operation_visibility(state: &State) {
     // WIM 压缩方式（fast/none）只对备份首次创建有意义，仅「备份」tab 显示。
     let show_compress = operation == "backup";
     // 「第二系统名称」输入框及其标签只在「新增第二系统」tab 显示；
-    // 「PE 恢复」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
+    // 「安装 PE」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
     // 其布局位置（field_x+500, secondary_y）会恰好覆盖右下角「创建快捷方式」按钮。
     let show_menu = operation == "create-secondary";
     let set_visible = |hwnd: Hwnd, visible: bool| {
@@ -1190,10 +1190,10 @@ unsafe fn set_operation_visibility(state: &State) {
     set_visible(state.controls.target, show_target);
     set_visible(state.controls.target_details, show_target);
     set_child_visible(2005, show_target);
-    // 「重启进入 PE」「创建快捷方式」只在 PE 恢复 tab 显示
+    // 「重启进入 PE」「创建快捷方式」只在 安装 PE tab 显示
     set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-entry");
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
-    // 启动方式单选与目录行只在「PE 恢复」tab 显示；硬盘启动模式下隐藏目录路径行
+    // 启动方式单选与目录行只在「安装 PE」tab 显示；硬盘启动模式下隐藏目录路径行
     let pe_mode_ram = IsDlgButtonChecked(state.root, ID_PE_MODE_RAM as i32) != 0;
     let pe_visible = operation == "install-pe-entry";
     append_gui_log(
@@ -1202,7 +1202,7 @@ unsafe fn set_operation_visibility(state: &State) {
     );
     set_child_visible(ID_PE_MODE_RAM as i32, pe_visible);
     set_child_visible(ID_PE_MODE_DISK as i32, pe_visible);
-    // 「PE 启动项名称」输入框两种模式通用，在「PE 恢复」tab 始终显示
+    // 「PE 启动项名称」输入框两种模式通用，在「安装 PE」tab 始终显示
     set_child_visible(ID_PE_NAME_LABEL as i32, pe_visible);
     set_child_visible(ID_PE_NAME_EDIT as i32, pe_visible);
     // PE 目录路径仅 RAM disk 模式需要（WIM 复制目录），硬盘启动模式隐藏
@@ -1242,7 +1242,7 @@ unsafe fn layout_operation(state: &State) {
     } else {
         source_details_y + details_height
     };
-    // 「PE 恢复」tab 的启动方式单选占三行（约 90px：单选行 + 启动项名行 + 目录行），后续 status 下移
+    // 「安装 PE」tab 的启动方式单选占三行（约 90px：单选行 + 启动项名行 + 目录行），后续 status 下移
     let pe_extra_y = if selected_operation(state) == "install-pe-entry" {
         90
     } else {
@@ -1298,7 +1298,7 @@ unsafe fn layout_operation(state: &State) {
     );
     reposition(state.controls.status, 20, status_y, client_width - 40, 64);
 
-    // 「PE 恢复」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
+    // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
     // 行2 硬盘启动单选；行3 PE 启动项名称（两种模式通用）
     if selected_operation(state) == "install-pe-entry" {
         let mode_y = last_details_y + 18;
@@ -1567,7 +1567,7 @@ unsafe fn layout_operation(state: &State) {
             28,
         );
     }
-    // 「PE 恢复」tab 专属按钮（重启进入 PE / 创建快捷方式）：
+    // 「安装 PE」tab 专属按钮（重启进入 PE / 创建快捷方式）：
     // 创建时使用固定坐标（560/710, 630），这里与通用按钮行同 y 对齐，
     // 避免窗口/布局变化时与右侧控件错位或遮挡。
     if selected_operation(state) == "install-pe-entry" {
@@ -3123,10 +3123,10 @@ fn run_cmd_to_file_timeout(command: &str, out_file: Option<&Path>, timeout_ms: u
     crate::windows_command::run_shell(command, out_file, timeout_ms)
 }
 
-/// PE 恢复安装入口：按启动方式单选分派到 RAM disk（目录，不占分区）
+/// 安装 PE 入口：按启动方式单选分派到 RAM disk（目录，不占分区）
 /// 或硬盘启动（独立分区）。两种模式可共存，启动项名称不同。
 /// 测试钩子（开发/验收用）：启动时若存在 C:\br-test.json 则读取并自动
-/// 设置 PE 恢复参数；auto_install=true 时延迟触发安装（确认框自动接受）。
+/// 设置安装 PE 参数；auto_install=true 时延迟触发安装（确认框自动接受）。
 unsafe fn test_hook_auto_install(state: &mut State) {
     let path = "C:\\br-test.json";
     if !PathBuf::from(path).is_file() {
@@ -3144,7 +3144,7 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         }
     };
     append_gui_log(state, "test hook: config loaded");
-    // 1. 操作模式：默认 PE 恢复；支持 "tab":"backup"（备份）/"restore"/"secondary" 等
+    // 1. 操作模式：默认安装 PE；支持 "tab":"backup"（备份）/"restore"/"secondary" 等
     let tab = json.get("tab").and_then(|v| v.as_str()).unwrap_or("pe");
     let op_index = match tab {
         "backup" => 0,
@@ -3403,17 +3403,17 @@ unsafe fn install_pe_ramdisk(state: &State) {
             state.root,
             &if language == Language::English {
                 format!(
-                    "Install the PE recovery environment (RAM disk) to {dir_path}?\n\n- Copy the PE WIM to {dir_path}\\sources\\boot.wim\n- Ensure {dir_path}\\boot\\boot.sdi\n- Add boot entry \"{entry_name}\" to the boot menu\n\nNo extra partition is used. The current Windows default boot is NOT changed. Continue?"
+                    "Install PE (RAM disk) to {dir_path}?\n\n- Copy the PE WIM to {dir_path}\\sources\\boot.wim\n- Ensure {dir_path}\\boot\\boot.sdi\n- Add boot entry \"{entry_name}\" to the boot menu\n\nNo extra partition is used. The current Windows default boot is NOT changed. Continue?"
                 )
             } else {
                 format!(
-                    "以 RAM disk 方式安装 PE 恢复环境到 {dir_path}？\n\n- 复制 PE 镜像到 {dir_path}\\sources\\boot.wim\n- 确保 {dir_path}\\boot\\boot.sdi 存在\n- 在启动菜单新增「{entry_name}」启动项\n\n不占用独立分区。不修改当前 Windows 默认启动。是否继续？"
+                    "以 RAM disk 方式安装 PE 到 {dir_path}？\n\n- 复制 PE 镜像到 {dir_path}\\sources\\boot.wim\n- 确保 {dir_path}\\boot\\boot.sdi 存在\n- 在启动菜单新增「{entry_name}」启动项\n\n不占用独立分区。不修改当前 Windows 默认启动。是否继续？"
                 )
             },
             if language == Language::English {
-                "Install PE recovery"
+                "Install PE"
             } else {
-                "安装 PE 恢复环境"
+                "安装 PE"
             },
             MB_YESNO | MB_ICONWARNING,
         )
@@ -3630,18 +3630,18 @@ unsafe fn install_pe_ramdisk(state: &State) {
     append_gui_log(
         state,
         &format!(
-            "GUI action completed: PE recovery installed (RAM disk wim -> {dir_path}\\sources\\boot.wim, BCD entry {os_guid_path})"
+            "GUI action completed: PE installed (RAM disk wim -> {dir_path}\\sources\\boot.wim, BCD entry {os_guid_path})"
         ),
     );
     show_message(
         state.root,
         &if language == Language::English {
             format!(
-                "PE recovery environment (RAM disk) installed to {dir_path}.\n\nThe boot menu now has \"{entry_name}\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
+                "PE (RAM disk) installed to {dir_path}.\n\nThe boot menu now has \"{entry_name}\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
             )
         } else {
             format!(
-                "PE 恢复环境（RAM disk）已安装到 {dir_path}。\n\n启动菜单已新增「{entry_name}」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
+                "PE（RAM disk）已安装到 {dir_path}。\n\n启动菜单已新增「{entry_name}」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
             )
         },
         if language == Language::English {
@@ -3803,17 +3803,17 @@ unsafe fn install_pe_harddisk(state: &State) {
             state.root,
             &if language == Language::English {
                 format!(
-                    "Install the PE recovery environment (hard disk boot) to partition {drive_char}:?\n\n- The partition WILL BE FORMATTED (all data on it is lost)\n- Apply the PE WIM to {drive_char}:\\\n- Add boot entry \"{entry_name}\" to the boot menu\n\nThe current Windows default boot is NOT changed. Continue?"
+                    "Install PE (hard disk boot) to partition {drive_char}:?\n\n- The partition WILL BE FORMATTED (all data on it is lost)\n- Apply the PE WIM to {drive_char}:\\\n- Add boot entry \"{entry_name}\" to the boot menu\n\nThe current Windows default boot is NOT changed. Continue?"
                 )
             } else {
                 format!(
-                    "以硬盘启动方式安装 PE 恢复环境到分区 {drive_char}:？\n\n- 该分区将被格式化（数据全部丢失！）\n- 将 PE 镜像展开到 {drive_char}:\\\n- 在启动菜单新增「{entry_name}」启动项\n\n不修改当前 Windows 默认启动。是否继续？"
+                    "以硬盘启动方式安装 PE 到分区 {drive_char}:？\n\n- 该分区将被格式化（数据全部丢失！）\n- 将 PE 镜像展开到 {drive_char}:\\\n- 在启动菜单新增「{entry_name}」启动项\n\n不修改当前 Windows 默认启动。是否继续？"
                 )
             },
             if language == Language::English {
-                "Install PE recovery"
+                "Install PE"
             } else {
-                "安装 PE 恢复环境"
+                "安装 PE"
             },
             MB_YESNO | MB_ICONWARNING,
         )
@@ -4018,18 +4018,18 @@ unsafe fn install_pe_harddisk(state: &State) {
     append_gui_log(
         state,
         &format!(
-            "GUI action completed: PE recovery installed (hard disk -> {drive_char}:\\, BCD entry {os_guid_path})"
+            "GUI action completed: PE installed (hard disk -> {drive_char}:\\, BCD entry {os_guid_path})"
         ),
     );
     show_message(
         state.root,
         &if language == Language::English {
             format!(
-                "PE recovery environment (hard disk boot) installed to partition {drive_char}:.\n\nThe boot menu now has \"{entry_name}\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
+                "PE (hard disk boot) installed to partition {drive_char}:.\n\nThe boot menu now has \"{entry_name}\". Reboot and choose it from the menu to enter the recovery desktop. The current Windows default boot is unchanged."
             )
         } else {
             format!(
-                "PE 恢复环境（硬盘启动）已安装到分区 {drive_char}:。\n\n启动菜单已新增「{entry_name}」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
+                "PE（硬盘启动）已安装到分区 {drive_char}:。\n\n启动菜单已新增「{entry_name}」。重启后从菜单选择即可进入恢复桌面。当前 Windows 默认启动未改动。"
             )
         },
         if language == Language::English {
@@ -4175,14 +4175,14 @@ unsafe fn pe_reboot_to_pe(state: &State) {
         show_message(
             state.root,
             if language == Language::English {
-                "No PE entry installed yet. Open the PE Recovery tab, choose a target volume and a PE WIM, then click Create Task first."
+                "No PE entry installed yet. Open the Install PE tab, choose a target volume and a PE WIM, then click Create Task first."
             } else {
-                "尚未安装 PE 恢复环境。请先在「PE 恢复」页选择目标卷和 PE 镜像，点击「创建任务」完成安装。"
+                "尚未安装 PE。请先在「安装 PE」页选择目标卷和 PE 镜像，点击「创建任务」完成安装。"
             },
             if language == Language::English {
                 "PE entry missing"
             } else {
-                "未安装 PE 恢复环境"
+                "未安装 PE"
             },
             MB_OK | MB_ICONINFORMATION,
         );
@@ -4244,7 +4244,7 @@ unsafe fn pe_reboot_to_pe(state: &State) {
 }
 
 /// 桌面快捷方式入口（`--pe-reboot`）：无主窗口，设置 bootsequence 指向
-/// 已安装的 PE 恢复环境，用无父窗口消息框提示结果。非提升进程先提权重启。
+/// 已安装的 PE，用无父窗口消息框提示结果。非提升进程先提权重启。
 pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
     if !is_elevated() {
         relaunch_elevated()?;
@@ -4262,12 +4262,12 @@ pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
         .filter(|text| !text.is_empty());
     let Some(guid) = guid else {
         let text = wide(
-            "尚未安装 PE 恢复环境。请先打开 BackupRestore，在「PE 恢复」页安装后再使用本快捷方式。\n\nPE recovery environment not installed yet. Install it from the PE Recovery tab first.",
+            "尚未安装 PE。请先打开 BackupRestore，在「安装 PE」页安装后再使用本快捷方式。\n\nPE is not installed yet. Install it from the Install PE tab first.",
         );
         MessageBoxW(
             null_mut(),
             text.as_ptr(),
-            wide("未安装 PE 恢复环境").as_ptr(),
+            wide("未安装 PE").as_ptr(),
             MB_OK | MB_ICONINFORMATION,
         );
         return Ok(());
@@ -5299,14 +5299,14 @@ unsafe fn schedule_pe_task(
         show_message(
             state.root,
             if language == Language::English {
-                "No PE entry installed yet. Open the PE Recovery tab, install the PE first, then retry."
+                "No PE entry installed yet. Open the Install PE tab, install the PE first, then retry."
             } else {
-                "尚未安装 PE 恢复环境。请先在「PE 恢复」页完成 PE 安装，再重试。"
+                "尚未安装 PE。请先在「安装 PE」页完成 PE 安装，再重试。"
             },
             if language == Language::English {
                 "PE entry missing"
             } else {
-                "未安装 PE 恢复环境"
+                "未安装 PE"
             },
             MB_OK | MB_ICONINFORMATION,
         );
@@ -5823,7 +5823,7 @@ unsafe extern "system" fn window_proc(
             28,
             ID_PE_SHORTCUT,
         );
-        // 「PE 恢复」tab：启动方式单选 + PE 目录名（仅 RAM disk 模式使用）
+        // 「安装 PE」tab：启动方式单选 + PE 目录名（仅 RAM disk 模式使用）
         create_control(
             hwnd,
             "BUTTON",
@@ -6013,7 +6013,7 @@ unsafe extern "system" fn window_proc(
             return 0;
         }
         if message == WM_KEYDOWN {
-            // 快捷键：Ctrl+B 备份 / Ctrl+R 还原 / Ctrl+P PE 恢复 /
+            // 快捷键：Ctrl+B 备份 / Ctrl+R 还原 / Ctrl+P 安装 PE /
             // Ctrl+O 读取镜像 / F5 刷新环境 / Ctrl+Enter 创建任务。
             // Tab、方向键、回车（无 Ctrl）由 IsDialogMessage 处理，这里只接组合键。
             let key = w_param as u32;

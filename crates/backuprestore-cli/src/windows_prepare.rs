@@ -1394,7 +1394,7 @@ fn physical_volume_identity_at(
 /// create-secondary 会在**目标卷已被格式化、镜像已应用之后**才死在离线 WinRE
 /// 注册前置检查（缺 `reagentc.exe` 与 `SYSTEM` hive）——目标白毁。
 /// 这里把同样的判据前移到**擦除之前**：只读挂载镜像探测两个标记文件，
-/// 纯 PE 直接拒绝并提示改用「PE 恢复」（那才是装 PE 的正路）。
+/// 纯 PE 直接拒绝并提示改用「安装 PE」（那才是装 PE 的正路）。
 ///
 /// 为什么拒绝不能去掉（2026-10-13 复核结论，d4bc2c6 一度放行后恢复）：
 /// 放行并不能让纯 PE 走通这条路——`winre_registration::repair` 在
@@ -1402,7 +1402,7 @@ fn physical_volume_identity_at(
 /// preflight 照样要求目标卷有 `reagentc.exe` + `SYSTEM` hive。纯 PE 必然失败，
 /// 唯一区别是失败时目标卷**已被格式化**。而且 `bcdboot` 建的是常规 Windows
 /// 启动项（无 `winpe yes`），STEP 3.5 盘符绑定也要写目标 SYSTEM hive——
-/// 纯 PE 两者皆不满足。装 PE 的正路是「PE 恢复」（内存版/硬盘版，带 `winpe yes`、
+/// 纯 PE 两者皆不满足。装 PE 的正路是「安装 PE」（内存版/硬盘版，带 `winpe yes`、
 /// 不做 WinRE 注册）。
 ///
 /// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件。
@@ -1412,7 +1412,7 @@ pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<Pro
         Ok(false) => Err(err(
             "镜像不是完整 Windows（缺少 reagentc.exe 或 SYSTEM 注册表），\
              还原/新增第二系统需要完整 Windows 镜像。要安装 PE，请改用\
-             「PE 恢复」功能（内存版或硬盘版），它才是为 PE 设计的路径。本次\
+             「安装 PE」功能（内存版或硬盘版），它才是为 PE 设计的路径。本次\
              未格式化任何卷、未写入引导。",
         )),
         Ok(true) => Ok(ProbeOutcome::FullWindows),
@@ -1427,7 +1427,7 @@ pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<Pro
             if lower.contains("windows pe") || lower.contains("winpe") {
                 return Err(err(&format!(
                     "镜像\"{name}\"是 Windows PE，不是完整 Windows；\
-                     要安装 PE 请改用「PE 恢复」功能。本次未格式化任何卷、未写入引导。"
+                     要安装 PE 请改用「安装 PE」功能。本次未格式化任何卷、未写入引导。"
                 )));
             }
             Ok(ProbeOutcome::HeuristicPass)

@@ -118,7 +118,7 @@ fn main() {
         .first()
         .is_some_and(|argument| argument == "--tab")
     {
-        // GUI 启动选项：--tab N 打开指定操作模式（1=备份 2=单系统还原 3=新增第二系统 4=PE 恢复）
+        // GUI 启动选项：--tab N 打开指定操作模式（1=备份 2=单系统还原 3=新增第二系统 4=安装 PE）
         let tab = arguments
             .get(1)
             .ok_or_else(|| err("--tab requires an index 1..=4"));
