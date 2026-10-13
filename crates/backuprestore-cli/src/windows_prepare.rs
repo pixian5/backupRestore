@@ -1351,37 +1351,25 @@ fn physical_volume_identity_at(
 /// 背景（2026-10-11 实验，docs/20261011-2140）：纯 WinPE `boot.wim` 走
 /// create-secondary 会在**目标卷已被格式化、镜像已应用之后**才死在离线 WinRE
 /// 注册前置检查（缺 `reagentc.exe` 与 `SYSTEM` hive）——目标白毁。
-/// 这里把同样的判据前移到**擦除之前**：只读挂载镜像探测两个标记文件，
-/// 纯 PE 直接拒绝并提示改用「PE 恢复」（那才是装 PE 的正路）。
+/// 这里把同样的判据前移到**擦除之前**：只读挂载镜像探测两个标记文件。
 ///
-/// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件；
-/// 探测自身的失败（挂载不上等）也报错——探测不可用就不放行破坏性操作。
+/// ⚠️ 2026-10-13 变更：用户要求忽略此硬约束（原拒绝分支为某次会话所加），
+/// 现**不再拒绝**任何镜像——纯 PE/RE 也放行，交由后续恢复/注册阶段兜底。
+/// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件。
 pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<ProbeOutcome, TaskError> {
     match wim_mount_markers(image_path, index) {
-        // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝。
-        Ok(false) => Err(err(
-            "镜像不是完整 Windows（缺少 reagentc.exe 或 SYSTEM 注册表），\
-             还原/新增第二系统需要完整 Windows 镜像。要安装 PE，请改用\
-             「PE 恢复」功能（内存版或硬盘版），它才是为 PE 设计的路径。本次\
-             未格式化任何卷、未写入引导。",
-        )),
+        // 2026-10-13：用户要求忽略此硬约束（原为某次会话加的 PE/RE 拒绝），
+        // 改为放行——纯 PE/RE 也允许走 create-secondary 的释放（Apply）流程，
+        // 由后续恢复/注册阶段自行兜底。
+        Ok(false) => Ok(ProbeOutcome::HeuristicPass),
         Ok(true) => Ok(ProbeOutcome::FullWindows),
         // 挂载本身失败：不硬拦。2026-10-13 实测本机在**有 VHD 附加**时
         // DISM /Mount-Wim 一律报 87（参数无效），挂载探测在该环境不可用；
         // 若把这种情况判失败，合法还原会被误杀。降级为镜像名启发式：
         // 标准纯 PE 镜像的名称特征（"Microsoft Windows PE"/"WindowsPE"）
         // 命中即拒绝，未命中放行——恢复阶段的离线注册前置检查仍是硬兜底。
-        Err(_) => {
-            let name = wim_image_display_name(image_path, index)?;
-            let lower = name.to_ascii_lowercase();
-            if lower.contains("windows pe") || lower.contains("winpe") {
-                return Err(err(&format!(
-                    "镜像\"{name}\"是 Windows PE，不是完整 Windows；\
-                     要安装 PE 请改用「PE 恢复」功能。本次未格式化任何卷、未写入引导。"
-                )));
-            }
-            Ok(ProbeOutcome::HeuristicPass)
-        }
+        // 2026-10-13：同样忽略名称启发式拒绝，统一放行（不再挡 PE/RE）。
+        Err(_) => Ok(ProbeOutcome::HeuristicPass),
     }
 }
 
