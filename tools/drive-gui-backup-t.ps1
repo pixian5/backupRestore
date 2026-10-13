@@ -31,8 +31,28 @@ public static class Native {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetDlgItemTextW(IntPtr hDlg, int id, StringBuilder sb, int max);
 
     [DllImport("user32.dll", EntryPoint="SendMessageW")] public static extern IntPtr SendMessageI(IntPtr h, uint m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, IntPtr extra);
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    // Real mouse click: this GUI ignores BM_CLICK on several buttons (notably refresh),
+    // so drive it with an actual cursor click at the control's centre.
+    public static bool RealClick(IntPtr h) {
+        RECT r;
+        if (!GetWindowRect(h, out r)) { return false; }
+        int cx = (r.Left + r.Right) / 2;
+        int cy = (r.Top + r.Bottom) / 2;
+        SetCursorPos(cx, cy);
+        System.Threading.Thread.Sleep(120);
+        mouse_event(0x0002, cx, cy, 0, IntPtr.Zero);
+        System.Threading.Thread.Sleep(60);
+        mouse_event(0x0004, cx, cy, 0, IntPtr.Zero);
+        return true;
+    }
     public static int GetComboCount(IntPtr combo) {
-        return SendMessageI(combo, 0x014B, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        // 0x0146 = CB_GETCOUNT. NOTE: 0x014B is CB_RESETCONTENT, using it here
+        // would silently WIPE the list and always report 0.
+        return SendMessageI(combo, 0x0146, IntPtr.Zero, IntPtr.Zero).ToInt32();
     }
     public static string GetComboText(IntPtr combo, int idx) {
         int len = SendMessageI(combo, 0x0149, new IntPtr(idx), IntPtr.Zero).ToInt32();
@@ -88,7 +108,7 @@ $ID_CHOICE_RE = 2002
 $ID_COMPRESS = 1208
 $IDYES = 6
 
-$IMAGE_PATH = "H:\BRImages\gui-backup.wim"
+$IMAGE_PATH = "H:\BRImages\gui-click-backup.wim"
 $SOURCE_PREFIX = "T:"
 
 try { Start-Transcript -LiteralPath "H:\brwork\drive-gui.log" -Force | Out-Null } catch { }
@@ -114,8 +134,10 @@ if ($comboSrc -eq [IntPtr]::Zero) { throw "SOURCE_COMBO_NOT_FOUND" }
 if ([Native]::GetComboCount($comboSrc) -eq 0) {
     $btnRefresh = [Native]::GetDlgItem($main, $ID_REFRESH)
     if ($btnRefresh -ne [IntPtr]::Zero) {
-        [void][Native]::PostMessage($btnRefresh, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-        Write-Output "refresh clicked"
+        [void][Native]::SetForegroundWindow($main)
+        Start-Sleep -Milliseconds 300
+        [void][Native]::RealClick($btnRefresh)
+        Write-Output "refresh real-clicked"
     } else {
         Write-Output "WARN refresh button not found"
     }
@@ -179,8 +201,10 @@ if ($cboCompress -ne [IntPtr]::Zero) {
 Write-Output "== 4. click create task (1003) =="
 $btnCreate = [Native]::GetDlgItem($main, $ID_CREATE_TASK)
 if ($btnCreate -eq [IntPtr]::Zero) { throw "ID_CREATE_TASK_NOT_FOUND" }
-[void][Native]::PostMessage($btnCreate, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-Write-Output "create-task clicked"
+[void][Native]::SetForegroundWindow($main)
+Start-Sleep -Milliseconds 200
+[void][Native]::RealClick($btnCreate)
+Write-Output "create-task real-clicked"
 
 Write-Output "== 5. wait environment choice dialog =="
 $dlgChoice = [IntPtr]::Zero
@@ -197,8 +221,8 @@ Write-Output "== 6. click enter Windows RE (2002) =="
 $btnRe = [Native]::GetDlgItem($dlgChoice, $ID_CHOICE_RE)
 if ($btnRe -eq [IntPtr]::Zero) { throw "ID_CHOICE_RE_NOT_FOUND" }
 Start-Sleep -Milliseconds 300
-[void][Native]::PostMessage($btnRe, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-Write-Output "enter-RE clicked"
+[void][Native]::RealClick($btnRe)
+Write-Output "enter-RE real-clicked"
 
 Write-Output "== 7. wait confirm MessageBox =="
 $dlgConfirm = [IntPtr]::Zero
@@ -215,5 +239,5 @@ Write-Output "== 8. click Yes (6) =="
 $btnYes = [Native]::GetDlgItem($dlgConfirm, $IDYES)
 if ($btnYes -eq [IntPtr]::Zero) { throw "IDYES_NOT_FOUND" }
 Start-Sleep -Milliseconds 300
-[void][Native]::PostMessage($btnYes, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-Write-Output "SUCCESS: task confirmed, preparing recovery boot..."
+[void][Native]::RealClick($btnYes)
+Write-Output "SUCCESS: task confirmed via real click; GUI is now running the backup"

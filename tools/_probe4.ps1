@@ -35,7 +35,7 @@ public static class S {
         SendText(h, 0x000D, new IntPtr(1024), sb);
         return sb.ToString().Replace("\r", " ").Replace("\n", " | ");
     }
-    public static int ComboCount(IntPtr c) { return SendM(c, 0x014B, IntPtr.Zero, IntPtr.Zero).ToInt32(); }
+    public static int ComboCount(IntPtr c) { return SendM(c, 0x0146, IntPtr.Zero, IntPtr.Zero).ToInt32(); }
     public static string ComboText(IntPtr c, int i) {
         int len = SendM(c, 0x0149, new IntPtr(i), IntPtr.Zero).ToInt32();
         if (len <= 0) return "";

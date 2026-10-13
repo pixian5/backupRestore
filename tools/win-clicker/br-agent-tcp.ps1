@@ -39,6 +39,7 @@ public class BrAgt {
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] p, int cb);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr e);
+    [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
     [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO li);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int n);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -62,9 +63,29 @@ public class BrAgt {
     public static void Up(int x, int y) { INPUT i = new INPUT(); i.type = 0; i.U.mi.dx = x; i.U.mi.dy = y; i.U.mi.dwFlags = MOUSE_LEFTUP; SendInput(1, new INPUT[] { i }, Marshal.SizeOf(typeof(INPUT))); }
     public static void Click(int x, int y) { SetCursorPos(x, y); System.Threading.Thread.Sleep(30); Down(x, y); Up(x, y); }
     public static void Dbl(int x, int y) { Click(x, y); System.Threading.Thread.Sleep(60); Click(x, y); }
-    public static void Vk(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); System.Threading.Thread.Sleep(20); keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero); }
-    public static void ModDown(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); System.Threading.Thread.Sleep(25); }
-    public static void ModUp(byte vk) { keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero); System.Threading.Thread.Sleep(20); }
+    public static void Vk(byte vk) {
+        // 扩展键必须带真扫描码 + KEYEVENTF_EXTENDEDKEY，否则 EDIT 等标准控件
+        // 直接忽略该键（2026-10-14 实测：扫描码传 0 时 Home/End 到不了编辑框，
+        // 而 Backspace 正常，差别就在 0x08 不是扩展键）。此前把"ctrl+a 全选
+        // 失败"误查成 UIPI/消息层问题，真正原因在这里。
+        byte sc = (byte)MapVirtualKeyW(vk, 0);
+        uint fl = IsExtVk(vk) ? 0x0001u : 0u;
+        keybd_event(vk, sc, fl, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(20);
+        keybd_event(vk, sc, fl | KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+    static bool IsExtVk(byte vk) {
+        switch (vk) {
+            case 0x21: case 0x22: case 0x23: case 0x24: case 0x25: case 0x26:
+            case 0x27: case 0x28: case 0x2C: case 0x2D: case 0x2E: case 0x2F:
+            case 0x5B: case 0x5C: case 0x5D: case 0x6F: case 0x90:
+            case 0xA3: case 0xA5:
+                return true;
+            default: return false;
+        }
+    }
+    public static void ModDown(byte vk) { byte sc = (byte)MapVirtualKeyW(vk, 0); keybd_event(vk, sc, 0, UIntPtr.Zero); System.Threading.Thread.Sleep(25); }
+    public static void ModUp(byte vk) { byte sc = (byte)MapVirtualKeyW(vk, 0); keybd_event(vk, sc, KEYEVENTF_KEYUP, UIntPtr.Zero); System.Threading.Thread.Sleep(20); }
     public static void Uni(string s) {
         foreach (char c in s) {
             INPUT[] a = new INPUT[2];
