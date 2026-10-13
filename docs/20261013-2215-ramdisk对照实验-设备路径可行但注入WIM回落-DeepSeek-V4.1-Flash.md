@@ -71,7 +71,34 @@ D 组结束后已彻底清理：C: 上的副本删除、`C:\Recovery\WindowsRE\W
 即：注入件多出/替换了 3 个文件，且 `Recovery.exe` 大了约 75 KB。**这些差异中哪一个让 bootmgr 拒绝加载 ramdisk，
 尚未定因** —— 不要在下一轮直接断言。
 
-## 五、下一步（按优先级，成本各一次重启）
+## 五之二、逐项剔除实验：**三个文件单独注入都能启动**
+
+以「能启动的那格」为底（原版件副本 + 镜像卷 F: + 设备路径形式），每次**只加一个文件**：
+
+| 格 | 只加入 | 结果 | 证据 |
+|---|---|---|---|
+| E1 | `RecoveryTask.env`（2.4.6） | ✅ **进 WinRE** | 截图 `elicit-env-gpt61.png`；Recovery 报 `sha256 mismatch: expected 6a60ea0b… got a2a09a38…`（**正确拒绝**：env 对应 2.4.6，而 WIM 里还是 2.3.7 的 Recovery.exe） |
+| E2 | `Recovery.exe`（2.4.6，`6a60ea0b…`） | ✅ **进 WinRE** | 截图 `elicit-recovery-gpt61.png`（与 B 组字节一致：旧 env 触发的同一错误对话框） |
+| E3 | `task.json` | ✅ **进 WinRE** | 截图 `elicit-taskjson-gpt61.png`（与 B 组字节一致） |
+
+**含义**：单独注入 `RecoveryTask.env` / `Recovery.exe` / `task.json` **都不破坏引导**。
+那么把三者**同时**注入的产品 WIM（`26A1D415…`）为什么进不去，只剩下两类候选：
+
+1. **组合效应**：三者在同一份 WIM 里共同触发（各自单独无影响，合起来有影响）；
+2. **注入流程里还没被单独复现的那一步**：`inject_winre_payload` 还会**删除** `OBSOLETE_WINRE_FILES`
+   （`BackupRestore.exe`、`RecoveryLauncher.cmd`、`winpeshl-boot.cmd`）——三者单独注入的对照组**没有**这一步。
+
+下一格直接验证候选 2：只做「原版件 + 删掉那三个 System32 旧文件」，不注入任何东西。
+
+## 五之三、待清理（**接手第一步**）
+
+E3 的现场对象未及清理（VM 当时卡在 WinRE 对话框、exec 不可用）：
+
+- BCD 对象 **`{889cf42f}`（loader）+ `{889cf42e}`（devopts）**
+- 载荷目录 **`F:\BackupRestoreRE\4a898314-65b8-4cdb-b329-14411189bdd3`**
+- 挂载点 `C:\br-verify\elicit-4a898314-65b8-4cdb-b329-14411189bdd3`
+- 产品任务 `0d8f1ed5` 与其对象 `{889cf421}/{889cf420}` 仍保留（待判别现场）
+- 处置脚本可直接复用：`.test-artifacts/ramdisk-elicit-cleanup-gpt61.ps1`（传上面四个参数即可）
 
 交接文档第 2/3 步的 WMI/BCD 二进制 diff 已可跳过：**存储层差异不是原因**（同一写法在 B 上成功）。
 
