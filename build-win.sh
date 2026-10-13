@@ -1,7 +1,17 @@
 #!/bin/bash
 # BackupRestore macOS 交叉编译 Windows ARM64 一键构建脚本
 # 用法：./build-win.sh [--deploy]
-#   --deploy  构建后复制到 VM 部署目录（C:\Users\Public\backupRestore-package\BackupRestore.exe）
+#   --deploy  构建后部署到 VM 两处（每处都写 BackupRestore.exe 与 Recovery.exe 两份）：
+#             包目录/自启点 C:\Users\Public\backupRestore-package
+#             工作目录     H:\brwork
+#
+# ⚠️ 部署目标唯一约定（2026-10-13 用户裁定）：工作目录只有 H:\brwork。
+#    旧工作区 F:\BR 已于 2026-10-13 退役并删除——F: 是镜像卷（标签 BRIMG），只放镜像。
+#    不要再往 F:\BR（或 F: 上任何目录）部署程序：两套工作区会争抢机器上唯一那份
+#    bootmgr 一次性启动槽位，造成交叉污染（典型症状：进 RE 后弹
+#    "I/O error: 系统找不到指定的路径。 (os error 3)"，因为启动请求指向的任务目录
+#    已被另一套工作区清掉）。客体侧脚本 windows/build-windows.ps1 的
+#    -DeployWorkDir 默认值同样是 H:\brwork。
 # 依赖（见 docs/20260825-2309-backuprestore-pe.md 踩坑 23）：
 #   - rustup target add aarch64-pc-windows-msvc（rust-std）
 #   - ~/win-sdk-arm64/{um,ucrt,vc}/arm64（从 VM 复制的 Windows SDK + VC import libs）

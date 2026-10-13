@@ -10,6 +10,11 @@ param(
     # 一条命令「构建 + 部署 + 核对」收工。
     [switch]$Deploy,
     [string]$DeployPackageDir = 'C:\Users\Public\backupRestore-package',
+    # ⚠️ 部署目标唯一约定（2026-10-13 用户裁定）：工作目录只有 H:\brwork。
+    # 旧工作区 F:\BR 已于同日退役删除——F: 是镜像卷（标签 BRIMG），只放镜像。
+    # 不要再往 F:\BR（或 F: 上任何目录）部署程序：两套工作区会争抢机器上唯一那份
+    # bootmgr 一次性启动槽位，造成交叉污染（典型症状：进 RE 后弹
+    # "I/O error: 系统找不到指定的路径。 (os error 3)"）。
     [string]$DeployWorkDir = 'H:\brwork'
 )
 
