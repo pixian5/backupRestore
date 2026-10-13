@@ -110,6 +110,8 @@ pe-debug.cmd
 # 归档的一次性根目录产物（2026-09-24 清理，内容保留在本机，不入库）
 .archive/
 .workbuddy/
+# AI 会话记忆与本地工作数据（本机写作，不入库）
+.workbuddy-ai/
 tools/win-clicker/_agent/
 tools/win-clicker/_agent-tcp/
 # br-s1.sh 的 GBK 转码暂存目录（每次运行重新生成）
