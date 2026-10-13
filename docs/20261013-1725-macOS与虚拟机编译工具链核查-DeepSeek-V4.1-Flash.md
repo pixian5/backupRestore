@@ -14,6 +14,7 @@
 | 工具是否齐全 | **齐全**。macOS 交叉编译与 VM 内原生编译两条路径都实测构建成功。 |
 | 是否需要额外下载 | **必需项为零**。 |
 | 版本一致性 | macOS、VM 交互会话、VM SYSTEM **三处统一为 rustc 1.98.1**（2026-10-13 17:30 统一，改后已重新构建验证）。 |
+| crates 源 | macOS 与 VM **两处 profile 均已配国内镜像 USTC**，VM 侧已用冷缓存实证走镜像（见 3.1）。 |
 
 ---
 
@@ -56,6 +57,7 @@ Finished `release` profile [optimized] target(s) in 7.56s
 | Rust（**交互会话** `C:\Users\x\.cargo`） | rustc **1.98.1** | ✅ 原为 1.98.0，2026-10-13 17:30 按用户要求升级统一 |
 | Rust（**SYSTEM** `...\systemprofile\.cargo`） | rustc **1.98.1** (48a229cea) | ✅ |
 | 已装 target（两处一致） | 仅 `aarch64-pc-windows-msvc` | ✅ 够用；x64 未装 |
+| cargo 镜像源 | 两处 `config.toml` **均已配 USTC 镜像**（见 3.1） | ✅ 2026-10-13 17:35 已配并实证 |
 
 **实跑验证**（文档记录的标准命令，`-CargoTargetDir` 指到 VM 本地盘）：
 
@@ -76,6 +78,48 @@ Package: X:\artifacts\windows\BackupRestore-windows-arm64-v2.4.4
 
 > 上表这次跑的是 **1.98.0**（改动前的交互会话版本）。把交互会话升到 1.98.1 后**又跑了一次**：
 > `Finished release profile in 41.03s`，同样产出 v2.4.4 包、产物大小同为 2,408,960 B。
+
+### 3.1 crates 源：VM 侧已配国内镜像（2026-10-13 17:35 完成）
+
+**原状**：VM 两处 profile 都没有 `config.toml`，`cargo` 直连 `crates.io`（macOS 侧本来就走 USTC 镜像）。
+本次首次构建时现场下载了 6 个 crate，说明 VM 的 registry 缓存本就处于部分缺失状态。
+
+**已做**：给 VM 的**两个** CARGO_HOME 各写一份 `config.toml`，内容与 macOS 侧一致：
+
+```toml
+[source.crates-io]
+replace-with = "ustc"
+
+[source.ustc]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+```
+
+| profile | 写入路径 |
+|---|---|
+| 交互会话 | `C:\Users\x\.cargo\config.toml` |
+| SYSTEM | `C:\Windows\System32\config\systemprofile\.cargo\config.toml` |
+
+**实证（不是"配了就算"）**：**两个 profile 分别验证过**。
+
+交互会话——用**全新** `CARGO_HOME`（`C:\br-cargo-verify`）冷缓存拉一次依赖，三条独立证据：
+
+1. 每个包都标注来源为镜像：`Downloaded block-buffer v0.10.4 (registry 'ustc')`、`Downloaded cc v1.5.1 (registry 'ustc')` …
+2. 实际落地的索引目录名是 **`mirrors.ustc.edu.cn-38d0e5eb5da2abae`**（走官方会是 `index.crates.io-*`）；
+3. **57 个 crate 全部下载成功**，`FETCH_EXIT=0`。
+
+SYSTEM 通道——`cargo fetch --manifest-path \\Mac\backupRestore\Cargo.toml` 同样逐包输出
+`(registry 'ustc')`（如 `Downloaded js-sys v0.3.106 (registry 'ustc')`），**说明 SYSTEM 侧那份配置也生效**。
+
+验证用的临时目录已删除；配上镜像后**正式构建重新跑通**（`Finished release profile in 40.01s`，
+仍产出 v2.4.4 包）。
+
+本地留了两个可复用的探针（在已忽略的 `.test-artifacts/`）：`cargo-mirror-config.toml` 与
+`verify-cargo-mirror.ps1`。
+
+**注意**：替换源会**改变缓存键**——原先缓存在 `index.crates.io-*` 下的 crate 不会复用，
+首次构建会从镜像重新下载一遍（本项目 57 个包，很快）。属预期行为，不是故障。
+
+**迁移用**：新 VM 只需把上面那 4 行 TOML 写到两个 profile 的 `config.toml`，即可复现。
 
 ---
 
