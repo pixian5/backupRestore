@@ -174,7 +174,7 @@ VM 内编译环境与踩坑见 [2.3.9 引导修复与 VM 原生编译路径](./d
 
 > **环境是否齐全**（2026-10-13 实测，两条路径都实跑过）：见
 > [macOS 与虚拟机编译工具链核查](./docs/20261013-1725-macOS与虚拟机编译工具链核查-DeepSeek-V4.1-Flash.md)。
-> 结论：工具齐全、无必需下载；但 VM 侧两套 Rust 版本不一致、宿主空闲 163GiB **低于 220GiB 硬门槛**。
+> 结论：工具齐全、无必需下载；macOS 与 VM 三处 Rust 已统一为 **rustc 1.98.1**。
 > 另记两个入口坑：`X:` 只在 VM 交互会话存在（SYSTEM 通道要用 UNC `\\Mac\backupRestore`），
 > 且 `if exist \\Mac\backupRestore\NUL` 恒为假、不能用来判共享可达。
 

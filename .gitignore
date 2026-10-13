@@ -162,3 +162,6 @@ target/
 Documents/br-src/
 Documents/br-s238/
 Documents/cargo-sync/
+
+# JiuwenSwarm runtime file operation logs
+.agent_history/
