@@ -165,3 +165,16 @@ Documents/cargo-sync/
 
 # JiuwenSwarm runtime file operation logs
 .agent_history/
+
+# AI 会话元数据与记忆库（本机写作，不入库；非本项目文件）
+.office-claw/
+coding_memory/
+AGENT.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+USER.md
+agents/
+context/
+memory/
+messages/

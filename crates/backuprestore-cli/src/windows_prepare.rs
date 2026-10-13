@@ -822,9 +822,12 @@ fn prepare_task(
     task.boot_plan.previous_bcd_sha256 = Some(sha256_file(&bootstrap_bcd)?);
     task.boot_plan.boot_sequence_requested = true;
     task.validate()?;
-    // 新启动通道：载荷放到镜像卷（re_staging），注册位只读。
+    // 新启动通道：载荷放到**系统卷**（re_staging），注册位只读。
+    // 2026-10-12 实测根因（docs/20261012-1935）：bootmgr 只解析系统卷（C:）的盘符，
+    // 镜像卷等数据卷的盘符在 bootmgr 阶段解析不了，ramdisk 载荷必然加载失败、回落默认项；
+    // 载荷放系统卷后 BCD 写 ramdisk=[C:] 即可正常进入 WinRE。
     let re_staging = ReStaging {
-        volume: image_volume.clone(),
+        volume: recovery.clone(),
         boot_sdi: PathBuf::from(format!(
             r"{}:\Recovery\WindowsRE\boot.sdi",
             ensure_volume_mounted(&recovery, 'R', &prepare_log)?
