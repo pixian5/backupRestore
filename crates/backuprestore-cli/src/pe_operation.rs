@@ -434,6 +434,17 @@ impl Engine {
 impl Engine {
     fn check_image(&mut self) -> Result<(), TaskError> {
         self.protect()?;
+        // 擦除前完整性预检（2.4.3 补齐）：PE 路径的 boot() 同样在 bcdboot 之后
+        // 调 winre_registration::repair（本文件 :768），其 preflight 要求目标卷有
+        // reagentc.exe + SYSTEM hive。纯 PE 镜像必然失败，而此前这里没有预检，
+        // 失败点落在**格式化之后**——与 2026-10-11 记录的 create-secondary 老坑同形。
+        // DataOverlay 不写引导、不做注册，不需要完整 Windows，故排除在外。
+        if self.intent() != RestoreIntent::DataOverlay {
+            wp::wim_full_windows_probe(
+                &self.image.to_string_lossy(),
+                self.request.index,
+            )?;
+        }
         // 文件句柄拒绝共享写入/删除，持续持有至本次任务结束，避免预检后被替换。
         self.image_handle = Some(
             OpenOptions::new()
