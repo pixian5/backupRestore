@@ -127,10 +127,13 @@ const ID_COMPRESS: usize = 1208;
 const ID_INDEX_NAME_EDIT: usize = 1209;
 const ID_KEEP_EDIT: usize = 1210;
 const ID_VERIFY_HASH: usize = 1211;
-// B/C 入口的执行通道单选（在线=不重启 / 离线=重启进 PE/RE）。
-// B 默认在线（不格式化），C 默认在线（格式化+装引导），均允许切离线。
+// B/C 入口的执行通道单选（在线=不重启 / 离线=重启进 PE/RE），默认均在线。
 const ID_CHANNEL_ONLINE: usize = 1212;
 const ID_CHANNEL_OFFLINE: usize = 1213;
+// B（还原数据到非 C 盘）的「格式化目标分区」复选框（2026-10-14 用户拍板：
+// B 的正确语义是格式化后还原，默认勾选；不勾=覆盖式应用、保留卷上多余文件。
+// 离线通道在 RE 内恒格式化，不受此开关影响——文案里写明）。
+const ID_FORMAT_TARGET: usize = 1214;
 const BS_AUTOCHECKBOX: u32 = 0x00000003;
 const BM_GETCHECK: u32 = 0x00F0;
 const ID_STATUS: usize = 1300;
@@ -647,6 +650,10 @@ unsafe fn install_tooltips(state: &mut State) {
             GetDlgItem(state.root, ID_CHANNEL_OFFLINE as i32),
             "channel_offline",
         ),
+        (
+            GetDlgItem(state.root, ID_FORMAT_TARGET as i32),
+            "format_target",
+        ),
         (state.controls.source, "source"),
         (state.controls.target, "target"),
         (state.controls.image, "image"),
@@ -710,10 +717,13 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "还原系统到非 C 盘：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，默认启动项保持不变。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
         }
         (Language::Chinese, "channel_online") => {
-            "在线执行：不重启，直接在当前系统里完成（B=覆盖应用不格式化；C=格式化目标并修复引导）。"
+            "在线执行：不重启，直接在当前系统里完成（B 按「格式化目标分区」选项决定是否先清空目标卷；C 恒格式化并修复引导）。"
         }
         (Language::Chinese, "channel_offline") => {
-            "离线执行：创建任务并重启进入 PE/Windows RE 完成（B/C 的目标卷都会被格式化后写入镜像）。"
+            "离线执行：创建任务并重启进入 PE/Windows RE 完成（目标卷都会被格式化后写入镜像）。"
+        }
+        (Language::Chinese, "format_target") => {
+            "勾选：先用 diskpart 快速格式化目标卷并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像——还原的完整语义。\n不勾：覆盖式应用，不格式化（卷上镜像没有的文件会保留，卷序列号不变）。\n仅对在线通道生效；离线通道在恢复环境里总是先格式化。"
         }
         (Language::Chinese, "source") => "选择备份来源或当前 Windows 分区；身份按 GUID 校验。",
         (Language::Chinese, "target") => "还原时将被格式化的目标分区；备份和探测模式不使用。",
@@ -782,10 +792,13 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "Restore system to non-C:: deploy a full Windows image to another partition with a new boot entry; default boot entry unchanged. Online by default; target must not be the system drive."
         }
         (Language::English, "channel_online") => {
-            "Online: run inside the current Windows session without reboot (B = overlay apply; C = format + boot repair)."
+            "Online: run inside the current Windows session without reboot (B honors the 'Format target volume' option; C always formats and repairs boot)."
         }
         (Language::English, "channel_offline") => {
             "Offline: schedule a task and reboot into PE/RE (target volume is formatted)."
+        }
+        (Language::English, "format_target") => {
+            "Checked: quick-format the target via diskpart and verify success (same partition, NTFS, volume serial changed) before applying the image.\nUnchecked: overlay apply without formatting (files not in the image remain; volume serial unchanged).\nOnline channel only; the offline channel always formats inside the recovery environment."
         }
         (Language::English, "source") => {
             "Select the backup source or current Windows volume; GUID identity is verified."
@@ -923,10 +936,11 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "restore_b_hint") => {
             "「还原数据到非 C 盘」把数据卷镜像还原到非系统分区，不碰引导：\n\n\
              • 目标卷：要接收数据的数据分区（不能是当前系统盘，也不能是已有 Windows 的分区）；\n\
-             • 通道差异（重要）：在线=覆盖式应用镜像、不格式化（卷上多余文件会保留，卷序列号不变）；离线=重启进 PE/RE，先 diskpart 格式化再还原（卷序列号改变）；\n\
+             • 格式化目标分区（默认勾选）：先 diskpart 快速格式化并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像；取消勾选=覆盖式应用、卷上多余文件保留；\n\
+             • 通道：在线=不重启直接执行；离线=重启进 PE/RE（恢复环境内总是先格式化再还原）；\n\
              • 镜像与索引：要还原的 WIM 及其中索引；\n\
              • 适用场景：数据盘损坏或迁移时恢复数据。\n\n\
-             安全提示：在线模式虽不格式化，但同名文件会被镜像内容覆盖。"
+             安全提示：勾选格式化会清空目标卷上的全部数据；不勾选时同名文件也会被镜像内容覆盖。"
         }
         (Language::Chinese, "restore_c_hint") => {
             "「还原系统到非 C 盘」把完整 Windows 镜像部署到另一个分区，成为可启动的第二系统：\n\n\
@@ -989,7 +1003,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "Restore C: writes an image system back to the running system drive and rebuilds the boot loader.\n\n• Target volume: locked to the running system drive (actual letter shown, not selectable);\n• Image & index: the WIM and its index to restore; all data on the system drive is overwritten;\n• Flow: destructive confirmation → choose PE/RE → reboot, format the target offline → DISM Apply → BCDBoot rebuilds the boot entry;\n• Use case: recover this machine from a backup when the system is damaged.\n\nSafety: the target cannot be changed; confirm the image is correct and important data is stored elsewhere. The operation cannot be cancelled midway."
         }
         (Language::English, "restore_b_hint") => {
-            "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Channel difference (important): online = overlay apply without formatting (extra files remain, volume serial unchanged); offline = reboot into PE/RE, format via diskpart first (volume serial changes);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: online mode does not format, but files with the same names are overwritten by the image."
+            "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Format target volume (checked by default): quick-format via diskpart, verify success (same partition, NTFS, serial changed), then write the image; unchecked = overlay apply, extra files remain;\n• Channel: online = no reboot; offline = reboot into PE/RE (always formats there);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: formatting erases everything on the target; even without it, same-name files are overwritten."
         }
         (Language::English, "restore_c_hint") => {
             "Restore other deploys a full Windows image to another partition as a bootable second system.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; the default boot entry stays on the current system;\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Difference from 'Second system': this entry runs online by default; that one always goes through the offline task chain.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
@@ -1336,9 +1350,10 @@ unsafe fn set_operation_visibility(state: &State) {
         state.controls.target,
         if operation == "restore-existing" { 0 } else { 1 },
     );
-    // B/C 的通道单选
+    // B/C 的通道单选；B 的「格式化目标分区」复选框（离线恒格式化，选项只对在线生效）
     set_child_visible(ID_CHANNEL_ONLINE as i32, show_channel);
     set_child_visible(ID_CHANNEL_OFFLINE as i32, show_channel);
+    set_child_visible(ID_FORMAT_TARGET as i32, operation == "restore-data");
     // 「重启进入 PE」「创建快捷方式」只在 安装 PE tab 显示
     set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-entry");
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
@@ -1393,9 +1408,13 @@ unsafe fn layout_operation(state: &State) {
         source_combo_y
     };
     let target_details_y = target_combo_y + 36;
-    // 通道单选行：目标卷详情框下方
+    // 通道单选行：目标卷详情框下方；B 再加一行「格式化目标分区」复选框
     let channel_y = target_details_y + details_height + 8;
-    let last_details_y = if channel_visible {
+    let show_format_target = layout_op == "restore-data";
+    let format_y = channel_y + 26;
+    let last_details_y = if show_format_target {
+        format_y + 24
+    } else if channel_visible {
         channel_y + 24
     } else if target_visible {
         target_details_y + details_height
@@ -1508,6 +1527,19 @@ unsafe fn layout_operation(state: &State) {
         );
         reposition(online_hwnd, field_x, channel_y, 300, 22);
         reposition(offline_hwnd, field_x + 320, channel_y, 360, 22);
+    }
+    // B 入口的「格式化目标分区」复选框：通道行下方一行，文案随语言刷新。
+    if show_format_target {
+        let format_hwnd = GetDlgItem(state.root, ID_FORMAT_TARGET as i32);
+        set_text(
+            format_hwnd,
+            if selected_language(state) == Language::English {
+                "Format target volume (erase, then write the image)"
+            } else {
+                "格式化目标分区（清空目标卷后写入镜像）"
+            },
+        );
+        reposition(format_hwnd, field_x, format_y, 460, 22);
     }
     reposition(state.controls.status, 20, status_y, client_width - 40, 64);
 
@@ -2046,7 +2078,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "目标卷用途：锁定为当前正在运行的系统盘；离线格式化后写回镜像，重建唯一系统。"
         }
         (Language::Chinese, "target", "restore-data") => {
-            "目标卷用途：接收数据卷镜像；在线=覆盖式应用不格式化，离线=先格式化再还原。不能选当前系统盘或已有 Windows 的分区。"
+            "目标卷用途：接收数据卷镜像。默认勾选「格式化目标分区」=清空后写入（卷序列号改变）；取消勾选=覆盖式应用（多余文件保留）。不能选当前系统盘或已有 Windows 的分区。"
         }
         (Language::Chinese, "target", "restore-system-other") => {
             "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项、默认启动项不变。必须不同于当前系统盘。"
@@ -2076,7 +2108,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "Purpose: locked to the running system drive; formatted offline and rewritten, rebuilding the only Windows."
         }
         (Language::English, "target", "restore-data") => {
-            "Purpose: receives the data-volume image; online = overlay apply without format, offline = format first. Never the system drive or an existing Windows partition."
+            "Purpose: receives the data-volume image. 'Format target volume' checked (default) = erase then write (serial changes); unchecked = overlay apply. Never the system drive or an existing Windows partition."
         }
         (Language::English, "target", "restore-system-other") => {
             "Purpose: formatted and written as a second Windows with a new boot entry; default boot entry unchanged. Must differ from the system drive."
@@ -3487,6 +3519,17 @@ unsafe fn test_hook_auto_install(state: &mut State) {
             GetDlgItem(state.root, ID_CHANNEL_OFFLINE as i32),
             BM_SETCHECK,
             if online { BST_UNCHECKED } else { BST_CHECKED },
+            0,
+        );
+    }
+    // 1.6 B 入口的「格式化目标分区」复选框（"format_target":false 取消勾选；
+    // 不写默认勾选）。1a 阶段（手工格式化 + 只验还原链路）用它取消。
+    if let Some(format_target) = json.get("format_target").and_then(|v| v.as_bool()) {
+        append_gui_log(state, &format!("test hook: format_target={format_target}"));
+        SendMessageW(
+            GetDlgItem(state.root, ID_FORMAT_TARGET as i32),
+            BM_SETCHECK,
+            if format_target { BST_CHECKED } else { BST_UNCHECKED },
             0,
         );
     }
@@ -5554,6 +5597,7 @@ unsafe fn create_task(state: &mut State) {
                 &compress,
                 &image_name,
                 keep_indexes,
+                false,
             );
             return;
         }
@@ -5566,15 +5610,21 @@ unsafe fn create_task(state: &mut State) {
             &format!("channel split: op={operation} online={online}"),
         );
         if online {
-            // 在线：B=数据卷覆盖应用（不格式化）；C=格式化+应用+修复引导
-            // （online_operation 的 create-secondary 分支）。C 的启动菜单名通过
-            // image_name 传给在线通道——restore_to_windows_volume 会优先用它命名
-            // 新启动项（用户命名 > 镜像版本名自动推断）。
+            // 在线：B=按「格式化目标分区」选项决定是否清空目标卷（默认勾选）；
+            // C=格式化+应用+修复引导（online_operation 的 create-secondary 分支）。
+            // C 的启动菜单名通过 image_name 传给在线通道——restore_to_windows_volume
+            // 会优先用它命名新启动项（用户命名 > 镜像版本名自动推断）。
             let online_image_name = if operation == "restore-system-other" {
                 get_text(state.controls.menu).trim().to_string()
             } else {
                 String::new()
             };
+            let format_target = operation == "restore-data"
+                && IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
+            append_gui_log(
+                state,
+                &format!("online params: format_target={format_target}"),
+            );
             run_online_operation(
                 state,
                 cli_operation(&operation),
@@ -5585,6 +5635,7 @@ unsafe fn create_task(state: &mut State) {
                 &compress,
                 &online_image_name,
                 keep_indexes,
+                format_target,
             );
             return;
         }
@@ -5987,6 +6038,7 @@ unsafe fn run_online_operation(
     compress: &str,
     image_name: &str,
     keep_indexes: Option<u32>,
+    format_target: bool,
 ) {
     if !ONLINE_BUSY.try_start() {
         show_message(
@@ -6006,6 +6058,7 @@ unsafe fn run_online_operation(
         compress: compress.into(),
         image_name: image_name.into(),
         keep_indexes,
+        format_target,
     };
     let root = state.root as usize;
     EnableWindow(GetDlgItem(state.root, ID_CREATE_TASK as i32), 0);
@@ -6086,6 +6139,20 @@ unsafe extern "system" fn window_proc(
             ID_CHANNEL_OFFLINE,
         );
         SendMessageW(_channel_online, BM_SETCHECK, BST_CHECKED, 0);
+        // B 入口的「格式化目标分区」复选框：默认勾选（B 的正确语义=清空后写入）。
+        // 坐标占位，layout_operation 定位；文案随语言刷新。
+        let _format_target = create_control(
+            hwnd,
+            "BUTTON",
+            "格式化目标分区（清空目标卷后写入镜像）",
+            BS_AUTOCHECKBOX | WS_TABSTOP,
+            180,
+            650,
+            420,
+            22,
+            ID_FORMAT_TARGET,
+        );
+        SendMessageW(_format_target, BM_SETCHECK, BST_CHECKED, 0);
         let (system_drive, _image_drive) = suggested_drive_defaults(&drives);
         // The image field is intentionally blank until the user chooses an
         // absolute path; no fixed BackupRestore folder is assumed.

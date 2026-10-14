@@ -15,6 +15,10 @@ pub(crate) struct OnlineOpParams {
     pub compress: String,
     pub image_name: String,
     pub keep_indexes: Option<u32>,
+    /// B（还原数据到非 C 盘）在线通道的「格式化目标分区」选项（2026-10-14 用户
+    /// 拍板：B 的正确语义是格式化后还原，GUI 默认勾选）。勾选时先 diskpart
+    /// 快速格式化并校验成功，再应用镜像；离线通道（RE 内）恒格式化不受此开关影响。
+    pub format_target: bool,
 }
 pub(crate) struct OnlineResult {
     pub success: bool,
@@ -304,9 +308,53 @@ fn execute_inner(
                     params, &root, identity, index, log_path, progress, &wim_info,
                 );
             }
+            // 「格式化目标分区」选项（默认勾选）：先 diskpart 快速格式化并**校验成功**
+            // （同分区 GUID/几何不变 + NTFS + 卷序列号已改变 + 根目录可读），失败即中止
+            // ——格式化没成功绝不能往旧数据上叠镜像。格式化会换卷序列号，因此后续
+            // 应用后的身份比对基准切换为格式化后的新身份（分区身份不变，仍锁同一分区）。
+            let baseline = if params.format_target {
+                let dir = log_path
+                    .parent()
+                    .ok_or_else(|| crate::err("日志目录缺失"))?;
+                log(
+                    log_path,
+                    "STEP 2/4 格式化目标卷（diskpart quick）并校验格式化成功",
+                )?;
+                let script = crate::diskpart_format_script(
+                    identity.disk_number,
+                    identity.partition_number,
+                )?;
+                let script_path = dir.join("format.txt");
+                fs::write(&script_path, script)?;
+                run_capture(
+                    "diskpart.exe",
+                    &["/s".into(), script_path.to_string_lossy().into_owned()],
+                    &cmd_out_file(dir),
+                    true,
+                )?;
+                let formatted = crate::windows_prepare::refresh_identity(&identity)?;
+                backuprestore_core::operation_safety::verify_formatted_volume(
+                    &identity, &formatted,
+                )?;
+                fs::read_dir(&root)?;
+                log(
+                    log_path,
+                    &format!(
+                        "格式化校验通过：序列号 {} -> {}，分区身份不变",
+                        identity.volume_serial, formatted.volume_serial
+                    ),
+                )?;
+                formatted
+            } else {
+                identity
+            };
             log(
                 log_path,
-                "STEP 2/4 还原镜像（数据卷在线覆盖，不格式化、不修复引导）",
+                if params.format_target {
+                    "STEP 2.5/4 应用镜像（数据卷已按选项格式化后写入）"
+                } else {
+                    "STEP 2/4 还原镜像（数据卷在线覆盖，不格式化、不修复引导）"
+                },
             )?;
             dism(
                 &[
@@ -325,17 +373,21 @@ fn execute_inner(
                 "STEP 3/4 回读目标卷身份；DISM 已执行完整性和应用校验",
             )?;
             let after = crate::windows_prepare::volume_identity(affected)?;
-            if !identity.same_partition(&after)
-                || identity.partition_offset != after.partition_offset
-                || identity.partition_size != after.partition_size
-                || identity.volume_serial != after.volume_serial
+            if !baseline.same_partition(&after)
+                || baseline.partition_offset != after.partition_offset
+                || baseline.partition_size != after.partition_size
+                || baseline.volume_serial != after.volume_serial
             {
                 return Err(crate::err("restore target identity changed during apply"));
             }
             // 数据卷并不包含 Windows 内核，不能用 ntoskrnl.exe 存在与否判断数据还原成功。
             log(
                 log_path,
-                "STEP 4/4 完成在线还原；未执行格式化或系统引导修复",
+                if params.format_target {
+                    "STEP 4/4 完成在线还原（已格式化后写入）；未执行系统引导修复"
+                } else {
+                    "STEP 4/4 完成在线还原；未执行格式化或系统引导修复"
+                },
             )
         }
         // C（他盘系统还原）的在线通道：无论目标当前是不是 Windows 卷，都走
@@ -1498,6 +1550,7 @@ description             something";
             compress: "fast".into(),
             image_name: "中文 & % ! ^ 备份".into(),
             keep_indexes: None,
+            format_target: false,
         };
         fs::write(source.join("data.txt"), "first").unwrap();
         capture(&params, &source, identity.clone(), 5, &log_path).unwrap();

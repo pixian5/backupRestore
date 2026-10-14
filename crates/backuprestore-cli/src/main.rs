@@ -271,9 +271,14 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
     let mut compress = String::new();
     let mut image_name = String::new();
     let mut keep_indexes: Option<u32> = None;
+    // CLI 在线还原的「格式化目标分区」开关（与 GUI 复选框同语义，默认不格式化）
+    let mut format_target = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--format-target" => {
+                format_target = true;
+            }
             "--operation" => {
                 i += 1;
                 operation = args.get(i).cloned().unwrap_or_default();
@@ -322,6 +327,9 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
         compress,
         image_name,
         keep_indexes,
+        // CLI 在线还原的「格式化目标分区」开关：与 GUI 复选框同语义，
+        // 默认不格式化保持旧行为，显式 --format-target 才清空目标卷。
+        format_target,
     };
     let result = crate::online_operation::execute(&params);
     println!("{}", result.detail);

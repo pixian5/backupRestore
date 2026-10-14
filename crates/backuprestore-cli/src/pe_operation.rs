@@ -407,6 +407,8 @@ impl Engine {
             compress: "fast".into(),
             image_name: "PE".into(),
             keep_indexes: None,
+            // PE 侧无「格式化选项」概念（备份操作也不用它），恒 false。
+            format_target: false,
         };
         let (_, free) = wp::disk_free_space(letter)?;
         let used = self.target.partition_size.saturating_sub(free);
