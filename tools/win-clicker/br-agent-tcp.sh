@@ -50,6 +50,13 @@ get_ip() {
 }
 
 start_agent() {
+  # 先经 prlctl(SYSTEM, Session 0) 把 agent 脚本原件二进制刷进客体本地
+  # C:\Users\Public\pkg\br-agent-tcp.in.ps1。2026-10-14 实测：提权(High IL)后的
+  # br-launch-agent.ps1 读 \\Mac\... UNC 会间歇性「系统找不到指定的文件」（第一次
+  # 成功、GUI 重启后失败），而 SYSTEM 通道的共享盘复制从未失败（build-win.sh 部署
+  # 全靠它）。br-launch-agent.ps1 会优先读这份本地副本，UNC 只作回退。
+  "$PRL" exec "$VM" cmd /c "copy /y \\\\Mac\\backupRestore\\tools\\win-clicker\\br-agent-tcp.ps1 C:\\Users\\Public\\pkg\\br-agent-tcp.in.ps1" >/dev/null 2>&1 || \
+    echo ">> 预刷 agent 脚本失败（将回退 UNC 读取）" >&2
   # 走可靠链路：br-s1.sh 会先把宿主最新的 br-gui-exec.ps1 经 UNC 刷进 VM，再由
   # run-in-session(SYSTEM->Session1) + ShellExecute runas 提权启动。
   #
