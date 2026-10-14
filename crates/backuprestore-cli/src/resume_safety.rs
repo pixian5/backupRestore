@@ -131,6 +131,7 @@ mod tests {
             role: TargetRole::ExistingWindows,
             boot_menu_name: None,
             minimum_size_bytes: 1,
+            is_active_system: true,
         });
         let mut values = BTreeMap::from([
             ("SOURCE_DISK_GUID".into(), "disk".into()),

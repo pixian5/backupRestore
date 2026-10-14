@@ -471,6 +471,22 @@ pub struct TargetSpec {
     pub boot_menu_name: Option<String>,
     #[serde(default)]
     pub minimum_size_bytes: u64,
+    /// 准备任务时，目标卷**是不是当前正在运行的那套系统**（`%SystemDrive%`）。
+    ///
+    /// 恢复期的收尾行为必须按「目标性质」路由，而不是按「操作类型」：目标是另一套
+    /// Windows 时，无论操作是 create-secondary 还是 restore-existing，都必须保住主系统
+    /// 的默认启动项、修目标的盘符绑定、按第二系统注册 WinRE。此前这些收尾卡在
+    /// `role == NewWindows`（= 只有 create-secondary 才做），于是离线把完整 Windows 镜像
+    /// 还原到 C 以外的 Windows 卷时，产出的是「能启动但会崩、且主系统每次开机被劫持」
+    /// 的半成品。
+    ///
+    /// 判断只能在**联机准备阶段**做：WinRE 里 `%SystemDrive%` 是恢复环境自己的 RAM 盘
+    /// `X:`，离线侧重新探测只会得到 RAM 盘。所以结论在准备时落盘，由 RE 读取。
+    ///
+    /// 故意**不给** `#[serde(default)]`：缺字段时反序列化失败、恢复流程停在动盘之前，
+    /// 比静默当成 `false` 安全——`false` 会让「重建唯一系统」场景误走第二系统收尾，
+    /// 去改写当前运行系统的盘符绑定。
+    pub is_active_system: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1281,6 +1297,25 @@ impl TaskStore {
                 )));
             };
             validate_task_id(id)?;
+            // 先读 status.json 定性。终态任务（success/failed）只是历史记录，它的
+            // task.json 能不能读懂都不影响「现在能不能创建新任务」，所以挡在前面。
+            //
+            // 这一步是必须的：否则 Task 结构每新增一个必填字段，旧版本留下的已完成
+            // 任务都会把新版本整个卡死。2026-10-14 实测——2.4.8 留下的 5 个终态任务
+            // 缺 `isActiveSystem`，让 2.4.9 的 prepare 完全无法创建任务，报
+            // 「cannot inspect existing task …: missing field」。
+            //
+            // 非终态任务仍然全程 fail-closed（下面的 validate + 一致性比对）：它的
+            // 启动项、载荷或目标可能还等着恢复，读不懂必须报错给用户看，不能静默跳过。
+            let status: StatusRecord = read_json(path.join("status.json")).map_err(|error| {
+                TaskError::Invalid(format!(
+                    "cannot inspect status for existing task {id} at {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if !status.stage.is_incomplete() {
+                continue;
+            }
             let task: Task = read_json(path.join("task.json")).map_err(|error| {
                 TaskError::Invalid(format!(
                     "cannot inspect existing task {id} at {}: {error}",
@@ -1289,12 +1324,6 @@ impl TaskStore {
             })?;
             task.validate().map_err(|error| {
                 TaskError::Invalid(format!("existing task {id} is invalid: {error}"))
-            })?;
-            let status: StatusRecord = read_json(path.join("status.json")).map_err(|error| {
-                TaskError::Invalid(format!(
-                    "cannot inspect status for existing task {id} at {}: {error}",
-                    path.display()
-                ))
             })?;
             if task.task_id != id
                 || status.task_id != task.task_id
@@ -1877,6 +1906,7 @@ mod tests {
             role: TargetRole::ExistingWindows,
             boot_menu_name: None,
             minimum_size_bytes: 100,
+            is_active_system: true,
         });
         assert!(task.validate().is_err());
     }
@@ -1907,6 +1937,7 @@ mod tests {
             role: TargetRole::ExistingWindows,
             boot_menu_name: None,
             minimum_size_bytes: 100,
+            is_active_system: true,
         });
         task.verify_hash = Some(true);
         task
@@ -2071,6 +2102,7 @@ mod tests {
             role: TargetRole::ExistingWindows,
             boot_menu_name: None,
             minimum_size_bytes: 100,
+            is_active_system: true,
         });
         assert!(task.validate().is_err());
     }
@@ -2123,6 +2155,7 @@ mod tests {
             role: TargetRole::NewWindows,
             boot_menu_name: Some("Windows 11 Backup".into()),
             minimum_size_bytes: 100,
+            is_active_system: false,
         });
         task.source = Some(identity("source", 200));
         task.workspace_volume = Some(identity("workspace", 200));
@@ -2157,6 +2190,7 @@ mod tests {
             role: TargetRole::ExistingWindows,
             boot_menu_name: None,
             minimum_size_bytes: 100,
+            is_active_system: true,
         });
         assert!(task.validate().is_ok());
         task.source = None;

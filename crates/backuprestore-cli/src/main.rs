@@ -2678,10 +2678,15 @@ fn recover_windows(
                     false,
                 )?;
                 let windows_root = target_root.join("Windows");
+                // 收尾按「目标性质」路由，不按「操作类型」：目标是另一套 Windows 时，
+                // create-secondary 和 restore-existing 需要的收尾是同一套（保主系统
+                // default + 修盘符绑定 + 按第二系统注册 WinRE）。判据来自准备阶段落盘的
+                // is_active_system——RE 内 `%SystemDrive%` 是 RAM 盘 X:，探测不到用户系统卷。
+                let target_is_secondary = !target.is_active_system;
                 // Capture the primary BCD state from the byte-for-byte task
                 // snapshot before BCDBoot.  It remains available even if a
                 // power failure occurs after BCDBoot changes the live store.
-                let previous_boot_manager = if target.role == TargetRole::NewWindows {
+                let previous_boot_manager = if target_is_secondary {
                     secondary_registry::repair(&target_root, target_letter, &target.volume, log)?;
                     Some(boot_manager_state_from_task_snapshot(store, task, log)?)
                 } else {
@@ -2695,7 +2700,7 @@ fn recover_windows(
                     "UEFI".to_string(),
                     "/v".to_string(),
                 ];
-                if target.role == TargetRole::NewWindows {
+                if target_is_secondary {
                     // /addlast 只管固件条目的添加位置，**不保护默认启动项**。
                     // bcdboot 的默认行为是把新建 loader 设为 {bootmgr}.default，
                     // 于是一旦后续步骤失败（2026-10-13 实测：repair_secondary 报
@@ -2709,8 +2714,8 @@ fn recover_windows(
                     // /addlast 在 /s 场景下**可能被忽略**。因此真正承重的防线是
                     // 紧随其后的 assert_boot_default_preserved（回读+自愈）；
                     // /d 保留在不带 /s 的环境下生效，是零成本的多一层。
-                    // 单系统还原（RestoreExisting）不加 /d：那是重建唯一系统，
-                    // default 本就该指向新 loader。
+                    // 还原到当前系统盘（重建唯一系统）不加 /d：那时 default 本就该
+                    // 指向新 loader。
                     bcd_args.push("/d".to_string());
                     bcd_args.push("/addlast".to_string());
                     // 顺带给新条目一个可读名字。最终命名仍由引导修复
@@ -2748,17 +2753,23 @@ fn recover_windows(
                     return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
                 }
                 verify_bcd_target(&efi, &target_root, log)?;
-                if target.role == TargetRole::NewWindows {
+                if target_is_secondary {
                     winre_registration::repair_secondary(&target_root, &efi, &target.volume, log)?;
                 } else {
                     winre_registration::repair(&target_root, &efi, &target.volume, log)?;
                 }
-                if target.role == TargetRole::NewWindows {
+                if target_is_secondary {
+                    // 菜单名只有「新增第二系统」才由用户指定；把完整 Windows 镜像还原到
+                    // 另一个分区时没有这个意图，此时只定位 loader、不改它的描述。
+                    // 但 preserve_primary_boot_manager 两种情况都要跑——保住主系统的
+                    // 默认启动项与菜单顺序是安全行为，不依赖菜单名。
                     let menu_name = target
                         .boot_menu_name
                         .as_deref()
-                        .ok_or_else(|| err("secondary target has no boot menu name"))?;
-                    let identifier = set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty());
+                    let identifier =
+                        set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
                     preserve_primary_boot_manager(
                         &efi,
                         previous_boot_manager.as_ref().expect("secondary BCD state"),
@@ -3073,7 +3084,9 @@ fn bcd_identifier_from_line(line: &str) -> Option<&str> {
 fn set_secondary_boot_menu(
     efi_root: &Path,
     target_root: &Path,
-    menu_name: &str,
+    // None = 调用方没有命名意图（把完整 Windows 还原到另一个分区），此时只定位
+    // loader 标识符给 preserve_primary_boot_manager 用，不改它的描述。
+    menu_name: Option<&str>,
     log: &Path,
 ) -> Result<String, TaskError> {
     let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
@@ -3118,6 +3131,13 @@ fn set_secondary_boot_menu(
         .ok_or_else(|| {
             err("BCDBoot created no Windows loader tied to the selected target partition")
         })?;
+    let Some(menu_name) = menu_name else {
+        append_log(
+            log,
+            &format!("Secondary Windows loader {identifier} kept its BCDBoot description"),
+        )?;
+        return Ok(identifier);
+    };
     let description_args = [
         "/store",
         store_arg.as_str(),

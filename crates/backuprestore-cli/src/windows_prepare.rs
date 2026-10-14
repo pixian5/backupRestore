@@ -807,6 +807,11 @@ fn prepare_task(
                 boot_menu_name: (options.operation == Operation::CreateSecondary)
                     .then(|| options.boot_menu_name.clone()),
                 minimum_size_bytes: target.partition_size,
+                // 目标性质在这里定案并落盘：RE 内 `%SystemDrive%` 是恢复环境的 RAM 盘 X:，
+                // 探测不到用户的系统卷，所以离线侧只能读这个结论（见字段文档）。
+                // 取不到活动系统身份时直接失败，不要退化成 false——那会让「重建唯一系统」
+                // 误走第二系统收尾。
+                is_active_system: target.same_partition(&active_system_volume_identity()?),
             });
         }
         Operation::Probe => {}
@@ -1987,6 +1992,24 @@ fn validate_operation_inputs(
             if options.operation == Operation::CreateSecondary && source.same_partition(target) {
                 return Err(err("second-system target must differ from source"));
             }
+            // 目标是不是当前正在运行的那套系统。这个结论下面要用三次：P0 安全闸、
+            // 是否需要完整 Windows 镜像（P2）、以及落进任务给 RE 读的 is_active_system。
+            let target_is_active = target.same_partition(&active_system_volume_identity()?);
+            // 【P0 安全闸】create-secondary 绝不能把目标指向当前正在运行的系统卷。
+            //
+            // 在这之前唯一挡着的是上面那条 `source != target`，而它可以用「源选别的卷」
+            // 绕开：实测 `--operation create-secondary --source-drive T --target-drive C`
+            // 会被接受，重启进 RE 后 diskpart 直接格式化正在运行的系统盘。GUI 同样能
+            // 构造（源卷选 T:、目标选 C:），因为 GUI 的离线分流只覆盖
+            // backup / restore-existing，create-secondary 不走 `%SystemDrive%` 检查。
+            //
+            // restore-existing **不加**这条：它的目标就是当前系统卷，属于合法场景
+            // （重建唯一系统，GUI 会弹窗走 PE/RE 离线链）。
+            if options.operation == Operation::CreateSecondary && target_is_active {
+                return Err(err(
+                    "create-secondary target must not be the active Windows volume",
+                ));
+            }
             let path = image_path.ok_or_else(|| err("restore image is missing"))?;
             if !Path::new(path).is_file() {
                 return Err(err("restore image does not exist"));
@@ -2000,7 +2023,30 @@ fn validate_operation_inputs(
                 ],
             )?;
             // 擦除前确认镜像是完整 Windows（纯 PE 走这里会在格式化后才失败）。
-            wim_full_windows_probe(path, options.wim_index)?;
+            //
+            // 【P2】但数据卷还原必须放行：数据卷镜像本来就没有 reagentc.exe / SYSTEM
+            // hive，拿完整 Windows 的标准去卡它等于禁掉整个数据卷离线通道。判据用
+            // **目标卷**当前有无 SYSTEM hive，与恢复期分叉 BCDBoot 的判据完全一致
+            // （`main.rs` 的 data-volume 分支）：目标不是 Windows 卷 → 这次只铺数据、
+            // 不碰引导，镜像缺 Windows 标记属正常。
+            //
+            // 本机此前是靠「挂载报 87 → 镜像名启发式放行」才通过的，换一台 DISM 挂载
+            // 可用的机器，数据卷的离线还原会被硬拒（实测路径见 docs 待改清单 P2）。
+            //
+            // ⚠️ create-secondary 不在放行范围内：装第二系统必须是完整 Windows，
+            // 否则产出一个进不了桌面的引导项。
+            //
+            // ⚠️ 活动系统卷**不做文件探测**：它的 SYSTEM hive 被系统独占，`probe_file`
+            // 会 `File::open` 它并撞上共享违例（os error 32），那个错误不是 NotFound、
+            // 会直接把准备阶段弄失败。而活动系统卷必然是 Windows 卷，无需探测。
+            let target_is_windows = target_is_active
+                || crate::pe_safety::target_is_windows_volume(&PathBuf::from(format!(
+                    "{}:\\",
+                    target.drive_letter.ok_or_else(|| err("目标盘符缺失"))?
+                )))?;
+            if options.operation == Operation::CreateSecondary || target_is_windows {
+                wim_full_windows_probe(path, options.wim_index)?;
+            }
             // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 完整性；
             // 优先比对物理文件大小，避免在提权准备阶段对 58GB 镜像再次耗时 2 分钟重复读盘计算哈希。
             // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
@@ -2467,6 +2513,26 @@ pub(crate) fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError>
         volume_serial,
         drive_letter: Some(letter),
     })
+}
+
+/// 当前**活动系统卷**（`%SystemDrive%`）的卷身份。
+///
+/// ⚠️ **只能在联机 Windows 下调用。** WinRE 里 `%SystemDrive%` 是恢复环境自己的
+/// RAM 盘 `X:`（见 `main.rs` 对 X: 的说明），取到的身份是 RAM 盘而不是用户的系统卷。
+/// 离线侧要判「目标是不是用户的活动系统」只能读 prepare 阶段写进任务的
+/// `TargetSpec::target_is_active_system`，不要在 RE 内重新探测。
+///
+/// 按**卷身份**（disk/partition GUID）比对，不要用盘符字面量：盘符不是分区的物理
+/// 属性，重启和 RE 内都会重排，系统盘也不一定是 `C:`。
+pub(crate) fn active_system_volume_identity() -> Result<VolumeIdentity, TaskError> {
+    let value = env::var("SystemDrive").map_err(|_| err("当前系统盘未知"))?;
+    let letter = value
+        .trim()
+        .chars()
+        .next()
+        .ok_or_else(|| err("当前系统盘未知"))?
+        .to_ascii_uppercase();
+    volume_identity(letter)
 }
 
 pub(crate) fn volume_identity_with_known_guid(
