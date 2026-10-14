@@ -723,7 +723,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "离线执行：创建任务并重启进入 PE/Windows RE 完成（目标卷都会被格式化后写入镜像）。"
         }
         (Language::Chinese, "format_target") => {
-            "勾选：先用 diskpart 快速格式化目标卷并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像——还原的完整语义（默认）。\n不勾：覆盖式应用，不格式化（目标卷上镜像没有的文件会保留，卷序列号不变）。\n在线离线通道均生效；离线时该选择会随任务落盘、恢复环境内执行。"
+            "勾选：先用 diskpart 快速格式化目标卷并校验成功（分区不变、卷序列号改变），再写入镜像——还原的完整语义（默认）。\n不勾：覆盖式应用，不格式化（目标卷上镜像没有的文件会保留，卷序列号不变）。\n在线离线通道均生效；离线时该选择会随任务落盘、恢复环境内执行。"
         }
         (Language::Chinese, "source") => "选择备份来源或当前 Windows 分区；身份按 GUID 校验。",
         (Language::Chinese, "target") => "还原时将被格式化的目标分区；备份和探测模式不使用。",
@@ -798,7 +798,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "Offline: schedule a task and reboot into PE/RE (target volume is formatted)."
         }
         (Language::English, "format_target") => {
-            "Checked (default): quick-format the target via diskpart and verify success (same partition, NTFS, volume serial changed) before applying the image.\nUnchecked: overlay apply without formatting (files not in the image remain; volume serial unchanged).\nApplies to both online and offline channels; offline the choice is persisted with the task and honored inside the recovery environment."
+            "Checked (default): quick-format the target via diskpart and verify success (same partition, volume serial changed) before applying the image.\nUnchecked: overlay apply without formatting (files not in the image remain; volume serial unchanged).\nApplies to both online and offline channels; offline the choice is persisted with the task and honored inside the recovery environment."
         }
         (Language::English, "source") => {
             "Select the backup source or current Windows volume; GUID identity is verified."
@@ -937,7 +937,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "restore_b_hint") => {
             "「还原数据到非 C 盘」把数据卷镜像还原到非系统分区，不碰引导：\n\n\
              • 目标卷：要接收数据的数据分区（不能是当前系统盘，也不能是已有 Windows 的分区）；\n\
-             • 格式化目标分区（默认勾选）：先 diskpart 快速格式化并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像；取消勾选=覆盖式应用、卷上多余文件保留；\n\
+             • 格式化目标分区（默认勾选）：先 diskpart 快速格式化并校验成功（分区不变、卷序列号改变），再写入镜像；取消勾选=覆盖式应用、卷上多余文件保留；\n\
              • 通道：在线=不重启直接执行；离线=重启进 PE/RE（格式化选项同样生效，随任务落盘）；\n\
              • 镜像与索引：要还原的 WIM 及其中索引；\n\
              • 适用场景：数据盘损坏或迁移时恢复数据。\n\n\
@@ -1004,7 +1004,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "Restore C: writes an image system back to the running system drive and rebuilds the boot loader.\n\n• Target volume: locked to the running system drive (actual letter shown, not selectable);\n• Image & index: the WIM and its index to restore; all data on the system drive is overwritten;\n• Flow: destructive confirmation → choose PE/RE → reboot, format the target offline → DISM Apply → BCDBoot rebuilds the boot entry;\n• Use case: recover this machine from a backup when the system is damaged.\n\nSafety: the target cannot be changed; confirm the image is correct and important data is stored elsewhere. The operation cannot be cancelled midway."
         }
         (Language::English, "restore_b_hint") => {
-            "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Format target volume (checked by default): quick-format via diskpart, verify success (same partition, NTFS, serial changed), then write the image; unchecked = overlay apply, extra files remain;\n• Channel: online = no reboot; offline = reboot into PE/RE (always formats there);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: formatting erases everything on the target; even without it, same-name files are overwritten."
+            "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Format target volume (checked by default): quick-format via diskpart, verify success (same partition, serial changed), then write the image; unchecked = overlay apply, extra files remain;\n• Channel: online = no reboot; offline = reboot into PE/RE (always formats there);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: formatting erases everything on the target; even without it, same-name files are overwritten."
         }
         (Language::English, "restore_c_hint") => {
             "Restore other deploys a full Windows image to another partition as a bootable second system.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; the default boot entry stays on the current system;\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Difference from 'Second system': this entry runs online by default; that one always goes through the offline task chain.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
@@ -4264,7 +4264,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         std::fs::remove_file(script_file)?;
         crate::append_log(
             &format_log,
-            "格式化身份、NTFS 文件系统与新卷序列号已回读验证",
+            "格式化身份与新卷序列号已回读验证（文件系统跟随目标卷）",
         )
     })();
     if let Err(error) = format_result {

@@ -45,15 +45,18 @@ pub fn verify_formatted_volume(
             "formatted partition identity/geometry mismatch".into(),
         ));
     }
-    if !after.filesystem.eq_ignore_ascii_case("NTFS")
-        || before.volume_serial.is_empty()
+    // 2026-10-14 用户裁定：不再强制校验文件系统必须是 NTFS（目标可能是
+    // exFAT/FAT32 等数据卷文件系统）。保留的强判据：卷序列号非空且已改变
+    // ——diskpart quick format 无论目标什么文件系统都会换序列号，这才是
+    // 「格式化真的发生了」的证据；文件系统本身跟随脚本/目标，不做假设。
+    if before.volume_serial.is_empty()
         || after.volume_serial.is_empty()
         || before
             .volume_serial
             .eq_ignore_ascii_case(&after.volume_serial)
     {
         return Err(TaskError::Invalid(
-            "format not verified: expected NTFS with a new volume serial".into(),
+            "format not verified: expected a new volume serial".into(),
         ));
     }
     Ok(())
@@ -84,7 +87,11 @@ mod tests {
         let mut after = before.clone();
         after.volume_serial = "new".into();
         assert!(verify_formatted_volume(&before, &after).is_ok());
+        // 2026-10-14 起 NTFS 不再是硬校验：换文件系统 + 新序列号同样算格式化成功
         after.filesystem = "FAT32".into();
+        assert!(verify_formatted_volume(&before, &after).is_ok());
+        // 空序列号 = 探测失败，仍拒绝
+        after.volume_serial = String::new();
         assert!(verify_formatted_volume(&before, &after).is_err());
     }
     #[test]
