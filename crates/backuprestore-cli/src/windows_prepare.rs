@@ -477,6 +477,12 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             }
             "--force-restore-hash" => force_restore_hash = true,
             "--verify-hash" => verify_hash = true,
+            // 取消「格式化目标分区」= 覆盖式应用（卷上镜像没有的文件保留）。
+            // GUI 取消勾选时就是推这个参数（native_gui.rs 的 prepare args）。
+            // 2026-10-14 漏接过一次：PrepareOptions/TargetSpec 两头都接好了，唯独少了
+            // 这一行解析分支，而下面的兜底是 `unknown prepare option` 硬报错——
+            // 于是「离线 + 取消格式化」整条通道在 prepare 阶段就直接失败。
+            "--skip-format" => format_target = false,
             other => return Err(err(&format!("unknown prepare option: {other}"))),
         }
     }

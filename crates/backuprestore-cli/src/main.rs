@@ -3354,6 +3354,28 @@ fn preserve_primary_boot_manager(
             ],
             log,
         )?;
+    } else if parse_boot_manager_state(&live)
+        .and_then(|state| state.resume_object)
+        .is_some()
+    {
+        // 快照里**没有** resumeobject，而 BCDBoot 为新系统凭空加了一个（它是新 loader
+        // 的兄弟对象，GUID 只差末位）。必须删掉：
+        //   ① 留着会让休眠恢复走进第二系统；
+        //   ② 下面的三项校验把 (live=Some, 快照=None) 判为失配，于是任务在
+        //      BootRepaired 永久失败，而且**每次重试都会同样失败**——
+        //      2026-10-14 阶段 3 实测就栽在这里：default 与 displayorder 都已正确
+        //      恢复，唯一失配项就是这个 BCDBoot 新增的 resumeobject。
+        run_logged(
+            "bcdedit.exe",
+            &[
+                "/store",
+                &store_arg,
+                "/deletevalue",
+                "{bootmgr}",
+                "resumeobject",
+            ],
+            log,
+        )?;
     }
     let mut display_args = vec![
         "/store".to_string(),
