@@ -2546,6 +2546,12 @@ fn recover_windows(
                     (target.volume.disk_number, target.volume.partition_number),
                 ),
             )?;
+            // 收尾按「目标性质」路由，不按「操作类型」：目标是另一套 Windows 时，
+            // create-secondary 和 restore-existing 需要的收尾是同一套（保主系统
+            // default + 修盘符绑定 + 按第二系统注册 WinRE）。判据来自准备阶段落盘的
+            // is_active_system——RE 内 `%SystemDrive%` 是 RAM 盘 X:，探测不到用户系统卷。
+            // 同一判据还决定 default 归属策略（boot_menu::DefaultPolicy）。
+            let target_is_secondary = !target.is_active_system;
             // 第二阶段按钮需要在目标身份确认后尽早出现；方案落盘并不修改 BCD，
             // 实际写入延后到映像应用完成后的引导修复阶段。
             let boot_menu_session = if pe_safety::target_is_windows_volume(&target_root)? {
@@ -2559,6 +2565,13 @@ fn recover_windows(
                     log,
                     preferred_name.as_deref(),
                 )?;
+                // default 归属的单一权威（docs/20261015-0725 S1）：重建唯一系统 →
+                // 指向还原目标；第二系统 → 保持原主系统。apply 只执行不推断。
+                session.set_default_policy(if target_is_secondary {
+                    crate::boot_menu::DefaultPolicy::PreserveCurrentDefault
+                } else {
+                    crate::boot_menu::DefaultPolicy::PointAtRestoreTarget
+                });
                 if let Some(p) = progress {
                     p.set_boot_menu(Arc::clone(&session));
                 }
@@ -2702,11 +2715,8 @@ fn recover_windows(
                     false,
                 )?;
                 let windows_root = target_root.join("Windows");
-                // 收尾按「目标性质」路由，不按「操作类型」：目标是另一套 Windows 时，
-                // create-secondary 和 restore-existing 需要的收尾是同一套（保主系统
-                // default + 修盘符绑定 + 按第二系统注册 WinRE）。判据来自准备阶段落盘的
-                // is_active_system——RE 内 `%SystemDrive%` 是 RAM 盘 X:，探测不到用户系统卷。
-                let target_is_secondary = !target.is_active_system;
+                // target_is_secondary 已在引导方案准备处按同一判据声明（default 策略共用），
+                // 这里不再重复声明，避免两处判据漂移。
                 // Capture the primary BCD state from the byte-for-byte task
                 // snapshot before BCDBoot.  It remains available even if a
                 // power failure occurs after BCDBoot changes the live store.
@@ -2762,6 +2772,16 @@ fn recover_windows(
                 recovery_fault::checkpoint("bcdboot-before", log)?;
                 run_logged("bcdboot.exe", &bcd_refs, log)?;
                 recovery_fault::checkpoint("bcdboot-after", log)?;
+                // 显式记录收尾路由与 default 意图（G4）：A 场景（重建唯一系统）
+                // 从此留下「default 指向新 loader」的日志，不再只靠 BCD 现状反推。
+                append_log(
+                    log,
+                    if target_is_secondary {
+                        "收尾路由=第二系统：bcdboot 带 /d /addlast，default 保持原主系统（随后 assert 回读确认）"
+                    } else {
+                        "收尾路由=重建唯一系统：bcdboot 不带 /d，default 指向新 loader（apply 策略=指向还原目标）"
+                    },
+                )?;
                 // /d 只在"现有默认启动项有效"时才保留它；这里立刻回读确认，
                 // 被改了就当场改回。放在这个位置是因为此刻环境已知良好
                 // （bcdboot 刚成功、ESP 仍挂载），比等流程失败后在未知状态下

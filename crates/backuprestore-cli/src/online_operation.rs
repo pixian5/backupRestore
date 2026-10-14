@@ -473,6 +473,10 @@ fn restore_to_windows_volume(
         log_path,
         versioned_name.as_deref(),
     )?;
+    // 在线通道只服务第二系统（活动系统盘必须在离线环境处理，execute_inner 顶部的
+    // affected==活动系统 拒绝已保证目标不是当前系统盘），default 归属=保持原主系统
+    // （docs/20261015-0725 S1，单一权威：apply 只执行不推断）。
+    boot_menu_session.set_default_policy(crate::boot_menu::DefaultPolicy::PreserveCurrentDefault);
     // 调用方显式指定了镜像名时以它为准（用户自己的命名优先于自动版本名）。
     // 目标下标不硬编码：默认顺序里它在最后，用户也可能上移。
     if !params.image_name.is_empty() {

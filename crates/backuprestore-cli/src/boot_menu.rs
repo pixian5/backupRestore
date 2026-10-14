@@ -32,10 +32,43 @@ pub(crate) struct BootMenuEntry {
     pub is_current_default: bool,
 }
 
+/// 还原完成后 `{bootmgr}.default` 的归属策略——**default 决策的唯一权威表述**
+/// （2026-10-15 用户规则化，docs/20261015-0725 S1）。
+///
+/// 此前这个决策分散在四处、各自推断互不知晓：bcdboot 的 `/d` 取舍
+/// （main.rs）、`assert_boot_default_preserved` 回读自愈、
+/// `preserve_primary_boot_manager` 快照恢复、以及 apply 末尾的兜底
+/// （`selected.contains(&previous.default)`，不在就静默落到还原目标）。
+/// 现在由 main.rs/在线路径按已知的「目标是不是第二系统」显式设定并随方案落盘，
+/// apply 只执行不推断；后三者降级为该决策的执行与校验细节。
+///
+/// 用户规则（与镜像从哪个分区备份而来无关，只看目标性质）：
+/// - 还原本系统（目标=活动系统分区）→ default 指向还原后的自己；
+/// - 新增第二系统（目标=其它分区）→ default 保持原主系统，新项只追加到菜单末尾。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum DefaultPolicy {
+    /// 重建唯一系统：default 指向本次还原的目标。镜像自认的分区（第一分区或
+    /// 第三分区启动后自认 C:）不影响这一结论——这就是本机的主系统。
+    PointAtRestoreTarget,
+    /// 新增第二系统：default 保持原有主系统不动。
+    PreserveCurrentDefault,
+}
+
+impl Default for DefaultPolicy {
+    /// 缺省取保守侧：没有显式设定时绝不擅自把 default 改指到还原目标。
+    fn default() -> Self {
+        Self::PreserveCurrentDefault
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BootMenuPlan {
     pub entries: Vec<BootMenuEntry>,
     pub timeout_seconds: u32,
+    /// default 归属策略。`#[serde(default)]` 让旧版本落盘的方案（没有这一字段）
+    /// 能继续读取，取保守缺省；正常流程由调用方在 prepare 后立即显式设定。
+    #[serde(default)]
+    pub default_policy: DefaultPolicy,
 }
 
 impl BootMenuPlan {
@@ -582,6 +615,29 @@ impl BootMenuSession {
         state.plan.validate()?;
         Ok(state.plan.clone())
     }
+    /// 设定 default 归属策略——「单一权威」的写入入口（docs/20261015-0725 S1）：
+    /// main.rs/在线路径在 prepare 之后按「目标是不是第二系统」显式调用，
+    /// apply 不再自行推断。设定随方案落盘，续跑任务重启后仍然有效。
+    pub(crate) fn set_default_policy(&self, policy: DefaultPolicy) {
+        let mut state = self.state.lock().unwrap();
+        state.plan.default_policy = policy;
+        let saved = backuprestore_core::write_json_atomic(
+            &self.path,
+            &SavedPlan {
+                task_id: self.task_id.clone(),
+                plan: state.plan.clone(),
+            },
+        );
+        match saved {
+            Ok(()) => {
+                let _ = crate::append_log(&self.log, &format!("默认启动项策略：{policy:?}"));
+            }
+            Err(error) => {
+                let _ =
+                    crate::append_log(&self.log, &format!("默认启动项策略落盘失败：{error}"));
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -732,6 +788,9 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
     Ok(BootMenuPlan {
         entries,
         timeout_seconds: TIMEOUT_DEFAULT,
+        // discover 不知道场景，先取保守缺省；main.rs/在线路径在 prepare 返回后
+        // 按目标性质立即显式设定（DefaultPolicy 的文档即规则原文）。
+        default_policy: DefaultPolicy::default(),
     })
 }
 
@@ -859,11 +918,52 @@ pub(crate) fn apply(
             selected.push(id.clone());
         }
     }
-    let default = if selected.contains(&previous.default) {
-        previous.default
-    } else {
-        target_id.ok_or_else(|| crate::err("缺少必选目标加载器"))?
+    // default 归属的唯一决策点（2026-10-15 用户规则化，docs/20261015-0725 S1）：
+    // 策略由 main.rs/在线路径按「目标是不是第二系统」显式设定并随方案落盘，
+    // 这里只执行、不推断，且每条分支都写日志——A 场景尤其需要显式留下
+    // 「default 指向还原后的自己」，避免事后只能从 BCD 现状反推当时的意图。
+    let (default, policy_note) = match plan.default_policy {
+        DefaultPolicy::PointAtRestoreTarget => {
+            // 重建唯一系统：default 指向还原后的自己。注意这覆盖了一种旧行为——
+            // 旧代码在「原 default 恰好还在菜单里」时会保留原值，若用户还原前
+            // 的默认项是另一套系统（如第二系统），还原后 default 仍指那套，
+            // 与「还原本系统后默认进自己」的规则相悖。镜像从哪个分区备份而来
+            // 不影响这一结论。
+            let id = target_id
+                .clone()
+                .ok_or_else(|| crate::err("缺少必选目标加载器"))?;
+            (id, "策略=指向还原目标（重建唯一系统）".to_string())
+        }
+        DefaultPolicy::PreserveCurrentDefault => {
+            if selected.contains(&previous.default) {
+                (
+                    previous.default.clone(),
+                    "原默认项仍在最终菜单，保留".to_string(),
+                )
+            } else {
+                // 第二系统场景下原默认项不在菜单=异常：主系统 loader 没被探测进
+                // 菜单，或落盘方案被改过绕过了 validate 的勾选守卫。最终行为仍是
+                // 落到还原目标（与旧代码一致），但先留一道 WARN——2026-10-13
+                // 事故正是这种「静默漂移」：default 留在半成品第二系统上，用户
+                // 每次开机被拖进去。是否升级为直接报错拒绝见 docs/20261015-0725
+                // S3，边界待用户裁定；裁定前不改行为，只加留痕。
+                crate::append_log(
+                    log,
+                    &format!(
+                        "WARN：原默认项 {} 不在最终菜单，default 将落到还原目标",
+                        previous.default
+                    ),
+                )?;
+                (
+                    target_id
+                        .clone()
+                        .ok_or_else(|| crate::err("缺少必选目标加载器"))?,
+                    "原默认项不在菜单，落到还原目标（已 WARN）".to_string(),
+                )
+            }
+        }
     };
+    crate::append_log(log, &format!("默认启动项决策：{default}；{policy_note}"))?;
     crate::run_logged(
         "bcdedit.exe",
         &["/store", &store, "/default", &default],
@@ -1010,6 +1110,7 @@ mod tests {
                 },
             ],
             timeout_seconds: TIMEOUT_DEFAULT,
+            default_policy: DefaultPolicy::PointAtRestoreTarget,
         }
     }
 
