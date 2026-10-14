@@ -72,6 +72,11 @@ DISM 作为镜像引擎、BCDBoot/BCD 作为启动管理。
 **明确不做**（不要擅自扩展成完整 Ghost/PE 工具）：分区布局重构、网络备份、增量/差异镜像、
 Legacy BIOS、自动修改 BitLocker。
 
+**实现限制**：第二系统盘符绑定的 `secondary_registry::gpt_mapping()` 只支持 GPT 盘
+（blob 为 `DMIO:ID:` + PARTUUID 小端 16 字节）；**MBR 盘（12 字节 blob：磁盘签名 + 分区偏移）走不了这条链**，
+`repair()` 会因 GUID 解析失败而报错。与「UEFI + GPT」的支持边界一致，但接手方在 MBR 机器上要知道这是硬边界，
+不是可降级的路径。机制详见 [盘符与MountedDevices-经验总结](./docs/盘符与MountedDevices-经验总结.md)。
+
 ---
 
 ## 二、代码结构
