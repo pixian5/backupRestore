@@ -41,7 +41,7 @@
 | **WinRE 注册状态机** | [注册 WinRE 状态机与续跑设计](20260928-0745-registered-winre-policy-and-resume-design.md) | 注册位双角色、三条不变量、13 场景矩阵 |
 | **BCD 与启动链** | [PE 通道 PoC](20260929-1300-pe-channel-poc-winre-wim-boots-from-image-volume.md)、[ramdisk 规格根因](20260929-2040-ramdisk-spec-root-cause-and-no-reboot-armed.md) | 自建 BCD 对象、`ramdisk=` 形态 |
 | **PE 路径** | [PE 设计](20260825-2309-backuprestore-pe.md)、[PE 实机五项缺陷](20261005-1050-PE实机界面测试-先格式化后谎报成功等五项缺陷-Opus5.md) | ramdisk / 硬盘版，含 P0 数据丢失路径 |
-| **ESP 与卷身份** | [S 盘自动打开问题定位](20260929-2014-S盘自动打开问题定位与修复方案.md)、[方案 A 零盘符](20260929-2330-plan-a-implemented-zero-drive-letter.md) | 零盘符改造 |
+| **ESP 与卷身份** | [S 盘自动打开问题定位](20260929-2014-S盘自动打开问题定位与修复方案.md)、[方案 A 零盘符](20260929-2330-plan-a-implemented-zero-drive-letter.md)、[Windows 盘符绑定机制与第二系统镜像盘符判定](20261014-0945-Windows盘符绑定机制与第二系统镜像盘符判定-Step-5-Preview.md) | 零盘符改造；**盘符机制权威**：MountedDevices / SystemRoot、BCD 不依赖盘符、repair 迁就镜像四步、两个场景能不能做 |
 | **实机验收** | [新载荷路径实机验收](20261010-1910-新载荷路径实机验收-Opus5.md)、[系统卷与引导修复验收](20261010-2200-系统卷与引导修复验收-Opus5.md)、[在线还原端到端验证](20261014-0146-在线还原端到端验证-纯净GUI真实破坏性确认-Step-5-Preview.md)、[进入RE备份T数据卷端到端验证](20261014-0200-进入RE备份T数据卷端到端验证-Step-5-Preview.md)、[进入RE还原T数据卷端到端验证与RE启动模式说明](20261014-0212-进入RE还原T数据卷端到端验证与RE启动模式说明-Step-5-Preview.md) | 数据卷 / 系统卷；**T: round-trip 齐备**：在线还原（纯净GUI）、RE 备份、RE 还原（数据卷镜像只应用不碰引导）；RE = ramdisk 内存模式 |
 | **断电与故障注入** | [断电矩阵五点](20261011-0330-断电矩阵五点实测与终态写入撕裂-Opus5.md)、[boot-matrix 六点](20261011-1030-boot-matrix六点实测与bootmgr-resumeobject未恢复-Opus5.md) | 25 个真实断电点 |
 | **GUI 与交互** | [操作通道全指南](20260916-0759-operation-channels.md)（**正文已就地更正**）、[VM 输入控制](20260927-0016-vm-input-control-guide.md)、[GUI 自动化键盘注入根因修复与端到端备份验证](20261014-0126-GUI界面自动化键盘注入根因修复与端到端备份验证-Step-5-Preview.md) | 键鼠注入通道；**界面自动化权威**：combo 回读消息码、扩展键扫描码修复、可靠键序配方、控件 ID/坐标表 |
