@@ -559,7 +559,7 @@ struct TokenElevation {
 
 struct Controls {
     language: Hwnd,
-    /// 六个操作入口 tab（备份 / 系统还原C盘 / 数据卷还原 / 他盘系统还原 /
+    /// 六个操作入口 tab（备份 / 还原系统到 C 盘 / 还原数据到非 C 盘 / 还原系统到非 C 盘 /
     /// 新增第二系统 / 安装 PE），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
     operation_tabs: [Hwnd; 6],
     source: Hwnd,
@@ -701,13 +701,13 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "新增第二系统：格式化另一个卷并通过 BCDBoot 添加启动项。"
         }
         (Language::Chinese, "restore_a") => {
-            "系统还原C盘：目标锁定为当前系统盘（显示实际盘符），必须离线执行——重启进入 PE/RE 完成格式化与还原；破坏性确认与环境确认两道确认后才会开始。"
+            "还原系统到 C 盘：目标锁定为当前系统盘（显示实际盘符），必须离线执行——重启进入 PE/RE 完成格式化与还原；破坏性确认与环境确认两道确认后才会开始。"
         }
         (Language::Chinese, "restore_b") => {
-            "数据卷还原：把数据卷镜像还原到非系统分区。默认在线执行、不格式化（覆盖式应用，卷序列号不变）；切到离线则重启进 PE/RE，先 diskpart 格式化再还原。目标不能是当前系统盘。"
+            "还原数据到非 C 盘：把数据卷镜像还原到非系统分区。默认在线执行、不格式化（覆盖式应用，卷序列号不变）；切到离线则重启进 PE/RE，先 diskpart 格式化再还原。目标不能是当前系统盘。"
         }
         (Language::Chinese, "restore_c") => {
-            "他盘系统还原：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，默认启动项保持不变。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
+            "还原系统到非 C 盘：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，默认启动项保持不变。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
         }
         (Language::Chinese, "channel_online") => {
             "在线执行：不重启，直接在当前系统里完成（B=覆盖应用不格式化；C=格式化目标并修复引导）。"
@@ -891,10 +891,11 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "probe") => "探测（仅检查）",
         (Language::Chinese, "backup") => "备份",
-        (Language::Chinese, "restore") => "系统还原C盘",
-        (Language::Chinese, "restore_a") => "系统还原C盘",
-        (Language::Chinese, "restore_b") => "数据卷还原",
-        (Language::Chinese, "restore_c") => "他盘系统还原",
+        // 三个还原入口用用户拍板的全称（2026-10-14：文案不得改动）。
+        (Language::Chinese, "restore") => "还原系统到 C 盘",
+        (Language::Chinese, "restore_a") => "还原系统到 C 盘",
+        (Language::Chinese, "restore_b") => "还原数据到非 C 盘",
+        (Language::Chinese, "restore_c") => "还原系统到非 C 盘",
         (Language::Chinese, "secondary") => "新增第二系统",
         (Language::Chinese, "probe_hint") => {
             "「探测」是全程无破坏的安全检查模式，适合首次使用先验证环境：\n\n\
@@ -912,7 +913,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
              说明：系统分区必须在离线环境备份；数据卷可在当前系统在线直接备份。"
         }
         (Language::Chinese, "restore_hint") => {
-            "「系统还原C盘」把镜像系统写回当前系统盘并重建引导：\n\n\
+            "「还原系统到 C 盘」把镜像系统写回当前系统盘并重建引导：\n\n\
              • 目标卷：锁定为当前正在运行的系统盘（显示实际盘符，不可改选）；\n\
              • 镜像与索引：要还原的 WIM 及其中索引；还原会覆盖系统盘上的全部数据；\n\
              • 流程：破坏性确认 → 选择 PE/RE → 重启离线格式化目标卷 → DISM 应用镜像 → BCDBoot 重建引导项；\n\
@@ -920,7 +921,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
              安全提示：目标无法更换，还原前请确认镜像正确、重要数据已另存，操作不可中途取消。"
         }
         (Language::Chinese, "restore_b_hint") => {
-            "「数据卷还原」把数据卷镜像还原到非系统分区，不碰引导：\n\n\
+            "「还原数据到非 C 盘」把数据卷镜像还原到非系统分区，不碰引导：\n\n\
              • 目标卷：要接收数据的数据分区（不能是当前系统盘，也不能是已有 Windows 的分区）；\n\
              • 通道差异（重要）：在线=覆盖式应用镜像、不格式化（卷上多余文件会保留，卷序列号不变）；离线=重启进 PE/RE，先 diskpart 格式化再还原（卷序列号改变）；\n\
              • 镜像与索引：要还原的 WIM 及其中索引；\n\
@@ -928,7 +929,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
              安全提示：在线模式虽不格式化，但同名文件会被镜像内容覆盖。"
         }
         (Language::Chinese, "restore_c_hint") => {
-            "「他盘系统还原」把完整 Windows 镜像部署到另一个分区，成为可启动的第二系统：\n\n\
+            "「还原系统到非 C 盘」把完整 Windows 镜像部署到另一个分区，成为可启动的第二系统：\n\n\
              • 目标卷：另选一个分区（不能是当前系统盘），将被格式化并写入镜像；\n\
              • 启动项名称：新系统在 Windows 启动菜单中的显示名称；默认启动项保持当前系统不变；\n\
              • 通道差异：在线=不重启，直接在当前系统格式化目标并修复引导；离线=重启进恢复环境完成；\n\
@@ -1240,9 +1241,9 @@ fn operation_display(language: Language, operation: &str) -> &'static str {
     match (language, operation) {
         (Language::Chinese, "probe") => "探测（仅检查）",
         (Language::Chinese, "backup") => "备份",
-        (Language::Chinese, "restore-existing") => "系统还原C盘",
-        (Language::Chinese, "restore-data") => "数据卷还原",
-        (Language::Chinese, "restore-system-other") => "他盘系统还原",
+        (Language::Chinese, "restore-existing") => "还原系统到 C 盘",
+        (Language::Chinese, "restore-data") => "还原数据到非 C 盘",
+        (Language::Chinese, "restore-system-other") => "还原系统到非 C 盘",
         (Language::Chinese, "create-secondary") => "新增第二系统",
         (Language::Chinese, "install-pe-entry") => "安装 PE",
         (Language::English, "probe") => "Inspect",
@@ -1329,7 +1330,7 @@ unsafe fn set_operation_visibility(state: &State) {
     set_visible(state.controls.target, show_target);
     set_visible(state.controls.target_details, show_target);
     set_child_visible(2005, show_target);
-    // A（系统还原C盘）：目标锁定为当前系统盘，禁用下拉防误选；
+    // A（还原系统到 C 盘）：目标锁定为当前系统盘，禁用下拉防误选；
     // 界面仍显示实际盘符（select_operation 会自动选中 %SystemDrive%）。
     EnableWindow(
         state.controls.target,
@@ -1427,6 +1428,25 @@ unsafe fn layout_operation(state: &State) {
             MoveWindow(hwnd, x, y, width, height, 1);
         }
     };
+    // 语言栏靠右显示：标签(55) + 间距(6) + combo(180)，combo 右缘 = 客户宽 - 20。
+    // 创建时的静态坐标只对最小宽 1020 成立，这里按实际客户宽动态右对齐
+    //（覆盖最大化/还原/拖拽改尺寸等所有窗口状态）。
+    let lang_combo_w = 180;
+    let lang_total = 55 + 6 + lang_combo_w;
+    reposition(
+        GetDlgItem(state.root, ID_LANGUAGE_LABEL as i32),
+        client_width - 20 - lang_total,
+        67,
+        55,
+        18,
+    );
+    reposition(
+        state.controls.language,
+        client_width - 20 - lang_combo_w,
+        60,
+        lang_combo_w,
+        300,
+    );
     reposition(
         state.controls.source,
         field_x,
@@ -1675,7 +1695,7 @@ unsafe fn layout_operation(state: &State) {
         24,
     );
     // 「单系统还原」与「新增第二系统」tab 的 WIM 索引与校验复选框布局：
-    // C（他盘系统还原）与「新增第二系统」一样带菜单名输入框，用同一布局。
+    // C（还原系统到非 C 盘）与「新增第二系统」一样带菜单名输入框，用同一布局。
     let (index_width, verify_hash_x, verify_hash_y) =
         if matches!(
             selected_operation(state),
@@ -1842,7 +1862,7 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     set_operation_tabs(state, selected_language(state));
     let operation = selected_operation(state);
     if operation == "restore-existing" {
-        // A（系统还原C盘）：目标锁定 %SystemDrive%，自动选中（下拉已禁用）。
+        // A（还原系统到 C 盘）：目标锁定 %SystemDrive%，自动选中（下拉已禁用）。
         // 旧版「源卷选择复制到目标」逻辑随源卷行隐藏一并移除。
         let letter = active_system_letter();
         select_drive(state, state.controls.target, &letter);
@@ -2461,7 +2481,7 @@ fn system_choice_log_path() -> std::path::PathBuf {
 /// 对话框文案语言：0=中文 1=English（模态期间单实例，用静态即可）。
 static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 // PE/RE 选择弹窗的正文模式：false=目标为当前系统盘（默认，历史文案）；
-// true=用户在 B（数据卷还原）显式选择离线通道——目标是数据卷，不涉及系统盘，
+// true=用户在 B（还原数据到非 C 盘）显式选择离线通道——目标是数据卷，不涉及系统盘，
 // 文案改为通用离线说明。调用方在 ask_system_drive_handler 前置位，弹窗创建时消费。
 static CHOICE_GENERIC_OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -2959,7 +2979,7 @@ unsafe fn refresh_environment(state: &mut State) {
     state.drives = discover_drives();
     set_drive_items(state, desired);
     set_drive_details(state);
-    // 刷新卷列表后，A（系统还原C盘）的目标下拉被重建——重新锁定 %SystemDrive%，
+    // 刷新卷列表后，A（还原系统到 C 盘）的目标下拉被重建——重新锁定 %SystemDrive%，
     // 防止刷新后目标停留在刷新前选中的卷（下拉已禁用，但显示必须始终是系统盘）。
     if selected_operation(state) == "restore-existing" {
         let letter = active_system_letter();
@@ -5113,7 +5133,7 @@ unsafe fn create_task(state: &mut State) {
             )
         } else {
             format!(
-                "所选目标是当前正在运行的系统盘（{}:）。数据卷还原与他盘系统还原不允许指向它；要还原当前系统请使用「系统还原C盘」入口。未做任何更改。",
+                "所选目标是当前正在运行的系统盘（{}:）。还原数据到非 C 盘与还原系统到非 C 盘不允许指向它；要还原当前系统请使用「还原系统到 C 盘」入口。未做任何更改。",
                 active_system_letter()
             )
         };
@@ -5133,7 +5153,7 @@ unsafe fn create_task(state: &mut State) {
         );
         return;
     }
-    // B（数据卷还原）的目标不能是已有 Windows 的分区：数据通道不修复引导，
+    // B（还原数据到非 C 盘）的目标不能是已有 Windows 的分区：数据通道不修复引导，
     // 把数据镜像盖在 Windows 分区上只会得到一个坏系统。指引改用 C/新增第二系统。
     if operation == "restore-data"
         && let Some(target_info) = state
@@ -5151,7 +5171,7 @@ unsafe fn create_task(state: &mut State) {
             if language == Language::English {
                 "The selected target already contains a Windows installation. The data-restore channel does not repair boot configuration; use 'Restore other' or 'Second system' to restore a system. Nothing was changed."
             } else {
-                "所选目标分区上已有 Windows 安装。数据卷还原通道不处理引导；要还原系统请改用「他盘系统还原」或「新增第二系统」。未做任何更改。"
+                "所选目标分区上已有 Windows 安装。还原数据到非 C 盘的通道不处理引导；要还原系统请改用「还原系统到非 C 盘」或「新增第二系统」。未做任何更改。"
             },
             if language == Language::English {
                 "Restore blocked"
@@ -5162,7 +5182,7 @@ unsafe fn create_task(state: &mut State) {
         );
         return;
     }
-    // C（他盘系统还原）走 create-secondary 语义，离线 prepare 要求启动菜单名必填；
+    // C（还原系统到非 C 盘）走 create-secondary 语义，离线 prepare 要求启动菜单名必填；
     // 在线通道同样用它给新启动项命名。空名在这里拦下，避免提权后才发现。
     if operation == "restore-system-other" && get_text(state.controls.menu).trim().is_empty() {
         append_gui_log(state, "GUI action blocked: restore-system-other requires a boot menu name");
@@ -5346,7 +5366,7 @@ unsafe fn create_task(state: &mut State) {
             return;
         }
         force_restore_hash = metadata_check.is_err() || !hash_ok;
-        // ===== A（系统还原C盘）容量预检加强：目标锁定为系统盘、无法换盘纠错，
+        // ===== A（还原系统到 C 盘）容量预检加强：目标锁定为系统盘、无法换盘纠错，
         // 容量不足必须在重启前拦下（进 PE 后才发现等于白重启一次）。
         // required_target_size = max(备份时源分区大小, 已用字节+保留量)，
         // 与目标分区总大小比对（还原会先格式化，比较对象是总容量而非空闲）。
@@ -5433,7 +5453,7 @@ unsafe fn create_task(state: &mut State) {
             &target_drive
         };
         let affected_upper = affected.trim_end_matches(':').to_ascii_uppercase();
-        // A（系统还原C盘）目标锁定系统盘、必离线；备份仍按「是否当前活动系统」分流。
+        // A（还原系统到 C 盘）目标锁定系统盘、必离线；备份仍按「是否当前活动系统」分流。
         let needs_offline = if operation == "backup" {
             affected_upper == system_upper
         } else {
@@ -5646,7 +5666,7 @@ unsafe fn create_task(state: &mut State) {
                 }
             }
         }
-        // 离线 C（他盘系统还原）：与「新增第二系统」完全一致的离线链——
+        // 离线 C（还原系统到非 C 盘）：与「新增第二系统」完全一致的离线链——
         // destructive 确认已在上方完成，直接落到下面的提权 prepare。
     }
     let executable =
@@ -6076,9 +6096,11 @@ unsafe extern "system" fn window_proc(
                 "COMBOBOX",
                 "中文",
                 CBS_DROPDOWNLIST | WS_TABSTOP,
-                755,
+                // 语言栏靠右显示：初始坐标按最小客户宽 1020 右对齐
+                //（combo 右缘 = 1020-20），layout_operation 会按实际宽度动态重排。
+                820,
                 60,
-                225,
+                180,
                 300,
                 ID_LANGUAGE,
             ),
@@ -6089,10 +6111,13 @@ unsafe extern "system" fn window_proc(
                     "",
                     // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 6
                     // 个之间切换，不会跳到下方 PE 启动方式/通道那一组。
+                    // 布局：入口名用用户拍板的全称（长短不一），按钮不等宽、
+                    // 间距 3px，从 x=90 排到 ~693；语言栏靠右（layout_operation
+                    // 动态右对齐），最小窗口 1020 宽下两者不重叠。
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP,
-                    180,
+                    90,
                     60,
-                    84,
+                    56,
                     32,
                     ID_OPERATION_BACKUP,
                 ),
@@ -6101,9 +6126,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    268,
+                    149,
                     60,
-                    84,
+                    120,
                     32,
                     ID_OPERATION_RESTORE,
                 ),
@@ -6112,9 +6137,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    356,
+                    272,
                     60,
-                    84,
+                    120,
                     32,
                     ID_OPERATION_RESTORE_DATA,
                 ),
@@ -6123,9 +6148,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    444,
+                    395,
                     60,
-                    84,
+                    120,
                     32,
                     ID_OPERATION_RESTORE_OTHER,
                 ),
@@ -6134,9 +6159,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    532,
+                    518,
                     60,
-                    84,
+                    100,
                     32,
                     ID_OPERATION_SECONDARY,
                 ),
@@ -6145,9 +6170,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    620,
+                    621,
                     60,
-                    84,
+                    72,
                     32,
                     ID_OPERATION_PE,
                 ),
@@ -6312,7 +6337,8 @@ unsafe extern "system" fn window_proc(
             now.year, now.month, now.day, now.hour, now.minute
         );
         set_text(controls.index_name, &default_index_name);
-        create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 130, 22, 2001);
+        // 「操作模式」标签收窄（62px），给全称入口名的 tab 按钮让出左侧空间。
+        create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 62, 22, 2001);
         create_control(hwnd, "STATIC", "源卷", 0, 20, 222, 150, 26, 2003);
         create_control(hwnd, "STATIC", "目标卷", 0, 20, 332, 150, 26, 2005);
         create_control(hwnd, "STATIC", "镜像绝对路径", 0, 20, 550, 130, 22, 2004);
@@ -6345,8 +6371,10 @@ unsafe extern "system" fn window_proc(
             hwnd,
             "STATIC",
             ui_text(Language::Chinese, "language"),
+            // 语言标签与 combo 同行靠右（按最小宽 1020 的初始位置，
+            // layout_operation 按实际客户宽动态右对齐）。
             0,
-            690,
+            759,
             67,
             55,
             18,
