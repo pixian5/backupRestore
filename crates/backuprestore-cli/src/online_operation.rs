@@ -338,6 +338,28 @@ fn execute_inner(
                 "STEP 4/4 完成在线还原；未执行格式化或系统引导修复",
             )
         }
+        // C（他盘系统还原）的在线通道：无论目标当前是不是 Windows 卷，都走
+        // 「格式化 → 应用 → 盘符重绑 → bcdboot → 菜单命名」全链路——这条入口的
+        // 语义就是把完整 Windows 装到另一个分区。与 restore-existing 在线分支的
+        // 差异：那条按目标现状分叉（数据卷走覆盖），这里语义就是装系统。
+        // execute_inner 顶部的 affected==活动系统 拒绝已保证目标不是当前系统盘。
+        "create-secondary" => {
+            let index: u32 = params
+                .index
+                .parse()
+                .map_err(|_| crate::err("invalid restore index"))?;
+            let (wim_indexes, wim_info) = indexes_with_info(image, log_path, index)?;
+            if !wim_indexes.contains(&index) {
+                return Err(crate::err("restore index missing from WIM"));
+            }
+            log(
+                log_path,
+                "STEP 2/4 在线部署第二系统（格式化 → 应用 → 修复引导，不重启）",
+            )?;
+            restore_to_windows_volume(
+                params, &root, identity, index, log_path, progress, &wim_info,
+            )
+        }
         _ => Err(crate::err("unsupported online operation")),
     }
 }

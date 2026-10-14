@@ -114,6 +114,10 @@ const ID_OPERATION_BACKUP: usize = 1101;
 const ID_OPERATION_RESTORE: usize = 1102;
 const ID_OPERATION_SECONDARY: usize = 1103;
 const ID_OPERATION_PE: usize = 1104;
+// 三入口拆分（2026-10-14 拍板）：「单系统还原」拆成 A/B/C 三个入口，
+// tab 总数 4 → 6。B=还原数据到非 C 盘，C=还原系统到非 C 盘。
+const ID_OPERATION_RESTORE_DATA: usize = 1105;
+const ID_OPERATION_RESTORE_OTHER: usize = 1106;
 const ID_SOURCE: usize = 1202;
 const ID_IMAGE: usize = 1203;
 const ID_TARGET: usize = 1204;
@@ -123,6 +127,10 @@ const ID_COMPRESS: usize = 1208;
 const ID_INDEX_NAME_EDIT: usize = 1209;
 const ID_KEEP_EDIT: usize = 1210;
 const ID_VERIFY_HASH: usize = 1211;
+// B/C 入口的执行通道单选（在线=不重启 / 离线=重启进 PE/RE）。
+// B 默认在线（不格式化），C 默认在线（格式化+装引导），均允许切离线。
+const ID_CHANNEL_ONLINE: usize = 1212;
+const ID_CHANNEL_OFFLINE: usize = 1213;
 const BS_AUTOCHECKBOX: u32 = 0x00000003;
 const BM_GETCHECK: u32 = 0x00F0;
 const ID_STATUS: usize = 1300;
@@ -551,7 +559,9 @@ struct TokenElevation {
 
 struct Controls {
     language: Hwnd,
-    operation_tabs: [Hwnd; 4],
+    /// 六个操作入口 tab（备份 / 系统还原C盘 / 数据卷还原 / 他盘系统还原 /
+    /// 新增第二系统 / 安装 PE），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
+    operation_tabs: [Hwnd; 6],
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
@@ -624,9 +634,19 @@ unsafe fn install_tooltips(state: &mut State) {
     let language = selected_language(state);
     let controls = [
         (state.controls.operation_tabs[0], "backup"),
-        (state.controls.operation_tabs[1], "restore"),
-        (state.controls.operation_tabs[2], "secondary"),
-        (state.controls.operation_tabs[3], "pe"),
+        (state.controls.operation_tabs[1], "restore_a"),
+        (state.controls.operation_tabs[2], "restore_b"),
+        (state.controls.operation_tabs[3], "restore_c"),
+        (state.controls.operation_tabs[4], "secondary"),
+        (state.controls.operation_tabs[5], "pe"),
+        (
+            GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32),
+            "channel_online",
+        ),
+        (
+            GetDlgItem(state.root, ID_CHANNEL_OFFLINE as i32),
+            "channel_offline",
+        ),
         (state.controls.source, "source"),
         (state.controls.target, "target"),
         (state.controls.image, "image"),
@@ -679,6 +699,21 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "secondary") => {
             "新增第二系统：格式化另一个卷并通过 BCDBoot 添加启动项。"
+        }
+        (Language::Chinese, "restore_a") => {
+            "系统还原C盘：目标锁定为当前系统盘（显示实际盘符），必须离线执行——重启进入 PE/RE 完成格式化与还原；破坏性确认与环境确认两道确认后才会开始。"
+        }
+        (Language::Chinese, "restore_b") => {
+            "数据卷还原：把数据卷镜像还原到非系统分区。默认在线执行、不格式化（覆盖式应用，卷序列号不变）；切到离线则重启进 PE/RE，先 diskpart 格式化再还原。目标不能是当前系统盘。"
+        }
+        (Language::Chinese, "restore_c") => {
+            "他盘系统还原：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，默认启动项保持不变。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
+        }
+        (Language::Chinese, "channel_online") => {
+            "在线执行：不重启，直接在当前系统里完成（B=覆盖应用不格式化；C=格式化目标并修复引导）。"
+        }
+        (Language::Chinese, "channel_offline") => {
+            "离线执行：创建任务并重启进入 PE/Windows RE 完成（B/C 的目标卷都会被格式化后写入镜像）。"
         }
         (Language::Chinese, "source") => "选择备份来源或当前 Windows 分区；身份按 GUID 校验。",
         (Language::Chinese, "target") => "还原时将被格式化的目标分区；备份和探测模式不使用。",
@@ -736,6 +771,21 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::English, "restore") => "Restore: format the target volume and apply the image.",
         (Language::English, "secondary") => {
             "Second system: format another volume and add a BCDBoot entry."
+        }
+        (Language::English, "restore_a") => {
+            "Restore system to C:: target is locked to the running system drive; must run offline (PE/RE) and requires two confirmations."
+        }
+        (Language::English, "restore_b") => {
+            "Restore data to non-C:: apply a data-volume image without touching boot. Online by default (no format); offline formats via diskpart. Target must not be the system drive."
+        }
+        (Language::English, "restore_c") => {
+            "Restore system to non-C:: deploy a full Windows image to another partition with a new boot entry; default boot entry unchanged. Online by default; target must not be the system drive."
+        }
+        (Language::English, "channel_online") => {
+            "Online: run inside the current Windows session without reboot (B = overlay apply; C = format + boot repair)."
+        }
+        (Language::English, "channel_offline") => {
+            "Offline: schedule a task and reboot into PE/RE (target volume is formatted)."
         }
         (Language::English, "source") => {
             "Select the backup source or current Windows volume; GUID identity is verified."
@@ -841,7 +891,10 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "probe") => "探测（仅检查）",
         (Language::Chinese, "backup") => "备份",
-        (Language::Chinese, "restore") => "单系统还原",
+        (Language::Chinese, "restore") => "系统还原C盘",
+        (Language::Chinese, "restore_a") => "系统还原C盘",
+        (Language::Chinese, "restore_b") => "数据卷还原",
+        (Language::Chinese, "restore_c") => "他盘系统还原",
         (Language::Chinese, "secondary") => "新增第二系统",
         (Language::Chinese, "probe_hint") => {
             "「探测」是全程无破坏的安全检查模式，适合首次使用先验证环境：\n\n\
@@ -859,12 +912,28 @@ fn ui_text(language: Language, key: &str) -> &'static str {
              说明：系统分区必须在离线环境备份；数据卷可在当前系统在线直接备份。"
         }
         (Language::Chinese, "restore_hint") => {
-            "「单系统还原」把镜像系统写回目标分区并重建引导：\n\n\
-             • 目标卷：将被格式化并写入镜像的分区；镜像与索引：要还原的 WIM 及其中索引；\n\
-             • 还原会覆盖目标卷上的全部数据，点击「创建任务」后还会再次弹确认框，请务必谨慎；\n\
-             • 流程：在离线环境格式化目标卷 → DISM 应用镜像 → BCDBoot 重建引导项，使镜像系统成为唯一 Windows 启动；\n\
-             • 适用场景：系统损坏、无法开机时需要把备份恢复回来。\n\n\
-             安全提示：还原前请确认目标分区选对、重要数据已备份，操作不可中途取消。"
+            "「系统还原C盘」把镜像系统写回当前系统盘并重建引导：\n\n\
+             • 目标卷：锁定为当前正在运行的系统盘（显示实际盘符，不可改选）；\n\
+             • 镜像与索引：要还原的 WIM 及其中索引；还原会覆盖系统盘上的全部数据；\n\
+             • 流程：破坏性确认 → 选择 PE/RE → 重启离线格式化目标卷 → DISM 应用镜像 → BCDBoot 重建引导项；\n\
+             • 适用场景：系统损坏、无法开机时把备份恢复回本机。\n\n\
+             安全提示：目标无法更换，还原前请确认镜像正确、重要数据已另存，操作不可中途取消。"
+        }
+        (Language::Chinese, "restore_b_hint") => {
+            "「数据卷还原」把数据卷镜像还原到非系统分区，不碰引导：\n\n\
+             • 目标卷：要接收数据的数据分区（不能是当前系统盘，也不能是已有 Windows 的分区）；\n\
+             • 通道差异（重要）：在线=覆盖式应用镜像、不格式化（卷上多余文件会保留，卷序列号不变）；离线=重启进 PE/RE，先 diskpart 格式化再还原（卷序列号改变）；\n\
+             • 镜像与索引：要还原的 WIM 及其中索引；\n\
+             • 适用场景：数据盘损坏或迁移时恢复数据。\n\n\
+             安全提示：在线模式虽不格式化，但同名文件会被镜像内容覆盖。"
+        }
+        (Language::Chinese, "restore_c_hint") => {
+            "「他盘系统还原」把完整 Windows 镜像部署到另一个分区，成为可启动的第二系统：\n\n\
+             • 目标卷：另选一个分区（不能是当前系统盘），将被格式化并写入镜像；\n\
+             • 启动项名称：新系统在 Windows 启动菜单中的显示名称；默认启动项保持当前系统不变；\n\
+             • 通道差异：在线=不重启，直接在当前系统格式化目标并修复引导；离线=重启进恢复环境完成；\n\
+             • 与「新增第二系统」的区别：本入口默认在线、随时可做；那个入口固定走离线任务链。\n\n\
+             安全提示：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
         }
         (Language::Chinese, "secondary_hint") => {
             "「新增第二系统」在保留当前 Windows 的前提下，把另一个镜像部署成可启动的第二系统：\n\n\
@@ -904,7 +973,10 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "probe") => "Inspect",
         (Language::English, "backup") => "Backup",
-        (Language::English, "restore") => "Restore",
+        (Language::English, "restore") => "Restore C:",
+        (Language::English, "restore_a") => "Restore C:",
+        (Language::English, "restore_b") => "Restore data",
+        (Language::English, "restore_c") => "Restore other",
         (Language::English, "secondary") => "Second system",
         (Language::English, "probe_hint") => {
             "Inspect is a completely non-destructive safety check; run it first to validate your environment.\n\n• Refreshes and verifies the current Windows, recovery environment (WinRE / PE entry) and every volume, identified by disk+partition GUID instead of drive letter;\n• 'Create task' only writes and validates the task files and WinRE payloads to confirm the setup;\n• It never backs up, restores, formats, touches boot entries, or reboots.\n\nTip: first-time users should switch to Inspect and run once to confirm Windows, WinRE and volumes are recognized before using other features."
@@ -913,7 +985,13 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "Backup captures the selected source partition into a WIM image (via DISM).\n\n• Source volume: the partition to back up (defaults to the system partition); Image path: absolute path for the .wim;\n• Compression: \"Compression\" uses fast for balanced speed and size; \"No compression\" is fastest but largest;\n• 'Image name' and 'Keep latest N' manage history; when the image already exists a new index is appended automatically;\n• Flow: after preparation it enters recovery (PE / WinRE), captures the source volume offline, then returns to Windows.\n\nNote: the system partition must be backed up offline; data volumes can be backed up online in the current system."
         }
         (Language::English, "restore_hint") => {
-            "Restore writes an image system back to the target partition and rebuilds the boot loader.\n\n• Target volume: the partition to be formatted and written; Image & index: the WIM and its index to restore;\n• Restoring overwrites all data on the target; 'Create task' asks for confirmation again, so proceed with care;\n• Flow: format the target offline → DISM Apply → BCDBoot to rebuild boot entries, making the image the only Windows;\n• Use case: damaged system or failure to boot, recovering from a backup.\n\nSafety: confirm the target partition is correct and important data is backed up; the operation cannot be cancelled midway."
+            "Restore C: writes an image system back to the running system drive and rebuilds the boot loader.\n\n• Target volume: locked to the running system drive (actual letter shown, not selectable);\n• Image & index: the WIM and its index to restore; all data on the system drive is overwritten;\n• Flow: destructive confirmation → choose PE/RE → reboot, format the target offline → DISM Apply → BCDBoot rebuilds the boot entry;\n• Use case: recover this machine from a backup when the system is damaged.\n\nSafety: the target cannot be changed; confirm the image is correct and important data is stored elsewhere. The operation cannot be cancelled midway."
+        }
+        (Language::English, "restore_b_hint") => {
+            "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Channel difference (important): online = overlay apply without formatting (extra files remain, volume serial unchanged); offline = reboot into PE/RE, format via diskpart first (volume serial changes);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: online mode does not format, but files with the same names are overwritten by the image."
+        }
+        (Language::English, "restore_c_hint") => {
+            "Restore other deploys a full Windows image to another partition as a bootable second system.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; the default boot entry stays on the current system;\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Difference from 'Second system': this entry runs online by default; that one always goes through the offline task chain.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
         }
         (Language::English, "secondary_hint") => {
             "Second system deploys another image as a bootable system while keeping the current Windows.\n\n• Target volume: pick a spare partition (not the current system) to write the image;\n• Boot name: customize the name shown in the boot menu; Chinese is supported;\n• Flow: format the target offline → DISM Apply → BCDBoot adds a boot entry;\n• Result: after reboot the boot menu lets you choose either system; ideal for dual-boot.\n\nNote: the target volume is overwritten; confirm it holds nothing you need to keep."
@@ -1082,11 +1160,52 @@ unsafe fn set_child_text(parent: Hwnd, id: usize, value: &str) {
 unsafe fn selected_operation(state: &State) -> &'static str {
     match state.operation_index {
         0 => "backup",
+        // 三入口拆分：1=A 还原系统到 C 盘（沿用 restore-existing），
+        // 2=B 还原数据到非 C 盘，3=C 还原系统到非 C 盘。
         1 => "restore-existing",
-        2 => "create-secondary",
-        3 => "install-pe-entry",
+        2 => "restore-data",
+        3 => "restore-system-other",
+        4 => "create-secondary",
+        5 => "install-pe-entry",
         _ => "backup",
     }
+}
+
+/// GUI 入口键 → CLI `prepare --operation` 值。
+/// B 复用 restore-existing（prepare 链要求 source==target，RE 内数据卷分支不碰引导）；
+/// C 复用 create-secondary（目标≠活动系统、需菜单名、NewWindows 收尾）——
+/// 2.4.9 起收尾按「目标性质」路由，operation 只表达语义，这里仅做入口归一。
+fn cli_operation(gui: &str) -> &'static str {
+    match gui {
+        "restore-data" => "restore-existing",
+        "restore-system-other" => "create-secondary",
+        "backup" => "backup",
+        "restore-existing" => "restore-existing",
+        "create-secondary" => "create-secondary",
+        "install-pe-entry" => "install-pe-entry",
+        "probe" => "probe",
+        _ => "backup",
+    }
+}
+
+/// 是否「镜像还原类」入口（A/B/C + 新增第二系统）：
+/// 共用 WIM 索引必选、破坏性确认、副档校验、--allow-destructive 等闸门。
+fn is_image_restore_entry(gui: &str) -> bool {
+    matches!(
+        gui,
+        "restore-existing" | "restore-data" | "restore-system-other" | "create-secondary"
+    )
+}
+
+/// 当前活动系统盘符（`%SystemDrive%`，无冒号大写）。
+/// GUI 侧只用于锁定 A 的目标、B/C 的目标预检——真正的卷身份比对在
+/// prepare 的 P0 安全闸里做，这里不做安全承诺。
+fn active_system_letter() -> String {
+    std::env::var("SystemDrive")
+        .unwrap_or_else(|_| "C:".to_string())
+        .trim_end_matches('\\')
+        .trim_end_matches(':')
+        .to_ascii_uppercase()
 }
 
 unsafe fn set_operation_tabs(state: &State, language: Language) {
@@ -1094,7 +1213,9 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
         .controls
         .operation_tabs
         .iter()
-        .zip(["backup", "restore", "secondary", "pe"])
+        .zip([
+            "backup", "restore_a", "restore_b", "restore_c", "secondary", "pe",
+        ])
         .enumerate()
     {
         set_text(*button, ui_text(language, key));
@@ -1119,12 +1240,16 @@ fn operation_display(language: Language, operation: &str) -> &'static str {
     match (language, operation) {
         (Language::Chinese, "probe") => "探测（仅检查）",
         (Language::Chinese, "backup") => "备份",
-        (Language::Chinese, "restore-existing") => "单系统还原",
+        (Language::Chinese, "restore-existing") => "系统还原C盘",
+        (Language::Chinese, "restore-data") => "数据卷还原",
+        (Language::Chinese, "restore-system-other") => "他盘系统还原",
         (Language::Chinese, "create-secondary") => "新增第二系统",
         (Language::Chinese, "install-pe-entry") => "安装 PE",
         (Language::English, "probe") => "Inspect",
         (Language::English, "backup") => "Backup",
-        (Language::English, "restore-existing") => "Restore",
+        (Language::English, "restore-existing") => "Restore system to C:",
+        (Language::English, "restore-data") => "Restore data to non-C:",
+        (Language::English, "restore-system-other") => "Restore system to non-C:",
         (Language::English, "create-secondary") => "Second system",
         (Language::English, "install-pe-entry") => "Install PE",
         _ => "",
@@ -1135,6 +1260,8 @@ fn operation_hint_key(operation: &str) -> &'static str {
     match operation {
         "backup" => "backup_hint",
         "restore-existing" => "restore_hint",
+        "restore-data" => "restore_b_hint",
+        "restore-system-other" => "restore_c_hint",
         "create-secondary" => "secondary_hint",
         "install-pe-entry" => "pe_hint",
         _ => "backup_hint",
@@ -1154,21 +1281,33 @@ unsafe fn set_operation_visibility(state: &State) {
     let show_image = operation != "probe";
     let show_target = matches!(
         operation,
-        "restore-existing" | "create-secondary" | "install-pe-entry"
+        "restore-existing" | "restore-data" | "restore-system-other" | "create-secondary"
+            | "install-pe-entry"
     );
-    let show_index = matches!(operation, "restore-existing" | "create-secondary");
+    // A/B/C/新增第二系统都要手选 WIM 索引 + 副档校验复选框。
+    let show_index = is_image_restore_entry(operation);
+    // 源卷行只在「备份」（选备份来源）与「新增第二系统」（显示保留系统）出现；
+    // A/B/C 的源卷没有用户语义（A/B 源=目标，C 源=当前系统盘），隐藏以免误导
+    // （原 P3 待办的「源卷（当前系统）」文案问题随隐藏一并消除）。
+    let show_source = matches!(operation, "backup" | "create-secondary");
     // WIM 压缩方式（fast/none）只对备份首次创建有意义，仅「备份」tab 显示。
     let show_compress = operation == "backup";
-    // 「第二系统名称」输入框及其标签只在「新增第二系统」tab 显示；
-    // 「安装 PE」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
+    // 「第二系统名称」在「新增第二系统」与 C（他盘系统还原，离线 prepare 必填）
+    // 显示；「安装 PE」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
     // 其布局位置（field_x+500, secondary_y）会恰好覆盖右下角「创建快捷方式」按钮。
-    let show_menu = operation == "create-secondary";
+    let show_menu = matches!(operation, "create-secondary" | "restore-system-other");
+    // B/C 入口显示「在线/离线」通道单选；A 必离线（无选择），备份走智能分流。
+    let show_channel = matches!(operation, "restore-data" | "restore-system-other");
     let set_visible = |hwnd: Hwnd, visible: bool| {
         ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
     let set_child_visible = |id: i32, visible: bool| {
         set_visible(GetDlgItem(state.root, id), visible);
     };
+
+    set_visible(state.controls.source, show_source);
+    set_visible(state.controls.source_details, show_source);
+    set_child_visible(2003, show_source);
 
     set_visible(state.controls.image, show_image);
     set_child_visible(ID_BROWSE_IMAGE as i32, show_image);
@@ -1190,6 +1329,15 @@ unsafe fn set_operation_visibility(state: &State) {
     set_visible(state.controls.target, show_target);
     set_visible(state.controls.target_details, show_target);
     set_child_visible(2005, show_target);
+    // A（系统还原C盘）：目标锁定为当前系统盘，禁用下拉防误选；
+    // 界面仍显示实际盘符（select_operation 会自动选中 %SystemDrive%）。
+    EnableWindow(
+        state.controls.target,
+        if operation == "restore-existing" { 0 } else { 1 },
+    );
+    // B/C 的通道单选
+    set_child_visible(ID_CHANNEL_ONLINE as i32, show_channel);
+    set_child_visible(ID_CHANNEL_OFFLINE as i32, show_channel);
     // 「重启进入 PE」「创建快捷方式」只在 安装 PE tab 显示
     set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-entry");
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
@@ -1224,20 +1372,31 @@ unsafe fn layout_operation(state: &State) {
     let field_width = (client_width - field_x - 24).max(700);
     let details_height = 112;
     let row_gap = 8;
+    // 三入口拆分后的行可见性：源卷行仅备份/新增第二系统显示（A/B/C 隐藏），
+    // 通道单选行仅 B/C 显示。隐藏的行不占位，目标行相应上移。
+    let layout_op = selected_operation(state);
+    let source_visible = matches!(layout_op, "backup" | "create-secondary");
+    let target_visible = matches!(
+        layout_op,
+        "restore-existing" | "restore-data" | "restore-system-other" | "create-secondary"
+            | "install-pe-entry"
+    );
+    let image_visible = layout_op != "probe";
+    let index_visible = is_image_restore_entry(layout_op);
+    let channel_visible = matches!(layout_op, "restore-data" | "restore-system-other");
     let source_combo_y = 100;
     let source_details_y = source_combo_y + 36;
-    let target_combo_y = source_details_y + details_height + row_gap;
+    let target_combo_y = if source_visible {
+        source_details_y + details_height + row_gap
+    } else {
+        source_combo_y
+    };
     let target_details_y = target_combo_y + 36;
-    let target_visible = matches!(
-        selected_operation(state),
-        "restore-existing" | "create-secondary" | "install-pe-entry"
-    );
-    let image_visible = selected_operation(state) != "probe";
-    let index_visible = matches!(
-        selected_operation(state),
-        "restore-existing" | "create-secondary"
-    );
-    let last_details_y = if target_visible {
+    // 通道单选行：目标卷详情框下方
+    let channel_y = target_details_y + details_height + 8;
+    let last_details_y = if channel_visible {
+        channel_y + 24
+    } else if target_visible {
         target_details_y + details_height
     } else {
         source_details_y + details_height
@@ -1296,6 +1455,40 @@ unsafe fn layout_operation(state: &State) {
         field_width,
         details_height,
     );
+    // B/C 入口的通道单选行：在线（左）/ 离线（右），文案随语言刷新，
+    // 双保险处理「两个单选都未选中」的异常态（同 PE 模式单选的做法）。
+    if channel_visible {
+        let online_hwnd = GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32);
+        let offline_hwnd = GetDlgItem(state.root, ID_CHANNEL_OFFLINE as i32);
+        let online_checked = IsDlgButtonChecked(state.root, ID_CHANNEL_ONLINE as i32) != 0;
+        let offline_checked = IsDlgButtonChecked(state.root, ID_CHANNEL_OFFLINE as i32) != 0;
+        if !online_checked && !offline_checked {
+            SendMessageW(online_hwnd, BM_SETCHECK, BST_CHECKED, 0);
+            append_gui_log(
+                state,
+                "channel layout: both radios unchecked -> reset to online",
+            );
+        }
+        let language = selected_language(state);
+        set_text(
+            online_hwnd,
+            if language == Language::English {
+                "Online (no reboot)"
+            } else {
+                "在线执行（不重启）"
+            },
+        );
+        set_text(
+            offline_hwnd,
+            if language == Language::English {
+                "Offline (reboot into PE/RE)"
+            } else {
+                "离线执行（重启进 PE/RE）"
+            },
+        );
+        reposition(online_hwnd, field_x, channel_y, 300, 22);
+        reposition(offline_hwnd, field_x + 320, channel_y, 360, 22);
+    }
     reposition(state.controls.status, 20, status_y, client_width - 40, 64);
 
     // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
@@ -1482,8 +1675,12 @@ unsafe fn layout_operation(state: &State) {
         24,
     );
     // 「单系统还原」与「新增第二系统」tab 的 WIM 索引与校验复选框布局：
+    // C（他盘系统还原）与「新增第二系统」一样带菜单名输入框，用同一布局。
     let (index_width, verify_hash_x, verify_hash_y) =
-        if selected_operation(state) == "create-secondary" {
+        if matches!(
+            selected_operation(state),
+            "create-secondary" | "restore-system-other"
+        ) {
             (380, field_x, secondary_y + 32)
         } else {
             (
@@ -1591,33 +1788,100 @@ unsafe fn layout_operation(state: &State) {
 unsafe fn set_volume_labels(state: &State) {
     let language = selected_language(state);
     let operation = selected_operation(state);
-    let (source, target) = match (language, operation) {
-        // Keep the left labels short enough for the narrow role column. The
-        // detail boxes below carry the complete safety explanation, so a
-        // label should identify the purpose without wrapping into a clipped
-        // third line on a maximized VM window.
-        (Language::Chinese, "backup") => ("源卷（备份来源）", "目标卷（镜像位置）"),
-        (Language::Chinese, "restore-existing") => ("源卷（当前系统）", "目标卷（覆盖还原）"),
-        (Language::Chinese, "create-secondary") => ("源卷（保留系统）", "目标卷（第二系统）"),
-        (Language::Chinese, "install-pe-entry") => ("源卷（不使用）", "目标卷（PE 安装位置）"),
-        (Language::Chinese, _) => ("源卷（检查对象）", "目标卷（不使用）"),
-        (Language::English, "backup") => ("Source (backup)", "Target (image)"),
-        (Language::English, "restore-existing") => ("Source (current)", "Target (overwrite)"),
-        (Language::English, "create-secondary") => ("Source (keep)", "Target (second system)"),
-        (Language::English, "install-pe-entry") => ("Source (unused)", "Target (PE install)"),
-        (Language::English, _) => ("Source (inspect)", "Target (unused)"),
+    // A 的目标标签带实际盘符（%SystemDrive%），动态拼接；源卷行在 A/B/C 隐藏，
+    // 标签文案仅作回退占位。Keep the labels short enough for the narrow role
+    // column. The detail boxes below carry the complete safety explanation.
+    let (source, target): (String, String) = match (language, operation) {
+        (Language::Chinese, "backup") => {
+            ("源卷（备份来源）".into(), "目标卷（镜像位置）".into())
+        }
+        (Language::Chinese, "restore-existing") => (
+            "源卷（不使用）".into(),
+            format!("目标卷（当前系统盘 {}:）", active_system_letter()),
+        ),
+        (Language::Chinese, "restore-data") => {
+            ("源卷（不使用）".into(), "目标卷（数据卷）".into())
+        }
+        (Language::Chinese, "restore-system-other") => (
+            "源卷（不使用）".into(),
+            "目标卷（第二系统位置）".into(),
+        ),
+        (Language::Chinese, "create-secondary") => {
+            ("源卷（保留系统）".into(), "目标卷（第二系统）".into())
+        }
+        (Language::Chinese, "install-pe-entry") => {
+            ("源卷（不使用）".into(), "目标卷（PE 安装位置）".into())
+        }
+        (Language::Chinese, _) => ("源卷（检查对象）".into(), "目标卷（不使用）".into()),
+        (Language::English, "backup") => ("Source (backup)".into(), "Target (image)".into()),
+        (Language::English, "restore-existing") => (
+            "Source (unused)".into(),
+            format!("Target (system {}:)", active_system_letter()),
+        ),
+        (Language::English, "restore-data") => {
+            ("Source (unused)".into(), "Target (data)".into())
+        }
+        (Language::English, "restore-system-other") => (
+            "Source (unused)".into(),
+            "Target (second system)".into(),
+        ),
+        (Language::English, "create-secondary") => {
+            ("Source (keep)".into(), "Target (second system)".into())
+        }
+        (Language::English, "install-pe-entry") => {
+            ("Source (unused)".into(), "Target (PE install)".into())
+        }
+        (Language::English, _) => ("Source (inspect)".into(), "Target (unused)".into()),
     };
-    set_child_text(state.root, 2003, source);
-    set_child_text(state.root, 2005, target);
+    set_child_text(state.root, 2003, &source);
+    set_child_text(state.root, 2005, &target);
 }
 
 unsafe fn select_operation(state: &mut State, index: usize) {
-    state.operation_index = index.min(3);
+    state.operation_index = index.min(5);
     set_operation_tabs(state, selected_language(state));
-    if selected_operation(state) == "restore-existing"
-        && let Some(source) = selected_drive_letter(state, state.controls.source)
-    {
-        select_drive(state, state.controls.target, &source);
+    let operation = selected_operation(state);
+    if operation == "restore-existing" {
+        // A（系统还原C盘）：目标锁定 %SystemDrive%，自动选中（下拉已禁用）。
+        // 旧版「源卷选择复制到目标」逻辑随源卷行隐藏一并移除。
+        let letter = active_system_letter();
+        select_drive(state, state.controls.target, &letter);
+    }
+    if matches!(operation, "restore-data" | "restore-system-other") {
+        // B/C：每次进入入口时通道复位为「在线」默认——不跨入口保留上次的
+        // 离线选择，防止用户在 C 选了离线后切到 B 忘改而意外重启格式化。
+        SendMessageW(
+            GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32),
+            BM_SETCHECK,
+            BST_CHECKED,
+            0,
+        );
+        SendMessageW(
+            GetDlgItem(state.root, ID_CHANNEL_OFFLINE as i32),
+            BM_SETCHECK,
+            BST_UNCHECKED,
+            0,
+        );
+        // 目标若还停在初始默认的系统盘（B/C 都禁止的目标），自动跳到第一个
+        // 合法卷：B=非系统且非 Windows 卷；C=非系统卷。找不到就保持原样，
+        // 由「创建任务」时的目标闸门给出明确报错（不做静默猜测）。
+        let system = active_system_letter();
+        if let Some(current) = selected_drive_letter(state, state.controls.target)
+            && current.eq_ignore_ascii_case(&system)
+            && let Some(candidate) = state.drives.iter().find(|drive| {
+                !drive.letter.eq_ignore_ascii_case(&system)
+                    && (operation == "restore-system-other" || !drive.has_windows_installation)
+            })
+        {
+            append_gui_log(
+                state,
+                &format!(
+                    "target default moved off system drive: {} -> {}",
+                    current, candidate.letter
+                ),
+            );
+            select_drive(state, state.controls.target, &candidate.letter);
+        }
     }
     set_operation_visibility(state);
     set_volume_labels(state);
@@ -1759,7 +2023,13 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "源卷用途：探测时只核验当前 Windows 分区身份；不会备份、还原或写入。"
         }
         (Language::Chinese, "target", "restore-existing") => {
-            "目标卷用途：将被格式化并写入镜像；单系统还原必须选择与源卷相同的分区。"
+            "目标卷用途：锁定为当前正在运行的系统盘；离线格式化后写回镜像，重建唯一系统。"
+        }
+        (Language::Chinese, "target", "restore-data") => {
+            "目标卷用途：接收数据卷镜像；在线=覆盖式应用不格式化，离线=先格式化再还原。不能选当前系统盘或已有 Windows 的分区。"
+        }
+        (Language::Chinese, "target", "restore-system-other") => {
+            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项、默认启动项不变。必须不同于当前系统盘。"
         }
         (Language::Chinese, "target", "create-secondary") => {
             "目标卷用途：将被格式化并写入镜像作为第二个 Windows；必须不同于源卷和程序目录所在分区。"
@@ -1777,13 +2047,19 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "Purpose: current Windows partition to replace; single-system restore forces target to match it."
         }
         (Language::English, "source", "create-secondary") => {
-            "Purpose: current Windows to keep; a secondary-system target must differ from it."
+            "Purpose: kept untouched during deployment; the secondary target must differ from it."
         }
         (Language::English, "source", _) => {
             "Purpose: probe only checks the current Windows volume identity; it never writes the volume."
         }
         (Language::English, "target", "restore-existing") => {
-            "Purpose: will be formatted and receive the image; single-system restore must select the source partition."
+            "Purpose: locked to the running system drive; formatted offline and rewritten, rebuilding the only Windows."
+        }
+        (Language::English, "target", "restore-data") => {
+            "Purpose: receives the data-volume image; online = overlay apply without format, offline = format first. Never the system drive or an existing Windows partition."
+        }
+        (Language::English, "target", "restore-system-other") => {
+            "Purpose: formatted and written as a second Windows with a new boot entry; default boot entry unchanged. Must differ from the system drive."
         }
         (Language::English, "target", "create-secondary") => {
             "Purpose: will be formatted and receive the second Windows; it must differ from source and the program directory volume."
@@ -2184,6 +2460,10 @@ fn system_choice_log_path() -> std::path::PathBuf {
 }
 /// 对话框文案语言：0=中文 1=English（模态期间单实例，用静态即可）。
 static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+// PE/RE 选择弹窗的正文模式：false=目标为当前系统盘（默认，历史文案）；
+// true=用户在 B（数据卷还原）显式选择离线通道——目标是数据卷，不涉及系统盘，
+// 文案改为通用离线说明。调用方在 ask_system_drive_handler 前置位，弹窗创建时消费。
+static CHOICE_GENERIC_OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "system" fn window_proc_system_choice(
     hwnd: Hwnd,
@@ -2193,15 +2473,25 @@ unsafe extern "system" fn window_proc_system_choice(
 ) -> LResult {
     if message == WM_CREATE {
         let english = CHOICE_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+        // B 入口离线通道用通用文案（目标是数据卷，不是系统盘）；消费后立即复位，
+        // 下一次（如备份/还原系统盘）回到默认系统盘文案。
+        let generic_offline = CHOICE_GENERIC_OFFLINE.swap(false, std::sync::atomic::Ordering::SeqCst);
         let font = GetStockObject(DEFAULT_GUI_FONT) as Handle;
+        let body_text = if english {
+            if generic_offline {
+                "Offline channel selected: the target volume will be formatted and receive the image after rebooting into PE or Windows RE. Choose how to proceed:"
+            } else {
+                "The target volume is the currently running system. Backing up or restoring the system partition must run offline in PE or Windows RE. Choose how to proceed:"
+            }
+        } else if generic_offline {
+            "已选择离线通道：重启进入 PE 或 Windows RE 后，目标卷将被格式化并写入镜像。请选择处理方式："
+        } else {
+            "目标分区是当前正在运行的系统。系统分区的备份与还原必须在 PE 或 Windows RE 中离线执行。请选择处理方式："
+        };
         let body = create_control(
             hwnd,
             "STATIC",
-            if english {
-                "The target volume is the currently running system. Backing up or restoring the system partition must run offline in PE or Windows RE. Choose how to proceed:"
-            } else {
-                "目标分区是当前正在运行的系统。系统分区的备份与还原必须在 PE 或 Windows RE 中离线执行。请选择处理方式："
-            },
+            body_text,
             0,
             30,
             24,
@@ -2669,6 +2959,12 @@ unsafe fn refresh_environment(state: &mut State) {
     state.drives = discover_drives();
     set_drive_items(state, desired);
     set_drive_details(state);
+    // 刷新卷列表后，A（系统还原C盘）的目标下拉被重建——重新锁定 %SystemDrive%，
+    // 防止刷新后目标停留在刷新前选中的卷（下拉已禁用，但显示必须始终是系统盘）。
+    if selected_operation(state) == "restore-existing" {
+        let letter = active_system_letter();
+        select_drive(state, state.controls.target, &letter);
+    }
     let text = match rust_cli_output(&["inspect-environment"]) {
         Ok(output) => output,
         Err(error) => {
@@ -3144,15 +3440,36 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         }
     };
     append_gui_log(state, "test hook: config loaded");
-    // 1. 操作模式：默认安装 PE；支持 "tab":"backup"（备份）/"restore"/"secondary" 等
+    // 1. 操作模式：默认安装 PE；支持 "tab":"backup"/"restore"(A)/
+    // "restore-data"(B)/"restore-other"(C)/"secondary" 等
     let tab = json.get("tab").and_then(|v| v.as_str()).unwrap_or("pe");
     let op_index = match tab {
         "backup" => 0,
         "restore" => 1,
-        "secondary" => 2,
-        _ => 3,
+        "restore-data" => 2,
+        "restore-other" => 3,
+        "secondary" => 4,
+        _ => 5,
     };
     select_operation(state, op_index);
+    // 1.5 B/C 入口的通道选择（"channel":"online"/"offline"，默认 online）：
+    // 自动化验收离线链路时用它切到 offline。
+    if let Some(channel) = json.get("channel").and_then(|v| v.as_str()) {
+        let online = channel != "offline";
+        append_gui_log(state, &format!("test hook: channel={channel}"));
+        SendMessageW(
+            GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32),
+            BM_SETCHECK,
+            if online { BST_CHECKED } else { BST_UNCHECKED },
+            0,
+        );
+        SendMessageW(
+            GetDlgItem(state.root, ID_CHANNEL_OFFLINE as i32),
+            BM_SETCHECK,
+            if online { BST_UNCHECKED } else { BST_CHECKED },
+            0,
+        );
+    }
     // 2. 启动方式：ram / disk
     let mode_ram = json
         .get("mode")
@@ -4595,9 +4912,7 @@ unsafe fn create_task(state: &mut State) {
                     "创建任务"
                 },
             );
-            if matches!(operation.as_str(), "restore-existing" | "create-secondary")
-                && Path::new(&updated).is_file()
-            {
+            if is_image_restore_entry(&operation) && Path::new(&updated).is_file() {
                 read_image(state);
             }
         }
@@ -4625,9 +4940,7 @@ unsafe fn create_task(state: &mut State) {
                         "创建任务"
                     },
                 );
-                if matches!(operation.as_str(), "restore-existing" | "create-secondary")
-                    && Path::new(&updated).is_file()
-                {
+                if is_image_restore_entry(&operation) && Path::new(&updated).is_file() {
                     read_image(state);
                 }
             }
@@ -4656,9 +4969,7 @@ unsafe fn create_task(state: &mut State) {
         },
     );
     let index = selected_wim_index(state);
-    let index = if matches!(operation.as_str(), "restore-existing" | "create-secondary")
-        && index.is_none()
-    {
+    let index = if is_image_restore_entry(&operation) && index.is_none() {
         if Path::new(&image_path).is_file() {
             read_image(state);
         }
@@ -4699,30 +5010,10 @@ unsafe fn create_task(state: &mut State) {
         .next()
         .map(|value| value.to_ascii_uppercase().to_string())
         .unwrap_or_default();
-    let source_drive = match selected_or_error(
-        state.controls.source,
-        if language == Language::English {
-            "Source volume"
-        } else {
-            "源卷"
-        },
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            append_gui_log(state, &format!("GUI action blocked: {error}"));
-            show_message(
-                state.root,
-                &error,
-                if language == Language::English {
-                    "Validation failed"
-                } else {
-                    "参数校验失败"
-                },
-                MB_OK | MB_ICONERROR,
-            );
-            return;
-        }
-    };
+    // 三入口拆分：先取目标卷（A 锁定系统盘 / B 数据卷 / C 第二系统位置），
+    // 源卷按入口归一——A/B 的 prepare 链要求 source==target（restore-existing），
+    // C 的语义是「保留当前系统、装另一个分区」（create-secondary 的 source）。
+    // 源卷下拉只在备份/新增第二系统显示，A/B/C 不再读它的选择。
     let target_drive = match selected_or_error(
         state.controls.target,
         if language == Language::English {
@@ -4747,6 +5038,34 @@ unsafe fn create_task(state: &mut State) {
             return;
         }
     };
+    let source_drive = match operation.as_str() {
+        "restore-existing" | "restore-data" => target_drive.clone(),
+        "restore-system-other" => active_system_letter(),
+        _ => match selected_or_error(
+            state.controls.source,
+            if language == Language::English {
+                "Source volume"
+            } else {
+                "源卷"
+            },
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                append_gui_log(state, &format!("GUI action blocked: {error}"));
+                show_message(
+                    state.root,
+                    &error,
+                    if language == Language::English {
+                        "Validation failed"
+                    } else {
+                        "参数校验失败"
+                    },
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
+        },
+    };
     // Keep this as the first restore-specific guard: no image parsing,
     // confirmation, elevation or preparation is reached when the program
     // directory would be overwritten.
@@ -4758,7 +5077,7 @@ unsafe fn create_task(state: &mut State) {
         .drives
         .iter()
         .find(|drive| drive.letter.eq_ignore_ascii_case(&target_drive));
-    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
+    if is_image_restore_entry(&operation)
         && same_partition_by_gui_identity(workspace_identity, target_identity)
     {
         append_gui_log(
@@ -4776,6 +5095,88 @@ unsafe fn create_task(state: &mut State) {
                 "Restore blocked"
             } else {
                 "还原已停止"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    // ===== 三入口拆分后的 GUI 侧目标闸门（prepare 的 P0 安全闸仍是最终防线）：
+    // B/C 的目标不能是当前系统盘——B 是数据还原、C 是第二系统，覆盖运行中的
+    // 系统盘分别属于 A 入口和明确的误操作。
+    if matches!(operation.as_str(), "restore-data" | "restore-system-other")
+        && target_drive.eq_ignore_ascii_case(&active_system_letter())
+    {
+        let message = if language == Language::English {
+            format!(
+                "The selected target is the currently running system drive ({}:). Restoring data or a second system onto it is not allowed; use the 'Restore C:' entry to restore the running system. Nothing was changed.",
+                active_system_letter()
+            )
+        } else {
+            format!(
+                "所选目标是当前正在运行的系统盘（{}:）。数据卷还原与他盘系统还原不允许指向它；要还原当前系统请使用「系统还原C盘」入口。未做任何更改。",
+                active_system_letter()
+            )
+        };
+        append_gui_log(
+            state,
+            "GUI action blocked: restore-data/restore-system-other target is the active system drive",
+        );
+        show_message(
+            state.root,
+            &message,
+            if language == Language::English {
+                "Restore blocked"
+            } else {
+                "还原已停止"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    // B（数据卷还原）的目标不能是已有 Windows 的分区：数据通道不修复引导，
+    // 把数据镜像盖在 Windows 分区上只会得到一个坏系统。指引改用 C/新增第二系统。
+    if operation == "restore-data"
+        && let Some(target_info) = state
+            .drives
+            .iter()
+            .find(|drive| drive.letter.eq_ignore_ascii_case(&target_drive))
+        && target_info.has_windows_installation
+    {
+        append_gui_log(
+            state,
+            "GUI action blocked: restore-data target already contains a Windows installation",
+        );
+        show_message(
+            state.root,
+            if language == Language::English {
+                "The selected target already contains a Windows installation. The data-restore channel does not repair boot configuration; use 'Restore other' or 'Second system' to restore a system. Nothing was changed."
+            } else {
+                "所选目标分区上已有 Windows 安装。数据卷还原通道不处理引导；要还原系统请改用「他盘系统还原」或「新增第二系统」。未做任何更改。"
+            },
+            if language == Language::English {
+                "Restore blocked"
+            } else {
+                "还原已停止"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
+    // C（他盘系统还原）走 create-secondary 语义，离线 prepare 要求启动菜单名必填；
+    // 在线通道同样用它给新启动项命名。空名在这里拦下，避免提权后才发现。
+    if operation == "restore-system-other" && get_text(state.controls.menu).trim().is_empty() {
+        append_gui_log(state, "GUI action blocked: restore-system-other requires a boot menu name");
+        show_message(
+            state.root,
+            if language == Language::English {
+                "Enter the boot menu name for the new system (shown in the Windows boot menu) before creating the task."
+            } else {
+                "请先填写启动菜单名称（新系统在 Windows 启动菜单中的显示名）再创建任务。"
+            },
+            if language == Language::English {
+                "Validation failed"
+            } else {
+                "参数校验失败"
             },
             MB_OK | MB_ICONERROR,
         );
@@ -4839,9 +5240,7 @@ unsafe fn create_task(state: &mut State) {
             MB_YESNO | MB_ICONWARNING,
         )
     };
-    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
-        && destructive_answer != IDYES
-    {
+    if is_image_restore_entry(&operation) && destructive_answer != IDYES {
         append_gui_log(
             state,
             &format!("GUI action cancelled: destructive confirmation; operation={operation}"),
@@ -4861,9 +5260,7 @@ unsafe fn create_task(state: &mut State) {
     // 档案丢失不阻止还原：用户可能移动/删除了 wim 旁的档案文件。
     let mut force_restore_hash = false;
     let mut verify_hash_enabled = false;
-    if matches!(operation.as_str(), "restore-existing" | "create-secondary")
-        && PathBuf::from(&image_path).is_file()
-    {
+    if is_image_restore_entry(&operation) && PathBuf::from(&image_path).is_file() {
         let verify_hash = unsafe {
             SendMessageW(state.controls.verify_hash, BM_GETCHECK, 0, 0) == BST_CHECKED as isize
         };
@@ -4949,6 +5346,48 @@ unsafe fn create_task(state: &mut State) {
             return;
         }
         force_restore_hash = metadata_check.is_err() || !hash_ok;
+        // ===== A（系统还原C盘）容量预检加强：目标锁定为系统盘、无法换盘纠错，
+        // 容量不足必须在重启前拦下（进 PE 后才发现等于白重启一次）。
+        // required_target_size = max(备份时源分区大小, 已用字节+保留量)，
+        // 与目标分区总大小比对（还原会先格式化，比较对象是总容量而非空闲）。
+        if operation == "restore-existing"
+            && let Ok(metadata) = &metadata_check
+            && let Some(target_size) = state
+                .drives
+                .iter()
+                .find(|drive| drive.letter.eq_ignore_ascii_case(&target_drive))
+                .and_then(|drive| drive.size_bytes)
+            && metadata.required_target_size() > target_size
+        {
+            let required_gb = metadata.required_target_size() / 1_073_741_824;
+            let actual_gb = target_size / 1_073_741_824;
+            append_gui_log(
+                state,
+                &format!(
+                    "GUI action blocked: restore target too small; required={} bytes actual={target_size} bytes",
+                    metadata.required_target_size()
+                ),
+            );
+            show_message(
+                state.root,
+                &if language == Language::English {
+                    format!(
+                        "The system drive ({target_drive}:) is smaller than this image requires (needs about {required_gb} GiB, the partition is {actual_gb} GiB). The target is locked to the system drive and cannot be changed; use a smaller image or a larger disk. Nothing was changed."
+                    )
+                } else {
+                    format!(
+                        "系统盘（{target_drive}:）容量小于该镜像的要求（约需 {required_gb} GiB，当前分区 {actual_gb} GiB）。目标锁定为系统盘无法更换；请换用更小的镜像或更大的磁盘。未做任何更改。"
+                    )
+                },
+                if language == Language::English {
+                    "Restore blocked"
+                } else {
+                    "还原已停止"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
     }
     // ===== 智能分流：备份/还原目标为「当前活动系统」→ 弹窗选 PE/RE/取消 =====
     // 判断用「当前活动系统」（%SystemDrive%），不是「任何含 Windows 的卷」：
@@ -4994,7 +5433,13 @@ unsafe fn create_task(state: &mut State) {
             &target_drive
         };
         let affected_upper = affected.trim_end_matches(':').to_ascii_uppercase();
-        if affected_upper == system_upper {
+        // A（系统还原C盘）目标锁定系统盘、必离线；备份仍按「是否当前活动系统」分流。
+        let needs_offline = if operation == "backup" {
+            affected_upper == system_upper
+        } else {
+            true
+        };
+        if needs_offline {
             // 当前活动系统：必须离线处理，弹窗让用户选 PE / RE / 取消。
             // 测试钩子配置了 system_drive_choice 时直接采用（跳过弹窗）。
             let choice = match state.test_drive_choice {
@@ -5093,12 +5538,125 @@ unsafe fn create_task(state: &mut State) {
             return;
         }
     }
+    // ===== B/C 入口按「通道单选」分流（默认在线；离线 = 重启进 PE/RE）=====
+    if matches!(operation.as_str(), "restore-data" | "restore-system-other") {
+        let online = IsDlgButtonChecked(state.root, ID_CHANNEL_ONLINE as i32) != 0;
+        append_gui_log(
+            state,
+            &format!("channel split: op={operation} online={online}"),
+        );
+        if online {
+            // 在线：B=数据卷覆盖应用（不格式化）；C=格式化+应用+修复引导
+            // （online_operation 的 create-secondary 分支）。C 的启动菜单名通过
+            // image_name 传给在线通道——restore_to_windows_volume 会优先用它命名
+            // 新启动项（用户命名 > 镜像版本名自动推断）。
+            let online_image_name = if operation == "restore-system-other" {
+                get_text(state.controls.menu).trim().to_string()
+            } else {
+                String::new()
+            };
+            run_online_operation(
+                state,
+                cli_operation(&operation),
+                &source_drive,
+                &target_drive,
+                &image_path,
+                &index,
+                &compress,
+                &online_image_name,
+                keep_indexes,
+            );
+            return;
+        }
+        // 离线 B：目标是数据卷（不是系统盘），PE/RE 弹窗用通用文案；
+        // PE=排队 PE 任务，RE=确认后走提权 prepare 链。
+        if operation == "restore-data" {
+            CHOICE_GENERIC_OFFLINE.store(true, std::sync::atomic::Ordering::SeqCst);
+            let choice = match state.test_drive_choice {
+                Some(c) => c,
+                None => ask_system_drive_handler(state.root, language),
+            };
+            // 弹窗在 WM_CREATE 里已 swap(false) 消费；测试钩子跳过弹窗时手动复位，
+            // 防止标志泄漏到下一次系统盘弹窗（文案错成通用版）。
+            CHOICE_GENERIC_OFFLINE.store(false, std::sync::atomic::Ordering::SeqCst);
+            append_gui_log(
+                state,
+                &format!("offline data restore choice: {choice} (0=cancel 1=PE 2=RE)"),
+            );
+            match choice {
+                1 => {
+                    append_gui_log(
+                        state,
+                        "offline data restore: user chose PE (schedule PE task)",
+                    );
+                    schedule_pe_task(
+                        state,
+                        cli_operation(&operation),
+                        &source_drive,
+                        &target_drive,
+                        &image_path,
+                        &index,
+                        &compress,
+                    );
+                    return;
+                }
+                2 => {
+                    // 进入 Windows RE：与 A/备份相同的确认框机制
+                    if state.test_drive_choice.is_none() {
+                        let operation_text = operation_display(language, &operation);
+                        let (body, caption) = if language == Language::English {
+                            (
+                                format!(
+                                    "A {operation_text} task will be created and prepared with administrator rights, then the system will restart into the recovery environment to run it. Continue?"
+                                ),
+                                "Enter the recovery environment".to_string(),
+                            )
+                        } else {
+                            (
+                                format!(
+                                    "将创建「{operation_text}」任务并以管理员权限准备，准备完成后系统会重启进入恢复环境执行。是否继续？"
+                                ),
+                                "进入恢复环境".to_string(),
+                            )
+                        };
+                        let confirm =
+                            show_message(state.root, &body, &caption, MB_YESNO | MB_ICONQUESTION);
+                        append_gui_log(
+                            state,
+                            &format!(
+                                "offline data restore: Windows RE confirm result={confirm} (6=yes)"
+                            ),
+                        );
+                        if confirm != IDYES {
+                            append_gui_log(
+                                state,
+                                "offline data restore: Windows RE confirm declined",
+                            );
+                            return;
+                        }
+                    }
+                    append_gui_log(
+                        state,
+                        "offline data restore: user chose Windows RE (prepare chain)",
+                    );
+                }
+                _ => {
+                    append_gui_log(state, "offline data restore cancelled by user");
+                    return;
+                }
+            }
+        }
+        // 离线 C（他盘系统还原）：与「新增第二系统」完全一致的离线链——
+        // destructive 确认已在上方完成，直接落到下面的提权 prepare。
+    }
     let executable =
         std::env::current_exe().unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
     let mut arguments = vec![
         "prepare".to_string(),
+        // GUI 入口归一成 CLI operation：B→restore-existing、C→create-secondary
+        //（2.4.9 起收尾按目标性质路由，CLI 侧无需感知三入口细分）。
         "--operation".to_string(),
-        operation.clone(),
+        cli_operation(&operation).to_string(),
         "--source-drive".to_string(),
         source_drive.clone(),
         "--target-drive".to_string(),
@@ -5123,7 +5681,7 @@ unsafe fn create_task(state: &mut State) {
             arguments.extend(["--keep-indexes".to_string(), keep.to_string()]);
         }
     }
-    if matches!(operation.as_str(), "restore-existing" | "create-secondary") {
+    if is_image_restore_entry(&operation) {
         arguments.push("--allow-destructive".to_string());
         // 档案缺失/哈希不匹配且用户已确认 → 跳过哈希校验。
         if force_restore_hash {
@@ -5481,6 +6039,33 @@ unsafe extern "system" fn window_proc(
             .and_then(|path| path.parent().map(|value| value.to_path_buf()))
             .unwrap_or_default();
         let drives = discover_drives();
+        // B/C 入口的「在线/离线」通道单选：创建坐标只是占位，
+        // layout_operation 会按目标卷详情框下方重新定位并刷新文案；
+        // 默认选中「在线」，select_operation 每次进入 B/C 时复位。
+        // 访问统一走 GetDlgItem(ID_CHANNEL_ONLINE/OFFLINE)，不进 Controls。
+        let _channel_online = create_control(
+            hwnd,
+            "BUTTON",
+            "在线执行（不重启）",
+            WS_TABSTOP | BS_AUTORADIOBUTTON | WS_GROUP,
+            180,
+            620,
+            300,
+            22,
+            ID_CHANNEL_ONLINE,
+        );
+        let _channel_offline = create_control(
+            hwnd,
+            "BUTTON",
+            "离线执行（重启进 PE/RE）",
+            WS_TABSTOP | BS_AUTORADIOBUTTON,
+            500,
+            620,
+            360,
+            22,
+            ID_CHANNEL_OFFLINE,
+        );
+        SendMessageW(_channel_online, BM_SETCHECK, BST_CHECKED, 0);
         let (system_drive, _image_drive) = suggested_drive_defaults(&drives);
         // The image field is intentionally blank until the user chooses an
         // absolute path; no fixed BackupRestore folder is assumed.
@@ -5502,12 +6087,12 @@ unsafe extern "system" fn window_proc(
                     hwnd,
                     "BUTTON",
                     "",
-                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 4
-                    // 个之间切换，不会跳到下方 PE 启动方式那一组。
+                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 6
+                    // 个之间切换，不会跳到下方 PE 启动方式/通道那一组。
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP,
                     180,
                     60,
-                    95,
+                    84,
                     32,
                     ID_OPERATION_BACKUP,
                 ),
@@ -5516,9 +6101,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    279,
+                    268,
                     60,
-                    95,
+                    84,
                     32,
                     ID_OPERATION_RESTORE,
                 ),
@@ -5527,9 +6112,31 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    378,
+                    356,
                     60,
-                    95,
+                    84,
+                    32,
+                    ID_OPERATION_RESTORE_DATA,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    444,
+                    60,
+                    84,
+                    32,
+                    ID_OPERATION_RESTORE_OTHER,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    532,
+                    60,
+                    84,
                     32,
                     ID_OPERATION_SECONDARY,
                 ),
@@ -5538,9 +6145,9 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    477,
+                    620,
                     60,
-                    95,
+                    84,
                     32,
                     ID_OPERATION_PE,
                 ),
@@ -5931,7 +6538,7 @@ unsafe extern "system" fn window_proc(
         }
         if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB")
             && let Ok(index) = tab.parse::<usize>()
-            && (0..=3).contains(&index)
+            && (0..=5).contains(&index)
         {
             select_operation(&mut *state_ptr, index);
             explicit_tab = true;
@@ -5942,7 +6549,7 @@ unsafe extern "system" fn window_proc(
             if let Some(pos) = args.iter().position(|a| a == "--tab")
                 && let Some(value) = args.get(pos + 1)
                 && let Ok(index) = value.parse::<usize>()
-                && (0..=3).contains(&index)
+                && (0..=5).contains(&index)
             {
                 select_operation(&mut *state_ptr, index);
                 explicit_tab = true;
@@ -6048,8 +6655,10 @@ unsafe extern "system" fn window_proc(
             if let Some(index) = match control_id {
                 ID_OPERATION_BACKUP => Some(0),
                 ID_OPERATION_RESTORE => Some(1),
-                ID_OPERATION_SECONDARY => Some(2),
-                ID_OPERATION_PE => Some(3),
+                ID_OPERATION_RESTORE_DATA => Some(2),
+                ID_OPERATION_RESTORE_OTHER => Some(3),
+                ID_OPERATION_SECONDARY => Some(4),
+                ID_OPERATION_PE => Some(5),
                 _ => None,
             } {
                 select_operation(state, index);
@@ -6062,13 +6671,14 @@ unsafe extern "system" fn window_proc(
                 );
                 return 0;
             }
+            // B/C 的通道单选切换后刷新一次布局（文案坐标已就绪，这里主要
+            // 是把选择写进 gui.log，便于事后审计用户当时选的哪条通道）。
+            if matches!(control_id, ID_CHANNEL_ONLINE | ID_CHANNEL_OFFLINE) {
+                let online = IsDlgButtonChecked(state.root, ID_CHANNEL_ONLINE as i32) != 0;
+                append_gui_log(state, &format!("channel selected: {}", if online { "online" } else { "offline" }));
+                return 0;
+            }
             if matches!(control_id, ID_SOURCE | ID_TARGET) && notification == CBN_SELCHANGE {
-                if control_id == ID_SOURCE
-                    && selected_operation(state) == "restore-existing"
-                    && let Some(source) = selected_drive_letter(state, state.controls.source)
-                {
-                    select_drive(state, state.controls.target, &source);
-                }
                 set_drive_details(state);
                 return 0;
             }
