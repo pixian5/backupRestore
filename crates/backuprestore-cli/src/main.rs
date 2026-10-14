@@ -3455,11 +3455,25 @@ fn cleanup_orphaned_secondary_resume_objects(
         }
         let guid = crate::text_parsing::require_guid(resume, "remove orphan resume object")
             .map_err(|message| err(&message))?;
-        run_logged("bcdedit.exe", &["/delete", &guid, "/f"], log)?;
-        append_log(
-            log,
-            &format!("Removed orphan resume object {guid} for replaced loader {loader}"),
-        )?;
+        // 清理孤儿 resume object 是**收尾性质**的动作：目标条目可能已被 bcdboot 或
+        // 早前步骤移除，此时 bcdedit 以 exit code 1 报「找不到元素」——目的本已达成
+        // （它就该不存在），绝不能因此把整任务判失败。
+        // 2026-10-14 实测（任务 0fa52c1d）：create-secondary 的格式化 / 镜像应用 /
+        // bcdboot / WinRE 注册 / 菜单命名 / default 恢复**全部成功**，仅此处因目标
+        // GUID 已不存在而失败 → 任务被判失败并「保留 boot entry 与载荷」→ 下次启动
+        // bootsequence 仍指向失效项报 0xc000000e，被迫进 PE 人工清引导。
+        match run_logged("bcdedit.exe", &["/delete", &guid, "/f"], log) {
+            Ok(()) => append_log(
+                log,
+                &format!("Removed orphan resume object {guid} for replaced loader {loader}"),
+            )?,
+            Err(error) => append_log(
+                log,
+                &format!(
+                    "Orphan resume object {guid} for replaced loader {loader} is already absent (deletion skipped): {error}"
+                ),
+            )?,
+        }
     }
     Ok(())
 }
