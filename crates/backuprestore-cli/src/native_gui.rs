@@ -723,7 +723,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "离线执行：创建任务并重启进入 PE/Windows RE 完成（目标卷都会被格式化后写入镜像）。"
         }
         (Language::Chinese, "format_target") => {
-            "勾选：先用 diskpart 快速格式化目标卷并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像——还原的完整语义。\n不勾：覆盖式应用，不格式化（卷上镜像没有的文件会保留，卷序列号不变）。\n仅对在线通道生效；离线通道在恢复环境里总是先格式化。"
+            "勾选：先用 diskpart 快速格式化目标卷并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像——还原的完整语义（默认）。\n不勾：覆盖式应用，不格式化（目标卷上镜像没有的文件会保留，卷序列号不变）。\n在线离线通道均生效；离线时该选择会随任务落盘、恢复环境内执行。"
         }
         (Language::Chinese, "source") => "选择备份来源或当前 Windows 分区；身份按 GUID 校验。",
         (Language::Chinese, "target") => "还原时将被格式化的目标分区；备份和探测模式不使用。",
@@ -798,7 +798,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "Offline: schedule a task and reboot into PE/RE (target volume is formatted)."
         }
         (Language::English, "format_target") => {
-            "Checked: quick-format the target via diskpart and verify success (same partition, NTFS, volume serial changed) before applying the image.\nUnchecked: overlay apply without formatting (files not in the image remain; volume serial unchanged).\nOnline channel only; the offline channel always formats inside the recovery environment."
+            "Checked (default): quick-format the target via diskpart and verify success (same partition, NTFS, volume serial changed) before applying the image.\nUnchecked: overlay apply without formatting (files not in the image remain; volume serial unchanged).\nApplies to both online and offline channels; offline the choice is persisted with the task and honored inside the recovery environment."
         }
         (Language::English, "source") => {
             "Select the backup source or current Windows volume; GUID identity is verified."
@@ -929,7 +929,8 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "「还原系统到 C 盘」把镜像系统写回当前系统盘并重建引导：\n\n\
              • 目标卷：锁定为当前正在运行的系统盘（显示实际盘符，不可改选）；\n\
              • 镜像与索引：要还原的 WIM 及其中索引；还原会覆盖系统盘上的全部数据；\n\
-             • 流程：破坏性确认 → 选择 PE/RE → 重启离线格式化目标卷 → DISM 应用镜像 → BCDBoot 重建引导项；\n\
+             • 格式化目标分区（默认勾选）：格式化成功校验后才写入；取消勾选=覆盖式应用（旧文件残留）；\n\
+             • 流程：破坏性确认 → 选择 PE/RE → 重启离线（按选项格式化）→ DISM 应用镜像 → BCDBoot 重建引导项；\n\
              • 适用场景：系统损坏、无法开机时把备份恢复回本机。\n\n\
              安全提示：目标无法更换，还原前请确认镜像正确、重要数据已另存，操作不可中途取消。"
         }
@@ -937,7 +938,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "「还原数据到非 C 盘」把数据卷镜像还原到非系统分区，不碰引导：\n\n\
              • 目标卷：要接收数据的数据分区（不能是当前系统盘，也不能是已有 Windows 的分区）；\n\
              • 格式化目标分区（默认勾选）：先 diskpart 快速格式化并校验成功（分区不变、NTFS、卷序列号改变），再写入镜像；取消勾选=覆盖式应用、卷上多余文件保留；\n\
-             • 通道：在线=不重启直接执行；离线=重启进 PE/RE（恢复环境内总是先格式化再还原）；\n\
+             • 通道：在线=不重启直接执行；离线=重启进 PE/RE（格式化选项同样生效，随任务落盘）；\n\
              • 镜像与索引：要还原的 WIM 及其中索引；\n\
              • 适用场景：数据盘损坏或迁移时恢复数据。\n\n\
              安全提示：勾选格式化会清空目标卷上的全部数据；不勾选时同名文件也会被镜像内容覆盖。"
@@ -1350,10 +1351,17 @@ unsafe fn set_operation_visibility(state: &State) {
         state.controls.target,
         if operation == "restore-existing" { 0 } else { 1 },
     );
-    // B/C 的通道单选；B 的「格式化目标分区」复选框（离线恒格式化，选项只对在线生效）
+    // B/C 的通道单选；「格式化目标分区」复选框在三个还原入口（A/B/C）都显示
+    //（2026-10-14 用户拍板：所有还原都要有格式化选项，在线离线全通道生效）。
     set_child_visible(ID_CHANNEL_ONLINE as i32, show_channel);
     set_child_visible(ID_CHANNEL_OFFLINE as i32, show_channel);
-    set_child_visible(ID_FORMAT_TARGET as i32, operation == "restore-data");
+    set_child_visible(
+        ID_FORMAT_TARGET as i32,
+        matches!(
+            operation,
+            "restore-existing" | "restore-data" | "restore-system-other"
+        ),
+    );
     // 「重启进入 PE」「创建快捷方式」只在 安装 PE tab 显示
     set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-entry");
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
@@ -1408,9 +1416,9 @@ unsafe fn layout_operation(state: &State) {
         source_combo_y
     };
     let target_details_y = target_combo_y + 36;
-    // 通道单选行：目标卷详情框下方；B 再加一行「格式化目标分区」复选框
+    // 通道单选行：目标卷详情框下方；三个还原入口再加一行「格式化目标分区」复选框
     let channel_y = target_details_y + details_height + 8;
-    let show_format_target = layout_op == "restore-data";
+    let show_format_target = is_image_restore_entry(layout_op) && layout_op != "create-secondary";
     let format_y = channel_y + 26;
     let last_details_y = if show_format_target {
         format_y + 24
@@ -1430,8 +1438,18 @@ unsafe fn layout_operation(state: &State) {
     let status_y = last_details_y + 16 + pe_extra_y;
     let image_y = status_y + 84;
     let secondary_y = image_y + 34;
+    // C（还原系统到非 C 盘）与「新增第二系统」的 verify_hash 复选框在
+    // secondary_y+32（底缘 +56）——按钮行必须让过它，留 8px 间隙。
+    // （2.5.2 及此前按钮行在 +40，与复选框重叠 16px，「严格对比哈希」被挡住。）
     let buttons_y = if index_visible {
-        secondary_y + 40
+        if matches!(
+            selected_operation(state),
+            "create-secondary" | "restore-system-other"
+        ) {
+            secondary_y + 64
+        } else {
+            secondary_y + 40
+        }
     } else if selected_operation(state) == "backup" {
         // 备份时 secondary_y 行独占「压缩率」下拉，下一行是「索引名 + 保留最近 N 个」，
         // 按钮行再下移 30px 避免遮挡。
@@ -1528,7 +1546,8 @@ unsafe fn layout_operation(state: &State) {
         reposition(online_hwnd, field_x, channel_y, 300, 22);
         reposition(offline_hwnd, field_x + 320, channel_y, 360, 22);
     }
-    // B 入口的「格式化目标分区」复选框：通道行下方一行，文案随语言刷新。
+    // 三个还原入口的「格式化目标分区」复选框：通道行下方一行（A 无通道行时
+    // 仍按同一相对位置排布），文案随语言刷新。
     if show_format_target {
         let format_hwnd = GetDlgItem(state.root, ID_FORMAT_TARGET as i32);
         set_text(
@@ -1539,7 +1558,8 @@ unsafe fn layout_operation(state: &State) {
                 "格式化目标分区（清空目标卷后写入镜像）"
             },
         );
-        reposition(format_hwnd, field_x, format_y, 460, 22);
+        let format_row_y = if channel_visible { format_y } else { channel_y };
+        reposition(format_hwnd, field_x, format_row_y, 460, 22);
     }
     reposition(state.controls.status, 20, status_y, client_width - 40, 64);
 
@@ -5610,8 +5630,9 @@ unsafe fn create_task(state: &mut State) {
             &format!("channel split: op={operation} online={online}"),
         );
         if online {
-            // 在线：B=按「格式化目标分区」选项决定是否清空目标卷（默认勾选）；
-            // C=格式化+应用+修复引导（online_operation 的 create-secondary 分支）。
+            // 在线：按「格式化目标分区」选项决定是否清空目标卷（默认勾选）——
+            // B=数据卷覆盖/格式化应用；C=格式化+应用+修复引导（online_operation
+            // 的 create-secondary 分支，同样尊重格式化选项）。
             // C 的启动菜单名通过 image_name 传给在线通道——restore_to_windows_volume
             // 会优先用它命名新启动项（用户命名 > 镜像版本名自动推断）。
             let online_image_name = if operation == "restore-system-other" {
@@ -5619,8 +5640,8 @@ unsafe fn create_task(state: &mut State) {
             } else {
                 String::new()
             };
-            let format_target = operation == "restore-data"
-                && IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
+            let format_target =
+                IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
             append_gui_log(
                 state,
                 &format!("online params: format_target={format_target}"),
@@ -5760,6 +5781,17 @@ unsafe fn create_task(state: &mut State) {
         }
         if verify_hash_enabled {
             arguments.push("--verify-hash".to_string());
+        }
+        // 格式化选项（离线链路）：三个还原入口取消勾选「格式化目标分区」时，
+        // prepare 落盘 format_target=false，RE 恢复链做覆盖式应用（跳过 diskpart）。
+        // 默认勾选不传参（=格式化，历史行为）。
+        if matches!(
+            operation.as_str(),
+            "restore-existing" | "restore-data" | "restore-system-other"
+        ) && IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) == 0
+        {
+            append_gui_log(state, "prepare args: --skip-format (overlay restore)");
+            arguments.push("--skip-format".to_string());
         }
     }
     if operation == "probe" {

@@ -78,7 +78,7 @@ mod winre_registration;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -2602,13 +2602,29 @@ fn recover_windows(
                 if task.status == Stage::Preflight {
                     store.write_transition(task, Stage::TargetErased)?;
                 }
-                format_target_partition(store, task, &target.volume, log)?;
-                if !target_root.is_dir() {
-                    return Err(err(
-                        "restore target is unavailable after DiskPart format operation",
-                    ));
+                // 格式化选项（TargetSpec.format_target，GUI 复选框落盘）：取消勾选时
+                // 覆盖式应用——跳过 diskpart 格式化与格式化后校验（不格式化就没有
+                // 「序列号已变」的校验对象），直接进入镜像应用。断电续跑从
+                // TargetErased 重入时同样按此选项跳过，行为一致。
+                if target.format_target {
+                    format_target_partition(store, task, &target.volume, log)?;
+                    if !target_root.is_dir() {
+                        return Err(err(
+                            "restore target is unavailable after DiskPart format operation",
+                        ));
+                    }
+                    verify_partition_identity_after_format(&target.volume, log)?;
+                } else {
+                    append_log(
+                        log,
+                        "按任务选项跳过格式化（覆盖式应用）：目标卷上镜像没有的文件将保留",
+                    )?;
+                    if !target_root.is_dir() {
+                        return Err(err(
+                            "restore target is unavailable for overlay apply (no format requested)",
+                        ));
+                    }
                 }
-                verify_partition_identity_after_format(&target.volume, log)?;
                 if entering_target_erased {
                     interrupt_after_stage_if_requested(
                         metadata_context,

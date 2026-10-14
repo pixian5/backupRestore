@@ -484,7 +484,14 @@ fn restore_to_windows_volume(
         });
     }
     progress.set_boot_menu(std::sync::Arc::clone(&boot_menu_session));
-    log(log_path, "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷")?;
+    log(
+        log_path,
+        if params.format_target {
+            "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷"
+        } else {
+            "STEP 2/4 还原镜像前先快照引导状态（按选项跳过格式化，覆盖式应用）"
+        },
+    )?;
     let before = run_bcd_edit(
         &[
             "/store".into(),
@@ -496,21 +503,30 @@ fn restore_to_windows_volume(
         dir,
     )?;
     let old = crate::parse_boot_manager_state(&before)
-        .ok_or_else(|| crate::err("引导管理器状态未知，拒绝格式化"))?;
+        .ok_or_else(|| crate::err("引导管理器状态未知，拒绝继续"))?;
     fs::copy(&store, dir.join("bcd-before"))?;
     fs::write(dir.join("bootmgr-before.txt"), &before)?;
 
-    let script = crate::diskpart_format_script(target.disk_number, target.partition_number)?;
-    let script_path = dir.join("format.txt");
-    fs::write(&script_path, script)?;
-    run_capture(
-        "diskpart.exe",
-        &["/s".into(), script_path.to_string_lossy().into_owned()],
-        &cmd_out_file(dir),
-        true,
-    )?;
-    let after = crate::windows_prepare::refresh_identity(&target)?;
-    backuprestore_core::operation_safety::verify_formatted_volume(&target, &after)?;
+    // 格式化选项（GUI「格式化目标分区」复选框，默认勾选）：取消勾选=跳过格式化
+    // 与格式化后校验，直接覆盖应用（盘符重绑/bcdboot/菜单命名照常——它们要求
+    // 的是「应用后的 Windows」，与是否先清空无关）。BCD 快照在上面照做，
+    // 回滚能力不受影响。
+    let after = if params.format_target {
+        let script = crate::diskpart_format_script(target.disk_number, target.partition_number)?;
+        let script_path = dir.join("format.txt");
+        fs::write(&script_path, script)?;
+        run_capture(
+            "diskpart.exe",
+            &["/s".into(), script_path.to_string_lossy().into_owned()],
+            &cmd_out_file(dir),
+            true,
+        )?;
+        let formatted = crate::windows_prepare::refresh_identity(&target)?;
+        backuprestore_core::operation_safety::verify_formatted_volume(&target, &formatted)?;
+        formatted
+    } else {
+        crate::windows_prepare::refresh_identity(&target)?
+    };
     let target_root = PathBuf::from(
         after
             .volume_path()

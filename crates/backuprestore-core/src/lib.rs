@@ -487,6 +487,17 @@ pub struct TargetSpec {
     /// 比静默当成 `false` 安全——`false` 会让「重建唯一系统」场景误走第二系统收尾，
     /// 去改写当前运行系统的盘符绑定。
     pub is_active_system: bool,
+    /// 还原前是否格式化目标卷（2026-10-14 用户拍板：所有还原入口都有显式格式化选项）。
+    /// `true`（默认）= diskpart 快速格式化 + 校验成功后写镜像；`false` = 覆盖式应用
+    /// （不格式化，卷上镜像没有的文件保留）。旧任务缺此字段按 `true` 走原路径。
+    #[serde(default = "default_format_target")]
+    pub format_target: bool,
+}
+
+/// 旧任务（2.5.2 及以前）没有 format_target 字段，反序列化按 true 兜底——
+/// 与历史行为（恒格式化）一致，不会把旧任务的行为静默改变。
+fn default_format_target() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1907,6 +1918,7 @@ mod tests {
             boot_menu_name: None,
             minimum_size_bytes: 100,
             is_active_system: true,
+            format_target: true,
         });
         assert!(task.validate().is_err());
     }
@@ -1938,6 +1950,7 @@ mod tests {
             boot_menu_name: None,
             minimum_size_bytes: 100,
             is_active_system: true,
+            format_target: true,
         });
         task.verify_hash = Some(true);
         task
@@ -2103,6 +2116,7 @@ mod tests {
             boot_menu_name: None,
             minimum_size_bytes: 100,
             is_active_system: true,
+            format_target: true,
         });
         assert!(task.validate().is_err());
     }
@@ -2156,6 +2170,7 @@ mod tests {
             boot_menu_name: Some("Windows 11 Backup".into()),
             minimum_size_bytes: 100,
             is_active_system: false,
+            format_target: true,
         });
         task.source = Some(identity("source", 200));
         task.workspace_volume = Some(identity("workspace", 200));
@@ -2191,6 +2206,7 @@ mod tests {
             boot_menu_name: None,
             minimum_size_bytes: 100,
             is_active_system: true,
+            format_target: true,
         });
         assert!(task.validate().is_ok());
         task.source = None;

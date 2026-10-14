@@ -118,6 +118,10 @@ pub(crate) struct PrepareOptions {
     force_restore_hash: bool,
     /// 还原时严格校验镜像哈希（GUI 勾选了对比哈希，默认未勾选仅对比大小）。
     verify_hash: bool,
+    /// 还原前是否格式化目标卷（GUI「格式化目标分区」复选框，默认 true）。
+    /// false = 覆盖式应用（不格式化，卷上镜像没有的文件保留），落盘进
+    /// TargetSpec 供 RE 恢复链读取。
+    format_target: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,6 +399,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut compress = None;
     let mut force_restore_hash = false;
     let mut verify_hash = false;
+    let mut format_target = true;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
         let value = |name: &str, args: &mut std::vec::IntoIter<String>| {
@@ -535,6 +540,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         keep_indexes,
         force_restore_hash,
         verify_hash,
+        format_target,
     })
 }
 
@@ -812,6 +818,8 @@ fn prepare_task(
                 // 取不到活动系统身份时直接失败，不要退化成 false——那会让「重建唯一系统」
                 // 误走第二系统收尾。
                 is_active_system: target.same_partition(&active_system_volume_identity()?),
+                // 格式化选项落盘（GUI 复选框 → prepare 参数 → RE 恢复链读取）
+                format_target: options.format_target,
             });
         }
         Operation::Probe => {}

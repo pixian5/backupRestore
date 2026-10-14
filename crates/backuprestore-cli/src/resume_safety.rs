@@ -132,6 +132,7 @@ mod tests {
             boot_menu_name: None,
             minimum_size_bytes: 1,
             is_active_system: true,
+            format_target: true,
         });
         let mut values = BTreeMap::from([
             ("SOURCE_DISK_GUID".into(), "disk".into()),
