@@ -52,6 +52,9 @@ const ID_LOG_BUTTON: i32 = 6;
 const ID_LOG_EDIT: i32 = 7;
 /// 「引导修复」按钮：第二阶段开始后打开系统选择与排序窗口。
 const ID_BOOT_MENU: i32 = 8;
+/// 「打开命令提示符」按钮：RE 内现场运行命令修复（bcdedit/dism 等）。
+/// 2026-10-14 用户需求：恢复环境出问题时可直接开 cmd，不必再从宿主侧逐键注入。
+const ID_CMD_BUTTON: i32 = 9;
 const SS_RIGHT: u32 = 0x0000_0002;
 const TIMER_ID: usize = 1;
 /// 详细日志弹窗的刷新定时器（与主窗口定时器区分）。
@@ -79,6 +82,10 @@ const WM_KEYDOWN: u32 = 0x0100;
 /// L：无论焦点在哪个控件都能打开详细日志弹窗。
 /// WinRE 里鼠标并非总是可用，必须留一条纯键盘通路。
 const VK_L: usize = 0x4C;
+/// K：全局打开命令提示符（与 L 同机制；WinRE 下鼠标未必可用）。
+/// 代价与 L 相同：焦点在文本控件里时无法输入字母 K——恢复窗口本身没有
+/// 可编辑文本，只影响详细日志弹窗/引导修复编辑器内的输入，属可接受。
+const VK_K: usize = 0x4B;
 const VK_ESCAPE: usize = 0x1B;
 /// 窗口类背景画刷：`COLOR_WINDOW + 1`。
 ///
@@ -689,7 +696,8 @@ unsafe fn layout_controls(hwnd: Hwnd) {
     let detail_top = 144;
     let tail_top = height - MARGIN - tail_height;
     let detail_height = (tail_top - GAP - detail_top).max(80);
-    let tail_width = content - 2 * BUTTON_WIDTH - 2 * GAP;
+    // 按钮排现有三个（详细日志/引导修复/命令提示符），日志尾部让出三份宽度。
+    let tail_width = content - 3 * BUTTON_WIDTH - 3 * GAP;
     unsafe {
         MoveWindow(GetDlgItem(hwnd, ID_STAGE), MARGIN, 28, stage_width, 48, 1);
         MoveWindow(
@@ -734,6 +742,35 @@ unsafe fn layout_controls(hwnd: Hwnd) {
             BUTTON_WIDTH,
             tail_height,
             1,
+        );
+        // 命令提示符按钮排在按钮行最右（第三个）。
+        MoveWindow(
+            GetDlgItem(hwnd, ID_CMD_BUTTON),
+            MARGIN + tail_width.max(200) + GAP + 2 * (BUTTON_WIDTH + GAP),
+            tail_top,
+            BUTTON_WIDTH,
+            tail_height,
+            1,
+        );
+    }
+}
+
+/// 在恢复环境里打开一个交互式命令提示符（cmd.exe）。
+///
+/// 2026-10-14 用户需求：RE 内出问题（引导劫持/挂起操作等）时能现场运行
+/// bcdedit/dism 等命令修复，不必再从宿主侧逐键注入。按钮与 K 快捷键都走这里。
+/// 进程独立运行不等待（见 windows_command::spawn_detached_interactive，
+/// 不挂作业对象、恢复流程不暂停）；失败只写日志。
+unsafe fn open_cmd_prompt(shared: &ProgressShared) {
+    if crate::windows_command::spawn_detached_interactive("cmd.exe") {
+        let _ = crate::append_log(
+            &*shared.log_path.lock().unwrap(),
+            "已打开命令提示符（用户请求，恢复流程不受影响）",
+        );
+    } else {
+        let _ = crate::append_log(
+            &*shared.log_path.lock().unwrap(),
+            "打开命令提示符失败：CreateProcessW 返回 0",
         );
     }
 }
@@ -1034,6 +1071,25 @@ unsafe extern "system" fn window_proc(
                 SendMessageW(boot_button, WM_SETFONT, create_font(-19, true) as usize, 1);
                 ShowWindow(boot_button, SW_HIDE);
             }
+            // 「打开命令提示符(K)」按钮：常显（不依赖任务阶段）——恢复环境任何
+            // 时刻都可能需要现场运行命令修复；K 为全局快捷键。
+            let cmd_button = CreateWindowExW(
+                0,
+                encode("Button").as_ptr(),
+                encode("打开命令提示符(K)").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0,
+                0,
+                120,
+                94,
+                hwnd,
+                ID_CMD_BUTTON as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !cmd_button.is_null() {
+                SendMessageW(cmd_button, WM_SETFONT, create_font(-19, true) as usize, 1);
+            }
             layout_controls(hwnd);
             SetTimer(hwnd, TIMER_ID, 1000, None);
             0
@@ -1062,6 +1118,12 @@ unsafe extern "system" fn window_proc(
                             );
                         }
                     }
+                }
+            } else if command_id == ID_CMD_BUTTON {
+                // 现场命令提示符：恢复流程不暂停不受影响（cmd 独立进程）。
+                let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+                if !shared_ptr.is_null() {
+                    open_cmd_prompt(&*shared_ptr);
                 }
             }
             0
@@ -1221,10 +1283,15 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             let msg_message = (*msg.as_ptr()).message;
             let msg_wparam = (*msg.as_ptr()).w_param;
             // 键盘通路：WinRE 下鼠标未必可用，所以 L 全局打开详细日志、
-            // Esc 关闭弹窗，都在消息循环里拦截——焦点落在哪个子控件上都有效。
+            // K 全局打开命令提示符、Esc 关闭弹窗，都在消息循环里拦截——
+            // 焦点落在哪个子控件上都有效。
             if msg_message == WM_KEYDOWN {
                 if msg_wparam == VK_L {
                     open_log_window(hwnd, shared);
+                    continue;
+                }
+                if msg_wparam == VK_K {
+                    open_cmd_prompt(&*shared);
                     continue;
                 }
                 if msg_wparam == VK_ESCAPE {

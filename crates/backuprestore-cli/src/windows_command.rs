@@ -209,9 +209,48 @@ fn quote(arg: &str) -> String {
     out
 }
 
+/// 分离启动一个交互式进程（不等待、不捕获输出、不挂作业对象）。
+///
+/// 2026-10-14 用户需求：恢复环境（WinRE）的进度窗口要能现场打开 cmd.exe 运行
+/// 修复命令（bcdedit/dism 等）。与 `run_program` 的差别：cmd 需要独立控制台、
+/// 与恢复流程并行存活，绝不能被作业对象在收尾时连带终止。
+#[cfg(windows)]
+pub(crate) fn spawn_detached_interactive(program: &str) -> bool {
+    const STARTF_USESHOWWINDOW: u32 = 0x0000_0001;
+    const SW_SHOWNORMAL: u16 = 1;
+    // CreateProcessW 可能改写命令行缓冲，给可变缓冲而非字面量指针。
+    let mut line = program.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let mut startup = StartupInfo {
+        cb: std::mem::size_of::<StartupInfo>() as u32,
+        flags: STARTF_USESHOWWINDOW,
+        show: SW_SHOWNORMAL,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let mut info = ProcessInfo {
+        process: null_mut(),
+        thread: null_mut(),
+        process_id: 0,
+        thread_id: 0,
+    };
+    let ok = unsafe {
+        CreateProcessW(
+            null(),
+            line.as_mut_ptr(),
+            null_mut(),
+            null_mut(),
+            0,
+            0,
+            null_mut(),
+            null(),
+            &mut startup,
+            &mut info,
+        )
+    };
+    ok != 0
+}
+
 /// 用户输入以独立参数传给 DISM，不经过命令解释器，避免名称/路径中的元字符被执行。
-pub(crate) fn run_program(
-    program: &str,
+pub(crate) fn run_program(    program: &str,
     args: &[String],
     out: Option<&Path>,
     ms: u32,
