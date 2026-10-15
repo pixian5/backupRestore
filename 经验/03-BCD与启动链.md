@@ -11,7 +11,7 @@
 - `bcdedit /enum` **把两种形态都规范化显示成 `ramdisk=[X:]`**——存储层差异回读不可见，这是历史上误判"根因是卷"的直接原因 —— 20261014-0003/2115 [✅]
 - 代码落点：`boot_entry.rs` `dos_device_of()` 用 `QueryDosDeviceW` 转设备路径，**失败即拒绝写盘符形式**（不静默退化）；返回值必须以首个 NUL 截断（否则报 `nul byte found in provided data`）；写入点写 `ramdisk=[\Device\HarddiskVolumeN]<卷内路径>,{devopts}` + `ramdisksdidevice partition=\Device\HarddiskVolumeN`，回读期望值仍用盘符形式（恰好一致）—— 20261014-0003/2115 [✅ 源码]
 - **载荷留在镜像卷**（`windows_prepare.rs` `re_staging.volume = image_volume`）；2.4.5「搬去 C:」已回退（污染 C:，且 `restore-existing` 格式化目标会抹掉自己的续跑载荷和 boot.sdi）—— 20261014-0003/2356 [✅]
-- ramdisk 形态细节：`]` **紧跟卷闭合、结尾没有第二个 `]`**（`ramdisk=[F:]\path,{opts}`）；`{ramdiskoptions}`（`{ae5534e0-…}`）与真实 WinRE 条目用的设备选项对象不是一回事，且 `/enum all` 不列出它 —— 20260927-1300/20261011-2350 [✅/⚠️]
+- ramdisk 形态细节：`]` **紧跟卷闭合、结尾没有第二个 `]`**（`ramdisk=[F:]\path,{opts}`）；`{ramdiskoptions}`（`{ae5534e0-…}`）与真实 WinRE 条目用的设备选项对象不是一回事，且 `/enum all` 不列出它 —— 20260929-1300/20261011-2350 [✅/⚠️]
 - RAMDISK osloader 权威参数：`ramdisksdidevice partition=X:` + `ramdisksdipath \目录\boot.sdi`（**必须 boot.sdi，误设 boot.wim 直接起不来**）+ `winpe yes` + `detecthal yes` + `systemroot \windows` + `nx OptIn`；`0xc0000225` 根因常是缺 `systemroot`/`nx` —— 20260825-2309/20260909-2145 [✅]
 
 ## 2. 盘符绑定（第二系统的灵魂）
