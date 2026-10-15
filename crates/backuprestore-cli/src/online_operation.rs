@@ -34,6 +34,23 @@ fn log(path: &Path, message: &str) -> Result<(), TaskError> {
     crate::append_log(path, message)
 }
 
+/// STEP 1/4 的开场白按 `operation` 分叉（2026-10-15 用户裁定 A3）。
+///
+/// 备份与还原共用 `online_operation` 模块，但两者实质动作相反：备份只读源卷写镜像，
+/// 还原则会格式化目标卷并改写引导。此前共用一句还原措辞，备份用户会以为自己的盘
+/// 要被格式化；且旧还原措辞里「不改动主系统默认启动项」在 v2.6.1 default 归属翻转后
+/// 已是**事实错误**（还原后 default 指向本次还原的新系统），一并订正。
+fn step1_notice(operation: &str) -> String {
+    if operation == "backup" {
+        "STEP 1/4 校验参数和卷身份；备份只读取源卷并写入镜像，不格式化任何卷、不改写启动引导"
+            .to_string()
+    } else {
+        "STEP 1/4 校验参数和卷身份；还原到另一 Windows 卷时会格式化目标卷并写入引导，\
+         还原完成后默认启动项指向本次还原的系统（原系统仍保留在菜单中）"
+            .to_string()
+    }
+}
+
 pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
     let dir = std::env::temp_dir().join(format!(
         "BackupRestore-online-{}-{}",
@@ -55,11 +72,8 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
             "ONLINE_RESTORE"
         }),
     ));
-    let result = log(
-        &path,
-        "STEP 1/4 校验参数和卷身份；还原到另一 Windows 卷时会格式化并写入引导，但不改动主系统默认启动项",
-    )
-    .and_then(|()| execute_inner(params, &path, &progress.0));
+    let result = log(&path, &step1_notice(&params.operation))
+        .and_then(|()| execute_inner(params, &path, &progress.0));
     let mut success = result.is_ok();
     let final_message = match result {
         Ok(()) => "操作完成：命令、回读和副档簿记均已通过".to_string(),
@@ -1673,5 +1687,33 @@ description             something";
         fs::write(bad_sidecar, &original_sidecars[0]).unwrap();
         println!("ONLINE_E2E_SUCCESS log={} hash={hash}", log_path.display());
         // 保留小体积验收日志和产物，不删除失败证据。
+    }
+
+    #[test]
+    fn step1_notice_splits_by_operation() {
+        // 2026-10-15 用户裁定 A3：备份与还原共用本模块，开场白必须分叉——
+        // 备份用户看到「会格式化并写入引导」会以为自己的盘要被动手。
+        let backup = step1_notice("backup");
+        assert!(
+            backup.contains("只读取源卷") && backup.contains("不格式化"),
+            "备份措辞必须强调只读源卷：{backup}"
+        );
+        assert!(
+            !backup.contains("格式化目标卷"),
+            "备份措辞不得出现格式化目标卷：{backup}"
+        );
+        let restore = step1_notice("restore");
+        assert!(
+            restore.contains("格式化目标卷") && restore.contains("写入引导"),
+            "还原措辞要说明格式化与引导：{restore}"
+        );
+        assert!(
+            restore.contains("默认启动项指向本次还原的系统"),
+            "还原措辞必须反映 v2.6.1 翻转后的 default 归属：{restore}"
+        );
+        assert!(
+            !restore.contains("不改动主系统默认启动项"),
+            "旧措辞事实错误（翻转后 default 会改指），必须剔除：{restore}"
+        );
     }
 }

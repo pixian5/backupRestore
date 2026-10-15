@@ -573,6 +573,10 @@ pub(crate) fn render_entries(plan: &BootMenuPlan, cursor: usize) -> String {
                 e.drive_letter,
                 if e.is_restore_target {
                     " [当前正在还原中的系统·Step 4生效]"
+                } else if e.is_current_default {
+                    // 2026-10-15 用户裁定 A4：钉住项必须在界面上说明白「还原后它不再是默认」，
+                    // 否则用户看到「当前默认启动项」被钉住会理所当然地以为还原后还进它。
+                    " [当前默认启动项·不可取消，还原后由新系统接管]"
                 } else {
                     ""
                 }
@@ -1703,6 +1707,32 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
             "必选标注在行尾"
         );
         assert!(lines[1].contains("(E:)"), "目标行带盘符");
+    }
+
+    #[test]
+    fn render_entries_explains_the_pinned_current_default() {
+        // 2026-10-15 用户裁定 A4：钉住的「当前默认启动项」必须在列表里说明
+        // 「还原后由新系统接管」——此前该行没有任何标注，用户会以为还原后仍进它。
+        let mut p = plan();
+        p.entries[0].is_current_default = true;
+        let rendered = render_entries(&p, 1);
+        let lines: Vec<&str> = rendered.split("\r\n").collect();
+        assert!(
+            lines[0].contains("[当前默认启动项·不可取消，还原后由新系统接管]"),
+            "当前默认项必须带说明标注：{lines:?}"
+        );
+        assert!(
+            lines[0].ends_with("[当前默认启动项·不可取消，还原后由新系统接管]"),
+            "标注在行尾，保持与目标标注一致的排版"
+        );
+        assert!(
+            !lines[0].contains("[当前正在还原中的系统"),
+            "两个标注互斥，不能同时出现"
+        );
+        assert!(
+            !lines[1].contains("当前默认启动项"),
+            "目标行不应误标为当前默认项"
+        );
     }
 
     #[test]

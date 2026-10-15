@@ -493,7 +493,12 @@ mod tests {
             }
         ));
         std::thread::sleep(Duration::from_secs(4));
-        let text = std::fs::read_to_string(&output).unwrap();
+        // 中文 Windows 上 cmd 在超时/负载场景会把 GBK 错误信息（如「系统找不到指定的
+        // 路径。」）写进输出文件，read_to_string 要求 UTF-8 会直接 panic——这与本用例
+        // 要验证的「作业对象杀掉了整棵树」毫无关系。改为按字节读 + lossy 解码：
+        // ORPHAN 是 ASCII，仍能可靠判存在性，编码噪声只会变成替换字符。
+        let bytes = std::fs::read(&output).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
         assert!(!text.contains("ORPHAN"));
         std::fs::remove_file(output).unwrap();
     }

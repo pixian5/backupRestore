@@ -1235,7 +1235,23 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             return; // 注册失败时进度窗口非关键，静默降级。
         }
     }
-    let title = encode("BackupRestore 恢复进度");
+    // 标题按 operation 分叉（2026-10-15 用户裁定 A3）：在线备份与在线还原共用本窗口，
+    // 但用户看到的标题写「恢复进度」会让备份用户以为正在还原。阶段骨架早在 487 行
+    // 就按 is_backup 分叉，标题此前是漏网的一处。
+    let operation = shared
+        .operation
+        .lock()
+        .unwrap()
+        .as_deref()
+        .map(|s| {
+            s.eq_ignore_ascii_case("BACKUP") || s.eq_ignore_ascii_case("ONLINE_BACKUP")
+        })
+        .unwrap_or(false);
+    let title = encode(if operation {
+        "BackupRestore 备份进度"
+    } else {
+        "BackupRestore 恢复进度"
+    });
     let hwnd = unsafe {
         CreateWindowExW(
             0,
