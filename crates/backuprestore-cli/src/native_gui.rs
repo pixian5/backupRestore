@@ -64,6 +64,9 @@ const BM_SETCHECK: u32 = 0x00f1;
 const BST_UNCHECKED: usize = 0;
 const BST_CHECKED: usize = 1;
 const CBN_SELCHANGE: usize = 1;
+/// 编辑框内容变化通知。注意 SetWindowText 也会触发它——判定「用户手改」
+/// 必须对照 `menu_name_auto`（见 set_menu_name）。
+const EN_CHANGE: usize = 0x0300;
 const WM_SETFONT: u32 = 0x0030;
 const WM_SIZE: u32 = 0x0005;
 const WM_KEYDOWN: u32 = 0x0100;
@@ -592,6 +595,13 @@ struct State {
     operation_index: usize,
     /// 测试钩子：智能分流时直接用该选择（0=取消 1=PE 2=RE），跳过弹窗。
     test_drive_choice: Option<i32>,
+    /// 「启动菜单名称」文本框是否被用户手动改过（S5）。改过之后 WIM 索引名
+    /// 预填不再覆盖它——用户意图优先于自动预填。
+    menu_name_touched: bool,
+    /// 程序最后一次自动写进菜单名文本框的值。WM_COMMAND 的 EN_CHANGE 拿到
+    /// 与它不同的文本才判定「用户手改」：SetWindowText 自己也会触发 EN_CHANGE，
+    /// 没有这个对照就会把程序自己的预填误判成用户输入。
+    menu_name_auto: Option<String>,
 }
 
 /// State for the PE recovery-desktop window. The operation the technician
@@ -1960,6 +1970,8 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     layout_operation(state);
     set_operation_guidance(state);
     set_drive_details(state);
+    // S5：切到 C/第二系统 tab 时，若菜单名还是自动态就用当前索引的 WIM 名预填。
+    prefill_menu_name_from_image(state);
     // 整窗强制重绘（历史 bug 双保险）：layout_operation 会对十余个控件做
     // MoveWindow，快速连续切换 tab 时重绘风暴容易让个别控件区域残留上一
     // tab 的文本（表现为「PE tab 镜像标签行叠出上一 tab 的 status 文本」）。
@@ -2398,6 +2410,83 @@ unsafe fn set_wim_items(state: &State) {
     SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
 }
 
+/// S5：把选中 WIM 索引的名字预填到「启动菜单名称」文本框。
+///
+/// 名字取自 DISM 的 ImageName——我们自己的备份是索引名（如「2026-10-14
+/// 21:40」），第三方 WIM 是「Windows 11 Pro」之类。只在用户没有手动改过时
+/// 覆盖（`menu_name_touched`）：用户意图优先于自动预填。
+unsafe fn prefill_menu_name_from_image(state: &mut State) {
+    if state.menu_name_touched {
+        return;
+    }
+    if !matches!(
+        selected_operation(state),
+        "create-secondary" | "restore-system-other"
+    ) {
+        return;
+    }
+    // 先取owned名字再写文本框：image 的借用不能跨过 set_menu_name 的 &mut。
+    let name = state
+        .wim_images
+        .get(combo_index(state.controls.index))
+        .map(|image| image.name.trim().to_string());
+    let Some(name) = name else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    set_menu_name(state, &name);
+}
+
+/// 程序侧写菜单名（区别于用户输入）：同步记录自动值，WM_COMMAND 的
+/// EN_CHANGE 据此区分「程序预填」与「用户手改」——SetWindowText 自己也会
+/// 触发 EN_CHANGE，没有这个对照就会把程序自己的预填误判成用户输入。
+///
+/// 顺序要紧：必须先写 `menu_name_auto` 再 `set_text`。EDIT 的 WM_SETTEXT
+/// 会同步（SendMessage）向父窗发 EN_CHANGE，处理函数在同一调用栈上重入；
+/// 若照「先写文本后记自动值」的直觉顺序，重入时 auto 还是上一个值（启动
+/// 首次甚至是 None），当前文本已变 → 差值非空 → `menu_name_touched` 被
+/// 永久置 true，此后读取镜像/切索引的预填全部被跳过（2026-10-15 实机
+/// 复现：菜单框永远停留在语言默认值，S5 预填整个失效）。
+unsafe fn set_menu_name(state: &mut State, value: &str) {
+    state.menu_name_auto = Some(value.to_string());
+    set_text(state.controls.menu, value);
+}
+
+/// S5：读当前 BCD 里所有启动项名字（撞名预检的数据源）。
+///
+/// 走 CLI 子命令 `list-boot-entries`：`bcdedit /enum` 是读操作，普通权限即可，
+/// 而 GUI 常态未提权（package 自启副本）。读不到返回空表——按「无法预检」
+/// 处理并记日志，承重消解在提权后的 prepare 侧（docs/20261015-0725）。
+fn existing_boot_entry_names(state: &State) -> Vec<String> {
+    match rust_cli_output(&["list-boot-entries"]) {
+        Ok(output) => {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&output) else {
+                append_gui_log(state, "boot entries JSON parse failed; precheck skipped");
+                return Vec::new();
+            };
+            value
+                .get("descriptions")
+                .and_then(|items| items.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        Err(error) => {
+            append_gui_log(
+                state,
+                &format!("boot entries unavailable; collision precheck skipped: {error}"),
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// 压缩方式下拉显示文本。只保留「压缩/不压缩」两项，不再暴露 max/LZX。
 /// 索引 0/1 固定对应 DISM 术语 fast/none（映射见 text_parsing）。
 fn compress_level_labels(language: Language) -> [&'static str; 2] {
@@ -2468,7 +2557,7 @@ unsafe fn apply_language(state: &mut State) {
         || existing_menu_name == "Windows Backup"
         || existing_menu_name == "Windows 备份"
     {
-        set_text(state.controls.menu, default_menu_name);
+        set_menu_name(state, default_menu_name);
     }
     set_drive_details(state);
     set_volume_labels(state);
@@ -3276,6 +3365,8 @@ unsafe fn read_image(state: &mut State) {
         Ok(images) => {
             state.wim_images = images;
             set_wim_items(state);
+            // S5：索引名预填菜单名文本框（用户手改过则不覆盖）。
+            prefill_menu_name_from_image(state);
             let image = json_text(&report, "image");
             let sha256 = json_text(&report, "sha256");
             let metadata = json_text(&report, "metadataSha256");
@@ -5292,14 +5383,69 @@ unsafe fn create_task(state: &mut State) {
         );
         return;
     }
+    // S5：新启动项撞名消解。与现有任一启动菜单项重名时追加 -YYYYMMDDHHMM，
+    // 回写文本框并告知——用户可继续手改后再创建。数据源是未提权的
+    // bcdedit /enum（list-boot-entries 子命令）；读不到就跳过，提权后的
+    // prepare 侧还有一道同样的消解兜底（docs/20261015-0725）。
+    if matches!(
+        operation.as_str(),
+        "restore-system-other" | "create-secondary"
+    ) {
+        let typed = get_text(state.controls.menu).trim().to_string();
+        let existing = existing_boot_entry_names(state);
+        let resolved =
+            crate::boot_menu::resolve_menu_name_collision(&typed, &existing, chrono::Local::now());
+        if resolved != typed {
+            append_gui_log(
+                state,
+                &format!("boot menu name collision resolved: {typed} -> {resolved}"),
+            );
+            set_menu_name(state, &resolved);
+            // 消解结果已是既定名：标上手改，避免随后切索引又被 WIM 名覆盖。
+            state.menu_name_touched = true;
+            show_message(
+                state.root,
+                &if language == Language::English {
+                    format!(
+                        "The boot menu name \"{typed}\" is already in use by an existing boot entry. It has been changed to \"{resolved}\". You can edit it further before creating the task."
+                    )
+                } else {
+                    format!(
+                        "启动菜单名称「{typed}」与现有启动项重名，已自动改为「{resolved}」。可继续手动修改后再创建任务。"
+                    )
+                },
+                if language == Language::English {
+                    "Boot menu name adjusted"
+                } else {
+                    "启动菜单名称已调整"
+                },
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+    }
     let operation_label = operation_display(language, &operation);
+    // C/第二系统入口把最终菜单名写进破坏性确认摘要：消解后的名字必须让用户
+    // 在点「是」之前看见，而不是建完任务才发现启动项叫了别的名字。
+    let menu_summary = if matches!(
+        operation.as_str(),
+        "restore-system-other" | "create-secondary"
+    ) {
+        let menu = get_text(state.controls.menu).trim().to_string();
+        if language == Language::English {
+            format!("\nBoot menu name: {menu}")
+        } else {
+            format!("\n启动菜单名：{menu}")
+        }
+    } else {
+        String::new()
+    };
     let summary = if language == Language::English {
         format!(
-            "Mode: {operation_label}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}",
+            "Mode: {operation_label}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}{menu_summary}",
         )
     } else {
         format!(
-            "模式：{operation_label}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}",
+            "模式：{operation_label}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}{menu_summary}",
         )
     };
     // 测试钩子（--test-hook + auto_install）下自动接受确认框，与 PE 安装确认同策略：
@@ -6633,6 +6779,8 @@ unsafe extern "system" fn window_proc(
             drives,
             operation_index: 0,
             test_drive_choice: None,
+            menu_name_touched: false,
+            menu_name_auto: None,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -6807,6 +6955,19 @@ unsafe extern "system" fn window_proc(
             }
             if matches!(control_id, ID_SOURCE | ID_TARGET) && notification == CBN_SELCHANGE {
                 set_drive_details(state);
+                return 0;
+            }
+            // 索引切换：菜单名预填跟随新选中的 WIM 索引名（用户手改过则不动）。
+            if control_id == ID_INDEX && notification == CBN_SELCHANGE {
+                prefill_menu_name_from_image(state);
+                return 0;
+            }
+            // 菜单名文本框：与程序自动值不同即判定用户手改，此后预填不再覆盖。
+            if control_id == ID_MENU && notification == EN_CHANGE {
+                let current = get_text(state.controls.menu);
+                if state.menu_name_auto.as_deref() != Some(current.as_str()) {
+                    state.menu_name_touched = true;
+                }
                 return 0;
             }
             match control_id {

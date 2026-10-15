@@ -204,6 +204,38 @@ pub(crate) fn list_volumes() -> Result<(), TaskError> {
     Ok(())
 }
 
+/// 列出当前 BCD 里所有分区 loader 的描述（S5 撞名预检，GUI 创建任务前调用）。
+///
+/// 刻意**不带 /store、不挂 ESP**：`bcdedit /enum` 是读操作，普通用户权限即可
+/// 完成，而 GUI 常态未提权（package 自启副本）；提权 prepare 侧的消解发生在
+/// 任务创建之后，用户看不到结果——这里让 GUI 在创建任务前就能预检并回显。
+///
+/// 失败不报错、输出空列表：调用方（GUI）按「无法预检」处理并记日志，
+/// 真正的承重消解在 prepare 侧（挂 ESP 读 /store，必然可用）。
+/// 输出 GBK 的本地化字段名用 `decode_windows_bytes` 解，中文菜单名才不会
+/// 被 from_utf8_lossy 弄花（弄花等于撞名检查对中文系统全废）。
+#[cfg(windows)]
+pub(crate) fn list_boot_entries() -> Result<(), TaskError> {
+    let output = std::process::Command::new("bcdedit.exe")
+        .args(["/enum", "all", "/v"])
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let descriptions = match output {
+        Ok(output) if output.status.success() => {
+            crate::boot_menu::all_loader_descriptions(&crate::text_parsing::decode_windows_bytes(
+                &output.stdout,
+            ))
+        }
+        _ => Vec::new(),
+    };
+    println!(
+        "{}",
+        serde_json::json!({ "descriptions": descriptions })
+    );
+    Ok(())
+}
+
 pub(crate) fn inspect_environment() -> Result<(), TaskError> {
     let output = capture("cmd.exe", &["/d", "/c", "ver"])?;
     // `ver` is localized and may use the active Windows code page.  The
@@ -695,6 +727,34 @@ fn prepare_task(
     if let Some(parent) = bootstrap_log.parent() {
         fs::create_dir_all(parent)?;
     }
+    // S5 新启动项撞名消解（docs/20261015-0725）：拟用的菜单名与现有任一启动项
+    // 重名时追加 -YYYYMMDDHHMM。GUI 侧已按用户可见的方式消解过一次（幂等，
+    // 已加后缀的名字不会二次加），但 CLI 直跑不过 GUI，必须在这里兜底——
+    // 否则 validate 的「启动菜单出现同名项」会直接拒掉任务，而用户看到的
+    // 名字是他自己起的，完全无法归因。读不到 BCD 不阻断：退化成不消解，
+    // 由 validate 的同名守卫以明确错误拦住，也好过 silently 建出两个同名项。
+    let options = {
+        let mut options = options;
+        if options.operation == Operation::CreateSecondary {
+            let existing = crate::boot_menu::existing_loader_descriptions(&bootstrap_log);
+            let resolved = crate::boot_menu::resolve_menu_name_collision(
+                &options.boot_menu_name,
+                &existing,
+                chrono::Local::now(),
+            );
+            if resolved != options.boot_menu_name.trim() {
+                append_log(
+                    &bootstrap_log,
+                    &format!(
+                        "启动菜单名与现有启动项重名，已自动消解：{} -> {}",
+                        options.boot_menu_name, resolved
+                    ),
+                )?;
+            }
+            options.boot_menu_name = resolved;
+        }
+        options
+    };
     let cleanup =
         store.cleanup_terminal_tasks(backuprestore_core::DEFAULT_TERMINAL_TASK_RETENTION)?;
     if !cleanup.removed_task_ids.is_empty()

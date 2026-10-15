@@ -479,10 +479,42 @@ fn restore_to_windows_volume(
     boot_menu_session.set_default_policy(crate::boot_menu::DefaultPolicy::PreserveCurrentDefault);
     // 调用方显式指定了镜像名时以它为准（用户自己的命名优先于自动版本名）。
     // 目标下标不硬编码：默认顺序里它在最后，用户也可能上移。
+    //
+    // S5 撞名消解：在线路径没有离线 prepare 的那道 CLI 兜底，而 rename 发生
+    // 在 BootMenuSession::prepare 之后——不在这里消解，同名项要等到 STEP 4
+    // 的 validate 才报错，那时目标卷已格式化、镜像已应用，失败代价极高。
+    // 两级对照：先 live BCD（用户定义的「现有启动菜单」），闭包内再对照
+    // 方案其它条目（覆盖"有 Windows 但 BCD 无条目"的候选卷）。
     if !params.image_name.is_empty() {
-        let name = params.image_name.clone();
+        let existing = crate::boot_menu::existing_loader_descriptions(log_path);
+        let pre_resolved = crate::boot_menu::resolve_menu_name_collision(
+            &params.image_name,
+            &existing,
+            chrono::Local::now(),
+        );
+        if pre_resolved != params.image_name.trim() {
+            log(
+                log_path,
+                &format!(
+                    "启动菜单名与现有启动项重名，已消解：{} -> {}",
+                    params.image_name, pre_resolved
+                ),
+            )?;
+        }
         boot_menu_session.edit(move |plan| {
             if let Some(position) = plan.restore_target_index() {
+                let others: Vec<String> = plan
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != position)
+                    .map(|(_, entry)| entry.display_name.clone())
+                    .collect();
+                let name = crate::boot_menu::resolve_menu_name_collision(
+                    &pre_resolved,
+                    &others,
+                    chrono::Local::now(),
+                );
                 plan.rename(position, &name);
             }
         });

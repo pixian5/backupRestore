@@ -207,6 +207,8 @@ fn main() {
         #[cfg(windows)]
         Some("list-volumes") => windows_prepare::list_volumes(),
         #[cfg(windows)]
+        Some("list-boot-entries") => windows_prepare::list_boot_entries(),
+        #[cfg(windows)]
         Some("inspect-environment") => windows_prepare::inspect_environment(),
         #[cfg(windows)]
         Some("wim-info") => {

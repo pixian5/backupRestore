@@ -168,6 +168,42 @@ impl BootMenuPlan {
     }
 }
 
+/// 新启动项命名撞名消解（S5，docs/20261015-0725）。
+///
+/// 拟用的名字与现有任一启动菜单项重名时，在末尾追加本地时间后缀
+/// `-YYYYMMDDHHMM`；同一分钟内已有同基名项时退到秒，再退到秒+序号，
+/// 保证绝不返回重名。基名超长时先截断，保证结果不超过 `NAME_MAX_CHARS`。
+///
+/// 为什么消解而不是报错：`validate()` 对同名项是硬失败，而重名在真实场景
+/// 很常见——用镜像索引名（备份时间戳）当菜单名时二次还原、同一镜像装两个
+/// 第二系统。与其让用户每次自己想新名字（还会把「为什么建不了任务」归因错
+/// 地方），不如按用户要求的粒度自动避让，文本框回显后仍可手改。
+pub(crate) fn resolve_menu_name_collision(
+    preferred: &str,
+    existing: &[String],
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    let trimmed = preferred.trim();
+    let collides = |candidate: &str| existing.iter().any(|name| name == candidate);
+    if trimmed.is_empty() || !collides(trimmed) {
+        return trimmed.chars().take(NAME_MAX_CHARS).collect();
+    }
+    for attempt in 0..100u32 {
+        let suffix = match attempt {
+            0 => now.format("%Y%m%d%H%M").to_string(),
+            1 => now.format("%Y%m%d%H%M%S").to_string(),
+            serial => format!("{}-{serial}", now.format("%Y%m%d%H%M%S")),
+        };
+        let dashed = format!("-{suffix}");
+        let keep = NAME_MAX_CHARS.saturating_sub(dashed.chars().count());
+        let candidate = format!("{}{dashed}", trimmed.chars().take(keep).collect::<String>());
+        if !collides(&candidate) {
+            return candidate;
+        }
+    }
+    trimmed.chars().take(NAME_MAX_CHARS).collect()
+}
+
 /// 枚举当前 BCD 里所有 loader 的 description，用于识别"哪些卷已有条目、原名叫什么"。
 /// 失败只返回 None（调用方退化成"无既有名字"），不阻断还原。
 #[cfg(windows)]
@@ -183,18 +219,23 @@ fn existing_boot_menu_names(log: &Path) -> Option<String> {
     .ok()
 }
 
-/// 判断一个 bcdedit 对象块是否是"指向该分区的 Windows 加载器"。
+/// 读当前 BCD 里所有分区 loader 的描述（S5 新启动项撞名预检的 live 数据源）。
+/// 读不到（ESP 不可达等）返回空表：调用方退化成「不消解」，由 validate 的
+/// 同名守卫或 apply 侧兜底，不阻断还原。
+#[cfg(windows)]
+pub(crate) fn existing_loader_descriptions(log: &Path) -> Vec<String> {
+    existing_boot_menu_names(log)
+        .map(|output| all_loader_descriptions(&output))
+        .unwrap_or_default()
+}
+
+/// 判断一个 bcdedit 对象块是不是「分区 loader」（不指定分区）。
 ///
-/// 判据：`path` 必须是 winload.efi，且**至少一个**设备类字段指向该分区，
-/// 同时不能带 `ramdiskdevice`（ramdisk 选项也有 winload 路径特征，但不是分区加载器）。
-///
-/// 这里刻意用"至少一个设备字段"而不是"device 与 osdevice 都要有"：
-/// 本地化字段名无法穷举（中文 bcdedit 的 osdevice 实测写法是「os 设备」——
-/// 带空格，见 main.rs 里已实战验证的解析器；曾误写成「操作系统设备」），
-/// 一旦某个拼法猜错，AND 语义会让该语言下**所有** loader 都匹配不上，
-/// 引导修复直接全线失效。OR 语义下猜错一个标签只是少一项证据，仍能工作。
-/// 行首匹配也用 starts_with 而非精确相等，兼容「os 设备」这种含空格的键名。
-fn block_is_loader_for(block: &str, needle: &str) -> bool {
+/// 判据：`path` 指向 winload.efi、有设备类字段、且不带 `ramdiskdevice`
+/// （ramdisk 选项也有 winload 路径特征，但不是启动菜单里可选的系统项）。
+/// `block_is_loader_for` 在其上追加分区针；`all_loader_descriptions`
+/// 直接用它列全量菜单项名字。
+fn block_is_partition_loader(block: &str) -> bool {
     let lower = block.to_ascii_lowercase();
     let lines: Vec<&str> = lower.lines().map(str::trim).collect();
     // ramdisk 条目：设备字段是 ramdiskdevice，不是分区加载器，必须先排除。
@@ -204,15 +245,39 @@ fn block_is_loader_for(block: &str, needle: &str) -> bool {
     let is_loader = lines.iter().any(|line| {
         (line.starts_with("path") || line.starts_with("路径")) && line.ends_with("\\winload.efi")
     });
-    let targets_partition = lines.iter().any(|line| {
+    let has_device = lines.iter().any(|line| {
+        line.starts_with("device")
+            || line.starts_with("osdevice")
+            || line.starts_with("设备")
+            || line.starts_with("os 设备")
+            || line.starts_with("操作系统设备")
+    });
+    is_loader && has_device
+}
+
+/// 判断一个 bcdedit 对象块是否是"指向该分区的 Windows 加载器"。
+///
+/// 判据在 `block_is_partition_loader` 之上追加"至少一个设备字段指向该分区"。
+///
+/// 这里刻意用"至少一个设备字段"而不是"device 与 osdevice 都要有"：
+/// 本地化字段名无法穷举（中文 bcdedit 的 osdevice 实测写法是「os 设备」——
+/// 带空格，见 main.rs 里已实战验证的解析器；曾误写成「操作系统设备」），
+/// 一旦某个拼法猜错，AND 语义会让该语言下**所有** loader 都匹配不上，
+/// 引导修复直接全线失效。OR 语义下猜错一个标签只是少一项证据，仍能工作。
+/// 行首匹配也用 starts_with 而非精确相等，兼容「os 设备」这种含空格的键名。
+fn block_is_loader_for(block: &str, needle: &str) -> bool {
+    if !block_is_partition_loader(block) {
+        return false;
+    }
+    block.to_ascii_lowercase().lines().any(|line| {
+        let line = line.trim();
         (line.starts_with("device")
             || line.starts_with("osdevice")
             || line.starts_with("设备")
             || line.starts_with("os 设备")
             || line.starts_with("操作系统设备"))
             && line.contains(needle)
-    });
-    is_loader && targets_partition
+    })
 }
 
 /// 从 PE 头部字节里取出资源目录（`RT_VERSION`）的 RVA 与大小。
@@ -430,6 +495,35 @@ pub(crate) fn loader_description_for_partition(output: &str, letter: char) -> Op
     None
 }
 
+/// 从 `bcdedit /enum all /v` 输出里提取**所有分区 loader** 的 description。
+///
+/// 与 `loader_description_for_partition` 的分工：那个按分区找名字（给既有
+/// 条目保名），这个列全量名字（给新条目避让，S5 撞名消解的输入）。
+/// 读不到名字的块直接跳过——列证宁可少，不要把空串当成一个候选名。
+pub(crate) fn all_loader_descriptions(output: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for block in output.replace("\r\n", "\n").split("\n\n") {
+        if !block_is_partition_loader(block) {
+            continue;
+        }
+        for line in block.lines() {
+            let trimmed = line.trim();
+            let Some((key, value)) = trimmed.split_once(char::is_whitespace) else {
+                continue;
+            };
+            let key_lower = key.to_ascii_lowercase();
+            if matches!(key_lower.as_str(), "description" | "说明" | "描述") {
+                let name = value.trim().to_string();
+                if !name.is_empty() {
+                    names.push(name);
+                }
+                break;
+            }
+        }
+    }
+    names
+}
+
 /// 对象必须唯一；同卷存在多个加载器时拒绝按枚举顺序猜测。
 pub(crate) fn loader_identifier_for_partition(
     output: &str,
@@ -536,6 +630,31 @@ impl BootMenuSession {
                 && entry.existing_name.is_none()
             {
                 entry.display_name = name.trim().chars().take(NAME_MAX_CHARS).collect();
+            }
+            // S5 撞名消解（方案内兜底）：目标名与其它条目重名时追加
+            // -YYYYMMDDHHMM。GUI 侧与离线 prepare 侧已各对照 live BCD 消解过
+            // 一次（幂等）；这里对照「本方案其它条目」——覆盖"卷上有 Windows
+            // 但 BCD 里没有条目"的候选：那种卷不在 live BCD 描述里，前两处
+            // 消解都看不到它，而它确实会进最终菜单。不消解的代价是 apply 的
+            // validate 在 STEP 4 才以「同名项」报错——那时已格式化已应用。
+            if let Some(position) = fresh.restore_target_index() {
+                let others: Vec<String> = fresh
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != position)
+                    .map(|(_, entry)| entry.display_name.clone())
+                    .collect();
+                let target_name = fresh.entries[position].display_name.clone();
+                let resolved =
+                    resolve_menu_name_collision(&target_name, &others, chrono::Local::now());
+                if resolved != target_name {
+                    crate::append_log(
+                        log,
+                        &format!("启动菜单目标名与其它菜单项重名，已消解：{target_name} -> {resolved}"),
+                    )?;
+                    fresh.entries[position].display_name = resolved;
+                }
             }
             fresh
         };
@@ -1527,5 +1646,73 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
             "必选标注在行尾"
         );
         assert!(lines[1].contains("(E:)"), "目标行带盘符");
+    }
+
+    #[test]
+    fn all_loader_descriptions_lists_every_menu_entry() {
+        // 混排四种对象：两个分区 loader（英文/中文标签）、一个 ramdisk 选项、
+        // 一个休眠恢复对象。只有前两个算「启动菜单里的系统项」。
+        let output = "Windows Boot Loader\r\nidentifier {11111111-2222-3333-4444-555555555555}\r\ndescription 本次还原的 Windows\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\n\r\nWindows Boot Loader\r\n标识符 {aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}\r\n说明 Windows 11 专业版 26100\r\n路径 \\Windows\\system32\\winload.efi\r\n设备 partition=E:\r\n操作系统设备 partition=E:\r\n\r\nWindows Boot Loader\r\nidentifier {ramdisk}\r\ndescription 恢复环境\r\npath \\Windows\\system32\\winload.efi\r\nramdiskdevice partition=F:\r\n\r\nWindows Resume Application\r\nidentifier {22222222-2222-2222-2222-222222222222}\r\ndescription 休眠恢复\r\npath \\Windows\\system32\\winresume.efi\r\ndevice partition=C:\r\n\r\n";
+        assert_eq!(
+            all_loader_descriptions(output),
+            vec!["本次还原的 Windows".to_string(), "Windows 11 专业版 26100".to_string()],
+            "列全量菜单名供撞名避让；ramdisk 与 resume 对象不算菜单项"
+        );
+    }
+
+    #[test]
+    fn resolve_menu_name_keeps_unique_names_untouched() {
+        let now = chrono::Local::now();
+        let existing = vec!["本次还原的 Windows".to_string()];
+        assert_eq!(
+            resolve_menu_name_collision("2026-10-14 21:40", &existing, now),
+            "2026-10-14 21:40",
+            "不撞名时原样返回（trim 后）"
+        );
+        assert_eq!(
+            resolve_menu_name_collision("  2026-10-14 21:40  ", &[], now),
+            "2026-10-14 21:40",
+            "无现有条目时同样不动，顺便 trim"
+        );
+    }
+
+    #[test]
+    fn resolve_menu_name_appends_local_timestamp_on_collision() {
+        let now = chrono::Local::now();
+        let expected_suffix = format!("-{}", now.format("%Y%m%d%H%M"));
+        let existing = vec!["2026-10-14 21:40".to_string()];
+        let resolved = resolve_menu_name_collision("2026-10-14 21:40", &existing, now);
+        assert_eq!(resolved, format!("2026-10-14 21:40{expected_suffix}"));
+        assert!(!existing.contains(&resolved), "消解结果不得仍与现有项重名");
+    }
+
+    #[test]
+    fn resolve_menu_name_escalates_when_suffixed_name_also_collides() {
+        let now = chrono::Local::now();
+        let minute = now.format("%Y%m%d%H%M").to_string();
+        let second = now.format("%Y%m%d%H%M%S").to_string();
+        // 同一分钟内已存在带分钟后缀和秒后缀的两项，只能退到秒+序号。
+        let existing = vec![
+            "备份".to_string(),
+            format!("备份-{minute}"),
+            format!("备份-{second}"),
+            format!("备份-{second}-2"),
+        ];
+        let resolved = resolve_menu_name_collision("备份", &existing, now);
+        assert_eq!(resolved, format!("备份-{second}-3"));
+        assert!(resolved.chars().count() <= NAME_MAX_CHARS);
+    }
+
+    #[test]
+    fn resolve_menu_name_truncates_base_to_fit_limit() {
+        let now = chrono::Local::now();
+        let long: String = "甲".repeat(NAME_MAX_CHARS + 10);
+        let existing = vec![long.clone()];
+        let resolved = resolve_menu_name_collision(&long, &existing, now);
+        assert_eq!(resolved.chars().count(), NAME_MAX_CHARS, "必须截到上限");
+        assert!(
+            resolved.ends_with(&format!("-{}", now.format("%Y%m%d%H%M"))),
+            "后缀完整保留，截断发生在基名段"
+        );
     }
 }
