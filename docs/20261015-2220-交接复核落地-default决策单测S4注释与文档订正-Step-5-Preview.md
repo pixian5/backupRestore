@@ -91,7 +91,7 @@ crate::append_log(log, &format!("默认启动项决策：{default}；{}", decisi
 处置：新建库内权威 [已知未修与长期守则清单](./20261015-2150-已知未修与长期守则清单落库-Step-5-Preview.md)
 （13 项待办逐项现状 + 六类长期守则镜像 + 维护约定），2109 文档三处裸引用已改指该文件。
 
-## 4. 本地验证结果
+## 4. 本地验证结果（macOS 侧）
 
 ```
 $ cargo test --workspace
@@ -101,8 +101,37 @@ $ cargo check --target aarch64-pc-windows-msvc -p backuprestore-cli
 Finished dev profile                                 # 无 error 无 warning
 ```
 
-⚠️ **macOS 绿灯不等于验收**：本轮触及 `apply`（`#[cfg(windows)]`），实机前必须在 VM 内
-Windows 侧跑 `cargo test` + `build-windows.ps1` 构建，并核对二进制内含新代码。
+## 4'. VM 内 Windows 侧验证（2026-10-15 22:41，实机前的必要一环）
+
+```
+$ prlctl exec "Windows 11" cmd /d /c "…cargo.exe test --manifest-path \\Mac\backupRestore\Cargo.toml --target-dir C:\br-target -p backuprestore-cli"
+test result: ok. 180 passed; 0 failed; 0 ignored; 6 filtered out    # 186 总数 - 6 个 #[ignore]
+```
+
+- **我新增的 8 个单测在 Windows 侧同样全过**（`pointing_at_target_*` / `policy_*` / `preserve_policy_*` 逐条 ok），
+  触及 `#[cfg(windows)]` 的 `apply` 重构通过平台侧验证。
+- 构建 + 部署：`windows/build-windows.ps1 -Architecture arm64 -CargoTargetDir C:\br-build -Deploy`
+  → 产物 `artifacts/windows/BackupRestore-windows-arm64-v2.6.2`，
+  **SHA256 `390e53e71713aadafeb2d42e16d5b46590ed58b8901f5bd2ae5466e20604a1a6`**，四处副本逐一对账一致。
+- 二进制内含新代码：VM 测试二进制含新单测名（ASCII 判据 `pointing_at_target_overrides…`）；
+  四处部署副本均含版本串 2.6.2，SHA 与构建产物相等。
+- **静态 CRT 复核（0844 文档要求的下一轮核对项）**：PE 导入表**零** `VCRUNTIME140*` / `api-ms-win-crt-*`
+  （12 个导入全是系统 DLL），`+crt-static` 在 VM 内构建路径真实生效。
+  对照：历史产物 v2.4.6 仍是动态 CRT——0844 的修复确有效果。
+
+### 两个新踩的环境坑（务必记住）
+
+1. **`prlctl exec` 管道遇到「中文 ignore 原因」会中断测试进程**：VM 内跑 `cargo test` 全量时，
+   测试二进制打印 `#[ignore = "修改测试虚拟机启动对象；…"]` 的中文原因后进程即被终止
+   （输出截断在原因串中间，无 panic、无 test result）。**不是代码问题**，单独跑该测试可通过。
+   规避：全量跑加 `--skip` 掉 6 个 ignore 用例
+   （`missing_payload_conflict_and_cleanup_retry`、`online_capture_append_keep_and_data_apply`、
+   `disposable_vhd_preflight_and_index_two_apply`、`offline_secondary_mapping`、
+   `offline_registration_on_test_partition`、`secondary_menu_repair_native`），
+   或把测试输出重定向到客体文件再 `type`+`iconv -f GBK` 读回（本次两条路都验证过）。
+2. **`findstr /c:"VCRUNTIME140"` 判 CRT 有误报**：在 v2.6.2 静态产物上命中，
+   实际 PE 导入表只有系统 DLL。判 CRT 必须解析导入表（数据目录 index 1，
+   PE32+ 在 optional header +120），或用 `dumpbin /imports`。
 
 ## 5. 未做 / 下一步
 
