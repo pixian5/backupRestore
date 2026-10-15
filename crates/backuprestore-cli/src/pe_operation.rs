@@ -785,13 +785,20 @@ impl RestoreBackend for Engine {
                 ));
             }
         }
-        crate::winre_registration::repair(
+        match crate::winre_registration::repair(
             &std::path::PathBuf::from(format!("{target_letter}:\\")),
             &std::path::PathBuf::from(format!("{esp_letter}:\\")),
             &target,
             &log,
-        )?;
-        self.log("引导与恢复环境关联已回读；系统实际可启动性需另行启动验收")
+        )? {
+            crate::winre_registration::RegistrationOutcome::Registered => {
+                self.log("引导与恢复环境关联已回读；系统实际可启动性需另行启动验收")
+            }
+            // 降级（用户 2026-10-16 裁定，原 P5）：跳过原因已由 preflight 写入
+            // 任务日志，结尾再复述一次——最终结果必须明确告知，不静默跳过。
+            crate::winre_registration::RegistrationOutcome::Skipped(reason) => self
+                .log(&format!("恢复环境注册已按裁定降级跳过：{reason}")),
+        }
     }
 }
 

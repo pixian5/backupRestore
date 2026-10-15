@@ -1,9 +1,34 @@
 //! 系统还原收尾：启用目标系统的恢复环境，并核验实际 BCD 关联。
+//!
+//! 降级策略（用户 2026-10-16 裁定，原 P5，见 `docs/20261016-0048` §5）：
+//! 本步骤发生在镜像铺完、引导修好**之后**，目标卷缺注册组件
+//! （`reagentc.exe` / `SYSTEM` 注册表）时**不再让整个任务失败**——那样前面
+//! 全部工作白费，而系统本身是好的。改为记警告 + 跳过注册 + 照常报成功，
+//! 且跳过原因必须写入任务日志、由调用方在结尾复述，不得静默。
+//! 身份不符、ESP 与活动 BCD 加载器不一致等**安全闸门仍旧硬失败**，
+//! 缺 `Winre.wim` / `boot.sdi` 恢复原件也维持硬失败（既有故障测试矩阵锁定，
+//! 超出本次裁定范围）。
 use backuprestore_core::TaskError;
 
 #[cfg(all(test, windows))]
 #[path = "winre_registration_fault_tests.rs"]
 mod fault_tests;
+
+/// 注册前置检查结论：`Proceed` 正常注册；`Skip` 按裁定降级跳过。
+#[derive(Debug, PartialEq, Eq)]
+enum Preflight {
+    Proceed,
+    Skip(String),
+}
+
+/// 注册结局，供调用方在任务日志里如实收尾。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RegistrationOutcome {
+    /// 已完整注册并回读通过。
+    Registered,
+    /// 按裁定降级跳过；原因已由 preflight 写入任务日志。
+    Skipped(String),
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Info {
@@ -162,7 +187,7 @@ fn verify_recovery_object(text: &str, recovery: &str, letter: char) -> Result<()
 }
 
 trait Backend {
-    fn preflight(&mut self) -> Result<(), TaskError>;
+    fn preflight(&mut self) -> Result<Preflight, TaskError>;
     fn info(&mut self) -> Result<Info, TaskError>;
     fn reset_clone(&mut self, _info: &Info) -> Result<bool, TaskError> {
         Ok(false)
@@ -176,8 +201,13 @@ trait Backend {
     }
 }
 
-fn run(backend: &mut impl Backend) -> Result<(), TaskError> {
-    backend.preflight()?;
+fn run(backend: &mut impl Backend) -> Result<RegistrationOutcome, TaskError> {
+    // 缺注册组件：降级跳过（用户 2026-10-16 裁定）。此刻尚未做任何注册写入，
+    // 跳过是干净的；checkpoint 让故障追踪链能看到这个决策点。
+    if let Preflight::Skip(reason) = backend.preflight()? {
+        backend.checkpoint("registration-skipped")?;
+        return Ok(RegistrationOutcome::Skipped(reason));
+    }
     let mut before = backend.info()?;
     if backend.reset_clone(&before)? {
         before = backend.info()?;
@@ -198,7 +228,8 @@ fn run(backend: &mut impl Backend) -> Result<(), TaskError> {
         backend.checkpoint("registration-reconnect")?;
     }
     let after = backend.info()?;
-    backend.verify(&after)
+    backend.verify(&after)?;
+    Ok(RegistrationOutcome::Registered)
 }
 
 #[cfg(windows)]
@@ -207,7 +238,7 @@ pub(crate) fn repair(
     efi: &std::path::Path,
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
-) -> Result<(), TaskError> {
+) -> Result<RegistrationOutcome, TaskError> {
     repair_with_mode(target, efi, expected, log, false)
 }
 
@@ -218,7 +249,7 @@ pub(crate) fn repair_secondary(
     efi: &std::path::Path,
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
-) -> Result<(), TaskError> {
+) -> Result<RegistrationOutcome, TaskError> {
     repair_with_mode(target, efi, expected, log, true)
 }
 
@@ -229,7 +260,7 @@ fn repair_with_mode(
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
     independent: bool,
-) -> Result<(), TaskError> {
+) -> Result<RegistrationOutcome, TaskError> {
     use crate::{append_log, capture_logged, pe_safety, windows_prepare as wp};
     use std::{fs, path::Path};
     struct WindowsBackend<'a> {
@@ -272,7 +303,7 @@ fn repair_with_mode(
         fn checkpoint(&self, point: &str) -> Result<(), TaskError> {
             crate::recovery_fault::checkpoint(point, self.log)
         }
-        fn preflight(&mut self) -> Result<(), TaskError> {
+        fn preflight(&mut self) -> Result<Preflight, TaskError> {
             // 离线注册要求「纯恢复环境」，但恢复环境有两种形态，二者都合法：
             //   · WinRE —— 有 Control\MiniNT 键（纯恢复环境专属标记）；
             //   · WinPE —— 无 MiniNT，但有 wpeutil.exe（PE 自带工具）。
@@ -311,12 +342,28 @@ fn repair_with_mode(
                 return Err(crate::err("WinRE 注册要求已确认的 UEFI 固件环境"));
             }
             self.identity()?;
-            for parts in [
-                vec!["Windows", "System32", "reagentc.exe"],
-                vec!["Windows", "System32", "config", "SYSTEM"],
+            // 缺注册组件 = 降级跳过，不是任务失败（用户 2026-10-16 裁定，原 P5）。
+            // 这一步在镜像铺完、引导修好之后，硬失败会让前面全部工作白费，而系统
+            // 本身是好的。只降级"缺文件"：上面的身份/环境/固件闸门与后面的加载器
+            // 一致性闸门仍旧硬失败，那些是安全判据而非能力缺失。
+            // 原因必须落任务日志（调用方还会在结尾复述），不得静默跳过。
+            for (parts, name) in [
+                (
+                    vec!["Windows", "System32", "reagentc.exe"],
+                    "reagentc.exe",
+                ),
+                (
+                    vec!["Windows", "System32", "config", "SYSTEM"],
+                    "SYSTEM 注册表",
+                ),
             ] {
                 if !pe_safety::probe_file(self.target, &parts)? {
-                    return Err(crate::err("目标缺少离线注册组件"));
+                    let reason = format!(
+                        "目标卷缺少恢复环境注册组件（{name}），按裁定跳过恢复环境注册；\
+                         系统可正常启动，但不含恢复环境（日后无法从恢复环境检修该系统）"
+                    );
+                    append_log(self.log, &format!("WinRE registration skipped: {reason}"))?;
+                    return Ok(Preflight::Skip(reason));
                 }
             }
             self.loader = pe_safety::target_loader(&self.bcd(false)?, self.letter)?;
@@ -375,7 +422,8 @@ fn repair_with_mode(
                     "WinRE registration target={} loader={} location={}",
                     self.letter, self.loader, self.location
                 ),
-            )
+            )?;
+            Ok(Preflight::Proceed)
         }
         fn info(&mut self) -> Result<Info, TaskError> {
             let windows = self.target.join("Windows");
@@ -541,33 +589,34 @@ fn repair_with_mode(
         original_sdi: None,
         independent,
     };
-    let result = run(&mut backend);
-    if let Err(error) = result {
-        // reagentc 在启用失败时可能删除已经存在的 boot.sdi，不能让失败破坏原件。
-        if let Some(bytes) = &backend.original_sdi {
-            let rollback = (|| -> Result<(), TaskError> {
-                backend.identity()?;
-                pe_safety::probe_file(target, &["Recovery", "WindowsRE", "boot.sdi"])?;
-                let path = target.join("Recovery\\WindowsRE\\boot.sdi");
-                if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
-                    fs::write(&path, bytes)?;
-                    if fs::read(&path)? != *bytes {
-                        return Err(crate::err("WinRE 启用失败后的 boot.sdi 恢复校验失败"));
+    match run(&mut backend) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            // reagentc 在启用失败时可能删除已经存在的 boot.sdi，不能让失败破坏原件。
+            if let Some(bytes) = &backend.original_sdi {
+                let rollback = (|| -> Result<(), TaskError> {
+                    backend.identity()?;
+                    pe_safety::probe_file(target, &["Recovery", "WindowsRE", "boot.sdi"])?;
+                    let path = target.join("Recovery\\WindowsRE\\boot.sdi");
+                    if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+                        fs::write(&path, bytes)?;
+                        if fs::read(&path)? != *bytes {
+                            return Err(crate::err("WinRE 启用失败后的 boot.sdi 恢复校验失败"));
+                        }
+                        append_log(
+                            log,
+                            "WinRE registration failed; original boot.sdi restored and verified",
+                        )?;
                     }
-                    append_log(
-                        log,
-                        "WinRE registration failed; original boot.sdi restored and verified",
-                    )?;
+                    Ok(())
+                })();
+                if let Err(rollback) = rollback {
+                    return Err(crate::err(&format!("{error}; {rollback}")));
                 }
-                Ok(())
-            })();
-            if let Err(rollback) = rollback {
-                return Err(crate::err(&format!("{error}; {rollback}")));
             }
+            Err(error)
         }
-        return Err(error);
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -809,6 +858,7 @@ mod tests {
         enabled: bool,
         false_success: bool,
         cloned: bool,
+        skip: bool,
     }
     impl Fake {
         fn step(&mut self, name: &'static str) -> Result<(), TaskError> {
@@ -821,8 +871,12 @@ mod tests {
         }
     }
     impl Backend for Fake {
-        fn preflight(&mut self) -> Result<(), TaskError> {
-            self.step("preflight")
+        fn preflight(&mut self) -> Result<Preflight, TaskError> {
+            self.step("preflight")?;
+            if self.skip {
+                return Ok(Preflight::Skip("故障替身：组件缺失".into()));
+            }
+            Ok(Preflight::Proceed)
         }
         fn info(&mut self) -> Result<Info, TaskError> {
             self.step("info")?;
@@ -870,6 +924,7 @@ mod tests {
                 enabled: false,
                 false_success: false,
                 cloned: false,
+                skip: false,
             };
             assert!(run(&mut fake).is_err());
             assert_eq!(fake.calls.last(), Some(&fail));
@@ -880,6 +935,7 @@ mod tests {
             enabled: false,
             false_success: true,
             cloned: false,
+            skip: false,
         };
         assert!(run(&mut fake).is_err());
         let mut fake = Fake {
@@ -890,6 +946,24 @@ mod tests {
         assert!(run(&mut fake).is_err());
         assert_eq!(fake.calls.last(), Some(&"reconnect"));
     }
+    /// 用户 2026-10-16 裁定（原 P5）：目标缺注册组件时降级跳过而非任务失败。
+    /// 降级必须①报成功②带回跳过原因③不触碰任何注册写入步骤。
+    #[test]
+    fn registration_degrades_when_components_missing() {
+        let mut fake = Fake {
+            calls: Vec::new(),
+            fail: "",
+            enabled: false,
+            false_success: false,
+            cloned: false,
+            skip: true,
+        };
+        assert_eq!(
+            run(&mut fake).unwrap(),
+            RegistrationOutcome::Skipped("故障替身：组件缺失".into())
+        );
+        assert_eq!(fake.calls, ["preflight"]);
+    }
     #[test]
     fn registration_is_idempotent_and_always_rereads() {
         let mut fake = Fake {
@@ -898,6 +972,7 @@ mod tests {
             enabled: false,
             false_success: false,
             cloned: false,
+            skip: false,
         };
         run(&mut fake).unwrap();
         assert_eq!(
@@ -921,6 +996,7 @@ mod tests {
                 enabled: true,
                 false_success: false,
                 cloned: true,
+                skip: false,
             };
             let result = run(&mut fake);
             if fail.is_empty() {

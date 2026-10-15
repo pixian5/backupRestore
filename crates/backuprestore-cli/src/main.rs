@@ -2791,10 +2791,15 @@ fn recover_windows(
                     return Err(err("BCDBoot reported success but bootmgfw.efi is missing"));
                 }
                 verify_bcd_target(&efi, &target_root, log)?;
-                if target_is_secondary {
-                    winre_registration::repair_secondary(&target_root, &efi, &target.volume, log)?;
+                let registration = if target_is_secondary {
+                    winre_registration::repair_secondary(&target_root, &efi, &target.volume, log)?
                 } else {
-                    winre_registration::repair(&target_root, &efi, &target.volume, log)?;
+                    winre_registration::repair(&target_root, &efi, &target.volume, log)?
+                };
+                // 降级（用户 2026-10-16 裁定，原 P5）：跳过原因已由 preflight 写入
+                // 任务日志，结尾复述一次——最终结果必须明确告知，不静默跳过。
+                if let winre_registration::RegistrationOutcome::Skipped(reason) = registration {
+                    append_log(log, &format!("恢复环境注册已按裁定降级跳过：{reason}"))?;
                 }
                 if target_is_secondary {
                     // 菜单名只有「新增第二系统」才由用户指定；把完整 Windows 镜像还原到

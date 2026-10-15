@@ -1479,14 +1479,14 @@ fn physical_volume_identity_at(
 /// 这里把同样的判据前移到**擦除之前**：只读挂载镜像探测两个标记文件，
 /// 纯 PE 直接拒绝并提示改用「安装 PE」（那才是装 PE 的正路）。
 ///
-/// 为什么拒绝不能去掉（2026-10-13 复核结论，d4bc2c6 一度放行后恢复）：
-/// 放行并不能让纯 PE 走通这条路——`winre_registration::repair` 在
-/// `bcdboot` **之后**才调用（main.rs:2717/2719、pe_operation.rs:768），它的
-/// preflight 照样要求目标卷有 `reagentc.exe` + `SYSTEM` hive。纯 PE 必然失败，
-/// 唯一区别是失败时目标卷**已被格式化**。而且 `bcdboot` 建的是常规 Windows
-/// 启动项（无 `winpe yes`），STEP 3.5 盘符绑定也要写目标 SYSTEM hive——
-/// 纯 PE 两者皆不满足。装 PE 的正路是「安装 PE」（内存版/硬盘版，带 `winpe yes`、
-/// 不做 WinRE 注册）。
+/// 为什么拒绝不能去掉（2026-10-13 复核结论，d4bc2c6 一度放行后恢复；
+/// 2026-10-16 随 P5 降级裁定订正注册相关论据）：
+/// 放行并不能让纯 PE 走通这条路。恢复环境注册一步在 2026-10-16 已按用户裁定
+/// 改为「缺注册组件就降级跳过、照常报成功」（`winre_registration` 的 preflight），
+/// 不再因此把任务判失败；但 `bcdboot` 建的是常规 Windows 启动项（无 `winpe yes`），
+/// STEP 3.5 盘符绑定也要写目标 SYSTEM hive——纯 PE 两者皆不满足，照样走不通，
+/// 唯一区别是失败时目标卷**已被格式化**。装 PE 的正路是「安装 PE」
+/// （内存版/硬盘版，带 `winpe yes`、不做 WinRE 注册）。
 ///
 /// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件。
 pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<ProbeOutcome, TaskError> {
