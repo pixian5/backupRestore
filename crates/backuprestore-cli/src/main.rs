@@ -2248,7 +2248,10 @@ fn recover_windows(
             // 天生就是任务前的干净 WinRE —— 方案 D 的「捕获前翻回干净件」不再需要。
             let destination_path =
                 resolve_volume_path(&destination.volume, &destination.relative_path)?;
-            // 备份索引名：任务自定义（GUI 默认程序启动时间）或默认名。
+            // 备份索引名：任务自定义（GUI 默认「系统版本+年月日」，如
+            // `Windows 11 26200.9550 20261015`）或兜底默认名。CLI 侧没有
+            // image_name 时不能照搬 GUI 的算法——这里可能跑在 RE 里，读到的
+            // "当前系统"是被还原的环境而不是被备份的源卷。
             let image_name = task
                 .image_name
                 .clone()
@@ -2567,13 +2570,11 @@ fn recover_windows(
                     log,
                     preferred_name.as_deref(),
                 )?;
-                // default 归属的单一权威（docs/20261015-0725 S1）：重建唯一系统 →
-                // 指向还原目标；第二系统 → 保持原主系统。apply 只执行不推断。
-                session.set_default_policy(if target_is_secondary {
-                    crate::boot_menu::DefaultPolicy::PreserveCurrentDefault
-                } else {
-                    crate::boot_menu::DefaultPolicy::PointAtRestoreTarget
-                });
+                // default 归属的单一权威（docs/20261015-0725 S1，2026-10-15 用户
+                // 修订）：无论目标是活动系统盘（重建唯一系统）还是另一个分区
+                // （新增第二系统），还原完成后 default 一律指向本次还原出来的
+                // 系统——用户要的就是"还原完开机进新系统"。apply 只执行不推断。
+                session.set_default_policy(crate::boot_menu::DefaultPolicy::PointAtRestoreTarget);
                 if let Some(p) = progress {
                     p.set_boot_menu(Arc::clone(&session));
                 }
@@ -2737,22 +2738,14 @@ fn recover_windows(
                     "/v".to_string(),
                 ];
                 if target_is_secondary {
-                    // /addlast 只管固件条目的添加位置，**不保护默认启动项**。
-                    // bcdboot 的默认行为是把新建 loader 设为 {bootmgr}.default，
-                    // 于是一旦后续步骤失败（2026-10-13 实测：repair_secondary 报
-                    // 「目标缺少离线注册组件」），default 就留在半成品系统上，
-                    // 用户每次开机被拖进去，只能离线改 BCD 才能救
-                    // （docs/20261013-0945）。/d = 保留现有默认启动项，是官方
-                    // 为"新增第二系统"给的用法（bcdboot c:\windows /d /addlast）。
-                    // ⚠️ 2026-10-13 实测注意：本项目所有 bcdboot 都带 /s 自定义 ESP，
-                    // 而 BFSVC 会警告 "AddBootmgrLast and PreserveBootOrder options
-                    // are ignored when custom volume is specified"——即 /d 与
-                    // /addlast 在 /s 场景下**可能被忽略**。因此真正承重的防线是
-                    // 紧随其后的 assert_boot_default_preserved（回读+自愈）；
-                    // /d 保留在不带 /s 的环境下生效，是零成本的多一层。
-                    // 还原到当前系统盘（重建唯一系统）不加 /d：那时 default 本就该
-                    // 指向新 loader。
-                    bcd_args.push("/d".to_string());
+                    // 2026-10-15 用户规则修订：**不再加 /d**。此前加 /d 是为了让
+                    // default 留在原主系统；现在规则反过来——还原完成后 default 就
+                    // 该指向本次还原出来的系统，而 bcdboot 的默认行为正是如此。
+                    // 旧注释里"失败后用户被拖进半成品系统"的顾虑实际不成立：
+                    // 这里是镜像应用完成之后才跑 bcdboot，那一刻目标卷已是完整
+                    // Windows，后续失败（WinRE 注册等）不会让它启动不了。
+                    // /addlast 只管固件条目的添加位置，与 default 无关，保留——
+                    // 菜单顺序最终仍由 boot_menu::apply 按用户方案写定。
                     bcd_args.push("/addlast".to_string());
                     // 顺带给新条目一个可读名字。最终命名仍由引导修复
                     // （boot_menu::apply，最后一个写 BCD 的步骤）按用户意图覆盖；
@@ -2779,18 +2772,16 @@ fn recover_windows(
                 append_log(
                     log,
                     if target_is_secondary {
-                        "收尾路由=第二系统：bcdboot 带 /d /addlast，default 保持原主系统（随后 assert 回读确认）"
+                        "收尾路由=第二系统：bcdboot 不带 /d（带 /addlast），default 指向新还原的系统（随后 assert 回读确认）"
                     } else {
                         "收尾路由=重建唯一系统：bcdboot 不带 /d，default 指向新 loader（apply 策略=指向还原目标）"
                     },
                 )?;
-                // /d 只在"现有默认启动项有效"时才保留它；这里立刻回读确认，
-                // 被改了就当场改回。放在这个位置是因为此刻环境已知良好
-                // （bcdboot 刚成功、ESP 仍挂载），比等流程失败后在未知状态下
-                // 补救可靠得多。
-                if let Some(previous) = &previous_boot_manager {
-                    assert_boot_default_preserved(&efi, previous, log)?;
-                }
+                // bcdboot 不带 /d 时本就会把 default 指向新 loader，但 /s 自定义
+                // ESP 场景下 BFSVC 的行为不完全可控，所以立刻回读一次确认，不对
+                // 就当场改。放在这个位置是因为此刻环境已知良好（bcdboot 刚成功、
+                // ESP 仍挂载），比等流程失败后在未知状态下补救可靠得多。
+                assert_boot_default_points_at_target(&efi, target_letter, log)?;
                 if let Some(entry) = &resume_entry {
                     boot_entry::rearm(entry, log)?;
                 }
@@ -3271,30 +3262,35 @@ fn boot_manager_state_from_store(
         .ok_or_else(|| err("existing Boot Manager state is missing or invalid"))
 }
 
-/// 新增第二系统时确认 BCDBoot 没有改动默认启动项；被改了就当场改回主系统。
+/// 确认默认启动项指向**本次还原出来的系统**；不对就当场改过去。
 ///
-/// 背景（2026-10-13 实机，docs/20261013-0945）：BCDBoot 的默认行为是把新建
-/// loader 设成 `{bootmgr}.default`。恢复它的 `preserve_primary_boot_manager`
-/// 排在 `winre_registration::repair_secondary` **之后**，于是 repair 一失败
-/// （实测"目标缺少离线注册组件"）就永远到不了恢复那一步——默认启动项留在
-/// 半成品第二系统上，用户每次开机被拖进去，只能进 WinPE 离线改 BCD 才能救。
+/// 2026-10-15 用户规则：还原完成后 default 一律指向新还原的系统（此前第二系统
+/// 场景刻意保留原主系统 default，用 bcdboot `/d` 换取"失败后不会进半成品系统"，
+/// 已按用户要求翻转——见 `boot_menu::DefaultPolicy` 的注释）。
 ///
-/// 第一道防线是给 BCDBoot 加 `/d`（保留现有默认启动项，官方给新增第二系统的
-/// 用法）。但 `/d` 的前提是现有 default 有效；极端情况下（store 里没有可用
-/// default）BCDBoot 仍会设新项。本函数就是那层确认：只比对并修正 `default`
-/// 一项，不动 `displayorder`——菜单里多一个条目只是"看得见、选了会失败"，
-/// 而 default 指错会直接让用户开不了机，两者严重性差一个量级。
+/// bcdboot 不带 `/d` 时本就会把 default 设成新 loader，但本项目所有 bcdboot 都
+/// 带 `/s` 自定义 ESP，BFSVC 在该场景下对默认项的处理不完全可控，所以这里回读
+/// 一次确认；不一致就写一次，仍不一致则拒绝继续后续破坏性步骤（WinRE 注册等）。
+/// 只动 `default` 一项，不动 `displayorder`——菜单顺序由 `boot_menu::apply`
+/// 按用户方案统一写定。
 #[cfg(windows)]
-fn assert_boot_default_preserved(
+fn assert_boot_default_points_at_target(
     efi_root: &Path,
-    previous: &BcdBootManagerState,
+    target_letter: char,
     log: &Path,
 ) -> Result<(), TaskError> {
     let store = efi_root.join("EFI\\Microsoft\\Boot\\BCD");
     let store_arg = store.to_string_lossy().into_owned();
+    // 目标卷的 loader：按分区找，不按"bcdboot 建了哪个"猜。
+    let all = capture_logged(
+        "bcdedit.exe",
+        &["/store", &store_arg, "/enum", "all", "/v"],
+        log,
+    )?;
+    let loader = crate::boot_menu::loader_identifier_for_partition(&all, target_letter)?
+        .ok_or_else(|| err("bcdboot 后找不到本次还原系统的启动加载器"))?;
     // `/enum {bootmgr} /v`：/v 才输出 GUID 而非 {bootmgr}/{default} 别名，
     // 解析器与别名比对都依赖这一点（2026-10-13 实测确认）。
-    // 这里只取 default 字段，loader_resume_objects 为空不影响判断。
     let read_default = |log: &Path| -> Result<String, TaskError> {
         let text = capture_logged(
             "bcdedit.exe",
@@ -3306,34 +3302,36 @@ fn assert_boot_default_preserved(
             .ok_or_else(|| err("BCDBoot 后启动管理器状态无法解析"))
     };
     let current = read_default(log)?;
-    if current.eq_ignore_ascii_case(&previous.default) {
-        append_log(log, "BCDBoot /d 已生效：默认启动项仍指向原主系统")?;
+    if current.eq_ignore_ascii_case(&loader) {
+        append_log(log, &format!("默认启动项已指向本次还原的系统（{loader}）"))?;
         return Ok(());
     }
     append_log(
         log,
         &format!(
-            "BCDBoot 改动了默认启动项（{} -> {current}），立即改回；\
-             否则后续任一步失败都会让用户每次开机进入半成品系统",
-            previous.default
+            "默认启动项未指向本次还原的系统（{current}），立即改为 {loader}；\
+             否则还原完成后开机进的还是旧系统"
         ),
     )?;
     run_logged(
         "bcdedit.exe",
-        &["/store", &store_arg, "/default", &previous.default],
+        &["/store", &store_arg, "/default", &loader],
         log,
     )?;
     let after = read_default(log)?;
-    if !after.eq_ignore_ascii_case(&previous.default) {
+    if !after.eq_ignore_ascii_case(&loader) {
         return Err(err(
-            "无法把默认启动项改回原主系统，拒绝继续后续破坏性步骤",
+            "无法把默认启动项指向本次还原的系统，拒绝继续后续破坏性步骤",
         ));
     }
-    append_log(log, "默认启动项已改回原主系统")?;
+    append_log(log, "默认启动项已指向本次还原的系统")?;
     Ok(())
 }
 
-/// 保留原默认系统和仍存在的菜单项，再追加第二系统；不复活 BCDBoot 删除的旧编号。
+/// 保留仍存在的菜单项并追加第二系统；不复活 BCDBoot 删除的旧编号。
+///
+/// default 归属**不在**本函数处理：它由 boot_menu::apply 按落盘方案的
+/// DefaultPolicy 统一决定（2026-10-15 用户规则：一律指向本次还原的系统）。
 #[cfg(windows)]
 fn preserve_primary_boot_manager(
     efi_root: &Path,
@@ -3349,18 +3347,11 @@ fn preserve_primary_boot_manager(
         log,
     )?;
     let expected_order = secondary_boot_order(previous, secondary_identifier, &live)?;
-    run_logged(
-        "bcdedit.exe",
-        &[
-            "/store",
-            &store_arg,
-            "/set",
-            "{bootmgr}",
-            "default",
-            &previous.default,
-        ],
-        log,
-    )?;
+    // **不再在这里写 default**（2026-10-15 用户规则修订）：default 归属的唯一
+    // 权威是 boot_menu::apply（按落盘方案的 DefaultPolicy），两个场景都指向本次
+    // 还原出来的系统。此前这里把它写回 `previous.default`，随后又被 apply 覆盖，
+    // 属于自相矛盾的中间态。本函数继续负责的是"原菜单项一个不少 + 追加新项 +
+    // 恢复休眠引用"这三件事。
     if let Some(resume_object) = &previous.resume_object {
         // BCDBoot 会把 {bootmgr}.resumeobject 换成新 loader 的恢复程序；快照里
         // 有记录才恢复——旧 BCD 可能本来就没有该字段，不能凭空造一个出来。
@@ -3419,8 +3410,8 @@ fn preserve_primary_boot_manager(
         (Some(actual), Some(expected)) => actual.eq_ignore_ascii_case(expected),
         _ => false,
     };
-    if verified.default != previous.default
-        || !resume_object_matches
+    // default 不再属于本函数的验收范围（归 boot_menu::apply，见上方注释）。
+    if !resume_object_matches
         || verified.display_order.len() != expected_order.len()
         || verified
             .display_order
@@ -3428,16 +3419,13 @@ fn preserve_primary_boot_manager(
             .zip(&expected_order)
             .any(|(actual, expected)| !actual.eq_ignore_ascii_case(expected))
     {
-        return Err(err(
-            "Boot Manager default or secondary display order could not be preserved",
-        ));
+        return Err(err("Secondary display order could not be preserved"));
     }
     cleanup_orphaned_secondary_resume_objects(previous, &verified_text, log)?;
     append_log(
         log,
         &format!(
-            "Preserved Boot Manager default {}; restored {} original display-order entries and appended secondary loader {secondary_identifier}",
-            previous.default,
+            "Restored {} original display-order entries and appended secondary loader {secondary_identifier} (default left to the boot-menu plan)",
             expected_order.len().saturating_sub(1),
         ),
     )?;

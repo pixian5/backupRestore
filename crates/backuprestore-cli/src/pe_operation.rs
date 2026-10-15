@@ -680,6 +680,9 @@ impl RestoreBackend for Engine {
         if crate::parse_boot_manager_state(&before).as_ref() != Some(&old) {
             return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
         }
+        // 2026-10-15 用户规则修订：**不再带 /d**。此前 /d 让 default 留在原主系统，
+        // 现在要求还原完成后 default 指向本次还原出来的系统——这正是 bcdboot 不带
+        // /d 时的默认行为。菜单顺序与 default 最终仍由下面的 bcdedit / apply 写定。
         self.command(
             "bcdboot.exe",
             &[
@@ -688,7 +691,6 @@ impl RestoreBackend for Engine {
                 format!("{esp_letter}:"),
                 "/f".into(),
                 "UEFI".into(),
-                "/d".into(),
             ],
             true,
         )?;
@@ -719,11 +721,13 @@ impl RestoreBackend for Engine {
             )?;
             let mut order = old.display_order.clone();
             if !order.iter().any(|id| id.eq_ignore_ascii_case(&loader)) {
-                order.push(loader);
+                order.push(loader.clone());
             }
             let mut args = vec!["/store".into(), store.clone(), "/displayorder".into()];
             args.extend(order.clone());
             self.command("bcdedit.exe", &args, false)?;
+            // 默认启动项指向**本次还原出来的系统**（2026-10-15 用户规则）：此前
+            // 这里写回 old.default（原主系统），与"还原完开机进新系统"的预期相反。
             self.command(
                 "bcdedit.exe",
                 &[
@@ -732,7 +736,7 @@ impl RestoreBackend for Engine {
                 "/set".into(),
                 "{bootmgr}".into(),
                 "default".into(),
-                old.default.clone(),
+                loader.clone(),
             ],
             false,
         )?;
@@ -769,13 +773,16 @@ impl RestoreBackend for Engine {
         )?;
             if crate::parse_boot_manager_state(&current)
                 != Some(crate::BcdBootManagerState {
-                    default: old.default,
+                    // 默认启动项=本次还原出来的系统（2026-10-15 用户规则）。
+                    default: loader.clone(),
                     display_order: order,
                     resume_object: old.resume_object,
                     loader_resume_objects: old.loader_resume_objects,
                 })
             {
-                return Err(crate::err("第二系统默认项或菜单顺序不符合约定，拒绝报成功"));
+                return Err(crate::err(
+                    "第二系统默认项或菜单顺序不符合约定，拒绝报成功",
+                ));
             }
         }
         crate::winre_registration::repair(

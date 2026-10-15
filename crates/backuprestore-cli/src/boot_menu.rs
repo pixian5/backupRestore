@@ -44,18 +44,30 @@ pub(crate) struct BootMenuEntry {
 ///
 /// 用户规则（与镜像从哪个分区备份而来无关，只看目标性质）：
 /// - 还原本系统（目标=活动系统分区）→ default 指向还原后的自己；
-/// - 新增第二系统（目标=其它分区）→ default 保持原主系统，新项只追加到菜单末尾。
+/// - 新增第二系统（目标=其它分区）→ **default 同样指向本次新还原出来的系统**。
+///
+/// 2026-10-15 用户修订（原规则是"第二系统保持原主系统 default"）：GUI 引导方案
+/// 里「当前的默认启动项」被钉住不可取消勾选，用户据此认为"默认启动项"指的就是
+/// 新还原出来的系统，而保留旧 default 与这个预期正好相反。两个场景从此统一。
+///
+/// 旧规则用 bcdboot `/d` 换来的"半成品系统保护"实际收益有限：`/d` 只在镜像已
+/// 应用完成、bcdboot 即将执行时起作用，而那一刻目标卷已经是完整的 Windows，
+/// 后续失败（WinRE 注册等）不会让用户进不了机。故不再为它牺牲 default 语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DefaultPolicy {
-    /// 重建唯一系统：default 指向本次还原的目标。镜像自认的分区（第一分区或
-    /// 第三分区启动后自认 C:）不影响这一结论——这就是本机的主系统。
+    /// default 指向本次还原的目标。镜像自认的分区（第一分区或第三分区启动后
+    /// 自认 C:）不影响这一结论——这就是用户要进入的系统。
     PointAtRestoreTarget,
-    /// 新增第二系统：default 保持原有主系统不动。
+    /// default 保持原有主系统不动。**现在没有调用方再显式设定它**：两个场景
+    /// 已统一指向还原目标，它只作为 `Default` 兜底——即方案里根本没有该字段时
+    /// （旧版本落盘的 boot-menu-plan.json），此时我们对场景一无所知，保守不动
+    /// default 比擅自改指安全。
     PreserveCurrentDefault,
 }
 
 impl Default for DefaultPolicy {
-    /// 缺省取保守侧：没有显式设定时绝不擅自把 default 改指到还原目标。
+    /// 缺省取保守侧：只有在方案未显式设定（旧版本落盘）时才保持原默认项，
+    /// 绝不擅自把 default 改指到还原目标。正常流程一律由调用方显式设定。
     fn default() -> Self {
         Self::PreserveCurrentDefault
     }
@@ -130,9 +142,10 @@ impl BootMenuPlan {
         if self.timeout_seconds > TIMEOUT_MAX {
             return Err(crate::err("启动菜单等待时间超出范围"));
         }
-        // 当前默认启动项（通常是主系统）不能被取消：它一旦从 displayorder 里消失，
-        // 默认项就会漂移到刚还原的系统。toggle 已拦住交互路径，这里再守一道，
-        // 防止落盘的方案被改过后绕过去。
+        // 当前默认启动项（通常是主系统）不能被取消：它必须在菜单里留着，否则
+        // 用户再也启动不回原系统——这与"还原后 default 指向新系统"是两回事
+        // （2026-10-15 用户规则修订后，default 归新系统，但原系统仍要能选）。
+        // toggle 已拦住交互路径，这里再守一道，防止落盘的方案被改过后绕过去。
         if self
             .entries
             .iter()
@@ -850,8 +863,9 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
         let existing = bcd_all
             .as_deref()
             .and_then(|output| loader_description_for_partition(output, letter));
-        // 这一项是不是当前的默认启动系统：是就钉住，不允许取消勾选
-        // （取消会让默认项漂移到刚还原的系统）。
+        // 这一项是不是当前的默认启动系统：是就钉住，不允许取消勾选。钉住的理由
+        // 是"原系统必须留在菜单里"（2026-10-15 用户规则修订后 default 归新还原的
+        // 系统，但那不代表可以把原系统从菜单里删掉——删了就启动不回去了）。
         let is_current_default = match (&bcd_all, &default_id) {
             (Some(output), Some(default)) => loader_identifier_for_partition(output, letter)?
                 .is_some_and(|id| id.eq_ignore_ascii_case(default)),
@@ -1053,6 +1067,9 @@ pub(crate) fn apply(
                 .ok_or_else(|| crate::err("缺少必选目标加载器"))?;
             (id, "策略=指向还原目标（重建唯一系统）".to_string())
         }
+        // 只有方案里**没有** default_policy 字段（旧版本落盘）才会走到这里：
+        // 那时无从得知目标性质，保持原默认项是最保守的选择。正常流程已由
+        // main.rs / 在线路径显式设定为 PointAtRestoreTarget。
         DefaultPolicy::PreserveCurrentDefault => {
             if selected.contains(&previous.default) {
                 (

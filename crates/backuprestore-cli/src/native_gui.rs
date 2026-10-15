@@ -400,7 +400,24 @@ unsafe extern "system" {
         information_length: u32,
         return_length: *mut u32,
     ) -> i32;
+    /// 读注册表值。用来取当前系统版本（备份索引名默认值）——GUI 里不能为三个
+    /// 字符串去 spawn reg.exe（会闪控制台），直接读 HKLM 即可。
+    fn RegGetValueW(
+        key: Handle,
+        sub_key: *const u16,
+        value: *const u16,
+        flags: u32,
+        value_type: *mut u32,
+        data: *mut c_void,
+        data_size: *mut u32,
+    ) -> i32;
 }
+
+const HKEY_LOCAL_MACHINE: Handle = 0x8000_0002usize as Handle;
+const RRF_RT_REG_SZ: u32 = 0x0000_0002;
+const RRF_RT_REG_DWORD: u32 = 0x0000_0010;
+/// Windows 版本信息的标准位置。
+const CURRENT_VERSION_KEY: &str = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
 
 #[repr(C)]
 struct BrowseInfoW {
@@ -602,6 +619,10 @@ struct State {
     /// 与它不同的文本才判定「用户手改」：SetWindowText 自己也会触发 EN_CHANGE，
     /// 没有这个对照就会把程序自己的预填误判成用户输入。
     menu_name_auto: Option<String>,
+    /// 备份索引名是否被用户手改过：改过就不再随源卷变化重算（同菜单名）。
+    index_name_touched: bool,
+    /// 程序最后一次自动写进索引名文本框的值（判定"手改"的对照）。
+    index_name_auto: Option<String>,
 }
 
 /// State for the PE recovery-desktop window. The operation the technician
@@ -724,7 +745,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "还原数据到非 C 盘：把数据卷镜像还原到非系统分区。默认在线执行、不格式化（覆盖式应用，卷序列号不变）；切到离线则重启进 PE/RE，先 diskpart 格式化再还原。目标不能是当前系统盘。"
         }
         (Language::Chinese, "restore_c") => {
-            "还原系统到非 C 盘：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，默认启动项保持不变。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
+            "还原系统到非 C 盘：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，还原完成后默认启动项切换为这台新系统（原系统仍保留在菜单中可选）。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
         }
         (Language::Chinese, "channel_online") => {
             "在线执行：不重启，直接在当前系统里完成（B 按「格式化目标分区」选项决定是否先清空目标卷；C 恒格式化并修复引导）。"
@@ -799,7 +820,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "Restore data to non-C:: apply a data-volume image without touching boot. Online by default (no format); offline formats via diskpart. Target must not be the system drive."
         }
         (Language::English, "restore_c") => {
-            "Restore system to non-C:: deploy a full Windows image to another partition with a new boot entry; default boot entry unchanged. Online by default; target must not be the system drive."
+            "Restore system to non-C:: deploy a full Windows image to another partition with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable in the menu). Online by default; target must not be the system drive."
         }
         (Language::English, "channel_online") => {
             "Online: run inside the current Windows session without reboot (B honors the 'Format target volume' option; C always formats and repairs boot)."
@@ -956,7 +977,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "restore_c_hint") => {
             "「还原系统到非 C 盘」把完整 Windows 镜像部署到另一个分区，成为可启动的第二系统：\n\n\
              • 目标卷：另选一个分区（不能是当前系统盘），将被格式化并写入镜像；\n\
-             • 启动项名称：新系统在 Windows 启动菜单中的显示名称；默认启动项保持当前系统不变；\n\
+             • 启动项名称：新系统在 Windows 启动菜单中的显示名称；还原完成后默认启动项指向这台新系统（原系统仍留在菜单里可选）；\n\
              • 通道差异：在线=不重启，直接在当前系统格式化目标并修复引导；离线=重启进恢复环境完成；\n\
              • 与「新增第二系统」的区别：本入口默认在线、随时可做；那个入口固定走离线任务链。\n\n\
              安全提示：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
@@ -965,8 +986,8 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "「新增第二系统」在保留当前 Windows 的前提下，把另一个镜像部署成可启动的第二系统：\n\n\
              • 目标卷：另选一个空闲分区（不占用当前系统），镜像写入该分区；\n\
              • 启动项名称：自定义新系统在 Windows 启动菜单中显示的名称，可用中文；\n\
-             • 流程：离线环境格式化目标分区 → DISM 应用镜像 → BCDBoot 添加启动项；\n\
-             • 效果：重启后开机菜单可自由选择进入任一系统，适合双系统共存场景。\n\n\
+             • 流程：离线环境格式化目标分区 → DISM 应用镜像 → BCDBoot 添加启动项并把默认启动项指向新系统；\n\
+             • 效果：重启后默认进入新系统，开机菜单里仍可自由选择进入任一系统，适合双系统共存场景。\n\n\
              说明：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
         }
         (Language::Chinese, "pe") => "安装 PE",
@@ -1017,10 +1038,10 @@ fn ui_text(language: Language, key: &str) -> &'static str {
             "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Format target volume (checked by default): quick-format via diskpart, verify success (same partition, serial changed), then write the image; unchecked = overlay apply, extra files remain;\n• Channel: online = no reboot; offline = reboot into PE/RE (always formats there);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: formatting erases everything on the target; even without it, same-name files are overwritten."
         }
         (Language::English, "restore_c_hint") => {
-            "Restore other deploys a full Windows image to another partition as a bootable second system.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; the default boot entry stays on the current system;\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Difference from 'Second system': this entry runs online by default; that one always goes through the offline task chain.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
+            "Restore other deploys a full Windows image to another partition as a bootable second system.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; after the restore the default boot entry points to this new system (the previous system stays selectable);\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Difference from 'Second system': this entry runs online by default; that one always goes through the offline task chain.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
         }
         (Language::English, "secondary_hint") => {
-            "Second system deploys another image as a bootable system while keeping the current Windows.\n\n• Target volume: pick a spare partition (not the current system) to write the image;\n• Boot name: customize the name shown in the boot menu; Chinese is supported;\n• Flow: format the target offline → DISM Apply → BCDBoot adds a boot entry;\n• Result: after reboot the boot menu lets you choose either system; ideal for dual-boot.\n\nNote: the target volume is overwritten; confirm it holds nothing you need to keep."
+            "Second system deploys another image as a bootable system while keeping the current Windows.\n\n• Target volume: pick a spare partition (not the current system) to write the image;\n• Boot name: customize the name shown in the boot menu; Chinese is supported;\n• Flow: format the target offline → DISM Apply → BCDBoot adds a boot entry and points the default boot entry at the new system;\n• Result: after reboot you land in the new system by default, and the boot menu still lets you choose either system; ideal for dual-boot.\n\nNote: the target volume is overwritten; confirm it holds nothing you need to keep."
         }
         (Language::English, "pe") => "Install PE",
         (Language::English, "pe_hint") => {
@@ -2113,7 +2134,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "目标卷用途：接收数据卷镜像。默认勾选「格式化目标分区」=清空后写入（卷序列号改变）；取消勾选=覆盖式应用（多余文件保留）。不能选当前系统盘或已有 Windows 的分区。"
         }
         (Language::Chinese, "target", "restore-system-other") => {
-            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项、默认启动项不变。必须不同于当前系统盘。"
+            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项，完成后默认启动项切换为这台新系统（原系统仍可选）。必须不同于当前系统盘。"
         }
         (Language::Chinese, "target", "create-secondary") => {
             "目标卷用途：将被格式化并写入镜像作为第二个 Windows；必须不同于源卷和程序目录所在分区。"
@@ -2143,7 +2164,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "Purpose: receives the data-volume image. 'Format target volume' checked (default) = erase then write (serial changes); unchecked = overlay apply. Never the system drive or an existing Windows partition."
         }
         (Language::English, "target", "restore-system-other") => {
-            "Purpose: formatted and written as a second Windows with a new boot entry; default boot entry unchanged. Must differ from the system drive."
+            "Purpose: formatted and written as a second Windows with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable). Must differ from the system drive."
         }
         (Language::English, "target", "create-secondary") => {
             "Purpose: will be formatted and receive the second Windows; it must differ from source and the program directory volume."
@@ -2452,6 +2473,136 @@ unsafe fn prefill_menu_name_from_image(state: &mut State) {
 unsafe fn set_menu_name(state: &mut State, value: &str) {
     state.menu_name_auto = Some(value.to_string());
     set_text(state.controls.menu, value);
+}
+
+/// 读 HKLM 下的 REG_SZ 值。读不到或类型不符返回 `None`——版本信息只是给索引名
+/// 起个好名字，缺了要有降级方案，绝不能因此阻断建窗。
+unsafe fn reg_read_string(sub_key: &str, value: &str) -> Option<String> {
+    let key = wide(sub_key);
+    let name = wide(value);
+    let mut buffer = vec![0u16; 512];
+    let mut size = (buffer.len() * size_of::<u16>()) as u32;
+    let status = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        key.as_ptr(),
+        name.as_ptr(),
+        RRF_RT_REG_SZ,
+        null_mut(),
+        buffer.as_mut_ptr().cast(),
+        &mut size,
+    );
+    if status != 0 {
+        return None;
+    }
+    // 缓冲区未被填满的部分是 0，去掉尾部 NUL 再 trim。
+    let text = String::from_utf16_lossy(&buffer)
+        .trim_end_matches('\0')
+        .trim()
+        .to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// 读 HKLM 下的 REG_DWORD 值（`UBR` 补丁级别就是 DWORD）。
+unsafe fn reg_read_dword(sub_key: &str, value: &str) -> Option<u32> {
+    let key = wide(sub_key);
+    let name = wide(value);
+    let mut data: u32 = 0;
+    let mut size = size_of::<u32>() as u32;
+    let status = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        key.as_ptr(),
+        name.as_ptr(),
+        RRF_RT_REG_DWORD,
+        null_mut(),
+        (&mut data as *mut u32).cast(),
+        &mut size,
+    );
+    (status == 0).then_some(data)
+}
+
+/// 当前系统的版本串，如 `Windows 11 26200.9550`。
+///
+/// `ProductName` 形如 `Windows 11 Pro`：去掉尾部的 edition 词得到 `Windows 11`，
+/// 与用户给的示例一致。词数不足三个时不拆，避免把 `Windows 11` 砍成 `Windows`；
+/// `Windows Server 2022 Datacenter` 这种四个词的也正好只剩版本部分。
+unsafe fn current_windows_version_tag() -> Option<String> {
+    let product = reg_read_string(CURRENT_VERSION_KEY, "ProductName")?;
+    let words: Vec<&str> = product.split_whitespace().collect();
+    let family = if words.len() >= 3 {
+        words[..words.len() - 1].join(" ")
+    } else {
+        product.clone()
+    };
+    let build = reg_read_string(CURRENT_VERSION_KEY, "CurrentBuildNumber");
+    let ubr = reg_read_dword(CURRENT_VERSION_KEY, "UBR");
+    let version = match (build, ubr) {
+        (Some(build), Some(ubr)) => format!("{build}.{ubr}"),
+        (Some(build), None) => build,
+        // 连 build 都读不到就只给产品名，不再拼半个版本号。
+        (None, _) => return Some(family),
+    };
+    Some(format!("{family} {version}"))
+}
+
+/// 备份索引名默认值：`系统版本 + 年月日`，例 `Windows 11 26200.9550 20261015`
+/// （2026-10-15 用户需求）。
+///
+/// **只在源卷就是当前系统盘时才带版本**：别的卷的版本要挂离线 hive 才读得到，
+/// 代价高；而把当前系统的版本安在别的卷头上是误导——索引名写进 WIM 就改不了。
+/// 那种情况退化成带盘符的名字，信息少但不假。
+unsafe fn default_backup_index_name(source_is_system: bool, letter: Option<&str>) -> String {
+    let mut now = SystemTime {
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        milliseconds: 0,
+    };
+    GetLocalTime(&mut now);
+    let date = format!("{:04}{:02}{:02}", now.year, now.month, now.day);
+    if !source_is_system {
+        return match letter {
+            Some(letter) => format!("Windows ({letter}:) {date}"),
+            None => format!("Windows {date}"),
+        };
+    }
+    match current_windows_version_tag() {
+        Some(tag) => format!("{tag} {date}"),
+        None => format!("Windows {date}"),
+    }
+}
+
+/// 程序侧写备份索引名：同步记录自动值，EN_CHANGE 据此区分「程序预填」与
+/// 「用户手改」——理由与顺序要求完全同 `set_menu_name`（先记 auto 再写文本）。
+unsafe fn set_index_name(state: &mut State, value: &str) {
+    state.index_name_auto = Some(value.to_string());
+    set_text(state.controls.index_name, value);
+}
+
+/// 源卷确定后重算备份索引名；用户手改过就再也不动它。
+unsafe fn refresh_backup_index_name(state: &mut State) {
+    if state.index_name_touched {
+        return;
+    }
+    let letter = selected_drive_letter(state, state.controls.source);
+    let system = std::env::var("SystemDrive")
+        .unwrap_or_else(|_| "C:".to_string())
+        .chars()
+        .next()
+        .unwrap_or('C')
+        .to_ascii_lowercase();
+    let source_is_system = letter
+        .as_deref()
+        .and_then(|letter| letter.chars().next())
+        .is_some_and(|letter| letter.to_ascii_lowercase() == system);
+    let value = default_backup_index_name(source_is_system, letter.as_deref());
+    if state.index_name_auto.as_deref() == Some(value.as_str()) {
+        return;
+    }
+    set_index_name(state, &value);
 }
 
 /// S5：读当前 BCD 里所有启动项名字（撞名预检的数据源）。
@@ -3120,6 +3271,9 @@ unsafe fn refresh_environment(state: &mut State) {
     state.drives = discover_drives();
     set_drive_items(state, desired);
     set_drive_details(state);
+    // 卷列表就绪后按真实选中的源卷重算一次备份索引名（建窗时是按"源盘=系统盘"
+    // 预填的，若实际选中了别的卷要换成带盘符的降级名）。用户手改过则不动。
+    refresh_backup_index_name(state);
     // 刷新卷列表后，A（还原系统到 C 盘）的目标下拉被重建——重新锁定 %SystemDrive%，
     // 防止刷新后目标停留在刷新前选中的卷（下拉已禁用，但显示必须始终是系统盘）。
     if selected_operation(state) == "restore-existing" {
@@ -6565,22 +6719,12 @@ unsafe extern "system" fn window_proc(
         }
         SendMessageW(controls.compress, CB_SETCURSEL, 0, 0);
         SendMessageW(controls.verify_hash, BM_SETCHECK, BST_UNCHECKED, 0);
-        // 备份索引名默认值 = 程序启动时间（本地），用户可修改。
-        let mut now = SystemTime {
-            year: 0,
-            month: 0,
-            day_of_week: 0,
-            day: 0,
-            hour: 0,
-            minute: 0,
-            second: 0,
-            milliseconds: 0,
-        };
-        GetLocalTime(&mut now);
-        let default_index_name = format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}",
-            now.year, now.month, now.day, now.hour, now.minute
-        );
+        // 备份索引名默认值 = 当前系统版本 + 年月日（如 `Windows 11 26200.9550
+        // 20261015`，2026-10-15 用户需求），用户可修改。
+        // 此刻源卷列表还没填好，先按"源盘 = 当前系统盘"预填；源卷确定后
+        // refresh_backup_index_name 会再校正一次（源盘不是系统盘时换成带盘符的
+        // 降级名），用户手改过则一律不动。
+        let default_index_name = default_backup_index_name(true, None);
         set_text(controls.index_name, &default_index_name);
         // 「操作模式」标签收窄（62px），给全称入口名的 tab 按钮让出左侧空间。
         create_control(hwnd, "STATIC", "操作模式", 0, 20, 55, 62, 22, 2001);
@@ -6781,6 +6925,8 @@ unsafe extern "system" fn window_proc(
             test_drive_choice: None,
             menu_name_touched: false,
             menu_name_auto: None,
+            index_name_touched: false,
+            index_name_auto: None,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -6955,6 +7101,9 @@ unsafe extern "system" fn window_proc(
             }
             if matches!(control_id, ID_SOURCE | ID_TARGET) && notification == CBN_SELCHANGE {
                 set_drive_details(state);
+                // 备份索引名默认带当前系统版本；源卷换成别的卷后那个版本就不适用了，
+                // 按新源卷重算（用户手改过则不动）。
+                refresh_backup_index_name(state);
                 return 0;
             }
             // 索引切换：菜单名预填跟随新选中的 WIM 索引名（用户手改过则不动）。
@@ -6967,6 +7116,14 @@ unsafe extern "system" fn window_proc(
                 let current = get_text(state.controls.menu);
                 if state.menu_name_auto.as_deref() != Some(current.as_str()) {
                     state.menu_name_touched = true;
+                }
+                return 0;
+            }
+            // 备份索引名文本框：同理，与自动值不同即判定用户手改，此后不再重算。
+            if control_id == ID_INDEX_NAME_EDIT && notification == EN_CHANGE {
+                let current = get_text(state.controls.index_name);
+                if state.index_name_auto.as_deref() != Some(current.as_str()) {
+                    state.index_name_touched = true;
                 }
                 return 0;
             }

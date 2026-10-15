@@ -474,9 +474,10 @@ fn restore_to_windows_volume(
         versioned_name.as_deref(),
     )?;
     // 在线通道只服务第二系统（活动系统盘必须在离线环境处理，execute_inner 顶部的
-    // affected==活动系统 拒绝已保证目标不是当前系统盘），default 归属=保持原主系统
-    // （docs/20261015-0725 S1，单一权威：apply 只执行不推断）。
-    boot_menu_session.set_default_policy(crate::boot_menu::DefaultPolicy::PreserveCurrentDefault);
+    // affected==活动系统 拒绝已保证目标不是当前系统盘）。
+    // default 归属=指向本次还原出来的系统（2026-10-15 用户规则，替代原先的
+    // "保持原主系统"；docs/20261015-0725 S1，单一权威：apply 只执行不推断）。
+    boot_menu_session.set_default_policy(crate::boot_menu::DefaultPolicy::PointAtRestoreTarget);
     // 调用方显式指定了镜像名时以它为准（用户自己的命名优先于自动版本名）。
     // 目标下标不硬编码：默认顺序里它在最后，用户也可能上移。
     //
@@ -620,11 +621,11 @@ fn restore_to_windows_volume(
     //
     // 2026-10-13 更正：原注释写「/addlast 只追加到菜单末尾，不动默认启动项」
     // 是**错的**——/addlast 管的是固件条目位置，与 default 无关；bcdboot 默认
-    // 就会把新 loader 设成 {bootmgr}.default。下面紧跟的快照恢复能补回来，
-    // 但那是"事后"补偿：在 bcdboot 与恢复之间重启/断电，用户就会进半成品系统。
-    // 加 /d（保留现有默认启动项）从源头不改。注意 BFSVC 在 /s 自定义 ESP 场景
-    // 可能忽略 /d（2026-10-13 实测警告），因此下面的立即恢复写回才是承重防线，
-    // /d 只在不带 /s 的环境多一层保险。
+    // 就会把新 loader 设成 {bootmgr}.default。
+    // 2026-10-15 用户规则修订：**不再加 /d**。此前加 /d 是为了让 default 留在
+    // 原主系统；现在要求还原完成后 default 就指向新还原出来的系统，bcdboot 的
+    // 默认行为正好是我们要的。旧顾虑"中途重启会进半成品系统"在此不成立——
+    // 这一步在 DISM 应用完成之后才跑，目标卷此刻已是完整 Windows。
     log(
         log_path,
         "STEP 3.6/4 预建还原系统启动项（等待期间即可在启动菜单看到并选择）",
@@ -637,26 +638,16 @@ fn restore_to_windows_volume(
             format!("{esp_letter}:"),
             "/f".into(),
             "UEFI".into(),
-            "/d".into(),
             "/addlast".into(),
         ],
         &cmd_out_file(dir),
         true,
     )?;
-    // 立刻把默认启动项与休眠引用恢复成快照值：bcdboot 会把 {bootmgr}.resumeobject
-    // 改写成新 loader 的恢复对象，若用户此刻重启，休眠恢复会指向错误系统。
-    // 菜单顺序留给 STEP 4 按用户选择写入，这里只保证"主系统仍是默认、休眠引用不变"。
-    run_bcd_edit(
-        &[
-            "/store".into(),
-            store.clone(),
-            "/set".into(),
-            "{bootmgr}".into(),
-            "default".into(),
-            old.default.clone(),
-        ],
-        dir,
-    )?;
+    // 立刻把休眠引用恢复成快照值：bcdboot 会把 {bootmgr}.resumeobject 改写成新
+    // loader 的恢复对象，若用户此刻重启，休眠恢复会指向错误系统。
+    // **default 不再改回**：2026-10-15 用户规则要求它指向本次还原的系统，
+    // bcdboot 不带 /d 后正是如此；最终值仍由 STEP 4 的 boot_menu::apply 写定。
+    // 菜单顺序也留给 STEP 4 按用户选择写入。
     if let Some(resume) = old.resume_object.clone() {
         run_bcd_edit(
             &[
@@ -688,7 +679,7 @@ fn restore_to_windows_volume(
 
     log(
         log_path,
-        "STEP 4/4 修复引导（bcdboot，保留主系统默认启动项）",
+        "STEP 4/4 修复引导（菜单命名/顺序/默认项，默认启动项=本次还原的系统）",
     )?;
     let live = run_bcd_edit(
         &[
@@ -701,12 +692,13 @@ fn restore_to_windows_volume(
         dir,
     )?;
     if crate::parse_boot_manager_state(&live).as_ref() != Some(&old) {
-        // STEP 3.6 已有意把新 loader 追加进 displayorder，所以这里不能再要求
-        // 与快照完全一致；真正要守住的是「主系统仍是默认启动项、休眠引用未被改写」。
+        // STEP 3.6 已有意把新 loader 追加进 displayorder，且按 2026-10-15 用户
+        // 规则 default 已改指新系统，所以这里不能再要求与快照完全一致；真正要
+        // 守住的是「休眠引用未被改写」——它指错会让休眠恢复走进错误的系统。
         let parsed = crate::parse_boot_manager_state(&live);
-        let unchanged = parsed.as_ref().is_some_and(|now| {
-            now.default == old.default && now.resume_object == old.resume_object
-        });
+        let unchanged = parsed
+            .as_ref()
+            .is_some_and(|now| now.resume_object == old.resume_object);
         if !unchanged {
             return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
         }
@@ -755,22 +747,20 @@ fn restore_to_windows_volume(
         Some(c) => c,
         None => return Err(crate::err("无法解析还原后的引导管理器状态，拒绝报成功")),
     };
-    // 验收：主系统默认启动项保留、bootmgr 的 resume_object 恢复为主系统的快照值；
-    // 原有 loader 的恢复对象映射不得被破坏；原菜单里已有的项必须一个不少地保留
-    // （引导修复只允许追加/改名/改序，不允许弄丢既有入口）。
+    // 验收（2026-10-15 用户规则）：默认启动项必须指向**本次还原出来的系统**
+    // （目标卷分区），而不是仍在运行的原主系统；bootmgr 的 resume_object 恢复为
+    // 快照值；原有 loader 的恢复对象映射不得被破坏；原菜单里已有的项必须一个
+    // 不少地保留（引导修复只允许追加/改名/改序，不允许弄丢既有入口）。
     //
     // **不能直接比对 GUID 文本**：bcdedit 会把默认项显示成 `{current}`、工具项显示成
     // `{memdiag}` 这类别名。2026-10-12 实机还原就在这里误报——默认项其实没变
     // （{current} 展开就是原主系统 loader，device 都是 partition=C:），
     // 但字符串比对认为 {12e3701c...} != {current}，于是把一次成功的还原判成失败。
-    // 默认项改用「指向哪个分区」判断：主系统在活动卷，第二系统才是目标卷。
-    let active_letter = std::env::var("SystemDrive")
-        .ok()
-        .and_then(|value| value.chars().next())
-        .unwrap_or('C');
-    let default_is_primary = match cur.default.to_ascii_lowercase().as_str() {
-        // 别名 {current} 就是"当前正在运行的 Windows"，天然是主系统。
-        "{current}" | "{default}" => true,
+    // 默认项改用「指向哪个分区」判断：本次还原的系统在目标卷。
+    let target_is_default = match cur.default.to_ascii_lowercase().as_str() {
+        // 别名 {current} 就是"当前正在运行的 Windows"——在线路径下它就是原主系统
+        // （活动系统盘作为在线目标在入口处已被拒），绝不可能是本次还原的目标。
+        "{current}" | "{default}" => false,
         identifier => {
             let object = run_bcd_edit(
                 &[
@@ -788,16 +778,18 @@ fn restore_to_windows_volume(
                 .find(|(key, _)| key.trim().eq_ignore_ascii_case("device"))
                 .map(|(_, value)| value.trim().to_ascii_lowercase())
                 .unwrap_or_default();
-            // device 已转小写，active_letter 也必须转小写后再比，
-            // 否则 "partition=c:".starts_with("partition=C:") 永远为 false。
+            // device 已转小写，target_letter 也必须转小写后再比，
+            // 否则 "partition=f:".starts_with("partition=F:") 永远为 false。
             device.starts_with(&format!(
                 "partition={}:",
-                active_letter.to_ascii_lowercase()
+                target_letter.to_ascii_lowercase()
             ))
         }
     };
-    if !default_is_primary {
-        return Err(crate::err("第二系统默认启动项不符合约定，拒绝报成功"));
+    if !target_is_default {
+        return Err(crate::err(
+            "默认启动项未指向本次还原的系统，拒绝报成功",
+        ));
     }
     // 原有菜单项一个都不能少。同样不能直接比 GUID 文本：bcdedit 可能把其中某项
     // 显示成 {current}/{memdiag}/{default} 之类的别名。把两边的常见别名都展开成
