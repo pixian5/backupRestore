@@ -927,6 +927,79 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
     })
 }
 
+/// default 归属决策的产物：最终写入 `/default` 的条目标识 + 两行日志文案。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DefaultDecision {
+    /// 最终要 `bcdedit /default` 的条目标识（带花括号）。
+    pub default_id: String,
+    /// 「默认启动项决策：…」主日志行的补充说明（含策略名）。
+    pub note: String,
+    /// 需要额外落盘的 WARN 行（原默认项不在最终菜单时的漂移告警）。
+    pub warning: Option<String>,
+}
+
+/// default 归属的唯一决策点（2026-10-15 用户规则化，docs/20261015-0725 S1）。
+///
+/// **刻意做成纯函数**：不碰 bcdedit、不写日志，因而与平台无关，可以在 macOS 侧
+/// 单测。`apply` 本体是 `#[cfg(windows)]`，这判断题此前只能靠实机验证——而它恰是
+/// 2026-10-13「default 静默漂移到半成品第二系统」事故的决策点，值得有回归护栏。
+///
+/// 输入只有三样：策略（调用方按目标性质显式设定）、目标 loader（目标被勾选则必有）、
+/// 最终菜单里的条目标识列表。策略语义见 `DefaultPolicy` 的文档注释。
+///
+/// 注意这里用 `TaskError::Invalid` 而非 `crate::err`：后者是
+/// `#[cfg(any(windows, test))]`，本函数在 macOS 非测试构建里也要能编译。两者产出的
+/// 错误文案完全一致。
+pub(crate) fn decide_default(
+    policy: DefaultPolicy,
+    target_id: Option<&str>,
+    previous_default: &str,
+    selected: &[String],
+) -> Result<DefaultDecision, TaskError> {
+    match policy {
+        DefaultPolicy::PointAtRestoreTarget => {
+            // 重建唯一系统：default 指向还原后的自己。注意这覆盖了一种旧行为——
+            // 旧代码在「原 default 恰好还在菜单里」时会保留原值，若用户还原前
+            // 的默认项是另一套系统（如第二系统），还原后 default 仍指那套，
+            // 与「还原本系统后默认进自己」的规则相悖。镜像从哪个分区备份而来
+            // 不影响这一结论。
+            let id = target_id.ok_or(TaskError::Invalid("缺少必选目标加载器".into()))?;
+            Ok(DefaultDecision {
+                default_id: id.to_string(),
+                note: "策略=指向还原目标（重建唯一系统）".into(),
+                warning: None,
+            })
+        }
+        // 只有方案里**没有** default_policy 字段（旧版本落盘）才会走到这里：
+        // 那时无从得知目标性质，保持原默认项是最保守的选择。正常流程已由
+        // main.rs / 在线路径显式设定为 PointAtRestoreTarget。
+        DefaultPolicy::PreserveCurrentDefault => {
+            if selected.iter().any(|id| id == previous_default) {
+                Ok(DefaultDecision {
+                    default_id: previous_default.to_string(),
+                    note: "原默认项仍在最终菜单，保留".into(),
+                    warning: None,
+                })
+            } else {
+                // 第二系统场景下原默认项不在菜单=异常：主系统 loader 没被探测进
+                // 菜单，或落盘方案被改过绕过了 validate 的勾选守卫。最终行为仍是
+                // 落到还原目标（与旧代码一致），但先留一道 WARN——2026-10-13
+                // 事故正是这种「静默漂移」：default 留在半成品第二系统上，用户
+                // 每次开机被拖进去。是否升级为直接报错拒绝见 docs/20261015-0725
+                // S3，边界待用户裁定；裁定前不改行为，只加留痕。
+                let id = target_id.ok_or(TaskError::Invalid("缺少必选目标加载器".into()))?;
+                Ok(DefaultDecision {
+                    default_id: id.to_string(),
+                    note: "原默认项不在菜单，落到还原目标（已 WARN）".into(),
+                    warning: Some(format!(
+                        "WARN：原默认项 {previous_default} 不在最终菜单，default 将落到还原目标"
+                    )),
+                })
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn apply(
     plan: &BootMenuPlan,
@@ -1053,53 +1126,20 @@ pub(crate) fn apply(
     }
     // default 归属的唯一决策点（2026-10-15 用户规则化，docs/20261015-0725 S1）：
     // 策略由 main.rs/在线路径按「目标是不是第二系统」显式设定并随方案落盘，
-    // 这里只执行、不推断，且每条分支都写日志——A 场景尤其需要显式留下
-    // 「default 指向还原后的自己」，避免事后只能从 BCD 现状反推当时的意图。
-    let (default, policy_note) = match plan.default_policy {
-        DefaultPolicy::PointAtRestoreTarget => {
-            // 重建唯一系统：default 指向还原后的自己。注意这覆盖了一种旧行为——
-            // 旧代码在「原 default 恰好还在菜单里」时会保留原值，若用户还原前
-            // 的默认项是另一套系统（如第二系统），还原后 default 仍指那套，
-            // 与「还原本系统后默认进自己」的规则相悖。镜像从哪个分区备份而来
-            // 不影响这一结论。
-            let id = target_id
-                .clone()
-                .ok_or_else(|| crate::err("缺少必选目标加载器"))?;
-            (id, "策略=指向还原目标（重建唯一系统）".to_string())
-        }
-        // 只有方案里**没有** default_policy 字段（旧版本落盘）才会走到这里：
-        // 那时无从得知目标性质，保持原默认项是最保守的选择。正常流程已由
-        // main.rs / 在线路径显式设定为 PointAtRestoreTarget。
-        DefaultPolicy::PreserveCurrentDefault => {
-            if selected.contains(&previous.default) {
-                (
-                    previous.default.clone(),
-                    "原默认项仍在最终菜单，保留".to_string(),
-                )
-            } else {
-                // 第二系统场景下原默认项不在菜单=异常：主系统 loader 没被探测进
-                // 菜单，或落盘方案被改过绕过了 validate 的勾选守卫。最终行为仍是
-                // 落到还原目标（与旧代码一致），但先留一道 WARN——2026-10-13
-                // 事故正是这种「静默漂移」：default 留在半成品第二系统上，用户
-                // 每次开机被拖进去。是否升级为直接报错拒绝见 docs/20261015-0725
-                // S3，边界待用户裁定；裁定前不改行为，只加留痕。
-                crate::append_log(
-                    log,
-                    &format!(
-                        "WARN：原默认项 {} 不在最终菜单，default 将落到还原目标",
-                        previous.default
-                    ),
-                )?;
-                (
-                    target_id
-                        .clone()
-                        .ok_or_else(|| crate::err("缺少必选目标加载器"))?,
-                    "原默认项不在菜单，落到还原目标（已 WARN）".to_string(),
-                )
-            }
-        }
-    };
-    crate::append_log(log, &format!("默认启动项决策：{default}；{policy_note}"))?;
+    // 决策逻辑本身抽成纯函数 `decide_default`（platform 无关、有单测护栏），
+    // 这里只执行并落盘日志——A 场景尤其需要显式留下「default 指向还原后的自己」，
+    // 避免事后只能从 BCD 现状反推当时的意图。
+    let decision = decide_default(
+        plan.default_policy,
+        target_id.as_deref(),
+        &previous.default,
+        &selected,
+    )?;
+    if let Some(warning) = &decision.warning {
+        crate::append_log(log, warning)?;
+    }
+    let default = decision.default_id;
+    crate::append_log(log, &format!("默认启动项决策：{default}；{}", decision.note))?;
     crate::run_logged(
         "bcdedit.exe",
         &["/store", &store, "/default", &default],
@@ -1731,5 +1771,129 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
             resolved.ends_with(&format!("-{}", now.format("%Y%m%d%H%M"))),
             "后缀完整保留，截断发生在基名段"
         );
+    }
+
+    // ---- default 归属决策（DefaultPolicy / decide_default，0725 S1 + v2.6.1 翻转）----
+    // apply 本体是 #[cfg(windows)]，这些用例是 macOS 侧唯一能守住「还原后 default
+    // 指向本次新还原的系统」这条用户规则的地方（2026-10-13 漂移事故的回归护栏）。
+
+    /// 决策入参：策略 + 目标 loader + 原默认项 + 最终菜单。
+    fn decide(
+        policy: DefaultPolicy,
+        target: Option<&str>,
+        previous: &str,
+        menu: &[&str],
+    ) -> DefaultDecision {
+        let selected: Vec<String> = menu.iter().map(|id| (*id).to_string()).collect();
+        decide_default(policy, target, previous, &selected).expect("决策不应失败")
+    }
+
+    #[test]
+    fn policy_default_is_the_conservative_side() {
+        // 方案里没有 default_policy 字段（旧版本落盘）时必须保守不动 default，
+        // 绝不擅自把 default 改指到还原目标。
+        assert_eq!(DefaultPolicy::default(), DefaultPolicy::PreserveCurrentDefault);
+    }
+
+    #[test]
+    fn policy_is_persisted_with_the_plan_and_old_plans_still_load() {
+        let p = plan();
+        assert_eq!(p.default_policy, DefaultPolicy::PointAtRestoreTarget);
+        let json = serde_json::to_string(&p).expect("方案可序列化");
+        assert!(
+            json.contains("PointAtRestoreTarget"),
+            "策略必须随方案落盘，否则 RE 内无从知晓：{json}"
+        );
+        // 模拟旧版本落盘的方案：把 default_policy 字段整个删掉再读回来。
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("合法 JSON");
+        value
+            .as_object_mut()
+            .expect("方案是 JSON 对象")
+            .remove("default_policy");
+        let legacy: BootMenuPlan = serde_json::from_value(value).expect("旧方案必须仍可读");
+        assert_eq!(
+            legacy.default_policy,
+            DefaultPolicy::PreserveCurrentDefault,
+            "字段缺失时取保守缺省，不能panic也不能猜测"
+        );
+    }
+
+    #[test]
+    fn pointing_at_target_overrides_a_still_listed_previous_default() {
+        // 0725 规则 2 被推翻后的核心语义：即便原默认项还在菜单里，default 也要翻到
+        // 本次新还原的系统（GUI 里「当前的默认启动项」被钉住，用户预期它就是新系统）。
+        let decision = decide(
+            DefaultPolicy::PointAtRestoreTarget,
+            Some("{new-loader}"),
+            "{old-primary}",
+            &["{old-primary}", "{new-loader}"],
+        );
+        assert_eq!(decision.default_id, "{new-loader}");
+        assert!(decision.warning.is_none(), "正常翻转不产生 WARN");
+        assert!(decision.note.contains("指向还原目标"));
+    }
+
+    #[test]
+    fn pointing_at_target_ignores_which_partition_the_image_came_from() {
+        // 还原前默认项是另一套系统（第二系统在场）时同样翻转到目标——
+        // 这正是 B3 待办里「还原前默认项是另一套系统」边角用例的纯逻辑版本。
+        let decision = decide(
+            DefaultPolicy::PointAtRestoreTarget,
+            Some("{target-loader}"),
+            "{second-system-loader}",
+            &["{second-system-loader}", "{primary-loader}", "{target-loader}"],
+        );
+        assert_eq!(decision.default_id, "{target-loader}");
+        assert!(decision.warning.is_none());
+    }
+
+    #[test]
+    fn pointing_at_target_without_a_target_loader_is_an_error() {
+        // 目标 loader 缺失（方案被改坏/未勾选目标）必须报错，绝不能静默写空 GUID。
+        let selected = vec!["{old-primary}".to_string()];
+        let error = decide_default(
+            DefaultPolicy::PointAtRestoreTarget,
+            None,
+            "{old-primary}",
+            &selected,
+        )
+        .expect_err("缺少目标 loader 必须报错");
+        assert!(error.to_string().contains("缺少必选目标加载器"), "{error}");
+    }
+
+    #[test]
+    fn preserve_policy_keeps_the_previous_default_while_it_is_still_listed() {
+        let decision = decide(
+            DefaultPolicy::PreserveCurrentDefault,
+            Some("{new-loader}"),
+            "{old-primary}",
+            &["{old-primary}", "{new-loader}"],
+        );
+        assert_eq!(decision.default_id, "{old-primary}", "保守策略保持原默认项");
+        assert!(decision.warning.is_none());
+    }
+
+    #[test]
+    fn preserve_policy_falls_back_to_target_with_a_warning_when_previous_is_gone() {
+        // 2026-10-13「静默漂移」事故的形状：原默认项不在最终菜单。行为仍落到还原
+        // 目标（与旧代码一致），但必须留一道 WARN——裁定为报错拒绝前不改行为。
+        let decision = decide(
+            DefaultPolicy::PreserveCurrentDefault,
+            Some("{new-loader}"),
+            "{vanished-primary}",
+            &["{new-loader}"],
+        );
+        assert_eq!(decision.default_id, "{new-loader}");
+        let warning = decision.warning.expect("必须留 WARN 留痕");
+        assert!(warning.contains("{vanished-primary}"), "{warning}");
+        assert!(warning.contains("不在最终菜单"), "{warning}");
+        assert!(decision.note.contains("已 WARN"));
+    }
+
+    #[test]
+    fn preserve_policy_without_target_and_without_previous_is_an_error() {
+        let error = decide_default(DefaultPolicy::PreserveCurrentDefault, None, "{gone}", &[])
+            .expect_err("既无原默认项又无目标 loader 时必须报错");
+        assert!(error.to_string().contains("缺少必选目标加载器"), "{error}");
     }
 }
