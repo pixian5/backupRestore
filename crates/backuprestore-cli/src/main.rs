@@ -2555,7 +2555,8 @@ fn recover_windows(
             // create-secondary 和 restore-existing 需要的收尾是同一套（保主系统
             // default + 修盘符绑定 + 按第二系统注册 WinRE）。判据来自准备阶段落盘的
             // is_active_system——RE 内 `%SystemDrive%` 是 RAM 盘 X:，探测不到用户系统卷。
-            // 同一判据还决定 default 归属策略（boot_menu::DefaultPolicy）。
+            // 注：default 归属不再由此判据分支——v2.6.4 起只有一条规则
+            // （一律指向本次还原出来的系统），固化在 boot_menu::decide_default。
             let target_is_secondary = !target.is_active_system;
             // 第二阶段按钮需要在目标身份确认后尽早出现；方案落盘并不修改 BCD，
             // 实际写入延后到映像应用完成后的引导修复阶段。
@@ -3266,7 +3267,7 @@ fn boot_manager_state_from_store(
 ///
 /// 2026-10-15 用户规则：还原完成后 default 一律指向新还原的系统（此前第二系统
 /// 场景刻意保留原主系统 default，用 bcdboot `/d` 换取"失败后不会进半成品系统"，
-/// 已按用户要求翻转——见 `boot_menu::DefaultPolicy` 的注释）。
+/// 已按用户要求翻转——见 `boot_menu::decide_default` 的注释）。
 ///
 /// bcdboot 不带 `/d` 时本就会把 default 设成新 loader，但本项目所有 bcdboot 都
 /// 带 `/s` 自定义 ESP，BFSVC 在该场景下对默认项的处理不完全可控，所以这里回读
@@ -3330,8 +3331,9 @@ fn assert_boot_default_points_at_target(
 
 /// 保留仍存在的菜单项并追加第二系统；不复活 BCDBoot 删除的旧编号。
 ///
-/// default 归属**不在**本函数处理：它由 boot_menu::apply 按落盘方案的
-/// DefaultPolicy 统一决定（2026-10-15 用户规则：一律指向本次还原的系统）。
+/// default 归属**不在**本函数处理：它由 boot_menu::apply 调
+/// `boot_menu::decide_default` 决定（2026-10-15 用户规则：一律指向本次还原的
+/// 系统；该规则 v2.6.4 起已无分支）。
 #[cfg(windows)]
 fn preserve_primary_boot_manager(
     efi_root: &Path,
@@ -3348,7 +3350,7 @@ fn preserve_primary_boot_manager(
     )?;
     let expected_order = secondary_boot_order(previous, secondary_identifier, &live)?;
     // **不再在这里写 default**（2026-10-15 用户规则修订）：default 归属的唯一
-    // 权威是 boot_menu::apply（按落盘方案的 DefaultPolicy），两个场景都指向本次
+    // 权威是 boot_menu::apply（调 decide_default），两个场景都指向本次
     // 还原出来的系统。此前这里把它写回 `previous.default`，随后又被 apply 覆盖，
     // 属于自相矛盾的中间态。本函数继续负责的是"原菜单项一个不少 + 追加新项 +
     // 恢复休眠引用"这三件事。

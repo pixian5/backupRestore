@@ -27,7 +27,8 @@
 //!    系统分区）与新增第二系统（目标=其它分区）两个场景已统一——还原完成后
 //!    `{bootmgr}.default` 一律指向**本次新还原出来的系统**（还原本系统场景本来就是，
 //!    第二系统场景自 v2.6.1 起翻转，原「保持原主系统 default」的旧规则已废除）。
-//!    权威表述在 `boot_menu::DefaultPolicy`，本模块的自建条目不参与该决策。
+//!    权威实现在 `boot_menu::decide_default`（唯一决策点），本模块的自建条目
+//!    不参与该决策。
 //! 2. **盘符会重排，loader 身份是 disk/partition GUID**：卷的稳定身份是
 //!    `VolumeIdentity`（disk/partition/volume GUID），盘符只是临时参数。所以自建条目的
 //!    簿记（`ReBootEntry::wim_volume`）记卷身份而非字母，「这个卷的 loader 是哪个
