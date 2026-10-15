@@ -88,7 +88,11 @@ const IOCTL_DISK_GET_DRIVE_LAYOUT_EX: u32 = 0x0007_0050;
 const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002d_1080;
 
 const RESERVED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
+/// EFI 系统分区的分区类型 GUID。**判定 ESP 必须用它，不能用盘符**——盘符在不同
+/// 环境里会重排（恢复环境内尤其如此），本项目此前把 `S:` 当作 ESP 只是约定，
+/// `S:` 被别的卷占用或 ESP 挂到别的盘符时都会判错（`text_parsing.rs` 与
+/// `native_gui.rs` 的注释都记录过这个靠不住的假设）。
+pub(crate) const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
 #[allow(dead_code)]
 const RECOVERY_TYPE: &str = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;

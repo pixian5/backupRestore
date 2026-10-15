@@ -115,7 +115,6 @@ const ID_LANGUAGE: usize = 1005;
 const ID_BROWSE_IMAGE: usize = 1006;
 const ID_OPERATION_BACKUP: usize = 1101;
 const ID_OPERATION_RESTORE: usize = 1102;
-const ID_OPERATION_SECONDARY: usize = 1103;
 const ID_OPERATION_PE: usize = 1104;
 // 三入口拆分（2026-10-14 拍板）：「单系统还原」拆成 A/B/C 三个入口，
 // tab 总数 4 → 6。B=还原数据到非 C 盘，C=还原系统到非 C 盘。
@@ -584,7 +583,7 @@ struct Controls {
     language: Hwnd,
     /// 六个操作入口 tab（备份 / 还原系统到 C 盘 / 还原数据到非 C 盘 / 还原系统到非 C 盘 /
     /// 新增第二系统 / 安装 PE），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
-    operation_tabs: [Hwnd; 6],
+    operation_tabs: [Hwnd; 5],
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
@@ -670,9 +669,8 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.operation_tabs[0], "backup"),
         (state.controls.operation_tabs[1], "restore_a"),
         (state.controls.operation_tabs[2], "restore_b"),
-        (state.controls.operation_tabs[3], "restore_c"),
-        (state.controls.operation_tabs[4], "secondary"),
-        (state.controls.operation_tabs[5], "pe"),
+        (state.controls.operation_tabs[3], "secondary"),
+        (state.controls.operation_tabs[4], "pe"),
         (
             GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32),
             "channel_online",
@@ -736,16 +734,13 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "单系统还原：格式化目标卷并写入镜像，目标必须是当前系统卷。"
         }
         (Language::Chinese, "secondary") => {
-            "新增第二系统：格式化另一个卷并通过 BCDBoot 添加启动项。"
+            "新增非 C 盘第二系统：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，还原完成后默认启动项切换为这台新系统（原系统仍保留在菜单中可选）。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
         }
         (Language::Chinese, "restore_a") => {
             "还原系统到 C 盘：目标锁定为当前系统盘（显示实际盘符），必须离线执行——重启进入 PE/RE 完成格式化与还原；破坏性确认与环境确认两道确认后才会开始。"
         }
         (Language::Chinese, "restore_b") => {
             "还原数据到非 C 盘：把数据卷镜像还原到非系统分区。默认在线执行、不格式化（覆盖式应用，卷序列号不变）；切到离线则重启进 PE/RE，先 diskpart 格式化再还原。目标不能是当前系统盘。"
-        }
-        (Language::Chinese, "restore_c") => {
-            "还原系统到非 C 盘：把完整 Windows 镜像部署到另一个分区并新增启动菜单项，还原完成后默认启动项切换为这台新系统（原系统仍保留在菜单中可选）。默认在线执行（格式化目标并修复引导，不重启）；离线则重启进恢复环境完成。目标不能是当前系统盘。"
         }
         (Language::Chinese, "channel_online") => {
             "在线执行：不重启，直接在当前系统里完成（B 按「格式化目标分区」选项决定是否先清空目标卷；C 恒格式化并修复引导）。"
@@ -811,16 +806,13 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "restore") => "Restore: format the target volume and apply the image.",
         (Language::English, "secondary") => {
-            "Second system: format another volume and add a BCDBoot entry."
+            "Add second system (non-C:): deploy a full Windows image to another partition with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable in the menu). Online by default; target must not be the system drive."
         }
         (Language::English, "restore_a") => {
             "Restore system to C:: target is locked to the running system drive; must run offline (PE/RE) and requires two confirmations."
         }
         (Language::English, "restore_b") => {
             "Restore data to non-C:: apply a data-volume image without touching boot. Online by default (no format); offline formats via diskpart. Target must not be the system drive."
-        }
-        (Language::English, "restore_c") => {
-            "Restore system to non-C:: deploy a full Windows image to another partition with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable in the menu). Online by default; target must not be the system drive."
         }
         (Language::English, "channel_online") => {
             "Online: run inside the current Windows session without reboot (B honors the 'Format target volume' option; C always formats and repairs boot)."
@@ -939,8 +931,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "restore") => "还原系统到 C 盘",
         (Language::Chinese, "restore_a") => "还原系统到 C 盘",
         (Language::Chinese, "restore_b") => "还原数据到非 C 盘",
-        (Language::Chinese, "restore_c") => "还原系统到非 C 盘",
-        (Language::Chinese, "secondary") => "新增第二系统",
+        (Language::Chinese, "secondary") => "新增非 C 盘第二系统",
         (Language::Chinese, "probe_hint") => {
             "「探测」是全程无破坏的安全检查模式，适合首次使用先验证环境：\n\n\
              • 刷新并校验当前 Windows 系统、恢复环境（WinRE / PE 入口）以及各卷身份，身份按磁盘+分区 GUID 校验，不依赖盘符；\n\
@@ -974,21 +965,13 @@ fn ui_text(language: Language, key: &str) -> &'static str {
              • 适用场景：数据盘损坏或迁移时恢复数据。\n\n\
              安全提示：勾选格式化会清空目标卷上的全部数据；不勾选时同名文件也会被镜像内容覆盖。"
         }
-        (Language::Chinese, "restore_c_hint") => {
-            "「还原系统到非 C 盘」把完整 Windows 镜像部署到另一个分区，成为可启动的第二系统：\n\n\
-             • 目标卷：另选一个分区（不能是当前系统盘），将被格式化并写入镜像；\n\
-             • 启动项名称：新系统在 Windows 启动菜单中的显示名称；还原完成后默认启动项指向这台新系统（原系统仍留在菜单里可选）；\n\
-             • 通道差异：在线=不重启，直接在当前系统格式化目标并修复引导；离线=重启进恢复环境完成；\n\
-             • 与「新增第二系统」的区别：本入口默认在线、随时可做；那个入口固定走离线任务链。\n\n\
-             安全提示：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
-        }
         (Language::Chinese, "secondary_hint") => {
-            "「新增第二系统」在保留当前 Windows 的前提下，把另一个镜像部署成可启动的第二系统：\n\n\
-             • 目标卷：另选一个空闲分区（不占用当前系统），镜像写入该分区；\n\
-             • 启动项名称：自定义新系统在 Windows 启动菜单中显示的名称，可用中文；\n\
-             • 流程：离线环境格式化目标分区 → DISM 应用镜像 → BCDBoot 添加启动项并把默认启动项指向新系统；\n\
-             • 效果：重启后默认进入新系统，开机菜单里仍可自由选择进入任一系统，适合双系统共存场景。\n\n\
-             说明：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
+            "「新增非 C 盘第二系统」在保留当前 Windows 的前提下，把镜像部署到另一个分区，成为可启动的第二系统：\n\n\
+             • 目标卷：另选一个分区（不能是当前系统盘），将被格式化并写入完整 Windows 镜像；\n\
+             • 启动项名称：新系统在 Windows 启动菜单中显示的名称，可用中文；\n\
+             • 通道差异：在线=不重启，直接在当前系统里格式化目标并修复引导；离线=重启进恢复环境完成；\n\
+             • 效果：完成后默认启动项切换到这台新系统，开机菜单里仍可自由选择进入原系统，适合双系统共存。\n\n\
+             安全提示：目标卷数据会被覆盖，部署前请确认该分区上没有需要保留的内容。"
         }
         (Language::Chinese, "pe") => "安装 PE",
         (Language::Chinese, "pe_hint") => {
@@ -1023,8 +1006,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "restore") => "Restore C:",
         (Language::English, "restore_a") => "Restore C:",
         (Language::English, "restore_b") => "Restore data",
-        (Language::English, "restore_c") => "Restore other",
-        (Language::English, "secondary") => "Second system",
+        (Language::English, "secondary") => "Add 2nd system (non-C:)",
         (Language::English, "probe_hint") => {
             "Inspect is a completely non-destructive safety check; run it first to validate your environment.\n\n• Refreshes and verifies the current Windows, recovery environment (WinRE / PE entry) and every volume, identified by disk+partition GUID instead of drive letter;\n• 'Create task' only writes and validates the task files and WinRE payloads to confirm the setup;\n• It never backs up, restores, formats, touches boot entries, or reboots.\n\nTip: first-time users should switch to Inspect and run once to confirm Windows, WinRE and volumes are recognized before using other features."
         }
@@ -1037,11 +1019,8 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "restore_b_hint") => {
             "Restore data applies a data-volume image to a non-system partition without touching boot.\n\n• Target volume: a data partition (never the system drive, nor a partition that already has Windows);\n• Format target volume (checked by default): quick-format via diskpart, verify success (same partition, serial changed), then write the image; unchecked = overlay apply, extra files remain;\n• Channel: online = no reboot; offline = reboot into PE/RE (always formats there);\n• Image & index: the WIM and its index to restore;\n• Use case: recover or migrate data volumes.\n\nSafety: formatting erases everything on the target; even without it, same-name files are overwritten."
         }
-        (Language::English, "restore_c_hint") => {
-            "Restore other deploys a full Windows image to another partition as a bootable second system.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; after the restore the default boot entry points to this new system (the previous system stays selectable);\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Difference from 'Second system': this entry runs online by default; that one always goes through the offline task chain.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
-        }
         (Language::English, "secondary_hint") => {
-            "Second system deploys another image as a bootable system while keeping the current Windows.\n\n• Target volume: pick a spare partition (not the current system) to write the image;\n• Boot name: customize the name shown in the boot menu; Chinese is supported;\n• Flow: format the target offline → DISM Apply → BCDBoot adds a boot entry and points the default boot entry at the new system;\n• Result: after reboot you land in the new system by default, and the boot menu still lets you choose either system; ideal for dual-boot.\n\nNote: the target volume is overwritten; confirm it holds nothing you need to keep."
+            "Add second system (non-C:) deploys a full Windows image to another partition as a bootable second system while keeping the current Windows.\n\n• Target volume: another partition (never the system drive); it is formatted and receives the image;\n• Boot name: the name shown in the Windows boot menu; Chinese is supported;\n• Channel difference: online = no reboot, format and boot-repair inside the current session; offline = reboot into the recovery environment;\n• Result: after the restore the default boot entry switches to this new system, and the boot menu still lets you choose either system; ideal for dual-boot.\n\nSafety: the target volume is overwritten; confirm it holds nothing you need to keep."
         }
         (Language::English, "pe") => "Install PE",
         (Language::English, "pe_hint") => {
@@ -1050,7 +1029,6 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         _ => "",
     }
 }
-
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -1211,9 +1189,8 @@ unsafe fn selected_operation(state: &State) -> &'static str {
         // 2=B 还原数据到非 C 盘，3=C 还原系统到非 C 盘。
         1 => "restore-existing",
         2 => "restore-data",
-        3 => "restore-system-other",
-        4 => "create-secondary",
-        5 => "install-pe-entry",
+        3 => "create-secondary",
+        4 => "install-pe-entry",
         _ => "backup",
     }
 }
@@ -1225,10 +1202,9 @@ unsafe fn selected_operation(state: &State) -> &'static str {
 fn cli_operation(gui: &str) -> &'static str {
     match gui {
         "restore-data" => "restore-existing",
-        "restore-system-other" => "create-secondary",
+        "create-secondary" => "create-secondary",
         "backup" => "backup",
         "restore-existing" => "restore-existing",
-        "create-secondary" => "create-secondary",
         "install-pe-entry" => "install-pe-entry",
         "probe" => "probe",
         _ => "backup",
@@ -1240,7 +1216,7 @@ fn cli_operation(gui: &str) -> &'static str {
 fn is_image_restore_entry(gui: &str) -> bool {
     matches!(
         gui,
-        "restore-existing" | "restore-data" | "restore-system-other" | "create-secondary"
+        "restore-existing" | "restore-data" | "create-secondary"
     )
 }
 
@@ -1255,13 +1231,55 @@ fn active_system_letter() -> String {
         .to_ascii_uppercase()
 }
 
+/// 当前活动系统盘符（`%SystemDrive%`，大写字母），**取不到就返回 `None`**。
+///
+/// 与 `active_system_letter` 的区别：那个在环境变量缺失时退回 `"C"`（只为界面
+/// 显示一个盘符，错了无害）；这个用于**安全判定**，取不到时必须如实说"不知道"，
+/// 绝不能退回字母 C——写死 C 会把"系统盘不是 C"的机器漏掉、把"C 是数据盘"的
+/// 机器误拦，正是 `install_pe_harddisk` 里那处 `drive_char == 'C'` 的老问题。
+fn system_drive_letter() -> Option<char> {
+    std::env::var("SystemDrive")
+        .ok()
+        .and_then(|value| {
+            value
+                .trim_end_matches('\\')
+                .trim_end_matches(':')
+                .chars()
+                .next()
+        })
+        .map(|letter| letter.to_ascii_uppercase())
+}
+
+/// 该卷是不是 EFI 系统分区（装引导文件的那个小分区）。
+///
+/// 判据是分区类型 GUID `EFI_TYPE`，不是盘符。
+fn is_efi_system_partition(drive: Option<&DriveInfo>) -> bool {
+    drive
+        .map(|drive| {
+            drive
+                .partition_type_guid
+                .eq_ignore_ascii_case(crate::windows_prepare::EFI_TYPE)
+        })
+        .unwrap_or(false)
+}
+
+/// 在运行本程序的那个卷上？程序所在卷不能被当成 PE 安装目标——装进去会覆盖
+/// 正在运行的程序自身。
+fn is_program_drive(drive_char: char, executable_dir: &std::path::Path) -> bool {
+    match executable_dir.to_string_lossy().chars().next() {
+        Some(letter) => letter.eq_ignore_ascii_case(&drive_char),
+        // 拿不到程序路径时不猜：既不能误判成"是"，也不能假设成 C。
+        None => false,
+    }
+}
+
 unsafe fn set_operation_tabs(state: &State, language: Language) {
     for (index, (button, key)) in state
         .controls
         .operation_tabs
         .iter()
         .zip([
-            "backup", "restore_a", "restore_b", "restore_c", "secondary", "pe",
+            "backup", "restore_a", "restore_b", "secondary", "pe",
         ])
         .enumerate()
     {
@@ -1289,15 +1307,13 @@ fn operation_display(language: Language, operation: &str) -> &'static str {
         (Language::Chinese, "backup") => "备份",
         (Language::Chinese, "restore-existing") => "还原系统到 C 盘",
         (Language::Chinese, "restore-data") => "还原数据到非 C 盘",
-        (Language::Chinese, "restore-system-other") => "还原系统到非 C 盘",
-        (Language::Chinese, "create-secondary") => "新增第二系统",
+        (Language::Chinese, "create-secondary") => "新增非 C 盘第二系统",
         (Language::Chinese, "install-pe-entry") => "安装 PE",
         (Language::English, "probe") => "Inspect",
         (Language::English, "backup") => "Backup",
         (Language::English, "restore-existing") => "Restore system to C:",
         (Language::English, "restore-data") => "Restore data to non-C:",
-        (Language::English, "restore-system-other") => "Restore system to non-C:",
-        (Language::English, "create-secondary") => "Second system",
+        (Language::English, "create-secondary") => "Add second system (non-C:)",
         (Language::English, "install-pe-entry") => "Install PE",
         _ => "",
     }
@@ -1308,7 +1324,6 @@ fn operation_hint_key(operation: &str) -> &'static str {
         "backup" => "backup_hint",
         "restore-existing" => "restore_hint",
         "restore-data" => "restore_b_hint",
-        "restore-system-other" => "restore_c_hint",
         "create-secondary" => "secondary_hint",
         "install-pe-entry" => "pe_hint",
         _ => "backup_hint",
@@ -1328,7 +1343,7 @@ unsafe fn set_operation_visibility(state: &State) {
     let show_image = operation != "probe";
     let show_target = matches!(
         operation,
-        "restore-existing" | "restore-data" | "restore-system-other" | "create-secondary"
+        "restore-existing" | "restore-data" | "create-secondary"
             | "install-pe-entry"
     );
     // A/B/C/新增第二系统都要手选 WIM 索引 + 副档校验复选框。
@@ -1342,9 +1357,9 @@ unsafe fn set_operation_visibility(state: &State) {
     // 「第二系统名称」在「新增第二系统」与 C（他盘系统还原，离线 prepare 必填）
     // 显示；「安装 PE」tab 有自己的「PE 启动项名称」输入框，若此处也显示 menu，
     // 其布局位置（field_x+500, secondary_y）会恰好覆盖右下角「创建快捷方式」按钮。
-    let show_menu = matches!(operation, "create-secondary" | "restore-system-other");
+    let show_menu = matches!(operation, "create-secondary");
     // B/C 入口显示「在线/离线」通道单选；A 必离线（无选择），备份走智能分流。
-    let show_channel = matches!(operation, "restore-data" | "restore-system-other");
+    let show_channel = matches!(operation, "restore-data" | "create-secondary");
     let set_visible = |hwnd: Hwnd, visible: bool| {
         ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
@@ -1390,7 +1405,7 @@ unsafe fn set_operation_visibility(state: &State) {
         ID_FORMAT_TARGET as i32,
         matches!(
             operation,
-            "restore-existing" | "restore-data" | "restore-system-other"
+            "restore-existing" | "restore-data" | "create-secondary"
         ),
     );
     // 「重启进入 PE」「创建快捷方式」只在 安装 PE tab 显示
@@ -1433,12 +1448,12 @@ unsafe fn layout_operation(state: &State) {
     let source_visible = matches!(layout_op, "backup" | "create-secondary");
     let target_visible = matches!(
         layout_op,
-        "restore-existing" | "restore-data" | "restore-system-other" | "create-secondary"
+        "restore-existing" | "restore-data" | "create-secondary"
             | "install-pe-entry"
     );
     let image_visible = layout_op != "probe";
     let index_visible = is_image_restore_entry(layout_op);
-    let channel_visible = matches!(layout_op, "restore-data" | "restore-system-other");
+    let channel_visible = matches!(layout_op, "restore-data" | "create-secondary");
     let source_combo_y = 100;
     let source_details_y = source_combo_y + 36;
     let target_combo_y = if source_visible {
@@ -1475,7 +1490,7 @@ unsafe fn layout_operation(state: &State) {
     let buttons_y = if index_visible {
         if matches!(
             selected_operation(state),
-            "create-secondary" | "restore-system-other"
+            "create-secondary"
         ) {
             secondary_y + 64
         } else {
@@ -1671,13 +1686,14 @@ unsafe fn layout_operation(state: &State) {
         let dir_text = get_text(dir_edit_hwnd);
         let dir_trimmed = dir_text.trim();
         if dir_trimmed.is_empty() {
+            // 程序所在盘符：取到就排除它，取不到（程序路径异常）就不排除任何卷，
+            // 绝不退回字母 C——那会把一台系统盘恰好是 C 的机器上所有其它卷都排除掉。
             let exe_drive = state
                 .executable_dir
                 .to_string_lossy()
                 .chars()
                 .next()
-                .unwrap_or('C')
-                .to_ascii_uppercase();
+                .map(|letter| letter.to_ascii_uppercase());
             let default_drive = state
                 .drives
                 .iter()
@@ -1686,7 +1702,7 @@ unsafe fn layout_operation(state: &State) {
                     letter
                         .chars()
                         .next()
-                        .map(|c| c != exe_drive)
+                        .map(|c| Some(c) != exe_drive)
                         .unwrap_or(true)
                 })
                 .unwrap_or_else(|| {
@@ -1782,7 +1798,7 @@ unsafe fn layout_operation(state: &State) {
     let (index_width, verify_hash_x, verify_hash_y) =
         if matches!(
             selected_operation(state),
-            "create-secondary" | "restore-system-other"
+            "create-secondary"
         ) {
             (380, field_x, secondary_y + 32)
         } else {
@@ -1905,13 +1921,10 @@ unsafe fn set_volume_labels(state: &State) {
         (Language::Chinese, "restore-data") => {
             ("源卷（不使用）".into(), "目标卷（数据卷）".into())
         }
-        (Language::Chinese, "restore-system-other") => (
+        (Language::Chinese, "create-secondary") => (
             "源卷（不使用）".into(),
             "目标卷（第二系统位置）".into(),
         ),
-        (Language::Chinese, "create-secondary") => {
-            ("源卷（保留系统）".into(), "目标卷（第二系统）".into())
-        }
         (Language::Chinese, "install-pe-entry") => {
             ("源卷（不使用）".into(), "目标卷（PE 安装位置）".into())
         }
@@ -1924,13 +1937,10 @@ unsafe fn set_volume_labels(state: &State) {
         (Language::English, "restore-data") => {
             ("Source (unused)".into(), "Target (data)".into())
         }
-        (Language::English, "restore-system-other") => (
+        (Language::English, "create-secondary") => (
             "Source (unused)".into(),
             "Target (second system)".into(),
         ),
-        (Language::English, "create-secondary") => {
-            ("Source (keep)".into(), "Target (second system)".into())
-        }
         (Language::English, "install-pe-entry") => {
             ("Source (unused)".into(), "Target (PE install)".into())
         }
@@ -1941,7 +1951,7 @@ unsafe fn set_volume_labels(state: &State) {
 }
 
 unsafe fn select_operation(state: &mut State, index: usize) {
-    state.operation_index = index.min(5);
+    state.operation_index = index.min(4);
     set_operation_tabs(state, selected_language(state));
     let operation = selected_operation(state);
     if operation == "restore-existing" {
@@ -1950,7 +1960,7 @@ unsafe fn select_operation(state: &mut State, index: usize) {
         let letter = active_system_letter();
         select_drive(state, state.controls.target, &letter);
     }
-    if matches!(operation, "restore-data" | "restore-system-other") {
+    if matches!(operation, "restore-data" | "create-secondary") {
         // B/C：每次进入入口时通道复位为「在线」默认——不跨入口保留上次的
         // 离线选择，防止用户在 C 选了离线后切到 B 忘改而意外重启格式化。
         SendMessageW(
@@ -1973,7 +1983,7 @@ unsafe fn select_operation(state: &mut State, index: usize) {
             && current.eq_ignore_ascii_case(&system)
             && let Some(candidate) = state.drives.iter().find(|drive| {
                 !drive.letter.eq_ignore_ascii_case(&system)
-                    && (operation == "restore-system-other" || !drive.has_windows_installation)
+                    && (operation == "create-secondary" || !drive.has_windows_installation)
             })
         {
             append_gui_log(
@@ -2133,11 +2143,8 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
         (Language::Chinese, "target", "restore-data") => {
             "目标卷用途：接收数据卷镜像。默认勾选「格式化目标分区」=清空后写入（卷序列号改变）；取消勾选=覆盖式应用（多余文件保留）。不能选当前系统盘或已有 Windows 的分区。"
         }
-        (Language::Chinese, "target", "restore-system-other") => {
-            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项，完成后默认启动项切换为这台新系统（原系统仍可选）。必须不同于当前系统盘。"
-        }
         (Language::Chinese, "target", "create-secondary") => {
-            "目标卷用途：将被格式化并写入镜像作为第二个 Windows；必须不同于源卷和程序目录所在分区。"
+            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项，完成后默认启动项切换为这台新系统（原系统仍可选）。必须不同于当前系统盘。"
         }
         (Language::Chinese, "target", "backup") => {
             "目标卷用途：备份模式不会写入此卷；镜像保存位置由“镜像绝对路径”决定。"
@@ -2163,11 +2170,8 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
         (Language::English, "target", "restore-data") => {
             "Purpose: receives the data-volume image. 'Format target volume' checked (default) = erase then write (serial changes); unchecked = overlay apply. Never the system drive or an existing Windows partition."
         }
-        (Language::English, "target", "restore-system-other") => {
-            "Purpose: formatted and written as a second Windows with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable). Must differ from the system drive."
-        }
         (Language::English, "target", "create-secondary") => {
-            "Purpose: will be formatted and receive the second Windows; it must differ from source and the program directory volume."
+            "Purpose: formatted and written as a second Windows with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable). Must differ from the system drive."
         }
         (Language::English, "target", "backup") => {
             "Purpose: backup does not write this volume; image storage comes from Image absolute path."
@@ -2442,7 +2446,7 @@ unsafe fn prefill_menu_name_from_image(state: &mut State) {
     }
     if !matches!(
         selected_operation(state),
-        "create-secondary" | "restore-system-other"
+        "create-secondary"
     ) {
         return;
     }
@@ -2610,16 +2614,15 @@ unsafe fn refresh_backup_index_name(state: &mut State) {
         return;
     }
     let letter = selected_drive_letter(state, state.controls.source);
-    let system = std::env::var("SystemDrive")
-        .unwrap_or_else(|_| "C:".to_string())
-        .chars()
-        .next()
-        .unwrap_or('C')
-        .to_ascii_lowercase();
+    // `%SystemDrive%` 取不到时 `system` 是 None，此时如实判定为"不是系统卷"
+    // 而不是退回字母 C——备份索引名的默认值会因此降级成带盘符的形式
+    // （`Windows (F:) 日期`），宁可少写也不要写错。
+    let system = system_drive_letter();
     let source_is_system = letter
         .as_deref()
         .and_then(|letter| letter.chars().next())
-        .is_some_and(|letter| letter.to_ascii_lowercase() == system);
+        .and_then(|letter| system.map(|system| letter.to_ascii_uppercase() == system))
+        .unwrap_or(false);
     let value = default_backup_index_name(source_is_system, letter.as_deref());
     if state.index_name_auto.as_deref() == Some(value.as_str()) {
         return;
@@ -3780,15 +3783,17 @@ unsafe fn test_hook_auto_install(state: &mut State) {
     };
     append_gui_log(state, "test hook: config loaded");
     // 1. 操作模式：默认安装 PE；支持 "tab":"backup"/"restore"(A)/
-    // "restore-data"(B)/"restore-other"(C)/"secondary" 等
+    // "restore-data"(B)/"restore-other"或"secondary"(合并后的 C) 等
     let tab = json.get("tab").and_then(|v| v.as_str()).unwrap_or("pe");
     let op_index = match tab {
         "backup" => 0,
         "restore" => 1,
         "restore-data" => 2,
         "restore-other" => 3,
-        "secondary" => 4,
-        _ => 5,
+        // 2026-10-16 用户裁定：「还原系统到非 C 盘」与「新增第二系统」本就是同一个
+        // 功能（只差文案），已合并为「新增非 C 盘第二系统」一个标签页，两个键都指 3。
+        "secondary" => 3,
+        _ => 4,
     };
     select_operation(state, op_index);
     // 1.5 B/C 入口的通道选择（"channel":"online"/"offline"，默认 online）：
@@ -4364,27 +4369,52 @@ unsafe fn install_pe_harddisk(state: &State) {
             return;
         }
     };
-    let drive_char = target_drive.chars().next().unwrap_or('C');
-    let program_drive = state
-        .executable_dir
-        .to_string_lossy()
-        .chars()
-        .next()
-        .unwrap_or(' ');
-    // 目标分区安全校验：非系统盘、非程序所在盘、非 ESP、可用空间 >= 2GB
+    let drive_char = match target_drive.chars().next() {
+        Some(letter) => letter.to_ascii_uppercase(),
+        // 取不到目标盘符就拒绝，不退回字母 C——那会凭空造出一个"合法目标"。
+        None => {
+            append_gui_log(state, "GUI action blocked: target drive letter unavailable");
+            show_message(
+                state.root,
+                if language == Language::English {
+                    "Could not determine the target drive letter."
+                } else {
+                    "无法确定目标分区的盘符。"
+                },
+                if language == Language::English {
+                    "Validation failed"
+                } else {
+                    "参数校验失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+    };
+    // 目标分区安全校验：非系统卷、非程序所在卷、非 ESP、可用空间 >= 2GB。
+    //
+    // 2026-10-16：系统盘改按 `%SystemDrive%` 判、ESP 改按分区类型 GUID 判，
+    // 不再写死 `'C'` / `'S'`。此前那两种写法在「系统盘不是 C」「ESP 不在 S」
+    // 的机器上拦不住真正的危险目标，在「C 或 S 其实是数据盘」的机器上又会误拦。
+    let target_info = state
+        .drives
+        .iter()
+        .find(|drive| drive.letter.eq_ignore_ascii_case(&drive_char.to_string()));
     let mut is_system_volume = false;
     let mut free_bytes: u64 = 0;
-    for drive in &state.drives {
-        if drive.letter.eq_ignore_ascii_case(&drive_char.to_string()) {
-            is_system_volume = drive.has_windows_installation;
-            free_bytes = drive.free_bytes.unwrap_or(0);
-            break;
-        }
+    if let Some(drive) = target_info {
+        is_system_volume = drive.has_windows_installation;
+        free_bytes = drive.free_bytes.unwrap_or(0);
     }
-    if drive_char == 'C' || drive_char == 'S' || drive_char == program_drive {
+    let on_system_drive = system_drive_letter() == Some(drive_char);
+    let on_esp = is_efi_system_partition(target_info);
+    let on_program_drive = is_program_drive(drive_char, &state.executable_dir);
+    if on_system_drive || on_esp || on_program_drive {
         append_gui_log(
             state,
-            "GUI action blocked: target partition is system/ESP/program volume",
+            &format!(
+                "GUI action blocked: target {drive_char}: is system={on_system_drive} esp={on_esp} program={on_program_drive}"
+            ),
         );
         show_message(
             state.root,
@@ -5390,7 +5420,7 @@ unsafe fn create_task(state: &mut State) {
     };
     let source_drive = match operation.as_str() {
         "restore-existing" | "restore-data" => target_drive.clone(),
-        "restore-system-other" => active_system_letter(),
+        "create-secondary" => active_system_letter(),
         _ => match selected_or_error(
             state.controls.source,
             if language == Language::English {
@@ -5453,7 +5483,7 @@ unsafe fn create_task(state: &mut State) {
     // ===== 三入口拆分后的 GUI 侧目标闸门（prepare 的 P0 安全闸仍是最终防线）：
     // B/C 的目标不能是当前系统盘——B 是数据还原、C 是第二系统，覆盖运行中的
     // 系统盘分别属于 A 入口和明确的误操作。
-    if matches!(operation.as_str(), "restore-data" | "restore-system-other")
+    if matches!(operation.as_str(), "restore-data" | "create-secondary")
         && target_drive.eq_ignore_ascii_case(&active_system_letter())
     {
         let message = if language == Language::English {
@@ -5469,7 +5499,7 @@ unsafe fn create_task(state: &mut State) {
         };
         append_gui_log(
             state,
-            "GUI action blocked: restore-data/restore-system-other target is the active system drive",
+            "GUI action blocked: restore-data/create-secondary target is the active system drive",
         );
         show_message(
             state.root,
@@ -5514,8 +5544,8 @@ unsafe fn create_task(state: &mut State) {
     }
     // C（还原系统到非 C 盘）走 create-secondary 语义，离线 prepare 要求启动菜单名必填；
     // 在线通道同样用它给新启动项命名。空名在这里拦下，避免提权后才发现。
-    if operation == "restore-system-other" && get_text(state.controls.menu).trim().is_empty() {
-        append_gui_log(state, "GUI action blocked: restore-system-other requires a boot menu name");
+    if operation == "create-secondary" && get_text(state.controls.menu).trim().is_empty() {
+        append_gui_log(state, "GUI action blocked: create-secondary requires a boot menu name");
         show_message(
             state.root,
             if language == Language::English {
@@ -5565,7 +5595,7 @@ unsafe fn create_task(state: &mut State) {
     // prepare 侧还有一道同样的消解兜底（docs/20261015-0725）。
     if matches!(
         operation.as_str(),
-        "restore-system-other" | "create-secondary"
+        "create-secondary"
     ) {
         let typed = get_text(state.controls.menu).trim().to_string();
         let existing = existing_boot_entry_names(state);
@@ -5604,7 +5634,7 @@ unsafe fn create_task(state: &mut State) {
     // 在点「是」之前看见，而不是建完任务才发现启动项叫了别的名字。
     let menu_summary = if matches!(
         operation.as_str(),
-        "restore-system-other" | "create-secondary"
+        "create-secondary"
     ) {
         let menu = get_text(state.controls.menu).trim().to_string();
         if language == Language::English {
@@ -5945,7 +5975,7 @@ unsafe fn create_task(state: &mut State) {
         }
     }
     // ===== B/C 入口按「通道单选」分流（默认在线；离线 = 重启进 PE/RE）=====
-    if matches!(operation.as_str(), "restore-data" | "restore-system-other") {
+    if matches!(operation.as_str(), "restore-data" | "create-secondary") {
         let online = IsDlgButtonChecked(state.root, ID_CHANNEL_ONLINE as i32) != 0;
         append_gui_log(
             state,
@@ -5957,7 +5987,7 @@ unsafe fn create_task(state: &mut State) {
             // 的 create-secondary 分支，同样尊重格式化选项）。
             // C 的启动菜单名通过 image_name 传给在线通道——restore_to_windows_volume
             // 会优先用它命名新启动项（用户命名 > 镜像版本名自动推断）。
-            let online_image_name = if operation == "restore-system-other" {
+            let online_image_name = if operation == "create-secondary" {
                 get_text(state.controls.menu).trim().to_string()
             } else {
                 String::new()
@@ -6109,7 +6139,7 @@ unsafe fn create_task(state: &mut State) {
         // 默认勾选不传参（=格式化，历史行为）。
         if matches!(
             operation.as_str(),
-            "restore-existing" | "restore-data" | "restore-system-other"
+            "restore-existing" | "restore-data" | "create-secondary"
         ) && IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) == 0
         {
             append_gui_log(state, "prepare args: --skip-format (overlay restore)");
@@ -6530,7 +6560,7 @@ unsafe extern "system" fn window_proc(
                     hwnd,
                     "BUTTON",
                     "",
-                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 6
+                    // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 5
                     // 个之间切换，不会跳到下方 PE 启动方式/通道那一组。
                     // 布局：入口名用用户拍板的全称（长短不一），按钮不等宽、
                     // 间距 3px，从 x=90 排到 ~693；语言栏靠右（layout_operation
@@ -6571,7 +6601,7 @@ unsafe extern "system" fn window_proc(
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
                     395,
                     60,
-                    120,
+                    150,
                     32,
                     ID_OPERATION_RESTORE_OTHER,
                 ),
@@ -6580,18 +6610,7 @@ unsafe extern "system" fn window_proc(
                     "BUTTON",
                     "",
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    518,
-                    60,
-                    100,
-                    32,
-                    ID_OPERATION_SECONDARY,
-                ),
-                create_control(
-                    hwnd,
-                    "BUTTON",
-                    "",
-                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    621,
+                    548,
                     60,
                     72,
                     32,
@@ -7100,8 +7119,7 @@ unsafe extern "system" fn window_proc(
                 ID_OPERATION_RESTORE => Some(1),
                 ID_OPERATION_RESTORE_DATA => Some(2),
                 ID_OPERATION_RESTORE_OTHER => Some(3),
-                ID_OPERATION_SECONDARY => Some(4),
-                ID_OPERATION_PE => Some(5),
+                ID_OPERATION_PE => Some(4),
                 _ => None,
             } {
                 select_operation(state, index);

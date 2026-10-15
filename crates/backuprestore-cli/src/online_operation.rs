@@ -491,7 +491,7 @@ fn restore_to_windows_volume(
     // affected==活动系统 拒绝已保证目标不是当前系统盘）。
     // default 归属=指向本次还原出来的系统（2026-10-15 用户规则，替代原先的
     // "保持原主系统"；docs/20261015-0725 S1，单一权威：apply 只执行不推断）。
-    boot_menu_session.set_default_policy(crate::boot_menu::DefaultPolicy::PointAtRestoreTarget);
+    // 该规则已固化在 `boot_menu::decide_default` 里，无需在此显式设定。
     // 调用方显式指定了镜像名时以它为准（用户自己的命名优先于自动版本名）。
     // 目标下标不硬编码：默认顺序里它在最后，用户也可能上移。
     //

@@ -2570,11 +2570,11 @@ fn recover_windows(
                     log,
                     preferred_name.as_deref(),
                 )?;
-                // default 归属的单一权威（docs/20261015-0725 S1，2026-10-15 用户
-                // 修订）：无论目标是活动系统盘（重建唯一系统）还是另一个分区
-                // （新增第二系统），还原完成后 default 一律指向本次还原出来的
-                // 系统——用户要的就是"还原完开机进新系统"。apply 只执行不推断。
-                session.set_default_policy(crate::boot_menu::DefaultPolicy::PointAtRestoreTarget);
+                // default 归属（docs/20261015-0725 S1，2026-10-15 用户修订）：
+                // 无论目标是活动系统盘（重建唯一系统）还是另一个分区（新增第二
+                // 系统），还原完成后 default 一律指向本次还原出来的系统——用户
+                // 要的就是"还原完开机进新系统"。该规则已固化在
+                // `boot_menu::decide_default` 里，apply 只执行不推断。
                 if let Some(p) = progress {
                     p.set_boot_menu(Arc::clone(&session));
                 }
