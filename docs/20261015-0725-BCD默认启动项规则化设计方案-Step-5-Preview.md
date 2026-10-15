@@ -13,6 +13,26 @@
 > 已实施；S2 被用户提出的「读取 WIM 菜单名预填」方案取代（见 §3-S5，待确认后实施）；
 > S3（原 default 丢失时报错拒绝的边界）**待用户裁定**；§6 验收矩阵尚未实机重跑。
 
+---
+
+> ## ⚠️ 规则 2 已被用户推翻（2026-10-15 10:40，v2.6.1）
+>
+> 用户原话：「**『当前的默认启动项』是钉住不可取消勾选：我希望的预期是，这个默认启动项
+> 指的是新还原出来的系统，而不是已存在的旧系统。**」
+>
+> 即上文「用户拍板的设计规则」第 1、2 条的**分歧被取消**——第二系统场景不再保留原主系统
+> default，**两个场景统一：还原完成后 `{bootmgr}.default` 指向本次还原出来的系统**。
+> 原规则 3（禁止一律设默认）随之作废。
+>
+> 连带影响与处置（详见 `20261015-1040-default归属翻转为新系统与备份索引名默认值-Hy4.md`）：
+> - `DefaultPolicy::PreserveCurrentDefault` **不再被任何调用方显式设定**，降级为「方案缺该
+>   字段时的保守兜底」；`PointAtRestoreTarget` 成为唯一实际策略。
+> - 离线/在线/PE 三条路径的 bcdboot **去掉 `/d`**（bcdboot 默认行为即把新 loader 设为
+>   default，正是新规则要的）；`assert_boot_default_preserved` 换成
+>   `assert_boot_default_points_at_target`；`preserve_primary_boot_manager` 不再写 default。
+> - 在线/PE 终检由「default 必须指向活动卷」**反转为「default 必须指向目标卷」**。
+> - §1.3、§3-S1、§4、§5、§6 的相应表述已被本次修订改写，阅读时以本条为准。
+
 ## 1. 现状行为取证（源码，v2.5.7）
 
 ### 1.1 路由判据（已符合规则）
@@ -44,6 +64,9 @@ RE 内 `%SystemDrive%` 是 RAM 盘 X: 探测不到，故离线侧只读该结论
 
 ### 1.3 第二系统路径（C，is_active_system=false）
 
+> **本条已被 2026-10-15 10:40 规则修订推翻**：下文「default 均保持主系统」不再成立，
+> 现为「一律指向本次还原的系统」。段末的行首 ⛔ 标注指出改动位置，历史表述保留作对照。
+
 四道防线叠加，default 均保持主系统：
 1. bcdboot `/d /addlast`（`main.rs:2736-2737`）+ 注释说明 BFSVC 在 `/s` 场景可能忽略
    `/d`/`/addlast`，真正承重的是第 2 道；
@@ -51,6 +74,9 @@ RE 内 `%SystemDrive%` 是 RAM 盘 X: 探测不到，故离线侧只读该结论
 3. `preserve_primary_boot_manager`（按任务快照恢复 default/displayorder）；
 4. apply 的 `selected.contains(&previous.default)` 优先保留分支。
 ✅ 规则 2 满足（阶段 4 实测：主系统 default 未劫持，新项 addlast）。
+⛔ **v2.6.1 起**：第 1 道 `/d` 已从 bcdboot 参数中删除、第 2 道换成
+`assert_boot_default_points_at_target`、第 3 道不再写 default、第 4 道的策略改由调用方传
+`PointAtRestoreTarget`——四道防线现在一致地把 default 推向**新还原的系统**。
 
 ### 1.4 与规则 3 相关的命名
 
@@ -155,7 +181,7 @@ enum DefaultPolicy {
 - `boot_menu.rs` 的 apply 注释更新为新策略表述。✅ 已随 S1 实施完成（`DefaultPolicy`
   文档注释即规则原文，apply 决策点注释说明分支语义）。
 
-### S5 读取 WIM 菜单名预填（用户 2026-10-15 07:36 提出，**待确认后实施**）
+### S5 读取 WIM 菜单名预填（用户 2026-10-15 07:36 提出，**已实施并实机验证，v2.6.0**）
 
 用户原话：「『还原系统到非 C 盘』tab 增加读取 wim 里面菜单名可以吗？读出并显示到文本框，
 如果和现有任一启动菜单重名，就在后面加上当前时间年月日时分，用户也可以修改」。
@@ -183,6 +209,24 @@ enum DefaultPolicy {
 5. **影响面**：仅 C 入口（create-secondary，在线/离线）；A 入口无菜单名文本框，不受影响。
    §6 的 V4 验收标准随之改为「新项名字 = WIM 索引名（撞名时带时间后缀）或用户改名」。
 
+**实施记录（v2.6.0，2026-10-15 09:00~09:45 实机验证通过）**
+
+- 落点：`native_gui.rs` 的 `prefill_menu_name_from_image`（选索引 → 预填）/ `set_menu_name`
+  + `menu_name_auto`/`menu_name_touched`（区分程序预填与用户手改）/ 创建任务前的撞名消解；
+  CLI 侧 `boot_menu.rs::resolve_menu_name_collision` 为同一权威实现，离线 prepare 与在线
+  STEP 3.6 各调一次形成两级兜底（在线路径的消解必须提前到 apply 之前，否则要等 STEP 4
+  validate 才报错，那时目标卷已格式化）。
+- **踩坑（已修，值得记住）**：`set_menu_name` 原先「先写文本、后记自动值」，而 EDIT 的
+  `WM_SETTEXT` 会**同步**（SendMessage）向父窗发 `EN_CHANGE`，处理函数在同一调用栈上重入——
+  重入时 `menu_name_auto` 还是旧值/None，与刚写入的文本不等 → `menu_name_touched` 被启动时
+  首次语言默认写入永久置 true → 此后所有预填（读取镜像/切索引）全部提前返回。现象是
+  「菜单框永远停在语言默认值」，即 S5 预填整个失效。**修法：先记 auto 再写文本**，
+  并在函数注释里点明这个重入陷阱。
+- 验证（全部通过）：读取镜像后预填 `Windows Backup (index 1)`；切索引 2 跟随切换、切回 1
+  往返正常；手改后切索引不覆盖；键入与现有项同名的 `本次还原的 Windows` → 自动改为
+  `本次还原的 Windows-202610150928` 并回写文本框；破坏性确认摘要含最终菜单名；取消路径
+  日志干净（create task → collision resolved → cancelled）。
+
 ## 4. 边界情形表（方案预期行为）
 
 | 场景 | 目标性质 | default 结果 | 菜单形态 |
@@ -190,11 +234,10 @@ enum DefaultPolicy {
 | A 入口还原到当前系统盘（格式化） | 活动系统 | 指向还原后的 loader（v2.5.8 起无条件） | 既有系统项 + 目标项（目标名「本次还原的 Windows」） |
 | A 入口还原到当前系统盘（跳过格式化） | 活动系统 | 指向目标分区 loader（bcdboot 复用旧条目则等价） | 同上 |
 | A 入口，还原前默认项是另一套系统 | 活动系统 | 指向还原后的 loader（修正旧行为：旧代码会保留原默认） | 原默认系统仍在菜单（若勾选） |
-| C 入口新增第二系统（用户起名） | 第二系统 | 保持原主系统 | 原菜单 + 新项 addlast（用户菜单名） |
-| C 入口还原到别的 Windows 卷（未起名） | 第二系统 | 保持原主系统 | 原菜单 + 新项 addlast（S5 实施后 = WIM 索引名/撞名带时间后缀；S5 前 = 「本次还原的 Windows」） |
-| 第二系统场景，用户在弹窗取消勾选主系统 | 第二系统 | validate 勾选守卫明确报错（现状已拦） | —（提示先恢复勾选） |
-| 第二系统场景，原 default 的 loader 不在菜单 | 第二系统 | WARN 后落 target（v2.5.8）；S3 裁定后或升级为报错拒绝 | 视菜单实际内容 |
-| 第二系统场景，主系统 loader 已不在 BCD | 第二系统 | WARN 后落 target（唯一可行 default） | 仅剩目标项 |
+| **C 入口新增第二系统（用户起名）** | 第二系统 | **指向新还原的系统**（10:40 修订，原为「保持原主系统」） | 原菜单 + 新项 addlast（用户菜单名） |
+| **C 入口还原到别的 Windows 卷（未起名）** | 第二系统 | **指向新还原的系统**（10:40 修订） | 原菜单 + 新项 addlast（S5：WIM 索引名/撞名带时间后缀） |
+| 第二系统场景，用户在弹窗取消勾选主系统 | 第二系统 | validate 勾选守卫明确报错；钉住的理由改为「原系统必须留在菜单里，否则再也启动不回去」（不再是保 default） | —（提示先恢复勾选） |
+| 第二系统场景，原 default 的 loader 不在菜单 | 第二系统 | 无影响：default 本就指向新系统 | 视菜单实际内容 |
 | B 入口数据卷还原 | 非 Windows 卷 | 不碰 BCD（skipping BCDBoot） | 不变 |
 
 ## 5. 改动清单（S1/G4 已于 v2.5.8 实施）
@@ -202,25 +245,28 @@ enum DefaultPolicy {
 | 文件 | 改动 | 状态 |
 |---|---|---|
 | `boot_menu.rs` | ① `BootMenuPlan` 加 `default_policy` 字段 + serde 默认值（旧方案文件缺省按 `PreserveCurrentDefault`，保安全）② apply default 决策按策略分支 + 全分支日志（S1）③ `set_default_policy` 唯一写入入口 | ✅ 已完成 |
-| `main.rs` | prepare 调用处按 `target_is_secondary`（判据上移共用）显式设定策略；bcdboot 后路由日志；删除重复判据声明 | ✅ 已完成 |
-| `online_operation.rs` | 在线通道固定 `PreserveCurrentDefault`（结构上只服务第二系统） | ✅ 已完成 |
+| `main.rs` | prepare 调用处显式设定策略（v2.6.1 起两场景统一 `PointAtRestoreTarget`）；bcdboot 后路由日志；**v2.6.1：去 `/d`、`assert_boot_default_preserved` → `assert_boot_default_points_at_target`、`preserve_primary_boot_manager` 不再写 default** | ✅ 已完成（v2.6.1） |
+| `online_operation.rs` | v2.5.8 固定 `PreserveCurrentDefault`；**v2.6.1 改为 `PointAtRestoreTarget` + STEP 3.6 去 `/d` + 终检反转为「default 必须指向目标卷」+ 预检不再要求 default 等于快照** | ✅ 已完成（v2.6.1） |
+| `pe_operation.rs` | **v2.6.1：bcdboot 去 `/d`；SecondaryInstall 分支把 default 写成新 loader；终检 `default: loader`** | ✅ 已完成（v2.6.1） |
 | `boot_menu.rs` 测试 | 方案构造补 `default_policy`；两种策略各补单测（含 fallback 路径） | ✅ 构造已补；策略单测待补 |
 | `boot_entry.rs` | 模块头补设计原则注释（S4） | ⏳ 待办 |
-| `boot_menu.rs`/`native_gui.rs` | S5：读取镜像后预填 WIM 索引名到菜单名文本框 + 撞名加时间后缀 + 后端同一函数兜底 | ⏳ 待用户确认后实施 |
+| `boot_menu.rs`/`native_gui.rs` | S5：读取镜像后预填 WIM 索引名到菜单名文本框 + 撞名加时间后缀 + 后端同一函数兜底 | ✅ 已完成并实机验证（v2.6.0） |
+| `native_gui.rs` 文案 | **v2.6.1：中英六处「默认启动项保持不变」→「还原后默认启动项指向这台新系统（原系统仍可选）」** | ✅ 已完成（v2.6.1） |
 | 文档 | 本文档随实现结果更新；`docs/README.md` 索引条目更新 | ✅ 已更新 |
 
 ## 6. 验收矩阵（实机）
 
-> **尚未重跑**。阶段 1-5 的实机通过是在 v2.5.7 上取得的；v2.5.8 改的是 default 决策的
-> 表述与日志（A 场景终态不变，另修正「还原前默认项是另一套系统」的边角），
-> S5 实施后需补 V4。每例开跑前按快照纪律拍摄（A 入口动 C: 值得拍），验证通过即删。
+> **V3 已按新规则实机重跑（2026-10-15 10:40 v2.6.1）**：C 入口在线还原到 F:、用户起名
+> 「默认项验证 20261015」，验收 default 指向 F: 的新 loader、原主系统仍在 displayorder。
+> 阶段 1-5 的历史通过是在 v2.5.7/v2.5.8 上取得的（那时 default 判据相反）；**V1/V2/V5/V6
+> 尚未按新规则重跑**。每例开跑前按快照纪律拍摄（A 入口动 C: 值得拍），验证通过即删。
 
 | # | 用例 | 通过标准 |
 |---|---|---|
 | V1 | A 入口全链（格式化） | default = 目标分区 loader；菜单含「本次还原的 Windows」；序列号变+哨兵消失 |
 | V2 | A 入口（跳过格式化，离线） | default = 目标分区 loader；哨兵法仍适用（覆盖式应用时哨兵必然消失） |
-| V3 | C 入口在线新增第二系统（起名） | default = 原主系统；新项 addlast 且名字=用户菜单名 |
-| V4 | C 入口还原到别的 Windows 卷（未起名） | default = 原主系统；新项 addlast 且名字=WIM 索引名（撞名带时间后缀）或用户改名（**不许**出现「本次还原的 Windows」——S5 实施后） |
+| V3 | C 入口在线新增第二系统（起名） | **default = 新还原的系统**（10:40 修订后；原标准为「= 原主系统」）；新项名字=用户菜单名；原主系统仍在 displayorder |
+| V4 | C 入口还原到别的 Windows 卷（未起名） | **default = 新还原的系统**；新项名字=WIM 索引名（撞名带时间后缀）或用户改名（**不许**出现「本次还原的 Windows」——S5 起） |
 | V5 | 弹窗取消勾选主系统（第二系统场景） | 明确报错，不静默改 default |
 | V6 | 每例均过三件套（截图/EventID 1000/WerFault）+ BCD 三行基线记录 |
 
@@ -229,5 +275,5 @@ enum DefaultPolicy {
 - 快照纪律已按用户纠正更新（MEMORY.md）：快照=CoW，**拍摄几乎不占空间**；一次修改只付
   一次空间（旧块保留进对应父层），**不随层数翻倍**；层数多的代价是各快照增量各自累积、
   删前不释放。V1-V6 每例开跑前按需拍摄，**验证通过即删**。
-- F: 第二系统已删除（2026-10-15 07:10 文档），V3/V4 需重新选目标卷（候选：E: 或重新
-  建的卷；不再占用 F:）。
+- F: 第二系统在 V3 重跑时再次被占用（2026-10-15 10:40 起，**验证后即删**）：先清理上一次
+  E2E 留下的 BCD 项回到单系统干净态（`{c971f7fb}` remove+delete），再走 C 入口在线还原到 F:。

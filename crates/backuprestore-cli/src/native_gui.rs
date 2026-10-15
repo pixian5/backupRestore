@@ -2520,21 +2520,43 @@ unsafe fn reg_read_dword(sub_key: &str, value: &str) -> Option<u32> {
     (status == 0).then_some(data)
 }
 
-/// 当前系统的版本串，如 `Windows 11 26200.9550`。
-///
-/// `ProductName` 形如 `Windows 11 Pro`：去掉尾部的 edition 词得到 `Windows 11`，
-/// 与用户给的示例一致。词数不足三个时不拆，避免把 `Windows 11` 砍成 `Windows`；
-/// `Windows Server 2022 Datacenter` 这种四个词的也正好只剩版本部分。
-unsafe fn current_windows_version_tag() -> Option<String> {
-    let product = reg_read_string(CURRENT_VERSION_KEY, "ProductName")?;
+/// `ProductName` 去掉尾部 edition 词：`Windows 11 Pro` → `Windows 11`，
+/// `Windows Server 2022 Datacenter` → `Windows Server 2022`。
+/// 词数不足三个时不拆（避免把 `Windows 11` 砍成 `Windows`）。
+fn trim_edition(product: &str) -> String {
     let words: Vec<&str> = product.split_whitespace().collect();
-    let family = if words.len() >= 3 {
+    if words.len() >= 3 {
         words[..words.len() - 1].join(" ")
     } else {
-        product.clone()
-    };
+        product.trim().to_string()
+    }
+}
+
+/// 当前系统的版本串，如 `Windows 11 26200.9550`。
+///
+/// ⚠️ 主版本**不能只信 `ProductName`**：实测本机是 Windows 11 25H2（build
+/// 26200.9550、DisplayVersion 25H2），注册表 `ProductName` 却仍写着
+/// `Windows 10 Pro`——跨版本升级/预览通道常见。所以桌面版按 build 号判定
+/// （≥22000 = Windows 11，≥10240 = Windows 10），这也是通行做法；
+/// Server 分支不受影响（ProductName 里的 "Server" 优先，且它的 build 号
+/// 与桌面版不同源，不能套桌面版阈值）。
+unsafe fn current_windows_version_tag() -> Option<String> {
+    let product = reg_read_string(CURRENT_VERSION_KEY, "ProductName")?;
     let build = reg_read_string(CURRENT_VERSION_KEY, "CurrentBuildNumber");
+    let build_number = build
+        .as_deref()
+        .and_then(|value| value.trim().parse::<u32>().ok());
     let ubr = reg_read_dword(CURRENT_VERSION_KEY, "UBR");
+    let family = if product.to_ascii_lowercase().contains("server") {
+        trim_edition(&product)
+    } else {
+        match build_number {
+            Some(number) if number >= 22000 => "Windows 11".to_string(),
+            Some(number) if number >= 10240 => "Windows 10".to_string(),
+            // build 读不到才退回 ProductName：宁可信息旧一点，也不要凭空造。
+            _ => trim_edition(&product),
+        }
+    };
     let version = match (build, ubr) {
         (Some(build), Some(ubr)) => format!("{build}.{ubr}"),
         (Some(build), None) => build,
