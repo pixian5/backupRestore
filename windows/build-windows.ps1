@@ -94,6 +94,20 @@ function Invoke-Cargo([string[]]$Arguments) {
     # prlctl/Guest Tools starts PowerShell in C:\. Always bind Cargo to this
     # package manifest so a documented build command works from any directory.
     if ($Arguments.Count -eq 0) { throw 'Cargo command is missing.' }
+    # 静态 CRT 硬要求（2026-10-15 补齐）：WinRE/WinPE/精简 Windows 没有
+    # VCRUNTIME140/UCRT，动态 CRT 产物在这些环境进程创建即被加载器终止——
+    # 症状是零输出、零副作用、无日志无弹窗，退出码 0xC0000135。
+    # 本脚本此前直接调 cargo 而未设该 flag（它只存在于 macOS 侧 build-win.sh），
+    # VM 内构建路径产物缺静态链接。用户 2026-10-15 拍板「编译完全走 VM 内 Windows」，
+    # 此 flag 为本路径的必需组成部分；幂等追加，不覆盖调用方已有 RUSTFLAGS。
+    $staticCrtFlag = '-C target-feature=+crt-static'
+    if ($env:RUSTFLAGS -notmatch [regex]::Escape($staticCrtFlag)) {
+        $env:RUSTFLAGS = if ([string]::IsNullOrWhiteSpace($env:RUSTFLAGS)) {
+            $staticCrtFlag
+        } else {
+            "$env:RUSTFLAGS $staticCrtFlag"
+        }
+    }
     $cargoArguments = @(
         $Arguments[0]
         '--manifest-path'
