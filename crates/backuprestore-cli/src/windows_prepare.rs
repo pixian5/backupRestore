@@ -591,8 +591,16 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     })
 }
 
-/// 显式放弃一个尚未写入目标卷的任务。只在 task/status 一致且仍处于
-/// Prepared/BootRequested/RecoveryStarted/Preflight 时允许；擦除开始后拒绝。
+/// 显式放弃或收口一个任务。
+///
+/// 两条路径：
+/// - **未写入目标卷**（Prepared/BootRequested/RecoveryStarted/Preflight）：走完整准备期补偿
+///   （清启动请求 → 删对象 → 删载荷 → 恢复 BCD 快照）。
+/// - **已终结**（Failed，2026-10-16 用户拍板新增）：走终态收口——只清本任务的引导对象与载荷、
+///   删掉大工作目录，**保留**证据记录。擦除后失败的任务以前既不能续也不能清（永久悬置）。
+///
+/// 仍拒绝的情形：**非终态且已越过破坏性边界**（TargetErased 之后但未标终态）——那说明恢复链
+/// 还在进行中，需要先继续原任务或人工恢复，不能从清理入口直接抹掉。
 #[cfg(windows)]
 pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskError> {
     require_administrator()?;
@@ -607,6 +615,42 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
         || status.operation != task.operation
     {
         return Err(err("任务状态记录不一致，拒绝放弃或清理"));
+    }
+    // 【终态收口，2026-10-16 用户拍板】已终结（Failed）的任务允许收口：
+    // 只清本任务的引导对象与载荷、删掉大工作目录，**保留** task.json / status.json /
+    // manifest.json / 日志等证据记录，供人工诊断。
+    //
+    // 为什么需要这条入口：任务在擦除后失败会停在 TargetErased；恢复环境的自动逃出
+    // 现在会把它标成 Failed（见 `main.rs::auto_escape_to_windows`），但在此之前
+    // （以及任何人工介入的场景）用户既不能续跑、也不能清理——这正是 2026-10-16
+    // 实机暴露的「非终态任务永久悬置」。收口时**必须同时清 bootsequence**
+    // （`disarm` 已含，且只认本任务的 GUID），否则等于把「下次启动又进恢复环境」
+    // 的锁原样留给下一次启动。
+    if task.status == backuprestore_core::Stage::Failed {
+        append_log(
+            &log,
+            &format!(
+                "Collecting terminal (Failed) task; operation={:?} — disarm boot objects, \
+                 remove payload, keep evidence",
+                task.operation
+            ),
+        )?;
+        match crate::boot_entry::ReBootEntry::read(&dir)? {
+            Some(entry) => {
+                crate::boot_entry::disarm(&entry, &log)?;
+                append_log(&log, "terminal cleanup: one-shot boot entry disarmed")?;
+            }
+            None => append_log(
+                &log,
+                "terminal cleanup: no boot entry record on disk; nothing to disarm",
+            )?,
+        }
+        store.cleanup_task_artifacts(&task.task_id)?;
+        append_log(
+            &log,
+            "Terminal (Failed) task collected; evidence records retained",
+        )?;
+        return Ok(());
     }
     if !task.status.can_abandon_before_target_write() {
         return Err(err(&format!(
@@ -2163,6 +2207,7 @@ fn validate_operation_inputs(
             if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
                 target_is_windows,
                 options.format_target,
+                crate::pe_safety::MessageLanguage::Chinese,
             ) {
                 return Err(err(message));
             }

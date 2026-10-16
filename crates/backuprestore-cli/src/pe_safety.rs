@@ -172,19 +172,40 @@ pub(crate) fn target_is_windows_volume(root: &Path) -> Result<bool, TaskError> {
 ///
 /// 该组合与 RE/在线/PE 环境无关、与 DISM 版本无关（PE 里同镜像同样失败）；
 /// `--skip-format` 只对**数据卷**（无 Windows 的卷，如 2026-10-14 验证的 T:）有效。
+/// 判据文案的语言维度。CLI 输出固定中文；GUI 是中英双语界面，按当前语言取。
+///
+/// 存在的意义：本判据此前在 GUI 里被**第二份硬编码文案**复制了一遍
+/// （2026-10-16 接手复核发现，项目有 P3「文案分叉」前科）。把语言做成参数后，
+/// **判据与文案都只有一处来源**，三处接线（离线权威闸门 / 在线系统卷 / GUI 预检）
+/// 不可能再各自漂移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageLanguage {
+    Chinese,
+    English,
+}
+
 pub(crate) fn overlay_restore_on_windows_volume_error(
     target_contains_windows: bool,
     format_target: bool,
+    language: MessageLanguage,
 ) -> Option<&'static str> {
-    if target_contains_windows && !format_target {
-        Some(
+    if !target_contains_windows || format_target {
+        return None;
+    }
+    Some(match language {
+        MessageLanguage::Chinese => {
             "覆盖式应用（取消格式化）不能用于已含 Windows 的目标卷：DISM 在还原 \
              Program Files\\WindowsApps 等受 TrustedInstaller 保护的目录元数据时会被拒绝 \
-             (RestoreDirMetadata 0x80070005)。请勾选「格式化目标分区」，或改还原到空的数据卷。",
-        )
-    } else {
-        None
-    }
+             (RestoreDirMetadata 0x80070005)。请勾选「格式化目标分区」，或改还原到空的数据卷。"
+        }
+        MessageLanguage::English => {
+            "Overlay restore (format target unchecked) cannot be used on a volume that already \
+             contains Windows: DISM would have to rewrite the metadata of TrustedInstaller-protected \
+             directories such as Program Files\\WindowsApps, which is denied (RestoreDirMetadata \
+             0x80070005) and fails with exit 5 inside recovery. Tick 'Format target partition', or \
+             restore to an empty data volume."
+        }
+    })
 }
 
 /// 活动 BCD 可能由系统独占；这里只验证类型和祖先，内容可读性由 bcdedit 回读验证。
@@ -550,8 +571,12 @@ mod tests {
     /// 四象限全锁：只有「含 Windows + 取消格式化」拒绝，其余三格必须放行。
     #[test]
     fn rejects_overlay_restore_onto_windows_volume() {
-        let message = overlay_restore_on_windows_volume_error(true, false)
-            .expect("overlay restore onto a Windows volume must be rejected");
+        let message = overlay_restore_on_windows_volume_error(
+            true,
+            false,
+            MessageLanguage::Chinese,
+        )
+        .expect("overlay restore onto a Windows volume must be rejected");
         // 文案里必须带上可归因的关键名词，方便用户与接手 AI 对上根因。
         assert!(message.contains("WindowsApps"));
         assert!(message.contains("TrustedInstaller"));
@@ -561,17 +586,56 @@ mod tests {
     #[test]
     fn allows_format_on_windows_volume() {
         // 勾选格式化 = DISM 只需「新建」受保护目录（允许），必须放行。
-        assert!(overlay_restore_on_windows_volume_error(true, true).is_none());
+        assert!(
+            overlay_restore_on_windows_volume_error(true, true, MessageLanguage::Chinese)
+                .is_none()
+        );
     }
 
     #[test]
     fn allows_overlay_restore_onto_data_volume() {
         // 数据卷没有 WindowsApps，覆盖式应用合法（2026-10-14 已在 T: 验证）。
-        assert!(overlay_restore_on_windows_volume_error(false, false).is_none());
+        assert!(
+            overlay_restore_on_windows_volume_error(false, false, MessageLanguage::Chinese)
+                .is_none()
+        );
     }
 
     #[test]
     fn allows_format_on_data_volume() {
-        assert!(overlay_restore_on_windows_volume_error(false, true).is_none());
+        assert!(
+            overlay_restore_on_windows_volume_error(false, true, MessageLanguage::Chinese)
+                .is_none()
+        );
+    }
+
+    /// 中英两份文案都必须完整（含根因关键词与可执行的出路），且**由同一判据产出**。
+    /// 这条单测是 R3「文案分叉」的回归护栏：GUI 若再自己硬编码一份，本测不会失败，
+    /// 但 GUI 侧的调用点已改为引用本函数（见 native_gui.rs 的 restore 预检）。
+    #[test]
+    fn both_languages_carry_root_cause_and_way_out() {
+        for language in [MessageLanguage::Chinese, MessageLanguage::English] {
+            let message = overlay_restore_on_windows_volume_error(true, false, language)
+                .expect("must reject regardless of language");
+            assert!(message.contains("WindowsApps"), "{language:?} 缺 WindowsApps");
+            assert!(
+                message.contains("TrustedInstaller"),
+                "{language:?} 缺 TrustedInstaller"
+            );
+            assert!(
+                message.contains("0x80070005"),
+                "{language:?} 缺 0x80070005"
+            );
+            // 必须给出可执行的出路（勾选格式化 / 换空数据卷）。
+            assert!(
+                message.contains("格式化") || message.contains("Format"),
+                "{language:?} 缺可执行出路"
+            );
+        }
+        // 两份文案必须不同（否则等于没做语言维度）。
+        assert_ne!(
+            overlay_restore_on_windows_volume_error(true, false, MessageLanguage::Chinese),
+            overlay_restore_on_windows_volume_error(true, false, MessageLanguage::English)
+        );
     }
 }

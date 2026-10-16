@@ -457,9 +457,11 @@ fn restore_to_windows_volume(
     // 必须在**格式化/应用之前**拦住，绝不能等 DISM exit 5 才失败——那时目标卷已
     // 进入破坏性阶段，且用户会陷入「重试 → 同样失败」的循环。
     // 与离线侧共用同一判据纯函数，避免两处文案分叉（单测在 windows_prepare.rs）。
-    if let Some(message) =
-        crate::pe_safety::overlay_restore_on_windows_volume_error(true, params.format_target)
-    {
+    if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+        true,
+        params.format_target,
+        crate::pe_safety::MessageLanguage::Chinese,
+    ) {
         return Err(crate::err(message));
     }
     // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会

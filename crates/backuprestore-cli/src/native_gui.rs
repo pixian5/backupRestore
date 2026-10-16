@@ -5546,37 +5546,48 @@ unsafe fn create_task(state: &mut State) {
     // A 入口（还原系统到 C 盘）目标必然是带 Windows 的系统卷；此时取消勾选「格式化
     // 目标分区」= 让 DISM 去改写 C: 上 `Program Files\WindowsApps\...`（MSIX 包目录，
     // owner=TrustedInstaller）的目录元数据，必然被拒（RestoreDirMetadata
-    // 0x80070005）→ RE 内 exit 5 → 失败后重武装又回 RE 的死循环。
+    // 0x80070005）→ RE 内 exit 5。
     // 权威闸门在 prepare 的 `validate_operation_inputs`（离线）与
     // `restore_to_windows_volume`（在线），这里只做「不让用户白跑一趟提权+重启」的前置拦截。
     // 详见 docs/20261016-1413 §2、docs/20261016-1836。
-    if is_image_restore_entry(&operation)
-        && IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) == 0
-        && state
+    //
+    // 【2026-10-16 接手复核修正（R3 文案分叉）】此前本处**自己复制了一份等价条件与
+    // 中英双语硬编码文案**，与 `pe_safety::overlay_restore_on_windows_volume_error`
+    // 并存 —— 判据能对、文案会漂（项目 P3 前科）。现改为**只调用同一个纯函数**，
+    // 判据与文案都单一来源；GUI 仅额外提供「语言」这一维度（CLI 固定中文）。
+    if is_image_restore_entry(&operation) {
+        let format_target_checked = IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
+        let target_has_windows = state
             .drives
             .iter()
             .find(|drive| drive.letter.eq_ignore_ascii_case(&target_drive))
-            .is_some_and(|drive| drive.has_windows_installation)
-    {
-        append_gui_log(
-            state,
-            "GUI action blocked: overlay restore (skip-format) onto a volume containing Windows",
-        );
-        show_message(
-            state.root,
-            if language == Language::English {
-                "Overlay restore (format target unchecked) cannot be used on a volume that already contains Windows: DISM would have to rewrite the metadata of TrustedInstaller-protected directories such as Program Files\\WindowsApps, which is denied (RestoreDirMetadata 0x80070005) and fails with exit 5 inside recovery. Tick 'Format target partition', or restore to an empty data volume. Nothing was changed."
-            } else {
-                "「取消格式化」（覆盖式应用）不能用于已含 Windows 的目标卷：DISM 要改写 Program Files\\WindowsApps 等受 TrustedInstaller 保护的目录元数据时会被拒绝（RestoreDirMetadata 0x80070005），在恢复环境里以 exit 5 失败。请勾选「格式化目标分区」，或改还原到空的数据卷。未做任何更改。"
-            },
-            if language == Language::English {
-                "Restore blocked"
-            } else {
-                "还原已停止"
-            },
-            MB_OK | MB_ICONERROR,
-        );
-        return;
+            .is_some_and(|drive| drive.has_windows_installation);
+        let message_language = if language == Language::English {
+            crate::pe_safety::MessageLanguage::English
+        } else {
+            crate::pe_safety::MessageLanguage::Chinese
+        };
+        if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+            target_has_windows,
+            format_target_checked,
+            message_language,
+        ) {
+            append_gui_log(
+                state,
+                "GUI action blocked: overlay restore (skip-format) onto a volume containing Windows",
+            );
+            show_message(
+                state.root,
+                message,
+                if language == Language::English {
+                    "Restore blocked"
+                } else {
+                    "还原已停止"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
     }
     // C（还原系统到非 C 盘）走 create-secondary 语义，离线 prepare 要求启动菜单名必填；
     // 在线通道同样用它给新启动项命名。空名在这里拦下，避免提权后才发现。

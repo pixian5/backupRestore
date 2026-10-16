@@ -860,30 +860,41 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
     // 若用户每次都选「重试」而问题又是确定性的，机器会在「失败 → 重启 → 又失败」
     // 之间无限打转（2026-10-16 实测：GUI 与 RE 都没给用户任何自救手段，
     // 只能从宿主侧挂 PE 光盘手改 BCD 才逃得出来）。到达阈值后：
-    //   ①清掉本任务的一次性启动项（disarm）②停掉本任务的载荷 ③重启回正常系统，
-    // 让机器回到一个可用的 Windows，而不是卡在恢复环境里。
+    //   ①清掉本任务的一次性启动项（disarm）②把任务写成终态（现场保留）
+    //   ③重启回正常系统，让机器回到一个可用的 Windows，而不是卡在恢复环境里。
+    //
+    // 【2026-10-16 用户拍板：确定性失败 → 终态保留现场】连败达阈值即视为
+    // 确定性失败，**不再等用户选择**，直接自动逃出。第 ② 步的终态标记是关键：
+    // 只 disarm 不标终态的话，任务会停在 TargetErased 等可续跑阶段，下一次从
+    // **任务所在 workspace** 启动程序时 `resume_pending_boot_task` 会再武装一次
+    // 并重启回 RE（`boot-resume-{stage}.attempted` 每阶段只挡一次），而
+    // `abandon-task` 在擦除后又拒绝清理 → 任务永久悬置、用户仍无自救出口。
     const AUTO_ESCAPE_THRESHOLD: u32 = 3;
     let mut consecutive_failures: u32 = 0;
-    // 自增的失败计数标题：让用户一眼看出这是第几次失败、离自动逃出还有几次。
+    // 自增的失败计数：让用户一眼看出这是第几次失败、离自动逃出还有几次。
     loop {
         match recover_env(path.clone()) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 consecutive_failures += 1;
-                let escape_notice = if consecutive_failures >= AUTO_ESCAPE_THRESHOLD {
-                    format!(
-                        "\n\n【已连续失败 {consecutive_failures} 次】\n\
-                         选择“重试”会再做一次；关闭本窗口（或选“取消”）将自动清理本次\n\
-                         一次性启动项并重启回正常 Windows，不再卡在恢复环境里。"
-                    )
-                } else {
-                    format!(
-                        "\n\n这是第 {consecutive_failures} 次失败（累计 {AUTO_ESCAPE_THRESHOLD} 次后\n\
-                         关闭窗口将自动清理并重启回正常系统）。"
-                    )
-                };
+                // 连败达阈值 = 确定性失败：直接自动逃出，不再询问用户。
+                if consecutive_failures >= AUTO_ESCAPE_THRESHOLD {
+                    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
+                    let _ = append_log(
+                        &escape_log,
+                        &format!(
+                            "consecutive failures reached the auto-escape threshold ({consecutive_failures}); \
+                             auto-escape: disarm one-shot boot entry, mark task terminal, reboot to Windows"
+                        ),
+                    );
+                    auto_escape_to_windows(&path, &escape_log);
+                    // auto_escape_to_windows 内部会重启；走到这里说明重启失败，
+                    // 仍要把错误如实返回，让上层记录日志。
+                    return Err(error);
+                }
+                // 未达阈值：给用户「重试 / 放弃」的选择。
                 let text: Vec<u16> = format!(
-                    "恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”进入系统恢复工具。\n恢复已完成的任务只重试清理，不会再次擦除目标。{escape_notice}\0"
+                    "恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”将立即清理本次一次性启动项、把任务标记为终态（现场保留）并重启回正常 Windows。\n恢复已完成的任务只重试清理，不会再次擦除目标。\n\n这是第 {consecutive_failures} 次失败（累计 {AUTO_ESCAPE_THRESHOLD} 次后会自动清理并重启回正常系统）。\0"
                 )
                 .encode_utf16()
                 .collect();
@@ -899,7 +910,7 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                         &escape_log,
                         &format!(
                             "user declined retry after {consecutive_failures} failure(s); \
-                             auto-escape: disarm one-shot boot entry and reboot to Windows"
+                             auto-escape: disarm one-shot boot entry, mark task terminal, reboot to Windows"
                         ),
                     );
                     auto_escape_to_windows(&path, &escape_log);
@@ -936,6 +947,44 @@ fn auto_escape_to_windows(env_path: &str, log: &Path) {
         if let Some(entry) = boot_entry::ReBootEntry::read(&task_dir)? {
             boot_entry::disarm(&entry, log)?;
             let _ = append_log(log, "auto-escape: one-shot boot entry disarmed");
+        }
+        // 【终态收口，2026-10-16 用户拍板】把任务写成终态（Failed），现场全部保留。
+        // 为什么必须做：见 `recover_env_interactive` 的注释——只 disarm 不标终态，
+        // 任务会停在 TargetErased 等可续跑阶段，下次从**任务所在 workspace** 启动
+        // 程序时又会被自动续跑一次（`boot-resume-{stage}.attempted` 每阶段只挡一次），
+        // 而 `abandon-task` 在擦除后拒绝清理 → 任务永久悬置、用户没有自救出口。
+        // 标成 Failed 后：①不再被自动续跑 ②可用 abandon-task 收口清理
+        // ③任务目录/日志/BCD 证据全部保留，供人工诊断。
+        match store.load(&task_id) {
+            Ok(mut task) if task.status.is_incomplete() => {
+                match store.write_failure(
+                    &mut task,
+                    1,
+                    "恢复在恢复环境中连续失败，已自动逃出并标记为终态（任务与现场保留，可人工诊断或清理）",
+                ) {
+                    Ok(_) => {
+                        let _ = append_log(
+                            log,
+                            "auto-escape: task marked terminal (Failed); evidence retained",
+                        );
+                    }
+                    Err(error) => {
+                        let _ = append_log(
+                            log,
+                            &format!("auto-escape: failed to mark task terminal: {error}"),
+                        );
+                    }
+                }
+            }
+            Ok(_) => {
+                let _ = append_log(log, "auto-escape: task already terminal; left as-is");
+            }
+            Err(error) => {
+                let _ = append_log(
+                    log,
+                    &format!("auto-escape: cannot load task to mark terminal: {error}"),
+                );
+            }
         }
         Ok(())
     })();
