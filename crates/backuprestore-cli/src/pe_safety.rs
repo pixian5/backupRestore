@@ -151,6 +151,42 @@ pub(crate) fn target_is_windows_volume(root: &Path) -> Result<bool, TaskError> {
     probe_file(root, &["Windows", "System32", "config", "SYSTEM"])
 }
 
+/// 「覆盖式应用（取消格式化）」打到**已含 Windows 的目标卷**时的确定性失败判据
+/// （准备期硬拒，用户 2026-10-16 拍板）。放在这里而不是 `windows_prepare`，是因为
+/// 本模块是 `cfg(any(windows, test))`，纯判据能在 macOS 上跑单测（同
+/// `target_is_windows_volume` 的处理方式）。
+///
+/// 返回 `Some(错误文案)` 表示该组合必须拒绝。判据抽成纯函数以便单测锁定行为，
+/// 与 `boot_menu::decide_default` 同一取向（行为固化到可测函数，不散落在分支里）。
+///
+/// **精确根因**（PE 内对照实验钉死，见 `docs/20261016-1413` §2 与
+/// `docs/20261016-1836`）：DISM 覆盖式应用要把镜像里 `Program Files\WindowsApps\...`
+/// （MSIX 应用包目录，owner = `NT SERVICE\TrustedInstaller`、带 MSIX 专用 ACL）的
+/// **目录元数据 / Security Descriptor / owner** 还原到卷上；该系统受 TrustedInstaller
+/// 保护、拒绝对这类目录改写 owner/ACL → `RestoreDirMetadata:(2418): Access is denied`
+/// → `0x80070005` → DISM **立即整体放弃**（不继续，exit 5）。
+///
+/// 旁证（PE 内实测）：该目录下 `md` 建子目录**成功**、`rd` 删除**成功**（普通数据写入
+/// 允许），**只有"改写既有受保护目录的元数据"被拒**。格式化能过是因为受保护目录被
+/// 清空，DISM 只需**新建**（允许）而非**改写**。
+///
+/// 该组合与 RE/在线/PE 环境无关、与 DISM 版本无关（PE 里同镜像同样失败）；
+/// `--skip-format` 只对**数据卷**（无 Windows 的卷，如 2026-10-14 验证的 T:）有效。
+pub(crate) fn overlay_restore_on_windows_volume_error(
+    target_contains_windows: bool,
+    format_target: bool,
+) -> Option<&'static str> {
+    if target_contains_windows && !format_target {
+        Some(
+            "覆盖式应用（取消格式化）不能用于已含 Windows 的目标卷：DISM 在还原 \
+             Program Files\\WindowsApps 等受 TrustedInstaller 保护的目录元数据时会被拒绝 \
+             (RestoreDirMetadata 0x80070005)。请勾选「格式化目标分区」，或改还原到空的数据卷。",
+        )
+    } else {
+        None
+    }
+}
+
 /// 活动 BCD 可能由系统独占；这里只验证类型和祖先，内容可读性由 bcdedit 回读验证。
 #[cfg(windows)]
 pub(crate) fn probe_file_metadata(root: &Path, components: &[&str]) -> Result<bool, TaskError> {
@@ -508,5 +544,34 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&empty);
+    }
+
+    /// 「覆盖式应用打到含 Windows 的目标卷」硬拒判据（用户 2026-10-16 拍板）。
+    /// 四象限全锁：只有「含 Windows + 取消格式化」拒绝，其余三格必须放行。
+    #[test]
+    fn rejects_overlay_restore_onto_windows_volume() {
+        let message = overlay_restore_on_windows_volume_error(true, false)
+            .expect("overlay restore onto a Windows volume must be rejected");
+        // 文案里必须带上可归因的关键名词，方便用户与接手 AI 对上根因。
+        assert!(message.contains("WindowsApps"));
+        assert!(message.contains("TrustedInstaller"));
+        assert!(message.contains("格式化目标分区"));
+    }
+
+    #[test]
+    fn allows_format_on_windows_volume() {
+        // 勾选格式化 = DISM 只需「新建」受保护目录（允许），必须放行。
+        assert!(overlay_restore_on_windows_volume_error(true, true).is_none());
+    }
+
+    #[test]
+    fn allows_overlay_restore_onto_data_volume() {
+        // 数据卷没有 WindowsApps，覆盖式应用合法（2026-10-14 已在 T: 验证）。
+        assert!(overlay_restore_on_windows_volume_error(false, false).is_none());
+    }
+
+    #[test]
+    fn allows_format_on_data_volume() {
+        assert!(overlay_restore_on_windows_volume_error(false, true).is_none());
     }
 }

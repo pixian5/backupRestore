@@ -2140,6 +2140,32 @@ fn validate_operation_inputs(
                     "{}:\\",
                     target.drive_letter.ok_or_else(|| err("目标盘符缺失"))?
                 )))?;
+            // 【准备期硬拒】「系统卷 + 取消格式化（覆盖式应用）」是确定性失败组合，
+            // 必须挡在擦除/重启之前，绝不能等 RE 里 exit 5 再把用户困在重试死循环里。
+            //
+            // 精确根因（2026-10-16 PE 内对照实验钉死，见 docs/20261016-1413 §2 与
+            // docs/20261016-1836）：DISM 覆盖式应用要把镜像里
+            // `C:\Program Files\WindowsApps\...`（MSIX 应用包目录，owner =
+            // NT SERVICE\TrustedInstaller，带 MSIX 专用 ACL）的目录元数据 /
+            // Security Descriptor / owner 还原到卷上；该目录受 TrustedInstaller 保护，
+            // 操作系统拒绝改写其 owner/ACL → `RestoreDirMetadata:(2418): Access is
+            // denied` → `0x80070005` → DISM 立即整体放弃（exit 5）。
+            // 实测旁证：`md` 在该目录下能建子目录、`rd` 能删（普通写入允许），
+            // **只有"改写既有受保护目录元数据"这一步被拒**；格式化能过是因为受保护
+            // 目录被清空，DISM 只需"新建"（允许）而非"改写"。
+            //
+            // 该约束与 RE/在线/PE 环境无关、与 DISM 版本无关：PE 里同镜像同样失败。
+            // `--skip-format` 只对**数据卷**（无 Windows 的卷）有效（数据卷里没有
+            // WindowsApps，2026-10-14 已在 T: 验证），对**已含 Windows 的系统卷**无效。
+            //
+            // 判据用「目标卷当前是否含 Windows」而非「是否活动系统卷」：任何既有
+            // Windows 卷都带 TrustedInstaller 保护的目录，都会命中同一根因。
+            if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+                target_is_windows,
+                options.format_target,
+            ) {
+                return Err(err(message));
+            }
             if options.operation == Operation::CreateSecondary || target_is_windows {
                 wim_full_windows_probe(path, options.wim_index)?;
             }

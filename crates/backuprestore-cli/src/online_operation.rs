@@ -446,6 +446,22 @@ fn restore_to_windows_volume(
     let dir = log_path
         .parent()
         .ok_or_else(|| crate::err("日志目录缺失"))?;
+    // 【准备期硬拒】本函数只在目标卷**已含 Windows** 时进入（execute_inner 按
+    // `target_is_windows_volume` 分流）。此时「取消格式化（覆盖式应用）」是确定性
+    // 失败组合：DISM 要把镜像里 `Program Files\WindowsApps\...`（MSIX 包目录，
+    // owner=TrustedInstaller、带 MSIX 专用 ACL）的目录元数据还原到卷上，而该目录
+    // 受 TrustedInstaller 保护、拒绝改写 owner/ACL → `RestoreDirMetadata` 被拒
+    // `0x80070005` → exit 5。精确根因与离线侧同源：见
+    // docs/20261016-1413 §2（PE 内 F: 成功 / C: 秒退对照实验）与 docs/20261016-1836。
+    //
+    // 必须在**格式化/应用之前**拦住，绝不能等 DISM exit 5 才失败——那时目标卷已
+    // 进入破坏性阶段，且用户会陷入「重试 → 同样失败」的循环。
+    // 与离线侧共用同一判据纯函数，避免两处文案分叉（单测在 windows_prepare.rs）。
+    if let Some(message) =
+        crate::pe_safety::overlay_restore_on_windows_volume_error(true, params.format_target)
+    {
+        return Err(crate::err(message));
+    }
     // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会
     // "格式化之后才失败"（STEP 3.5 盘符绑定需要完整 Windows 注册表）。
     // 与 prepare 链共用同一判据：缺 reagentc.exe 或 SYSTEM hive 直接拒绝。
