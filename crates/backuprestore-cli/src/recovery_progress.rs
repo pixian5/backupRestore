@@ -10,7 +10,7 @@
 use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -55,6 +55,13 @@ const ID_BOOT_MENU: i32 = 8;
 /// 「打开命令提示符」按钮：RE 内现场运行命令修复（bcdedit/dism 等）。
 /// 2026-10-14 用户需求：恢复环境出问题时可直接开 cmd，不必再从宿主侧逐键注入。
 const ID_CMD_BUTTON: i32 = 9;
+/// 「暂停/继续」按钮（ID 10）：用户按下后恢复链在下一个步骤边界挂起，
+/// 再按一次继续。2026-10-16 用户需求——RE 里必须能停住程序现场处理。
+const ID_PAUSE_BUTTON: i32 = 10;
+/// 「BCD 回退」按钮（ID 11）：把 ESP 上的 BCD 恢复成任务准备期保存的快照
+/// （`bcd-before-raw` / `bcd-before-export`），让用户在恢复链改坏引导后能一键退回。
+/// 2026-10-16 用户需求——此前只能从宿主侧挂 PE 光盘手改，终端用户无法自救。
+const ID_BCD_ROLLBACK_BUTTON: i32 = 11;
 const SS_RIGHT: u32 = 0x0000_0002;
 const TIMER_ID: usize = 1;
 /// 详细日志弹窗的刷新定时器（与主窗口定时器区分）。
@@ -86,6 +93,8 @@ const VK_L: usize = 0x4C;
 /// 代价与 L 相同：焦点在文本控件里时无法输入字母 K——恢复窗口本身没有
 /// 可编辑文本，只影响详细日志弹窗/引导修复编辑器内的输入，属可接受。
 const VK_K: usize = 0x4B;
+/// P：全局切换暂停/继续（与 L/K 同机制；WinRE 下鼠标未必可用）。
+const VK_P: usize = 0x50;
 const VK_ESCAPE: usize = 0x1B;
 /// 窗口类背景画刷：`COLOR_WINDOW + 1`。
 ///
@@ -99,6 +108,10 @@ const FW_BOLD: i32 = 700;
 const CLEARTYPE_QUALITY: u32 = 5;
 
 /// 与窗口线程共享的进度状态：当前活动日志路径（主线程切换日志时更新）。
+/// 「BCD 回退」按钮的动作类型：返回 Ok(()) 表示已回退，Err(说明) 记录失败原因。
+/// 抽成别名是为了避免 clippy 的 type_complexity 告警，也让字段声明更易读。
+type BcdRollbackAction = Box<dyn Fn() -> Result<(), String> + Send>;
+
 pub struct ProgressShared {
     pub log_path: Mutex<PathBuf>,
     pub log_offset: Mutex<u64>,
@@ -130,6 +143,14 @@ pub struct ProgressShared {
     pub log_window: Mutex<Option<usize>>,
     /// 第二阶段准备好的引导修复会话；按钮在会话存在后显示。
     pub boot_menu: Mutex<Option<Arc<crate::boot_menu::BootMenuSession>>>,
+    /// 用户在恢复界面点了「暂停」时置 true。恢复链在每个步骤边界检查它，
+    /// 为 true 则原地等待（不推进、不退出），让用户能停下来查看/处理。
+    /// 用 AtomicBool 而不是 Mutex：检查非常频繁，且只需要一个布尔语义。
+    pub paused: AtomicBool,
+    /// 「BCD 回退」按钮的动作。恢复主流程在拿到任务目录/ESP 身份后，把回退闭包
+    /// 装到这里；按钮点击时调用它（回退需要 bcdedit + 卷挂载，只有主流程才有
+    /// 这些上下文）。未装载时按钮点击只写一条日志。
+    pub bcd_rollback: Mutex<Option<BcdRollbackAction>>,
 }
 
 impl ProgressShared {
@@ -144,6 +165,39 @@ impl ProgressShared {
     /// 在第二阶段候选探测完成后发布引导修复会话，进度窗会显示按钮。
     pub fn set_boot_menu(&self, session: Arc<crate::boot_menu::BootMenuSession>) {
         *self.boot_menu.lock().unwrap() = Some(session);
+    }
+
+    /// 恢复链在**每个步骤边界**调用：若用户点了「暂停」，就在这里原地等待，
+    /// 阻塞恢复推进，直到用户再点一次「继续」。
+    ///
+    /// 为什么放在恢复链里而不是窗口线程里：真正在干活的是恢复线程，只有让它
+    /// 自己挂起才能"停住"；窗口线程只能改状态。等待期间**不关窗口、不退出**，
+    /// 用户还能用「详细日志」「命令提示符」「引导修复」等按钮现场处理。
+    ///
+    /// 参数 `stage` 只用于写一条可读日志（"已暂停于 X"），不参与逻辑。
+    pub fn wait_if_paused(&self, log: &Path, stage: &str) {
+        if !self.paused.load(Ordering::SeqCst) {
+            return;
+        }
+        let _ = crate::append_log(log, &format!("恢复已暂停（用户请求），停在：{stage}"));
+        // 每 200ms 醒来一次，纯自旋等待；暂停是人手操作，不需要更精细。
+        while self.paused.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let _ = crate::append_log(log, "恢复已继续（用户请求）");
+    }
+
+    /// 切换暂停状态，返回切换后的值（true=已暂停）。
+    pub fn toggle_paused(&self) -> bool {
+        let now = !self.paused.load(Ordering::SeqCst);
+        self.paused.store(now, Ordering::SeqCst);
+        now
+    }
+
+    /// 装载「BCD 回退」动作。恢复主流程在拿到任务目录与 ESP 身份后调用；
+    /// 按钮点击时执行该闭包。重复调用会替换旧闭包。
+    pub fn set_bcd_rollback(&self, action: BcdRollbackAction) {
+        *self.bcd_rollback.lock().unwrap() = Some(action);
     }
 
     /// 将已用时间的计时起点重置为当前时刻（在写入 STEP 1/4 时对齐）。
@@ -696,8 +750,9 @@ unsafe fn layout_controls(hwnd: Hwnd) {
     let detail_top = 144;
     let tail_top = height - MARGIN - tail_height;
     let detail_height = (tail_top - GAP - detail_top).max(80);
-    // 按钮排现有三个（详细日志/引导修复/命令提示符），日志尾部让出三份宽度。
-    let tail_width = content - 3 * BUTTON_WIDTH - 3 * GAP;
+    // 按钮排现有五个（详细日志/引导修复/命令提示符/暂停/BCD 回退），
+    // 日志尾部让出五份宽度。
+    let tail_width = content - 5 * BUTTON_WIDTH - 5 * GAP;
     unsafe {
         MoveWindow(GetDlgItem(hwnd, ID_STAGE), MARGIN, 28, stage_width, 48, 1);
         MoveWindow(
@@ -743,10 +798,26 @@ unsafe fn layout_controls(hwnd: Hwnd) {
             tail_height,
             1,
         );
-        // 命令提示符按钮排在按钮行最右（第三个）。
+        // 命令提示符按钮排在按钮行第三位，暂停按钮第四位。
         MoveWindow(
             GetDlgItem(hwnd, ID_CMD_BUTTON),
             MARGIN + tail_width.max(200) + GAP + 2 * (BUTTON_WIDTH + GAP),
+            tail_top,
+            BUTTON_WIDTH,
+            tail_height,
+            1,
+        );
+        MoveWindow(
+            GetDlgItem(hwnd, ID_PAUSE_BUTTON),
+            MARGIN + tail_width.max(200) + GAP + 3 * (BUTTON_WIDTH + GAP),
+            tail_top,
+            BUTTON_WIDTH,
+            tail_height,
+            1,
+        );
+        MoveWindow(
+            GetDlgItem(hwnd, ID_BCD_ROLLBACK_BUTTON),
+            MARGIN + tail_width.max(200) + GAP + 4 * (BUTTON_WIDTH + GAP),
             tail_top,
             BUTTON_WIDTH,
             tail_height,
@@ -1090,6 +1161,44 @@ unsafe extern "system" fn window_proc(
             if !cmd_button.is_null() {
                 SendMessageW(cmd_button, WM_SETFONT, create_font(-19, true) as usize, 1);
             }
+            // 「暂停(P)」按钮：常显。恢复链在步骤边界检查 paused 标志并挂起，
+            // 让用户能停下来查看日志 / 用命令提示符处理，再按一次继续。
+            let pause_button = CreateWindowExW(
+                0,
+                encode("Button").as_ptr(),
+                encode("暂停(P)").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0,
+                0,
+                120,
+                94,
+                hwnd,
+                ID_PAUSE_BUTTON as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !pause_button.is_null() {
+                SendMessageW(pause_button, WM_SETFONT, create_font(-19, true) as usize, 1);
+            }
+            // 「BCD 回退」按钮：常显。把 ESP 上的 BCD 恢复成准备期快照，
+            // 让用户在恢复链改坏引导后能一键退回。
+            let rollback_button = CreateWindowExW(
+                0,
+                encode("Button").as_ptr(),
+                encode("BCD 回退(B)").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0,
+                0,
+                120,
+                94,
+                hwnd,
+                ID_BCD_ROLLBACK_BUTTON as usize as Hwnd,
+                GetModuleHandleW(null()),
+                null_mut(),
+            );
+            if !rollback_button.is_null() {
+                SendMessageW(rollback_button, WM_SETFONT, create_font(-19, true) as usize, 1);
+            }
             layout_controls(hwnd);
             SetTimer(hwnd, TIMER_ID, 1000, None);
             0
@@ -1124,6 +1233,51 @@ unsafe extern "system" fn window_proc(
                 let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
                 if !shared_ptr.is_null() {
                     open_cmd_prompt(&*shared_ptr);
+                }
+            } else if command_id == ID_PAUSE_BUTTON {
+                // 暂停/继续切换：改共享标志，按钮文字随状态翻转。
+                let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+                if !shared_ptr.is_null() {
+                    let paused = (*shared_ptr).toggle_paused();
+                    let label = encode(if paused { "继续(P)" } else { "暂停(P)" });
+                    SetWindowTextW(GetDlgItem(hwnd, ID_PAUSE_BUTTON), label.as_ptr());
+                    let _ = crate::append_log(
+                        &(*shared_ptr).log_path.lock().unwrap(),
+                        if paused {
+                            "用户点击暂停：恢复将在下一个步骤边界挂起"
+                        } else {
+                            "用户点击继续：恢复将立即推进"
+                        },
+                    );
+                }
+            } else if command_id == ID_BCD_ROLLBACK_BUTTON {
+                // BCD 回退：调用主流程装载的闭包（需要任务目录与 ESP 身份）。
+                let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+                if !shared_ptr.is_null() {
+                    let guard = (*shared_ptr).bcd_rollback.lock().unwrap();
+                    let log_path = (*shared_ptr).log_path.lock().unwrap().clone();
+                    match guard.as_ref() {
+                        Some(action) => match action() {
+                            Ok(()) => {
+                                let _ = crate::append_log(
+                                    &log_path,
+                                    "用户点击 BCD 回退：已恢复准备期 BCD 快照",
+                                );
+                            }
+                            Err(message) => {
+                                let _ = crate::append_log(
+                                    &log_path,
+                                    &format!("用户点击 BCD 回退失败：{message}"),
+                                );
+                            }
+                        },
+                        None => {
+                            let _ = crate::append_log(
+                                &log_path,
+                                "BCD 回退尚不可用：恢复流程尚未装载任务目录/ESP 身份",
+                            );
+                        }
+                    }
                 }
             }
             0
@@ -1177,6 +1331,8 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         operation: Mutex::new(operation.map(|s| s.to_string())),
         log_window: Mutex::new(None),
         boot_menu: Mutex::new(None),
+        paused: AtomicBool::new(false),
+        bcd_rollback: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);
     let handle = thread::spawn(move || {
@@ -1299,8 +1455,8 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             let msg_message = (*msg.as_ptr()).message;
             let msg_wparam = (*msg.as_ptr()).w_param;
             // 键盘通路：WinRE 下鼠标未必可用，所以 L 全局打开详细日志、
-            // K 全局打开命令提示符、Esc 关闭弹窗，都在消息循环里拦截——
-            // 焦点落在哪个子控件上都有效。
+            // K 全局打开命令提示符、P 切换暂停/继续、Esc 关闭弹窗，都在消息
+            // 循环里拦截——焦点落在哪个子控件上都有效。
             if msg_message == WM_KEYDOWN {
                 if msg_wparam == VK_L {
                     open_log_window(hwnd, shared);
@@ -1308,6 +1464,20 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
                 }
                 if msg_wparam == VK_K {
                     open_cmd_prompt(&*shared);
+                    continue;
+                }
+                if msg_wparam == VK_P {
+                    let paused = shared.toggle_paused();
+                    let label = encode(if paused { "继续(P)" } else { "暂停(P)" });
+                    SetWindowTextW(GetDlgItem(hwnd, ID_PAUSE_BUTTON), label.as_ptr());
+                    let _ = crate::append_log(
+                        &shared.log_path.lock().unwrap(),
+                        if paused {
+                            "用户按 P 暂停：恢复将在下一个步骤边界挂起"
+                        } else {
+                            "用户按 P 继续：恢复将立即推进"
+                        },
+                    );
                     continue;
                 }
                 if msg_wparam == VK_ESCAPE {

@@ -1965,6 +1965,19 @@ fn compensate_prepare_failure(
     }
 }
 
+/// 把 ESP 上的 BCD 恢复成任务准备期保存的快照。
+///
+/// 原先只在准备期失败补偿时内部调用（`rollback_boot_request`）；2026-10-16 起
+/// 恢复界面的「BCD 回退」按钮也调它——用户在恢复环境里发现引导被改坏时，
+/// 可以一键退回准备期状态，不必再从宿主侧挂 PE 光盘手改。
+pub(crate) fn rollback_bcd_snapshot(
+    task_dir: &Path,
+    efi: &VolumeIdentity,
+    log: &Path,
+) -> Result<(), TaskError> {
+    rollback_boot_request(task_dir, efi, log)
+}
+
 fn rollback_boot_request(
     task_dir: &Path,
     efi: &VolumeIdentity,

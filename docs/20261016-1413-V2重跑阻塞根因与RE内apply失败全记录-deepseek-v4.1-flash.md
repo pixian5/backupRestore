@@ -9,7 +9,7 @@
 | # | 现象 | 根因 | 性质 | 现状 |
 |---|---|---|---|---|
 | **A** | 提权管理员上下文里 `reagentc /info` **恒定 exit 9**（`WinReGetWimVersion failed to initialize DISM error 0xc0040009`），导致 V2 准备链 314ms 内失败 | `C:\Windows\Logs\DISM` 目录的 ACL **不给 Administrators 写权限**，DISM 建/写自己日志失败 → 初始化 0xc0040009。SYSTEM 上下文因 ACE 里带 `SYSTEM:(F)` 一直正常 | **环境/系统层**（非本产品代码 bug，但本产品对 plain `/info` 无容忍会放大它） | 已授权修复现场；已用「撤销授权→复现 / 重授权→恢复」双向实验钉死 |
-| **B** | 准备链通过后，RE 内 `dism /Apply-Image /ApplyDir:C:\` **立即 exit 5 Access is denied**（2 秒返回），失败后 RE 反复重武装 → **重启死循环回 RE** | **`--skip-format` 覆盖式应用打到「已存在完整旧系统」的 C: 系统卷**——DISM 拒绝写入。V1（先格式化再 apply）成功、V2（不格式化直接 apply）确定性失败 | **产品行为边界**（skip-format + 系统卷 的组合此前从未实机验证；`20261014-2345` 那次成功的是**数据卷 T:**） | RE 内清 `bootsequence` 逃出；C: 完好（哨兵存活、序列号未变） |
+| **B** | 准备链通过后，RE 内 `dism /Apply-Image /ApplyDir:C:\` **立即 exit 5 Access is denied**（2 秒返回），失败后 RE 反复重武装 → **重启死循环回 RE** | **覆盖式应用要改写 C: 上 `C:\Program Files\WindowsApps\...` 的目录元数据（owner/ACL），该目录受 TrustedInstaller 保护 → `RestoreDirMetadata` 被拒 `0x80070005`**。PE 内对照实验钉死：同环境同镜像，**F: 100% 成功、C: 秒退**；且 `md`（建目录）允许、只有"改写既有受保护目录元数据"被拒 | **产品行为边界**（skip-format + 系统卷 组合此前从未实机验证；`20261014-2345` 那次成功的是**数据卷 T:**） | RE 内清 `bootsequence` 逃出；C: 完好（哨兵存活、序列号未变） |
 
 **关键安全事实**：V2 全程 **C: 一个字节都没被改写**——哨兵 `BR-102220.txt` 仍在、卷序列号仍 `5C93-0047`（覆盖式应用失败在 apply 起步阶段，未格式化）。
 
@@ -130,13 +130,43 @@ C:\Windows\Logs\DISM\dism.log   NT AUTHORITY\SYSTEM:(I)(F)        ← 只有 SYS
 - 任务状态 `status.json`：`stage=target-erased, progress=35, errorCode=1, error=invalid task: dism.exe failed with exit code: 5`。
 - 13:47 第二次点「重试」**完全相同的失败**——**确定性失败**。
 
-### 2.2 根因判断
+### 2.2 根因**已实测钉死**（2026-10-16 16:30-17:04，PE 内对照实验）
 
-- **V1 成功、V2 失败的唯一分界 = `--skip-format`**。
-  - V1：先 diskpart 格式化 C: → 清空后 `Apply-Image` → 成功。
-  - V2：跳过格式化 → 直接往**已有完整旧系统**的 C: 做覆盖式 apply → **DISM 拒绝**。
-- 机理：DISM 覆盖式应用到一个活跃系统卷时，会碰到卷上**不可改写的既有对象**（`pagefile.sys`/`hiberfil.sys`、`System Volume Information`、`$MFT` 元数据、EWF/EFS 属性、`Windows\CbsTemp` 等）。`Error 5 Access is denied` 是 DISM 在这个前置校验阶段的直接拒绝，**不是**空间不足（空间检查是独立步骤，本机 C: 有 177.8 GiB 空余）。
-- **此组合此前从未实机验证**：`docs/20261014-2345` 那次 skip-format 成功案例的目标是**数据卷 T:**（无 SYSTEM hive、无 pagefile、不碰 BCD），与「系统卷 C: 覆盖式应用」完全不是一个场景。`windows_prepare.rs:2101-2108`【P2】只对**数据卷**放行纯 PE 镜像，也没覆盖「系统卷 skip-format」的安全语义。
+> ⚠️ 本节此前写的「覆盖式应用撞上 pagefile/hiberfil/$MFT 等不可改写对象」是**未经证实的推测**。
+> 后在 PE 控制台里做了完整对照实验，真因比那条推测**精确得多**，以本节为准。
+
+**实验（全部在同一 PE、同一镜像、同一 DISM `10.0.28000.1` 下）**：
+
+| # | 目标 | 命令 | 结果 |
+|---|---|---|---|
+| 1 | **C:**（已有完整旧系统） | `dism /Apply-Image ... /ApplyDir:C:\` | **秒退 `Error 5 Access is denied`**（复现 RE 内现象） |
+| 2 | **F:**（此前已写过一份系统） | 同一条命令 `/ApplyDir:F:\` | **100% 成功**（`The operation completed successfully.`） |
+
+变量**只剩目标卷**——不是 DISM 版本、不是镜像、不是 PE 环境。
+
+**DISM 自身日志（`X:\windows\Logs\DISM\dism.log`，PE 内可读）给出精确到函数名的失败点**：
+
+```
+Warning  Directory metadata: C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.29.289.0_arm64__8wekyb3d8bbwe (HRESULT=0x80070005)
+Error    RestoreDirMetadata:(2418): Access is denied.
+Error    WIMCreateDirectory:(3216): Access is denied.
+Error    RestoreDirTree:(3468): Access is denied.
+Error    WIMApplyImageInternal:(939): Access is denied.
+```
+
+**精确根因**：失败发生在 **`RestoreDirMetadata`**——DISM 覆盖式应用时，要把镜像里 `C:\Program Files\WindowsApps\...`（MSIX 应用包目录）的**目录元数据 / Security Descriptor / owner 还原到卷上**。该目录的 owner 是 `NT SERVICE\TrustedInstaller`、带 MSIX 专用 ACL（app-package SID、`TrustedInstaller:(I)(F)`），**操作系统拒绝对这类受保护目录改写 owner/ACL** → `0x80070005` → DISM **立即整体放弃**（不继续）。
+
+**与"数据写入"无关的旁证**（PE 内实测）：
+- 在 `C:\Program Files\WindowsApps\` 下 **`md` 建新目录成功**（`dir` 可见）、**可正常 `rd` 删除** → 普通数据写入是允许的；
+- 被拒的**只有"改写既有受保护目录的元数据"这一步**。
+- F: 上同样路径的 `WindowsApps\...`（DISM 刚写入的）**没有**这层 TrustedInstaller 保护，所以通过。
+
+**结论**：
+1. **"跳过格式化 + 还原到系统卷 C:" 这条路在本机确定性走不通**——根因是 C: 上既有 Windows 自带 `Program Files\WindowsApps` 等 TrustedInstaller 保护的目录，DISM 覆盖式应用**必然**在还原它们的目录元数据时被拒。
+2. 与 **RE / 在线 / PE 环境无关**：PE 里同样失败（此前误以为"RE 特有问题"）。
+3. 与 **DISM 版本无关**：PE 用 `10.0.28000.1` 照样失败。
+4. `--skip-format` **对数据卷（无 Windows 的卷）有效**（`20261014-2345` 已验证），但**对已含 Windows 的系统卷无效**。
+5. **格式化能通过**是因为：格式化把 C: 清空，`WindowsApps` 等受保护目录一并消失，DISM 只需**新建**目录（`md` 允许）而非**改写**既有受保护目录的元数据 → V1（先格式化）成功。
 
 ### 2.3 副作用：RE 失败 → 重启死循环（严重）
 

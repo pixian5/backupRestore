@@ -855,22 +855,92 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
             flags: u32,
         ) -> i32;
     }
+    // 同一条恢复链连续失败的次数。用于「连败 N 次自动逃出」：
+    // 恢复环境里的一次性启动项（bootsequence）在失败后仍指向本恢复环境，
+    // 若用户每次都选「重试」而问题又是确定性的，机器会在「失败 → 重启 → 又失败」
+    // 之间无限打转（2026-10-16 实测：GUI 与 RE 都没给用户任何自救手段，
+    // 只能从宿主侧挂 PE 光盘手改 BCD 才逃得出来）。到达阈值后：
+    //   ①清掉本任务的一次性启动项（disarm）②停掉本任务的载荷 ③重启回正常系统，
+    // 让机器回到一个可用的 Windows，而不是卡在恢复环境里。
+    const AUTO_ESCAPE_THRESHOLD: u32 = 3;
+    let mut consecutive_failures: u32 = 0;
+    // 自增的失败计数标题：让用户一眼看出这是第几次失败、离自动逃出还有几次。
     loop {
         match recover_env(path.clone()) {
             Ok(()) => return Ok(()),
             Err(error) => {
-                let text: Vec<u16> = format!("恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”进入系统恢复工具。\n恢复已完成的任务只重试清理，不会再次擦除目标。\0").encode_utf16().collect();
+                consecutive_failures += 1;
+                let escape_notice = if consecutive_failures >= AUTO_ESCAPE_THRESHOLD {
+                    format!(
+                        "\n\n【已连续失败 {consecutive_failures} 次】\n\
+                         选择“重试”会再做一次；关闭本窗口（或选“取消”）将自动清理本次\n\
+                         一次性启动项并重启回正常 Windows，不再卡在恢复环境里。"
+                    )
+                } else {
+                    format!(
+                        "\n\n这是第 {consecutive_failures} 次失败（累计 {AUTO_ESCAPE_THRESHOLD} 次后\n\
+                         关闭窗口将自动清理并重启回正常系统）。"
+                    )
+                };
+                let text: Vec<u16> = format!(
+                    "恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”进入系统恢复工具。\n恢复已完成的任务只重试清理，不会再次擦除目标。{escape_notice}\0"
+                )
+                .encode_utf16()
+                .collect();
                 let title: Vec<u16> = "BackupRestore 恢复需要处理\0".encode_utf16().collect();
                 let result = unsafe {
                     // MB_SETFOREGROUND：恢复环境没有桌面外壳帮错误窗口取得键盘焦点。
                     MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10035)
                 };
+                // 选“重试”（IDRETRY=4）继续；其余（含取消、关闭窗口）走自动逃出。
                 if result != 4 {
+                    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
+                    let _ = append_log(
+                        &escape_log,
+                        &format!(
+                            "user declined retry after {consecutive_failures} failure(s); \
+                             auto-escape: disarm one-shot boot entry and reboot to Windows"
+                        ),
+                    );
+                    auto_escape_to_windows(&path, &escape_log);
+                    // auto_escape_to_windows 内部会重启；走到这里说明重启失败，
+                    // 仍要把错误如实返回，让上层记录日志。
                     return Err(error);
                 }
             }
         }
     }
+}
+
+/// 恢复环境失败后「自动逃出」：清掉本任务的一次性启动项、删除本任务载荷，
+/// 然后重启回正常 Windows，避免机器卡在恢复环境里无限重启。
+///
+/// 为什么需要它：`bootsequence` 在恢复链失败后**仍指向恢复环境**，用户每次选
+/// 「重试」都会再次进入同一个失败。历史上唯一的逃出办法是从宿主侧挂 PE 光盘、
+/// 手改 BCD（`docs/20260916-0759`），对终端用户不可行。
+///
+/// 安全边界：只动**本任务**的 BCD 对象与载荷（按精确 GUID），绝不碰别的启动项；
+/// 清理失败也仍然尝试重启（宁可回到 Windows 让用户看到问题，也不要卡在 RE）。
+#[cfg(windows)]
+fn auto_escape_to_windows(env_path: &str, log: &Path) {
+    // 尽力而为：任何一步失败都只记日志，绝不阻断最后的重启。
+    let _ = (|| -> Result<(), TaskError> {
+        let values = read_env_file(env_path)?;
+        let task_id = env_required(&values, "TASK_ID")?;
+        let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
+        let store_rel = split_workspace_root_rel(&workspace_root_rel, &task_id)?;
+        let mut mounts = MountedVolumes::new();
+        let letter = mount_env_volume(&mut mounts, &values, "WORKSPACE", 'T', log, false)?;
+        let store = TaskStore::new(PathBuf::from(format!(r"{}:\{store_rel}", letter)));
+        let task_dir = store.task_dir(&task_id)?;
+        if let Some(entry) = boot_entry::ReBootEntry::read(&task_dir)? {
+            boot_entry::disarm(&entry, log)?;
+            let _ = append_log(log, "auto-escape: one-shot boot entry disarmed");
+        }
+        Ok(())
+    })();
+    // 无论清理是否成功都重启：回到 Windows 总比卡在 RE 里好。
+    let _ = run_logged("wpeutil.exe", &["reboot"], log);
 }
 
 #[cfg(windows)]
@@ -2578,6 +2648,22 @@ fn recover_windows(
                 // `boot_menu::decide_default` 里，apply 只执行不推断。
                 if let Some(p) = progress {
                     p.set_boot_menu(Arc::clone(&session));
+                    // 装载「BCD 回退」动作：点击时把 ESP 上的 BCD 恢复成任务准备期
+                    // 保存的快照（bcd-before-raw / bcd-before-export）。ESP 身份在
+                    // 点击时才解析（此刻还没到 STEP 3 的 find_efi_root），
+                    // 用免盘符探测避免抢盘符。
+                    let rollback_task_dir = store.task_dir(&task.task_id)?;
+                    let rollback_log = log.to_path_buf();
+                    p.set_bcd_rollback(Box::new(move || {
+                        let efi = windows_prepare::esp_identity_without_drive_letter()
+                            .map_err(|error| error.to_string())?;
+                        windows_prepare::rollback_bcd_snapshot(
+                            &rollback_task_dir,
+                            &efi,
+                            &rollback_log,
+                        )
+                        .map_err(|error| error.to_string())
+                    }));
                 }
                 append_log(log, "引导修复候选已准备：第二阶段显示编辑按钮")?;
                 Some(session)
@@ -2659,6 +2745,11 @@ fn recover_windows(
                 )?;
                 append_log(log, "STEP 2/4 还原镜像（时间长）")?;
                 let entering_image_applied = task.status == Stage::TargetErased;
+                // 应用镜像前是最后一个「还没动目标」的安全暂停点：用户可在这里
+                // 停下确认镜像/目标，再决定是否继续。
+                if let Some(p) = progress {
+                    p.wait_if_paused(log, "STEP 2/4 还原镜像");
+                }
                 recovery_fault::checkpoint("apply", log)?;
                 run_logged(
                     "dism.exe",
@@ -2692,6 +2783,10 @@ fn recover_windows(
                 append_log(log, "STEP 3/4 校验")?;
                 let efi = find_efi_root(efi_root)?;
                 let entering_boot_repaired = task.status == Stage::ImageApplied;
+                // 修引导前暂停点：BCD 尚未被改动，用户在此停下可安全放弃。
+                if let Some(p) = progress {
+                    p.wait_if_paused(log, "STEP 3/4 校验（引导修复前）");
+                }
                 // BootRepaired is recorded immediately before BCDBoot so a
                 // failure is eligible for BCD rollback.  A retry from that
                 // stage simply re-runs BCDBoot and validates its output.
