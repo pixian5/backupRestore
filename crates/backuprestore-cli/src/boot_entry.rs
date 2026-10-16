@@ -524,15 +524,13 @@ pub fn create_entry(
         &format!("new boot channel: readback device={actual_device} osdevice={actual_osdevice}"),
     )?;
     if actual_device != expected || actual_osdevice != expected {
-        let _ = bcd(&["/delete", &loader, "/f"]);
-        let _ = bcd(&["/delete", &devopts, "/f"]);
+        delete_best_effort(&loader, &devopts, log);
         return Err(crate::err(&format!(
             "new boot entry readback mismatch: expected {expected}, got {actual_device} / {actual_osdevice}"
         )));
     }
     if bcd_field(&loader, "winpe")?.is_empty() {
-        let _ = bcd(&["/delete", &loader, "/f"]);
-        let _ = bcd(&["/delete", &devopts, "/f"]);
+        delete_best_effort(&loader, &devopts, log);
         return Err(crate::err("new boot entry is not marked winpe=yes"));
     }
 
@@ -547,6 +545,35 @@ pub fn create_entry(
     };
     entry.write(task_dir)?;
     Ok(entry)
+}
+
+/// 补偿路径上的删除：失败不能阻断主流程，但**必须留痕**。
+///
+/// 【2026-10-16 审查修订，日志缺口 7】此前这三处是 `let _ = bcd(&["/delete", ...])`：
+/// 删除失败时**连一行日志都没有**，事后完全无法判断"现场还留着孤儿 BCD 对象"
+/// 是不是这里漏掉的（补偿路径 `windows_prepare` 里有补记，这条快速路径无声）。
+/// 孤儿对象不在 `displayorder` 里就不影响启动，所以不升级为致命错误；
+/// 但"可能留了孤儿"这件事必须写进日志。
+fn delete_best_effort(loader: &str, devopts: &str, log: &Path) {
+    for guid in [loader, devopts] {
+        match bcd(&["/delete", guid, "/f"]) {
+            Ok(text) => {
+                let detail = text.trim();
+                let suffix = if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({detail})")
+                };
+                let _ = crate::append_log(log, &format!("补偿删除 {guid}：成功{suffix}"));
+            }
+            Err(error) => {
+                let _ = crate::append_log(
+                    log,
+                    &format!("补偿删除 {guid} 失败（可能留下孤儿 BCD 对象）：{error}"),
+                );
+            }
+        }
+    }
 }
 
 /// 武装一次性启动：只动 bootmgr 的 `bootsequence`，指向我们的 osloader。
@@ -569,8 +596,7 @@ pub fn arm_one_shot(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
     bcd(&["/bootsequence", &loader])?;
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed != loader {
-        let _ = bcd(&["/delete", &loader, "/f"]);
-        let _ = bcd(&["/delete", &devopts, "/f"]);
+        delete_best_effort(&loader, &devopts, log);
         return Err(crate::err(&format!(
             "bootsequence is {armed}, expected {loader}; entry removed"
         )));

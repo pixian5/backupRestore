@@ -20,7 +20,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::ptr::null_mut;
 use std::thread;
 use std::time::Duration;
@@ -131,6 +131,12 @@ pub(crate) struct PrepareOptions {
     /// `BackupRestore.settings.ini`（GUI 设置窗口写的）> 默认（3 次 + 自动逃出）。
     /// 落盘进 `RecoveryTask.env`，由恢复环境 `main.rs::recover_env_interactive` 读取。
     failure_policy: crate::failure_policy::FailurePolicy,
+    /// DISM 等待上限（秒；0 = 不限制 = 历史行为）。来源优先级：
+    /// CLI `--dism-timeout-secs` > 程序目录 `BackupRestore.settings.ini` 的
+    /// `dism_timeout_secs` > 默认 0。落盘进 `RecoveryTask.env` 的
+    /// `DISM_TIMEOUT_SECS`，恢复环境在入口把它灌进进程环境变量
+    /// （`crate::dism_timeout::ENV_VAR`），本进程内所有 DISM 调用都按它等待。
+    dism_timeout_secs: u32,
     /// 创建任务时的界面语言（`zh` / `en`），落盘进 `RecoveryTask.env` 的
     /// `UI_LANGUAGE`。恢复环境的提示文案跟着它走，避免英文界面用户在恢复
     /// 环境里突然看到中文。
@@ -227,6 +233,10 @@ pub(crate) fn list_volumes() -> Result<(), TaskError> {
 /// 真正的承重消解在 prepare 侧（挂 ESP 读 /store，必然可用）。
 /// 输出 GBK 的本地化字段名用 `decode_windows_bytes` 解，中文菜单名才不会
 /// 被 from_utf8_lossy 弄花（弄花等于撞名检查对中文系统全废）。
+///
+/// 【2026-10-16 审查修订，日志缺口 10】失败原因写进输出的 `error` 字段：
+/// 此前失败与"真的没有启动项"都表现为**空列表**，调用方无法区分——
+/// 撞名预检会静默失效，而用户看到的菜单名重名问题要到任务创建时才炸。
 #[cfg(windows)]
 pub(crate) fn list_boot_entries() -> Result<(), TaskError> {
     let output = std::process::Command::new("bcdedit.exe")
@@ -234,18 +244,40 @@ pub(crate) fn list_boot_entries() -> Result<(), TaskError> {
         .stdin(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output();
-    let descriptions = match output {
-        Ok(output) if output.status.success() => {
+    let (descriptions, probe_error) = match &output {
+        Ok(output) if output.status.success() => (
             crate::boot_menu::all_loader_descriptions(&crate::text_parsing::decode_windows_bytes(
                 &output.stdout,
-            ))
+            )),
+            None,
+        ),
+        Ok(output) => {
+            // 退出码非零：把 stderr 尾部一起带出来，让 GUI 能记下真实原因
+            //（BCD 存储不可访问 / 权限不足 / 系统无 UEFI 等）。
+            let mut text = crate::text_parsing::decode_windows_bytes(&output.stdout);
+            text.push_str(&crate::text_parsing::decode_windows_bytes(&output.stderr));
+            let tail: Vec<&str> = text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            let start = tail.len().saturating_sub(4);
+            (
+                Vec::new(),
+                Some(format!(
+                    "bcdedit /enum exited with {}: {}",
+                    output.status,
+                    tail[start..].join(" | ")
+                )),
+            )
         }
-        _ => Vec::new(),
+        Err(error) => (Vec::new(), Some(format!("bcdedit could not be started: {error}"))),
     };
-    println!(
-        "{}",
-        serde_json::json!({ "descriptions": descriptions })
-    );
+    let mut report = serde_json::json!({ "descriptions": descriptions });
+    if let Some(error) = probe_error {
+        report["error"] = serde_json::json!(error);
+    }
+    println!("{}", report);
     Ok(())
 }
 
@@ -453,6 +485,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     // 失败处理策略：CLI 显式传参优先，缺省时读程序目录的设置文件（GUI 写的）。
     let mut fail_threshold: Option<u32> = None;
     let mut fail_action: Option<crate::failure_policy::FailureAction> = None;
+    let mut fail_pause_max_wait: Option<u32> = None;
+    let mut dism_timeout_secs: Option<u32> = None;
     let mut ui_language: Option<String> = None;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
@@ -555,6 +589,21 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
                     || err("--fail-action must be auto-escape or pause"),
                 )?);
             }
+            "--fail-pause-max-wait-secs" => {
+                let raw = value("--fail-pause-max-wait-secs", &mut args)?;
+                fail_pause_max_wait = Some(
+                    crate::failure_policy::parse_pause_max_wait_secs(&raw).ok_or_else(|| {
+                        err("--fail-pause-max-wait-secs must be 0..=86400 seconds (0 = unlimited)")
+                    })?,
+                );
+            }
+            "--dism-timeout-secs" => {
+                let raw = value("--dism-timeout-secs", &mut args)?;
+                dism_timeout_secs = Some(
+                    crate::dism_timeout::parse_secs(&raw)
+                        .map_err(|reason| err(&format!("--dism-timeout-secs: {reason}")))?,
+                );
+            }
             "--ui-language" => {
                 let raw = value("--ui-language", &mut args)?.trim().to_ascii_lowercase();
                 // 只认 zh*/en* 前缀（`zh-CN`、`en-US` 都接受），其余明确拒绝，
@@ -625,8 +674,17 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         crate::failure_policy::FailurePolicy {
             threshold: fail_threshold.unwrap_or(base.threshold),
             action: fail_action.unwrap_or(base.action),
+            pause_max_wait_secs: fail_pause_max_wait.unwrap_or(base.pause_max_wait_secs),
         }
     };
+    // DISM 等待上限：同一套优先级（CLI > 设置文件 > 默认 0=不限制）。
+    // `load_from_dir` 自己处理"设置文件不存在/读失败 → 默认"，键名与 GUI
+    // 设置窗口写入的一致（同一个 `BackupRestore.settings.ini`）。
+    let dism_timeout_secs = dism_timeout_secs.unwrap_or_else(|| {
+        executable_dir()
+            .map(|dir| crate::dism_timeout::load_from_dir(&dir))
+            .unwrap_or(crate::dism_timeout::DEFAULT_SECS)
+    });
     Ok(PrepareOptions {
         operation,
         source_drive,
@@ -645,6 +703,7 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         verify_hash,
         format_target,
         failure_policy,
+        dism_timeout_secs,
         ui_language: ui_language.unwrap_or_else(|| "zh".to_string()),
     })
 }
@@ -826,18 +885,22 @@ fn prepare_task(
     if let Some(conflict) = validate_volume_roles(&roles, options.operation, &recovery).err() {
         return Err(err(conflict.message()));
     }
+    // 准备日志先建好再跑输入校验：`validate_operation_inputs` 里的 DISM 预检
+    // （镜像完整性探测）要往这里写 stdout/stderr。早先日志目录在校验**之后**
+    // 才创建，那段失败就无处落盘——正是 2026-10-16 审查点名的日志缺口 1。
+    let bootstrap_log = executable_dir.join(r"logs\prepare-bootstrap.log");
+    if let Some(parent) = bootstrap_log.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let image_acceptance = validate_operation_inputs(
         &source,
         &target,
         &image_volume,
         image_path.as_deref(),
         &options,
+        &bootstrap_log,
     )?;
     let store = TaskStore::new(executable_dir);
-    let bootstrap_log = executable_dir.join(r"logs\prepare-bootstrap.log");
-    if let Some(parent) = bootstrap_log.parent() {
-        fs::create_dir_all(parent)?;
-    }
     // S5 新启动项撞名消解（docs/20261015-0725）：拟用的菜单名与现有任一启动项
     // 重名时追加 -YYYYMMDDHHMM。GUI 侧已按用户可见的方式消解过一次（幂等，
     // 已加后缀的名字不会二次加），但 CLI 直跑不过 GUI，必须在这里兜底——
@@ -1596,8 +1659,16 @@ fn physical_volume_identity_at(
 /// （内存版/硬盘版，带 `winpe yes`、不做 WinRE 注册）。
 ///
 /// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件。
-pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<ProbeOutcome, TaskError> {
-    match wim_mount_markers(image_path, index) {
+///
+/// `log` 必须传入任务自己的 `prepare.log`：三处 DISM 调用的 stdout/stderr 全部落盘，
+/// 失败时错误消息里带输出尾部。此前的实现只取 `status`，挂载失败（本机有附加 VHD
+/// 时 `/Mount-Wim` 恒定报 87）在日志里只剩 "mount failed" 三个字，事后无法定位。
+pub(crate) fn wim_full_windows_probe(
+    image_path: &str,
+    index: u32,
+    log: &Path,
+) -> Result<ProbeOutcome, TaskError> {
+    match wim_mount_markers(image_path, index, log) {
         // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝（此刻尚未格式化任何卷）。
         Ok(false) => Err(err(
             "镜像不是完整 Windows（缺少 reagentc.exe 或 SYSTEM 注册表），\
@@ -1612,7 +1683,7 @@ pub(crate) fn wim_full_windows_probe(image_path: &str, index: u32) -> Result<Pro
         // 标准纯 PE 镜像的名称特征（"Microsoft Windows PE"/"WindowsPE"）
         // 命中即拒绝，未命中放行——恢复阶段的离线注册前置检查仍是硬兜底。
         Err(_) => {
-            let name = wim_image_display_name(image_path, index)?;
+            let name = wim_image_display_name(image_path, index, log)?;
             let lower = name.to_ascii_lowercase();
             if lower.contains("windows pe") || lower.contains("winpe") {
                 return Err(err(&format!(
@@ -1635,20 +1706,15 @@ pub(crate) enum ProbeOutcome {
 
 /// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
 /// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
-fn wim_mount_markers(image_path: &str, index: u32) -> Result<bool, TaskError> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+///
+/// 失败的错误消息带 DISM 输出尾部，完整输出已落进 `log`。
+fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, TaskError> {
     let mount_dir = std::env::temp_dir().join(format!("br-wimprobe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&mount_dir);
     std::fs::create_dir_all(&mount_dir)?;
-    let run = |args: &[&str]| -> Result<std::process::Output, TaskError> {
-        std::process::Command::new("dism.exe")
-            .arg("/English")
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(TaskError::from)
+    let run = |args: &[&str]| -> Result<Output, TaskError> {
+        crate::run_output_logged("dism.exe", args, log)
+            .map_err(|error| err(&format!("dism 调用失败（无法启动/读取输出）：{error}")))
     };
     let mounted = run(&[
         "/Mount-Wim",
@@ -1659,7 +1725,16 @@ fn wim_mount_markers(image_path: &str, index: u32) -> Result<bool, TaskError> {
     ])?;
     if !mounted.status.success() {
         let _ = std::fs::remove_dir_all(&mount_dir);
-        return Err(err("mount failed"));
+        let tail = crate::output_tail_summary(&mounted, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
+        return Err(err(&format!(
+            "镜像挂载探测失败（dism /Mount-Wim 退出码 {}{}）。完整输出已写入准备日志。",
+            mounted.status, detail
+        )));
     }
     let has_reagentc = mount_dir.join(r"Windows\System32\reagentc.exe").is_file();
     let has_system_hive = mount_dir
@@ -1673,28 +1748,48 @@ fn wim_mount_markers(image_path: &str, index: u32) -> Result<bool, TaskError> {
     ])?;
     let _ = std::fs::remove_dir_all(&mount_dir);
     if !unmounted.status.success() {
-        return Err(err("unmount failed"));
+        let tail = crate::output_tail_summary(&unmounted, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
+        return Err(err(&format!(
+            "镜像挂载探测的卸载失败（dism /Unmount-Wim 退出码 {}{}）。\
+             镜像可能仍处于挂载状态并被锁定，请手动用 dism /Unmount-Wim /Discard 清理后再试。",
+            unmounted.status, detail
+        )));
     }
     Ok(has_reagentc && has_system_hive)
 }
 
 /// 读取镜像指定索引的显示名（Name 行；缺失时退回 Description）。
-fn wim_image_display_name(image_path: &str, index: u32) -> Result<String, TaskError> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let output = std::process::Command::new("dism.exe")
-        .args([
+///
+/// 失败时错误消息带 DISM 输出尾部（完整输出已落进 `log`），避免只留一句
+/// "Get-WimInfo failed"。
+fn wim_image_display_name(image_path: &str, index: u32, log: &Path) -> Result<String, TaskError> {
+    let output = crate::run_output_logged(
+        "dism.exe",
+        &[
             "/English",
             "/Get-WimInfo",
             // 注意：/Get-WimInfo 的参数是 /WimFile（/ImageFile 是 Mount/Apply 的）。
             &format!("/WimFile:{image_path}"),
             &format!("/Index:{index}"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()?;
+        ],
+        log,
+    )?;
     if !output.status.success() {
-        return Err(err("Get-WimInfo failed for image name"));
+        let tail = crate::output_tail_summary(&output, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
+        return Err(err(&format!(
+            "读取镜像名失败（dism /Get-WimInfo 退出码 {}{}）。请确认镜像文件可访问且未被占用。",
+            output.status, detail
+        )));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
@@ -2151,6 +2246,7 @@ fn validate_operation_inputs(
     image: &VolumeIdentity,
     image_path: Option<&str>,
     options: &PrepareOptions,
+    log: &Path,
 ) -> Result<Option<ImageAcceptance>, TaskError> {
     match options.operation {
         Operation::Probe => Ok(None),
@@ -2270,7 +2366,7 @@ fn validate_operation_inputs(
                 return Err(err(message));
             }
             if options.operation == Operation::CreateSecondary || target_is_windows {
-                wim_full_windows_probe(path, options.wim_index)?;
+                wim_full_windows_probe(path, options.wim_index, log)?;
             }
             // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 完整性；
             // 优先比对物理文件大小，避免在提权准备阶段对 58GB 镜像再次耗时 2 分钟重复读盘计算哈希。
@@ -2475,6 +2571,11 @@ fn write_recovery_env(
     // 恢复环境失败处理策略 + 界面语言（2026-10-16 用户拍板做成设置项）。
     // 键名与取值都来自 `crate::failure_policy`，恢复环境读同一份常量。
     for (key, value) in options.failure_policy.env_pairs() {
+        put_value(&mut values, key, value);
+    }
+    // DISM 等待上限（2026-10-16 审查补上）。只在非默认时写一行，避免给每个
+    // 任务都多一行没有信息量的 0。
+    if let Some((key, value)) = crate::dism_timeout::env_pair(options.dism_timeout_secs) {
         put_value(&mut values, key, value);
     }
     put_value(&mut values, "UI_LANGUAGE", options.ui_language.clone());

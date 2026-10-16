@@ -310,6 +310,21 @@ impl Engine {
     fn log(&self, text: &str) -> Result<(), TaskError> {
         crate::append_log(&self.dir.join("operation.log"), text)
     }
+    /// 长等待类的等待上限。
+    ///
+    /// 【2026-10-16 审查修订，卡死 2】只有 DISM 走可配置超时
+    /// （`crate::dism_timeout::wait_ms()`，默认仍是 INFINITE、零回归）。
+    /// 其余长命令保持 INFINITE：环境变量叫 `DISM_TIMEOUT_SECS`，不该顺手
+    /// 杀掉一个慢一点的 bcdedit。DISM 挂死时 `pe_operation::execute` 永不返回，
+    /// 调用方 `native_gui` 的 `EnableWindow(hwnd, 1)` 永不到达 → PE 桌面窗口
+    /// 永久禁用（不能点也不能关）。
+    fn long_wait_ms(program: &str) -> u32 {
+        if program.to_ascii_lowercase().ends_with("dism.exe") {
+            crate::dism_timeout::wait_ms()
+        } else {
+            windows_command::INFINITE
+        }
+    }
     fn command(&mut self, program: &str, args: &[String], long: bool) -> Result<String, TaskError> {
         self.command_number += 1;
         let out = self
@@ -326,7 +341,7 @@ impl Engine {
             args,
             Some(&out),
             if long {
-                windows_command::INFINITE
+                Self::long_wait_ms(program)
             } else {
                 60_000
             },
@@ -445,6 +460,7 @@ impl Engine {
             wp::wim_full_windows_probe(
                 &self.image.to_string_lossy(),
                 self.request.index,
+                &self.dir.join("operation.log"),
             )?;
         }
         // 文件句柄拒绝共享写入/删除，持续持有至本次任务结束，避免预检后被替换。

@@ -43,12 +43,24 @@ if (-not $ok) { Fail "GetTokenInformation(TokenLinkedToken) failed" }
 $hLinked = [System.Runtime.InteropServices.Marshal]::ReadIntPtr($buf)
 [void][Win32E]::LocalFree($buf)
 Write-Output ("linked token=" + $hLinked)
+# CreateProcessAsUser needs a PRIMARY token; the linked token from
+# GetTokenInformation(TokenLinkedToken) is not guaranteed to be primary,
+# so duplicate it explicitly (mirrors launch-interactive.ps1).
+$hPrimary = [IntPtr]::Zero
+$okDup = [Win32E]::DuplicateTokenEx($hLinked, 0x02000000, [IntPtr]::Zero, 2, 1, [ref]$hPrimary)
+if (-not $okDup) { Fail ("DuplicateTokenEx(linked->primary) failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+Write-Output ("primary token=" + $hPrimary)
 $si = New-Object Win32E+STARTUPINFO
 $si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
 $si.lpDesktop = "winsta0\default"
 $pi = New-Object Win32E+PROCESS_INFORMATION
 $cmd = "powershell -ExecutionPolicy Bypass -NoProfile -File `"$ScriptPath`""
-$ok3 = [Win32E]::CreateProcessAsUser($hLinked, "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00000010, [IntPtr]::Zero, "C:\Users\Public\backupRestore-package", [ref]$si, [ref]$pi)
-"launch_result=$ok3 pid=$($pi.dwProcessId)" | Out-File $LogPath -Encoding ascii
+$ok3 = [Win32E]::CreateProcessAsUser($hPrimary, "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe", $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0x00000010, [IntPtr]::Zero, "C:\Users\Public\backupRestore-package", [ref]$si, [ref]$pi)
+if (-not $ok3) {
+    "launch_result=False err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() + " pid=" + $pi.dwProcessId | Out-File $LogPath -Encoding ascii
+} else {
+    "launch_result=True pid=" + $pi.dwProcessId | Out-File $LogPath -Encoding ascii
+}
+[void][Win32E]::CloseHandle($hPrimary)
 [void][Win32E]::CloseHandle($hLinked)
 [void][Win32E]::CloseHandle($hToken)

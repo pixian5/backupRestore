@@ -19,6 +19,8 @@ use std::thread;
 use crate::native_gui::Msg;
 use crate::text_parsing::classify_log_line;
 
+use backuprestore_core::TaskError;
+
 type Hwnd = *mut c_void;
 type WParam = usize;
 type LParam = isize;
@@ -107,6 +109,19 @@ const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
 const FW_BOLD: i32 = 700;
 const CLEARTYPE_QUALITY: u32 = 5;
 
+/// 暂停总上限（秒）。0 = 不限制（**默认**）。
+///
+/// 默认不限制是**有意的**：把默认设成某个固定秒数，会把「有人值守但看得久」
+/// 的正常用法也中断，等于用一个误杀换掉一个挂死。真正的逃生通道是
+/// **关闭进度窗口**——那 unmistakably 表示放弃（见 `pause_abandoned`）。
+/// 这个上限只作为第二道保险，留给运维通过环境变量打开。
+fn pause_total_timeout() -> u64 {
+    std::env::var("BACKUPRESTORE_PAUSE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 /// 与窗口线程共享的进度状态：当前活动日志路径（主线程切换日志时更新）。
 /// 「BCD 回退」按钮的动作类型：返回 Ok(()) 表示已回退，Err(说明) 记录失败原因。
 /// 抽成别名是为了避免 clippy 的 type_complexity 告警，也让字段声明更易读。
@@ -147,6 +162,19 @@ pub struct ProgressShared {
     /// 为 true 则原地等待（不推进、不退出），让用户能停下来查看/处理。
     /// 用 AtomicBool 而不是 Mutex：检查非常频繁，且只需要一个布尔语义。
     pub paused: AtomicBool,
+    /// 【2026-10-16 审查修订，卡死 4】暂停期间用户关掉了进度窗口。
+    ///
+    /// 为什么必须有：主进度窗口此前**没有 `WM_CLOSE` 分支**（落到
+    /// `DefWindowProcW` → `DestroyWindow`），而 `WM_DESTROY` 只 `KillTimer` +
+    /// 销毁日志弹窗 + `PostQuitMessage`，**从不通知恢复线程**。于是
+    /// 「暂停 → 关窗口」之后：进程还活着、恢复线程在 `wait_if_paused` 里
+    /// 无超时自旋、界面上什么都没有、也没有任何出口。杀进程之后
+    /// `bootsequence` 仍武装，重启又回 RE 重来。
+    ///
+    /// 窗口过程在**用户发起**的 `WM_CLOSE`（区别于程序自己 `request_close`
+    /// 发的那次）里置这个标志；`wait_if_paused` 看到它就返回 `Err` 中断恢复链，
+    /// 由上层既有的失败处理（含 auto-escape）接管——机器因此能逃出去。
+    pub pause_abandoned: AtomicBool,
     /// 「BCD 回退」按钮的动作。恢复主流程在拿到任务目录/ESP 身份后，把回退闭包
     /// 装到这里；按钮点击时调用它（回退需要 bcdedit + 卷挂载，只有主流程才有
     /// 这些上下文）。未装载时按钮点击只写一条日志。
@@ -175,16 +203,51 @@ impl ProgressShared {
     /// 用户还能用「详细日志」「命令提示符」「引导修复」等按钮现场处理。
     ///
     /// 参数 `stage` 只用于写一条可读日志（"已暂停于 X"），不参与逻辑。
-    pub fn wait_if_paused(&self, log: &Path, stage: &str) {
+    ///
+    /// 【2026-10-16 审查修订，卡死 4】返回 `Err` 的两种情况：
+    /// ① 暂停期间用户关掉了进度窗口（`pause_abandoned`）—— unmistakably
+    ///    表示放弃，必须中断而不是继续干一件用户已经看不见的事。
+    /// ② 暂停总时长超过 `pause_total_timeout()`（默认 0 = 不限制）。
+    /// 中断由上层既有的失败处理接管（保留现场；`auto-escape` 时会 disarm +
+    /// 标终态 + 重启回 Windows），所以机器不会留在恢复环境里打转。
+    pub fn wait_if_paused(&self, log: &Path, stage: &str) -> Result<(), TaskError> {
         if !self.paused.load(Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
         let _ = crate::append_log(log, &format!("恢复已暂停（用户请求），停在：{stage}"));
+        let limit_secs = pause_total_timeout();
+        let deadline = (limit_secs > 0)
+            .then(|| std::time::Instant::now() + std::time::Duration::from_secs(limit_secs));
+        if limit_secs > 0 {
+            let _ = crate::append_log(
+                log,
+                &format!("暂停总上限 {limit_secs} 秒；超时将中断恢复链并按失败处理"),
+            );
+        }
         // 每 200ms 醒来一次，纯自旋等待；暂停是人手操作，不需要更精细。
         while self.paused.load(Ordering::SeqCst) {
+            if self.pause_abandoned.load(Ordering::SeqCst) {
+                let _ = crate::append_log(
+                    log,
+                    "进度窗口已关闭且当时处于暂停：中断恢复链，按失败处理（现场保留）",
+                );
+                return Err(crate::err("进度窗口已关闭，恢复已中断"));
+            }
+            if let Some(deadline) = deadline
+                && std::time::Instant::now() >= deadline
+            {
+                let _ = crate::append_log(
+                    log,
+                    &format!(
+                        "暂停已达总上限 {limit_secs} 秒：中断恢复链，按失败处理（现场保留）"
+                    ),
+                );
+                return Err(crate::err("暂停等待超时，恢复已中断"));
+            }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         let _ = crate::append_log(log, "恢复已继续（用户请求）");
+        Ok(())
     }
 
     /// 切换暂停状态，返回切换后的值（true=已暂停）。
@@ -1289,6 +1352,37 @@ unsafe extern "system" fn window_proc(
             }
             0
         },
+        WM_CLOSE => unsafe {
+            // 【2026-10-16 审查修订，卡死 4】暂停中关闭窗口 = 用户放弃。
+            //
+            // 此前主进度窗口**没有** WM_CLOSE 分支：消息落到
+            // `_ => DefWindowProcW`，窗口被销毁，而恢复线程还在
+            // `wait_if_paused` 里无超时自旋——进程活着、没有任何 UI、
+            // 没有超时、没有出口（`WM_DESTROY` 只做 KillTimer + 销毁日志
+            // 弹窗 + PostQuitMessage，从不通知恢复线程）。
+            //
+            // 用 `close_requested` 区分「用户关窗」与「程序自己请求关闭」：
+            // `request_close` 会先置位再投递 WM_CLOSE，那种情况不能算放弃
+            // （操作已经做完，此刻多半也没在暂停）。
+            //
+            // 注意：置位后**必须仍调用 DefWindowProcW**，否则窗口不会被销毁，
+            // 关窗就变成"窗口还在但恢复已中断"，比原来更糟。
+            let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
+            if !shared_ptr.is_null() {
+                let program_requested = (*shared_ptr).close_requested.load(Ordering::SeqCst);
+                if !program_requested {
+                    (*shared_ptr).pause_abandoned.store(true, Ordering::SeqCst);
+                    if (*shared_ptr).paused.load(Ordering::SeqCst) {
+                        let log_path = (*shared_ptr).log_path.lock().unwrap().clone();
+                        let _ = crate::append_log(
+                            &log_path,
+                            "用户关闭进度窗口（当时处于暂停）：恢复链将中断并按失败处理，现场保留",
+                        );
+                    }
+                }
+            }
+            DefWindowProcW(hwnd, message, w_param, l_param)
+        },
         WM_DESTROY => unsafe {
             KillTimer(hwnd, TIMER_ID);
             // 先销毁详细日志弹窗：它的 GWL_USERDATA 指向本窗口，主窗口销毁后
@@ -1332,6 +1426,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         log_window: Mutex::new(None),
         boot_menu: Mutex::new(None),
         paused: AtomicBool::new(false),
+        pause_abandoned: AtomicBool::new(false),
         bcd_rollback: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);

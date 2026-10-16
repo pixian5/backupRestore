@@ -27,7 +27,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
-use std::process::{ChildStderr, ChildStdout, Stdio};
+use std::process::{ChildStderr, ChildStdout, Output, Stdio};
 use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::thread;
@@ -41,6 +41,10 @@ pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 mod boot_cleanup;
 #[cfg(windows)]
 mod boot_entry;
+/// DISM 等待上限：把「无限等待」变成可配置，**默认仍是无限**（零回归）。
+/// 跨平台纯逻辑，本机单测即可覆盖全部分支。
+#[cfg(any(windows, test))]
+mod dism_timeout;
 /// 恢复环境「连续失败 N 次后如何处理」策略：判据、文案与设置的单一来源。
 /// **跨平台**（纯逻辑 + 文件读写），本机单测即可覆盖全部分支。
 #[cfg(any(windows, test))]
@@ -55,6 +59,10 @@ mod boot_menu;
 mod boot_record;
 #[cfg(windows)]
 mod native_gui;
+/// 在线任务本轮工作目录的选址：`<exe>\logs` 优先、`%TEMP%` 兜底。
+/// 纯路径决策，本机单测即可覆盖全部分支。
+#[cfg(any(windows, test))]
+mod online_log;
 #[cfg(windows)]
 mod online_operation;
 #[cfg(windows)]
@@ -88,6 +96,8 @@ fn usage() -> ! {
 }
 
 fn main() {
+    #[cfg(windows)]
+    install_panic_logging();
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments.is_empty() && should_launch_gui() {
         if let Err(error) = launch_gui() {
@@ -364,6 +374,86 @@ fn record_launch_error(error: &TaskError) {
     );
 }
 
+/// panic 载荷落盘到 `<exe>\logs\panic.log`，同时保留默认 hook（继续打 stderr）。
+///
+/// 为什么必须自己装 hook（2026-10-16 审查，docs/20261016-2250 日志缺口 2）：
+/// 产物是 `#![windows_subsystem = "windows"]`，**没有控制台**，panic 的默认
+/// 行为是「往 stderr 写一段然后 abort/展开」——在 windows subsystem 下那段文本
+/// 无处可去。而 GUI 侧 `native_gui` 的在线线程是 `catch_unwind` 包着的，
+/// `unwrap_or_else(|_| …)` 把 payload 整个丢掉，只留一句「线程异常退出」。
+/// 两头一夹：**在线操作 panic 之后，日志里既没有断言消息也没有文件行号**，
+/// 连是哪个 `expect`/`unwrap`/断言炸的都无从判断。
+///
+/// 装在这里而不是只在 `native_gui::run` 里：任何路径（GUI / recover / PE 桌面）
+/// 的 panic 都能留下痕迹。hook 里只做最小文件写，绝不 panic-on-panic。
+#[cfg(windows)]
+fn install_panic_logging() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        let location = info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        // payload 可能是 &str 或 String（Rust 只保证这两个），也可能是自定义类型
+        // （Rust 2024 前 Display 也可）——逐层降级取文本，取不到就记类型名。
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .or_else(|| {
+                info.payload()
+                    .downcast_ref::<&dyn std::fmt::Display>()
+                    .map(|value| value.to_string())
+            })
+            .unwrap_or_else(|| "<panic payload not printable>".to_string());
+        let thread = std::thread::current()
+            .name()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "<unnamed thread>".to_string());
+        let Ok(executable) = env::current_exe() else {
+            return;
+        };
+        let Some(directory) = executable.parent() else {
+            return;
+        };
+        let _ = append_log(
+            &directory.join("logs").join("panic.log"),
+            &format!(
+                "panic in thread [{thread}] at {location}: {payload}\n\
+                 backtrace (RUST_BACKTRACE=1 可展开): {:?}",
+                std::backtrace::Backtrace::capture()
+            ),
+        );
+    }));
+}
+
+/// 把 `catch_unwind` 捕获到的 panic 载荷取成可读文本。
+///
+/// 与 `install_panic_logging` 配合使用：hook 保证"日志里一定有"，这个函数保证
+/// "错误消息里也有"。此前 `unwrap_or_else(|_| …)` 把 payload 整段丢弃。
+#[cfg(windows)]
+pub(crate) fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .or_else(|| {
+            payload
+                .downcast_ref::<&dyn std::fmt::Display>()
+                .map(|value| value.to_string())
+        })
+        .unwrap_or_else(|| "panic 载荷不是可打印文本（详见 panic.log）".to_string())
+}
+
 #[derive(Default)]
 struct RecoverOptions {
     dry_run: bool,
@@ -591,20 +681,29 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
         return Ok(false);
     }
     append_log(&log, "Re-armed our one-shot boot entry for pending task")?;
-    let shutdown = Command::new("shutdown.exe")
-        .args(["/r", "/t", "0"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()?;
-    if !shutdown.success() {
+    // 【2026-10-16 审查修订，日志缺口 6】三个流全部落盘：此前 shutdown 的三流
+    // 都是 `Stdio::null()`，重启失败时只剩一个退出码，完全不知道 Windows
+    // 为什么拒绝重启（权限不足 / 有挂起的更新 / 别的会话占着）。
+    let shutdown = run_output_logged("shutdown.exe", &["/r", "/t", "0"], &log)?;
+    if !shutdown.status.success() {
+        let tail = output_tail_summary(&shutdown, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
         append_log(
             &log,
-            &format!("Pending boot recovery failed: shutdown exited {shutdown}"),
+            &format!(
+                "Pending boot recovery failed: shutdown exited {}{}",
+                shutdown.status, detail
+            ),
         )?;
         release_boot_resume_attempt(&task_dir, task.status)?;
-        return Err(err("unable to restart into Windows RE for pending task"));
+        return Err(err(&format!(
+            "unable to restart into Windows RE for pending task{}",
+            detail
+        )));
     }
     append_log(
         &log,
@@ -814,7 +913,29 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
         None,
     );
     if let Err(error) = &result {
-        store.write_recovery_error(&task, error.to_string())?;
+        // 【2026-10-16 审查修订，日志缺口 4】三处加固，都不改变主流程的成败：
+        // ① 先落 Recovery.log 再写 status.json——GUI 的错误文案引导用户"查看
+        //    Recovery.log"，而这条路径此前只写 status.json，日志里没有错误内容。
+        // ② 写盘失败不再 `?`——那会用**写盘错误**替换掉原始恢复错误向上传播，
+        //    把真正的失败原因顶掉（旧代码 `store.write_recovery_error(...)?`）。
+        // ③ 两个失败都各自记一行，事后能看出"恢复失败"与"连错误都没记上"的区别。
+        if let Err(log_error) = append_log(
+            &log,
+            &format!("Recovery failed: {error}（原始错误已落 Recovery.log）"),
+        ) {
+            let _ = append_log(
+                &log,
+                &format!("Recovery failed: {error}; 且无法写入日志：{log_error}"),
+            );
+        }
+        if let Err(write_error) = store.write_recovery_error(&task, error.to_string()) {
+            let _ = append_log(
+                &log,
+                &format!(
+                    "Recovery failed: {error}; 且无法写入 status 错误字段：{write_error}"
+                ),
+            );
+        }
     }
     #[cfg(windows)]
     if result.is_ok() {
@@ -838,17 +959,60 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
 
 #[cfg(windows)]
 fn recover_env_interactive(path: String) -> Result<(), TaskError> {
+    // 策略与逃生日志先备好：入口探测若失败，必须能"落盘 + 走 auto_escape"，
+    // 不能再 `?` 直接 return Err——那会让进程 exit(1)、一次性启动项（bootsequence）
+    // 仍指向本恢复环境，下次重启又进 RE 又失败，无限打转（2026-10-16 审查，
+    // docs/20261016-2250 卡死 7：旧代码两个 `?` 都在恢复循环之外）。
+    let values = read_env_file(&path).unwrap_or_default();
+    let policy = crate::failure_policy::FailurePolicy::from_values(&values);
+    let language = ui_language(&values);
+    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
+    let _ = append_log(&escape_log, &policy.log_line(0));
     // 自定义恢复入口没有经过系统恢复桌面；先枚举即插即用设备，
     // 否则 ARM64 恢复环境中的键盘可能尚未就绪，错误窗口无法操作。
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"X:\Windows".into());
     let init_log = PathBuf::from(&system_root).join("Temp/BackupRestore-init.log");
-    if std::process::Command::new("reg.exe")
+    // 【2026-10-16 审查修订，日志缺口 3】三个流的输出全部落盘，失败不再静默：
+    // 此前 `reg query` 只按退出码决定是否跑 wpeinit，退出码本身与它自己的
+    // stdout/stderr 全丢；wpeinit 的输出进 Stdio::null()。WinRE 里"键盘/设备
+    // 未就绪"这类故障事后完全无从判断走了哪条分支、失败原因是什么。
+    match std::process::Command::new("reg.exe")
         .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\MiniNT"])
-        .output()?
-        .status
-        .success()
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
     {
-        run_logged("wpeinit.exe", &[], &init_log)?;
+        Ok(output) if output.status.success() => {
+            // 恢复环境里：wpeinit 负责枚举即插即用设备（含键盘）。它失败
+            // 意味着后面的错误弹框可能根本无法操作，属确定性失败。
+            if let Err(error) = run_logged("wpeinit.exe", &[], &init_log) {
+                let _ = append_log(
+                    &escape_log,
+                    &format!(
+                        "recovery entry failed: wpeinit did not run ({error}); \
+                         auto-escaping instead of returning so the machine cannot boot-loop back into WinRE"
+                    ),
+                );
+                auto_escape_to_windows(&path, &escape_log);
+                return Err(error);
+            }
+        }
+        Ok(output) => {
+            let _ = append_log(
+                &escape_log,
+                &format!(
+                    "reg query MiniNT exited with {} ({}); skipping wpeinit",
+                    output.status,
+                    crate::output_tail_summary(&output, 4)
+                ),
+            );
+        }
+        Err(error) => {
+            let _ = append_log(
+                &escape_log,
+                &format!("reg query MiniNT could not be started ({error}); skipping wpeinit"),
+            );
+        }
     }
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -857,6 +1021,17 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
             text: *const u16,
             title: *const u16,
             flags: u32,
+        ) -> i32;
+        // 带超时的 MessageBox。`wLanguageId=0`（用线程默认语言），
+        // `dwMilliseconds=0` 表示立即超时并返回 0。user32 一直导出它
+        // （自 XP 起），是给无人值守场景加超时的标准手段。
+        fn MessageBoxTimeoutW(
+            window: *mut std::ffi::c_void,
+            text: *const u16,
+            title: *const u16,
+            flags: u32,
+            language_id: u16,
+            milliseconds: u32,
         ) -> i32;
     }
     // 同一条恢复链连续失败的次数。用于「连败 N 次后如何处理」：
@@ -883,12 +1058,10 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
     // `resume_pending_boot_task` 会再武装一次并重启回 RE
     // （`boot-resume-{stage}.attempted` 每阶段只挡一次），而 `abandon-task`
     // 在擦除后又拒绝清理 → 任务永久悬置、用户仍无自救出口。
-    let values = read_env_file(&path).unwrap_or_default();
-    let policy = crate::failure_policy::FailurePolicy::from_values(&values);
-    let language = ui_language(&values);
-    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
-    let _ = append_log(&escape_log, &policy.log_line(0));
+    // （`values` / `policy` / `language` / `escape_log` 已在本函数开头备好。）
     let mut consecutive_failures: u32 = 0;
+    // 第一次进入 pause 分支的时刻。`None` = 没配等待上限（历史行为，无限等）。
+    let mut pause_deadline: Option<Instant> = None;
     loop {
         match recover_env(path.clone()) {
             Ok(()) => return Ok(()),
@@ -913,7 +1086,25 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                 // 策略 pause：达阈值**不自动处理**，弹框停在恢复环境等用户按按钮。
                 // 「是」= 立即执行与 auto-escape 完全相同的处理；「否」= 继续重试。
                 // 弹框是模态的：不点就一直等，这就是「暂停在恢复环境里」的语义。
+                //
+                // 【2026-10-16 审查修订，卡死 1】配了 `pause_max_wait_secs` 时改用
+                // `MessageBoxTimeoutW`：超时（返回 0）执行与「是」完全相同的清理。
+                // 默认 0 = 不限制，仍用 `MessageBoxW` 无限等——**行为与旧版一致**。
+                // 上限从第一次进入暂停态起算（`pause_deadline`），不是每次弹框各自计时。
                 if policy.pause_now(consecutive_failures) {
+                    let deadline = match pause_deadline {
+                        Some(deadline) => Some(deadline),
+                        None => {
+                            let deadline = policy
+                                .has_pause_wait_limit()
+                                .then(|| {
+                                    Instant::now()
+                                        + Duration::from_secs(policy.pause_max_wait_secs as u64)
+                                });
+                            pause_deadline = deadline;
+                            deadline
+                        }
+                    };
                     let mut text = policy.pause_prompt(
                         &error.to_string(),
                         consecutive_failures,
@@ -924,18 +1115,61 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                     let title: Vec<u16> = crate::failure_policy::FailurePolicy::prompt_title(language)
                         .encode_utf16()
                         .collect();
-                    let result = unsafe {
-                        // MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND：
-                        // 恢复环境没有桌面外壳帮错误窗口取得键盘焦点。
-                        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10034)
-                    };
-                    if result == 6 {
+                    // MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND：
+                    // 恢复环境没有桌面外壳帮错误窗口取得键盘焦点。
+                    const MB_YESNO_WARN_FOREGROUND: u32 = 0x10034;
+                    // 剩余毫秒；已到期 → 0（MessageBoxTimeoutW 的 0 表示立即超时返回）。
+                    let remaining_ms = deadline
+                        .map(|deadline| {
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis()
+                                .min(u32::MAX as u128) as u32
+                        })
+                        .unwrap_or(u32::MAX);
+                    let result = if deadline.is_some() {
                         let _ = append_log(
                             &escape_log,
                             &format!(
-                                "user requested manual cleanup after {consecutive_failures} failure(s) \
-                                 (pause policy); auto-escape: disarm one-shot boot entry, mark task terminal, \
-                                 reboot to Windows"
+                                "pause prompt waits at most {remaining_ms} ms (limit {} sec); \
+                                 timeout runs the same cleanup as Yes",
+                                policy.pause_max_wait_secs
+                            ),
+                        );
+                        unsafe {
+                            MessageBoxTimeoutW(
+                                std::ptr::null_mut(),
+                                text.as_ptr(),
+                                title.as_ptr(),
+                                MB_YESNO_WARN_FOREGROUND,
+                                0,
+                                remaining_ms,
+                            )
+                        }
+                    } else {
+                        unsafe {
+                            MessageBoxW(
+                                std::ptr::null_mut(),
+                                text.as_ptr(),
+                                title.as_ptr(),
+                                MB_YESNO_WARN_FOREGROUND,
+                            )
+                        }
+                    };
+                    // 6 = IDYES；0 = 超时（MessageBoxTimeoutW 的超时返回值）。
+                    // 两者执行完全相同的清理：超时在无人值守时就是"没人来按按钮"。
+                    if result == 6 || result == 0 {
+                        let _ = append_log(
+                            &escape_log,
+                            &format!(
+                                "{} after {consecutive_failures} failure(s) (pause policy); \
+                                 auto-escape: disarm one-shot boot entry, mark task terminal, \
+                                 reboot to Windows",
+                                if result == 6 {
+                                    "user requested manual cleanup"
+                                } else {
+                                    "pause wait limit expired with no user input"
+                                }
                             ),
                         );
                         auto_escape_to_windows(&path, &escape_log);
@@ -1111,6 +1345,18 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     };
     let task_id = env_required(&values, "TASK_ID")?;
     validate_task_id(&task_id)?;
+    // 【2026-10-16 审查修订，卡死 2/3/6】把任务级的 DISM 等待上限灌进进程环境变量，
+    // 让本进程内所有 DISM 调用（`pe_operation::command` 的 long 分支、
+    // `online_operation::dism`、`native_gui` 的 PE 安装）都能读到。
+    // 恢复环境是**无人值守**的：只能靠任务自带的值，不能指望谁记得设环境变量。
+    // 值为 0（默认/未设置）时同样显式设一次，避免父进程遗留的旧值干扰。
+    {
+        let secs = crate::dism_timeout::from_values(&values);
+        // set_var 在 2024 edition 里是 unsafe（多线程并发修改环境不安全）；
+        // 此刻还在单线程入口，且必须在任何子进程派生之前完成。
+        unsafe { std::env::set_var(crate::dism_timeout::ENV_VAR, secs.to_string()) };
+        meta_log(&format!("DISM wait limit: {secs} sec (0 = unlimited)"));
+    }
     let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
     let store_rel = split_workspace_root_rel(&workspace_root_rel, &task_id)?;
     meta_log(&format!(
@@ -1463,13 +1709,30 @@ fn complete_recovery_cleanup(
         append_log(log, "Boot entry cleaned; task marked successful")
     })();
     if let Err(error) = &result {
+        // 【2026-10-16 审查修订，日志缺口 4】写盘失败不用 `?`：那会用写盘错误
+        // 替换掉 `result` 里的原始恢复错误向上传播（`result` 仍会在函数末尾
+        // 返回）。两个失败各自记一行，事后能区分"清理失败"与"连状态都没记上"。
         if task.status == Stage::RecoveryComplete {
-            store.write_recovery_error(task, format!("恢复已完成，待重试清理：{error}"))?;
+            if let Err(state_error) =
+                store.write_recovery_error(task, format!("恢复已完成，待重试清理：{error}"))
+            {
+                let _ = append_log(
+                    log,
+                    &format!(
+                        "Recovery completed; cleanup pending: {error}; \
+                         且无法写入 status 错误字段：{state_error}"
+                    ),
+                );
+            }
         }
-        append_log(
-            log,
-            &format!("Recovery completed; cleanup pending: {error}"),
-        )?;
+        if let Err(log_error) =
+            append_log(log, &format!("Recovery completed; cleanup pending: {error}"))
+        {
+            let _ = append_log(
+                log,
+                &format!("Recovery completed; cleanup pending: {error}; 且无法写入日志：{log_error}"),
+            );
+        }
     }
     result
 }
@@ -1920,38 +2183,34 @@ fn assign_volume_letter(
         &format!("mount {prefix}: assigning {letter}: with mountvol.exe"),
     )?;
     let direct_started = Instant::now();
-    let direct_status = Command::new("mountvol.exe")
-        .args([format!("{letter}:"), expected.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .and_then(|mut child| {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                if let Some(status) = child.try_wait()? {
-                    break Ok(status);
-                }
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "mountvol timed out while assigning volume",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-        })?;
+    // 【2026-10-16 审查修订，日志缺口 5】mountvol 的输出落盘：此前三流全
+    // `Stdio::null()`，失败只记退出码。mountvol 是 WinRE 里的历史故障点
+    // （卷未联机 / GUID 不匹配 / 挂载点被占），错误文本恰恰是唯一线索。
+    // 用 `run_program` 而不是 `.output()`：它带作业对象约束进程树、支持超时，
+    // 且把输出写进文件——正好接上原来那个手工 try_wait 超时循环。
+    let direct_out = script.with_extension("mountvol.out");
+    let _ = std::fs::remove_file(&direct_out);
+    let direct_outcome = windows_command::run_program(
+        "mountvol.exe",
+        &[format!("{letter}:"), expected.to_string()],
+        Some(&direct_out),
+        30_000,
+    );
+    let direct_text = std::fs::read(&direct_out)
+        .map(|bytes| crate::text_parsing::decode_windows_bytes(&bytes))
+        .unwrap_or_default();
+    if !direct_text.trim().is_empty() {
+        append_log(log, &format!("mountvol 输出：{direct_text}"))?;
+    }
     append_log(
         log,
         &format!(
-            "mountvol.exe direct assignment for {letter}: exited with {direct_status} after {}ms",
+            "mountvol.exe direct assignment for {letter}: {direct_outcome} after {}ms",
             direct_started.elapsed().as_millis()
         ),
     )?;
-    if direct_status.success() {
+    let _ = std::fs::remove_file(&direct_out);
+    if direct_outcome.is_success() {
         verify_mounted_volume(letter, expected, log)?;
         verify_live_volume_identity(letter, values, prefix, allow_reformatted_serial)?;
         append_log(
@@ -2879,7 +3138,9 @@ fn recover_windows(
                 // 应用镜像前是最后一个「还没动目标」的安全暂停点：用户可在这里
                 // 停下确认镜像/目标，再决定是否继续。
                 if let Some(p) = progress {
-                    p.wait_if_paused(log, "STEP 2/4 还原镜像");
+                    // Err = 暂停期间窗口被关 / 暂停超时：中断恢复链并按失败处理
+                    //（现场保留；auto-escape 时会 disarm + 标终态 + 重启回 Windows）。
+                    p.wait_if_paused(log, "STEP 2/4 还原镜像")?;
                 }
                 recovery_fault::checkpoint("apply", log)?;
                 run_logged(
@@ -2916,7 +3177,7 @@ fn recover_windows(
                 let entering_boot_repaired = task.status == Stage::ImageApplied;
                 // 修引导前暂停点：BCD 尚未被改动，用户在此停下可安全放弃。
                 if let Some(p) = progress {
-                    p.wait_if_paused(log, "STEP 3/4 校验（引导修复前）");
+                    p.wait_if_paused(log, "STEP 3/4 校验（引导修复前）")?;
                 }
                 // BootRepaired is recorded immediately before BCDBoot so a
                 // failure is eligible for BCD rollback.  A retry from that
@@ -3328,6 +3589,57 @@ fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, Ta
         return Err(err(&format!("{program} failed with {}", output.status)));
     }
     Ok(text)
+}
+
+/// 跑一个命令并把 stdout/stderr **整体落进日志**，无论退出码如何都返回原始 `Output`。
+///
+/// 与 `capture_logged` 的分工：那个在非零退出时用 `?` 把输出**扔掉**，只留
+/// "failed with <status>"。而 DISM 的真实原因就写在 stdout/stderr 里——只丢
+/// 这一句等于把唯一线索丢了。三处 DISM 预检（`windows_prepare` 的
+/// Mount/Unmount-Wim 与 Get-WimInfo）此前只取 `status`，导致 GUI 点「创建任务」
+/// 之后最常见的第一道失败在 `prepare.log` 里只剩一句无原因的错误，事后只能
+/// 盲猜重试（2026-10-16 审查结论，见 docs/20261016-2250 日志缺口 1）。
+///
+/// 输出整体落盘（不截断），避免"摘要里没有的那一行恰好是关键行"。
+#[cfg(windows)]
+pub(crate) fn run_output_logged(
+    program: &str,
+    args: &[&str],
+    log: &Path,
+) -> Result<Output, TaskError> {
+    append_log(log, &format!("running {program} {}", args.join(" ")))?;
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    let mut text = crate::text_parsing::decode_windows_bytes(&output.stdout);
+    text.push_str(&crate::text_parsing::decode_windows_bytes(&output.stderr));
+    if !text.is_empty() {
+        append_log(log, &text)?;
+    }
+    Ok(output)
+}
+
+/// 取输出尾部若干非空行做**错误原因摘要**，用于拼进返回给用户/上层日志的错误消息。
+///
+/// 只做尾部而非全文：错误消息要能在 GUI 弹窗和终端里一行读完，整段 DISM 输出
+/// 会把它撑爆。完整输出已由 `run_output_logged` 落盘，这里只负责"让错误本身
+/// 自解释"。
+#[cfg(windows)]
+pub(crate) fn output_tail_summary(output: &Output, limit: usize) -> String {
+    let mut text = crate::text_parsing::decode_windows_bytes(&output.stdout);
+    text.push_str(&crate::text_parsing::decode_windows_bytes(&output.stderr));
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let start = lines.len().saturating_sub(limit);
+    lines[start..].join(" | ")
 }
 
 #[cfg(any(windows, test))]

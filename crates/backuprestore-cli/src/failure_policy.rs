@@ -17,6 +17,20 @@
 //!   - [`FailureAction::PauseInRecovery`]：**不自动处理**，弹框停在恢复环境里
 //!     （弹框是模态的，机器会一直等），由用户按按钮手动执行与 `AutoEscape`
 //!     **完全相同**的那套处理。
+//! - `pause_max_wait_secs`：**只对 `PauseInRecovery` 生效**——从第一次进入暂停态
+//!   起算的**总**等待上限（秒；0 = 不限制 = 历史行为）。见下面「为什么要有它」。
+//!
+//! ## 为什么 `pause` 需要一个等待上限（2026-10-16 审查，卡死 1）
+//!
+//! `auto-escape` 有自动逃出兜底，`pause` 刻意没有——弹框是模态的，不点就一直等。
+//! 这在「有人值守」语义下是对的，但在**无人值守**场景下等于放弃这台机器：
+//! 键盘未就绪、屏幕被切走、VM 没人看，机器就永远停在恢复环境里。
+//! `pause_max_wait_secs` 是逃生阀：超时后执行与「是」按钮完全相同的清理并重启。
+//!
+//! 默认 0（不限制）是**有意的**：把它设成某个固定秒数会把「有人值守但看得久」
+//! 的正常用法也杀掉，等于用一个误杀换掉一个挂死。逃生阀交给用户开。
+//!
+//! 判据与失败次数阈值**解耦**：上限只约束"等多久"，不改变"失败几次才暂停"。
 //!
 //! ## 单一来源（P3「文案分叉」前科的护栏）
 //!
@@ -39,11 +53,15 @@ pub(crate) const DEFAULT_THRESHOLD: u32 = 3;
 pub(crate) const MIN_THRESHOLD: u32 = 1;
 /// 阈值上限。上限的意义是防呆：用户输入 100000 等于关闭该保护，不如明确拒绝。
 pub(crate) const MAX_THRESHOLD: u32 = 20;
+/// `pause` 策略的等待上限：0 = 不限制（历史行为）；上限 24 小时。
+pub(crate) const DEFAULT_PAUSE_MAX_WAIT_SECS: u32 = 0;
+pub(crate) const MAX_PAUSE_MAX_WAIT_SECS: u32 = 24 * 60 * 60;
 /// 设置文件名（与程序同目录；程序已在该目录写 `logs/`，无需提权即可写）。
 pub(crate) const SETTINGS_FILE_NAME: &str = "BackupRestore.settings.ini";
 /// 落进 `RecoveryTask.env` 的键名。
 pub(crate) const ENV_THRESHOLD: &str = "FAILURE_THRESHOLD";
 pub(crate) const ENV_ACTION: &str = "FAILURE_ACTION";
+pub(crate) const ENV_PAUSE_MAX_WAIT: &str = "FAILURE_PAUSE_MAX_WAIT_SECS";
 
 /// 触发阈值后的处理方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -110,13 +128,47 @@ impl FailureAction {
                 "No prompt after the limit: disarm the one-shot boot entry, mark the task terminal (evidence kept), and reboot to Windows."
             }
             (FailureAction::PauseInRecovery, MessageLanguage::Chinese) => {
-                "达到次数后不自动处理：停在恢复环境弹框等你选择——「是」= 立即执行上面那套清理并重启，「否」= 继续重试。弹框不点就一直等，方便你先排查。"
+                "达到次数后不自动处理：停在恢复环境弹框等你选择——「是」= 立即执行上面那套清理并重启，「否」= 继续重试。可另设最长等待秒数，超时后自动执行与「是」相同的清理。"
             }
             (FailureAction::PauseInRecovery, MessageLanguage::English) => {
-                "No automatic action: the recovery environment waits with a prompt — Yes = run the same cleanup and reboot, No = retry again. It waits indefinitely so you can inspect first."
+                "No automatic action: the recovery environment waits with a prompt — Yes = run the same cleanup and reboot, No = retry again. You can also set a maximum wait; after it expires the same cleanup as \"Yes\" runs automatically."
             }
         }
     }
+}
+
+/// 解析 `pause` 等待上限。`Some(0)` = 不限制；`None` = 无法识别。
+///
+/// 只接受纯 ASCII 数字：`+30`、`30.0`、全角「３」一律拒绝（与
+/// `parse_threshold` 同一条理由——静默回退默认会让用户以为设置生效了）。
+pub(crate) fn parse_pause_max_wait_secs(text: &str) -> Option<u32> {
+    let trimmed = text.trim();
+    if !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let value: u32 = trimmed.parse().ok()?;
+    (value <= MAX_PAUSE_MAX_WAIT_SECS).then_some(value)
+}
+
+/// GUI 文本框用的 `pause` 等待上限解析（错误文案与 CLI 侧同一来源）。
+pub(crate) fn parse_pause_max_wait_text(text: &str, language: MessageLanguage) -> Result<u32, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(match language {
+            MessageLanguage::Chinese => "请填写等待秒数（0 = 不限制）".to_string(),
+            MessageLanguage::English => "Enter the wait in seconds (0 = unlimited)".to_string(),
+        });
+    }
+    parse_pause_max_wait_secs(trimmed).ok_or_else(|| {
+        match language {
+            MessageLanguage::Chinese => format!(
+                "等待秒数必须是 0 到 {MAX_PAUSE_MAX_WAIT_SECS} 之间的整数"
+            ),
+            MessageLanguage::English => format!(
+                "Enter a whole number of seconds between 0 and {MAX_PAUSE_MAX_WAIT_SECS}"
+            ),
+        }
+    })
 }
 
 /// 一条完整的失败处理策略。
@@ -124,6 +176,8 @@ impl FailureAction {
 pub(crate) struct FailurePolicy {
     pub(crate) threshold: u32,
     pub(crate) action: FailureAction,
+    /// `pause` 策略的总等待上限（秒；0 = 不限制）。对 `auto-escape` 无意义。
+    pub(crate) pause_max_wait_secs: u32,
 }
 
 impl Default for FailurePolicy {
@@ -131,6 +185,7 @@ impl Default for FailurePolicy {
         Self {
             threshold: DEFAULT_THRESHOLD,
             action: FailureAction::default(),
+            pause_max_wait_secs: DEFAULT_PAUSE_MAX_WAIT_SECS,
         }
     }
 }
@@ -143,7 +198,11 @@ impl FailurePolicy {
                 "失败次数必须在 {MIN_THRESHOLD} 到 {MAX_THRESHOLD} 之间"
             ));
         }
-        Ok(Self { threshold, action })
+        Ok(Self {
+            threshold,
+            action,
+            pause_max_wait_secs: DEFAULT_PAUSE_MAX_WAIT_SECS,
+        })
     }
 
     /// 解析用户在文本框里输入的次数。空串按「未填写」拒绝（而不是静默当成 0）。
@@ -192,15 +251,32 @@ impl FailurePolicy {
             .get(ENV_ACTION)
             .and_then(|value| FailureAction::parse(value))
             .unwrap_or_default();
-        Self { threshold, action }
+        let pause_max_wait_secs = values
+            .get(ENV_PAUSE_MAX_WAIT)
+            .and_then(|value| parse_pause_max_wait_secs(value))
+            .unwrap_or(DEFAULT_PAUSE_MAX_WAIT_SECS);
+        Self {
+            threshold,
+            action,
+            pause_max_wait_secs,
+        }
     }
 
-    /// 落进 `RecoveryTask.env` 的两行（键, 值）。
-    pub(crate) fn env_pairs(&self) -> [(&'static str, String); 2] {
+    /// 落进 `RecoveryTask.env` 的三行（键, 值）。
+    pub(crate) fn env_pairs(&self) -> [(&'static str, String); 3] {
         [
             (ENV_THRESHOLD, self.threshold.to_string()),
             (ENV_ACTION, self.action.env_name().to_string()),
+            (
+                ENV_PAUSE_MAX_WAIT,
+                self.pause_max_wait_secs.to_string(),
+            ),
         ]
+    }
+
+    /// `pause` 策略是否配有等待上限（0 = 不限制）。
+    pub(crate) fn has_pause_wait_limit(&self) -> bool {
+        self.action == FailureAction::PauseInRecovery && self.pause_max_wait_secs > 0
     }
 
     /// 是否已达到触发次数（两种行为共用这个判据）。
@@ -247,12 +323,16 @@ impl FailurePolicy {
     }
 
     /// 达到阈值且策略为「暂停」时的弹框正文：**明确写清每个按钮做什么**。
+    ///
+    /// 配了等待上限时把上限也写进正文——用户看到"最多等 N 秒"才知道自己还有
+    /// 多少时间，而不是以为会无限等下去（反之也一样）。
     pub(crate) fn pause_prompt(
         &self,
         error: &str,
         consecutive_failures: u32,
         language: MessageLanguage,
     ) -> String {
+        let wait_note = self.pause_wait_note(language);
         match language {
             MessageLanguage::Chinese => format!(
                 "恢复已连续失败 {consecutive_failures} 次，达到设定的阈值（{} 次）。\n\n\
@@ -261,8 +341,8 @@ impl FailurePolicy {
                  与「自动清理」模式做的事完全相同。\n\
                  • 「否」：继续重试同一任务。\n\n\
                  最近一次失败：{error}\n\n\
-                 （可在 Windows 端程序的「设置 → 恢复环境失败处理」里改为「自动清理并重启」。\
-                 本弹框不点就一直等，方便你先排查。）",
+                 {wait_note}\
+                 （可在 Windows 端程序的「设置 → 恢复环境失败处理」里改为「自动清理并重启」。）",
                 self.threshold
             ),
             MessageLanguage::English => format!(
@@ -273,9 +353,29 @@ impl FailurePolicy {
                  reboot to Windows — exactly what the automatic mode does.\n\
                  • No: retry the same task.\n\n\
                  Latest failure: {error}\n\n\
-                 (Change this under Settings -> Recovery failure handling. This prompt waits indefinitely \
-                 so you can inspect first.)",
+                 {wait_note}\
+                 (Change this under Settings -> Recovery failure handling.)",
                 self.threshold
+            ),
+        }
+    }
+
+    /// 弹框里描述等待上限的那一句。无上限时说"会一直等"——**必须如实**，
+    /// 不能让用户以为有兜底而实际没有（2026-10-16 审查，卡死 1）。
+    fn pause_wait_note(&self, language: MessageLanguage) -> String {
+        match (self.pause_max_wait_secs, language) {
+            (0, MessageLanguage::Chinese) => {
+                "本弹框不点就一直等，方便你先排查（未设置最长等待时间）。\n".to_string()
+            }
+            (0, MessageLanguage::English) => {
+                "This prompt waits indefinitely so you can inspect first (no maximum wait set).\n"
+                    .to_string()
+            }
+            (secs, MessageLanguage::Chinese) => format!(
+                "本弹框最长等待 {secs} 秒（从第一次暂停起算）；超时将自动执行与「是」相同的清理并重启回正常 Windows。\n"
+            ),
+            (secs, MessageLanguage::English) => format!(
+                "This prompt waits at most {secs} seconds (counted from the first pause); after that it runs the same cleanup as \"Yes\" and reboots to Windows.\n"
             ),
         }
     }
@@ -298,23 +398,39 @@ impl FailurePolicy {
                 "after {} failures it will clean up and reboot to Windows automatically",
                 self.threshold
             ),
-            (FailureAction::PauseInRecovery, MessageLanguage::Chinese) => format!(
-                "累计 {} 次后会暂停并等你手动选择是否清理",
-                self.threshold
-            ),
-            (FailureAction::PauseInRecovery, MessageLanguage::English) => format!(
-                "after {} failures it will pause and wait for you to decide",
-                self.threshold
-            ),
+            (FailureAction::PauseInRecovery, MessageLanguage::Chinese) => {
+                if self.pause_max_wait_secs == 0 {
+                    format!("累计 {} 次后会暂停并等你手动选择是否清理（不设上限）", self.threshold)
+                } else {
+                    format!(
+                        "累计 {} 次后会暂停并等你手动选择是否清理（最多等 {} 秒后自动清理）",
+                        self.threshold, self.pause_max_wait_secs
+                    )
+                }
+            }
+            (FailureAction::PauseInRecovery, MessageLanguage::English) => {
+                if self.pause_max_wait_secs == 0 {
+                    format!(
+                        "after {} failures it will pause and wait for you to decide (no time limit)",
+                        self.threshold
+                    )
+                } else {
+                    format!(
+                        "after {} failures it will pause and wait for you to decide (auto-cleanup after {} seconds)",
+                        self.threshold, self.pause_max_wait_secs
+                    )
+                }
+            }
         }
     }
 
     /// 恢复环境日志里记一行「本次用的是哪套策略」，便于事后取证。
     pub(crate) fn log_line(&self, consecutive_failures: u32) -> String {
         format!(
-            "failure policy: threshold={} action={} consecutive_failures={consecutive_failures}",
+            "failure policy: threshold={} action={} pause_max_wait_secs={} consecutive_failures={consecutive_failures}",
             self.threshold,
-            self.action.env_name()
+            self.action.env_name(),
+            self.pause_max_wait_secs
         )
     }
 
@@ -350,27 +466,63 @@ impl FailurePolicy {
                 SETTINGS_ACTION_KEY => {
                     values.insert(ENV_ACTION.to_string(), value);
                 }
+                SETTINGS_PAUSE_MAX_WAIT_KEY => {
+                    values.insert(ENV_PAUSE_MAX_WAIT.to_string(), value);
+                }
                 _ => {}
             }
         }
         Self::from_values(&values)
     }
 
-    /// 写设置（覆盖）。目录不存在时自动创建。
+    /// 写设置（**合并**，只替换自己这两个键，其余键原样保留）。
+    ///
+    /// 为什么必须是合并而不是整文件重写：设置文件是**共享**的。
+    /// 2026-10-16 起 `dism_timeout` 也往同一个 `BackupRestore.settings.ini` 里
+    /// 写 `dism_timeout_secs`。任何一处整文件重写都会把另一处**静默**冲掉——
+    /// 用户改一次失败次数，DISM 上限就悄悄回到默认（不限制），而两个键的语义
+    /// 完全不相干，这种丢失事后极难归因。合并写把风险从"设计上必然发生"
+    /// 降到"只丢自己管的那两个键"。
+    ///
+    /// 目录不存在时自动创建。
     pub(crate) fn save_to_dir(&self, executable_dir: &Path) -> std::io::Result<()> {
         fs::create_dir_all(executable_dir)?;
-        let text = format!(
-            "# BackupRestore 程序设置（本文件由程序自动生成，可手工编辑）\n\
-             # failure_threshold: 恢复环境连续失败多少次后触发处理（{}..={}）\n\
-             # failure_action: auto-escape = 自动清理并重启回 Windows；pause = 暂停在恢复环境等用户手动处理\n\
-             failure_threshold={}\n\
-             failure_action={}\n",
-            MIN_THRESHOLD,
-            MAX_THRESHOLD,
-            self.threshold,
-            self.action.env_name()
+        let path = Self::settings_path(executable_dir);
+        let existing = fs::read_to_string(&path).unwrap_or_default();
+        let mut kept: Vec<&str> = existing
+            .lines()
+            .filter(|line| {
+                let key = line.trim().split_once('=').map(|(key, _)| key.trim());
+                key != Some(SETTINGS_THRESHOLD_KEY)
+                    && key != Some(SETTINGS_ACTION_KEY)
+                    && key != Some(SETTINGS_PAUSE_MAX_WAIT_KEY)
+            })
+            .collect();
+        if kept.is_empty() {
+            kept.push("# BackupRestore 程序设置（本文件由程序自动生成，可手工编辑）");
+        }
+        // 先各自成行再 push：`&format!(...)` 的临时 String 会随语句结束而失效，
+        // 不能直接塞进 `Vec<&str>`。
+        let threshold_comment = format!(
+            "# failure_threshold: 恢复环境连续失败多少次后触发处理（{}..={}）",
+            MIN_THRESHOLD, MAX_THRESHOLD
         );
-        fs::write(Self::settings_path(executable_dir), text)
+        let action_comment = "# failure_action: auto-escape = 自动清理并重启回 Windows；pause = 暂停在恢复环境等用户手动处理".to_string();
+        let pause_wait_comment = "# failure_pause_max_wait_secs: pause 策略从第一次暂停起算的总等待秒数（0 = 不限制；超时后自动清理并重启）".to_string();
+        let threshold_line = format!("{SETTINGS_THRESHOLD_KEY}={}", self.threshold);
+        let action_line = format!("{SETTINGS_ACTION_KEY}={}", self.action.env_name());
+        let pause_wait_line = format!("{SETTINGS_PAUSE_MAX_WAIT_KEY}={}", self.pause_max_wait_secs);
+        kept.extend([
+            threshold_comment.as_str(),
+            action_comment.as_str(),
+            pause_wait_comment.as_str(),
+            threshold_line.as_str(),
+            action_line.as_str(),
+            pause_wait_line.as_str(),
+        ]);
+        let mut text = kept.join("\n");
+        text.push('\n');
+        fs::write(&path, text)
     }
 }
 
@@ -378,6 +530,7 @@ impl FailurePolicy {
 /// 一个是恢复环境的内部契约）。
 pub(crate) const SETTINGS_THRESHOLD_KEY: &str = "failure_threshold";
 pub(crate) const SETTINGS_ACTION_KEY: &str = "failure_action";
+pub(crate) const SETTINGS_PAUSE_MAX_WAIT_KEY: &str = "failure_pause_max_wait_secs";
 
 #[cfg(test)]
 mod tests {
@@ -482,13 +635,136 @@ mod tests {
 
     #[test]
     fn env_pairs_round_trip() {
-        let policy = FailurePolicy::new(5, FailureAction::PauseInRecovery).expect("valid");
+        let policy = FailurePolicy {
+            threshold: 5,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 120,
+        };
         let pairs = policy.env_pairs();
         let map = values(&[
             (pairs[0].0, pairs[0].1.as_str()),
             (pairs[1].0, pairs[1].1.as_str()),
+            (pairs[2].0, pairs[2].1.as_str()),
         ]);
         assert_eq!(FailurePolicy::from_values(&map), policy);
+    }
+
+    #[test]
+    fn pause_max_wait_parsing_rejects_junk_instead_of_guessing() {
+        assert_eq!(parse_pause_max_wait_secs(" 90 "), Some(90));
+        assert_eq!(parse_pause_max_wait_secs("0"), Some(0));
+        assert_eq!(
+            parse_pause_max_wait_secs(&MAX_PAUSE_MAX_WAIT_SECS.to_string()),
+            Some(MAX_PAUSE_MAX_WAIT_SECS)
+        );
+        for junk in ["", "   ", "+90", "90.0", "９０", "86401", "-1", "abc", "90s"] {
+            assert_eq!(
+                parse_pause_max_wait_secs(junk),
+                None,
+                "{junk:?} should be rejected"
+            );
+        }
+        // GUI 文本框解析：空串单独给"请填写"，其余走统一错误。
+        assert_eq!(
+            parse_pause_max_wait_text("30", MessageLanguage::Chinese),
+            Ok(30)
+        );
+        assert!(parse_pause_max_wait_text("", MessageLanguage::Chinese).is_err());
+        assert!(parse_pause_max_wait_text("abc", MessageLanguage::English).is_err());
+    }
+
+    #[test]
+    fn pause_wait_limit_is_independent_of_the_failure_threshold() {
+        // 上限只约束"等多久"，不改变"失败几次才暂停"——两者必须解耦。
+        let policy = FailurePolicy {
+            threshold: 3,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 600,
+        };
+        assert!(policy.pause_now(3));
+        assert!(!policy.pause_now(2));
+        assert!(policy.has_pause_wait_limit());
+        // 0 = 不限制（历史行为），auto-escape 时这个字段无意义。
+        let unlimited = FailurePolicy::default();
+        assert!(!unlimited.has_pause_wait_limit());
+        let auto = FailurePolicy {
+            pause_max_wait_secs: 600,
+            ..FailurePolicy::default()
+        };
+        assert!(!auto.has_pause_wait_limit());
+    }
+
+    #[test]
+    fn pause_prompt_states_the_real_wait_behaviour() {
+        // 无上限时必须如实说"一直等"——不能让用户以为有兜底而实际没有。
+        let unlimited = FailurePolicy {
+            threshold: 3,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 0,
+        };
+        let text = unlimited.pause_prompt("boom", 3, MessageLanguage::Chinese);
+        assert!(text.contains("不点就一直等"), "{text}");
+        assert!(text.contains("未设置最长等待时间"), "{text}");
+        assert!(!text.contains("最长等待 0 秒"), "{text}");
+
+        // 有上限时把秒数写清楚。
+        let limited = FailurePolicy {
+            threshold: 3,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 300,
+        };
+        let text = limited.pause_prompt("boom", 3, MessageLanguage::Chinese);
+        assert!(text.contains("最长等待 300 秒"), "{text}");
+        assert!(text.contains("从第一次暂停起算"), "{text}");
+        let text = limited.pause_prompt("boom", 3, MessageLanguage::English);
+        assert!(text.contains("at most 300 seconds"), "{text}");
+    }
+
+    #[test]
+    fn log_line_records_the_pause_wait_limit_for_forensics() {
+        let policy = FailurePolicy {
+            threshold: 4,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 45,
+        };
+        let line = policy.log_line(2);
+        assert!(line.contains("threshold=4"), "{line}");
+        assert!(line.contains("action=pause"), "{line}");
+        assert!(line.contains("pause_max_wait_secs=45"), "{line}");
+        assert!(line.contains("consecutive_failures=2"), "{line}");
+    }
+
+    #[test]
+    fn settings_round_trip_carries_the_pause_wait_limit() {
+        let dir = std::env::temp_dir().join(format!(
+            "backuprestore-failure-policy-wait-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let policy = FailurePolicy {
+            threshold: 9,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 777,
+        };
+        policy.save_to_dir(&dir).expect("save");
+        assert_eq!(FailurePolicy::load_from_dir(&dir), policy);
+        // 缺文件 → 默认（含 pause_max_wait_secs = 0）
+        let missing = dir.join("nope");
+        assert_eq!(FailurePolicy::load_from_dir(&missing), FailurePolicy::default());
+        // 坏文件 → 默认（不能因为设置坏了让 GUI 起不来）
+        fs::write(FailurePolicy::settings_path(&dir), "garbage\n===\n").expect("write");
+        assert_eq!(FailurePolicy::load_from_dir(&dir), FailurePolicy::default());
+        // 只写两个旧键（历史文件没有第三个）→ 第三个回退默认，不报错。
+        fs::write(
+            FailurePolicy::settings_path(&dir),
+            "failure_threshold=7\nfailure_action=pause\n",
+        )
+        .expect("write");
+        let legacy = FailurePolicy::load_from_dir(&dir);
+        assert_eq!(legacy.threshold, 7);
+        assert_eq!(legacy.action, FailureAction::PauseInRecovery);
+        assert_eq!(legacy.pause_max_wait_secs, DEFAULT_PAUSE_MAX_WAIT_SECS);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -518,7 +794,11 @@ mod tests {
         // 这条护栏锁住「文案里不许出现 Markdown 标记」。
         for language in [MessageLanguage::Chinese, MessageLanguage::English] {
             for action in [FailureAction::AutoEscape, FailureAction::PauseInRecovery] {
-                let policy = FailurePolicy { threshold: 3, action };
+                let policy = FailurePolicy {
+                    threshold: 3,
+                    action,
+                    pause_max_wait_secs: DEFAULT_PAUSE_MAX_WAIT_SECS,
+                };
                 for text in [
                     action.label(language).to_string(),
                     action.detail(language).to_string(),
@@ -545,7 +825,11 @@ mod tests {
             for action in [FailureAction::AutoEscape, FailureAction::PauseInRecovery] {
                 assert!(!action.label(language).is_empty());
                 assert!(!action.detail(language).is_empty());
-                let policy = FailurePolicy { threshold: 3, action };
+                let policy = FailurePolicy {
+                    threshold: 3,
+                    action,
+                    pause_max_wait_secs: DEFAULT_PAUSE_MAX_WAIT_SECS,
+                };
                 assert!(!policy.plan_note(language).is_empty());
                 assert!(!policy.retry_prompt("e", 1, language).is_empty());
                 assert!(!policy.pause_prompt("e", 3, language).is_empty());

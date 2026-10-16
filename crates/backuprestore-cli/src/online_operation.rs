@@ -51,19 +51,36 @@ fn step1_notice(operation: &str) -> String {
     }
 }
 
+/// 在线任务本轮的工作目录（日志 + 引导方案 session 都放这里）。
+///
+/// 【2026-10-16 审查修订，日志缺口 9】此前固定写 `%TEMP%\BackupRestore-online-*`：
+/// 磁盘清理、甚至「把含 TEMP 的卷还原掉」这类操作都会把完整现场连带删掉，
+/// 事后只剩 `gui.log` 里一行含路径的摘要，而现场恰恰是排查还原失败唯一的材料。
+/// 选址规则见 `online_log`（纯逻辑 + 本机单测），这里只消费结果。
 pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
-    let dir = std::env::temp_dir().join(format!(
-        "BackupRestore-online-{}-{}",
-        std::process::id(),
-        Utc::now().timestamp_nanos_opt().unwrap_or_default()
-    ));
-    if let Err(error) = fs::create_dir(&dir) {
-        return OnlineResult {
-            success: false,
-            detail: format!("无法创建日志目录：{error}"),
-        };
-    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()));
+    let (dir, placement_note) = match crate::online_log::resolve_dir(exe_dir.as_deref()) {
+        Ok(found) => found,
+        Err(error) => {
+            return OnlineResult {
+                success: false,
+                detail: format!("无法创建日志目录：{error}"),
+            };
+        }
+    };
     let path = dir.join("Online.log");
+    // 位置说明写进本轮日志第一行：日志自己说明自己住在哪，现场才找得到。
+    // 写失败不阻断（真的写不进盘会由随后的 STEP 1 日志如实暴露）。
+    let _ = log(
+        &path,
+        &if placement_note.is_empty() {
+            format!("日志位置：{}（程序目录 logs，不随 %TEMP% 清理丢失）", path.display())
+        } else {
+            format!("日志位置：{}；{}", path.display(), placement_note)
+        },
+    );
     let progress = ProgressGuard(crate::recovery_progress::spawn(
         path.clone(),
         Some(if params.operation == "backup" {
@@ -104,11 +121,23 @@ fn drive(value: &str) -> Result<char, TaskError> {
     Ok(raw.chars().next().unwrap().to_ascii_uppercase())
 }
 fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
+    // 【2026-10-16 审查修订，卡死 6】等待上限可配置（`dism_timeout`），
+    // 默认仍是 INFINITE、与旧版行为一致。此前是硬编码 INFINITE：DISM 挂死则
+    // 工作线程永久等待，「创建任务」按钮与状态永远停在「执行中」。
+    // 在线路径前后各有一条日志，所以比 prepare 路径强；缺的就是这个超时。
+    let wait_ms = crate::dism_timeout::wait_ms();
     log(
         log_path,
-        &format!("DISM 开始（等待至退出，无固定超时）：{args:?}"),
+        &format!(
+            "DISM 开始（等待上限 {}）：{args:?}",
+            if wait_ms == crate::windows_command::INFINITE {
+                "不限制".to_string()
+            } else {
+                format!("{wait_ms} 毫秒")
+            }
+        ),
     )?;
-    let outcome = windows_command::run_program("dism.exe", args, Some(log_path), INFINITE);
+    let outcome = windows_command::run_program("dism.exe", args, Some(log_path), wait_ms);
     log(log_path, &format!("DISM 结果：{outcome}"))?;
     if !outcome.is_success() {
         return Err(crate::err(&format!("DISM failed: {outcome}")));
@@ -467,7 +496,7 @@ fn restore_to_windows_volume(
     // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会
     // "格式化之后才失败"（STEP 3.5 盘符绑定需要完整 Windows 注册表）。
     // 与 prepare 链共用同一判据：缺 reagentc.exe 或 SYSTEM hive 直接拒绝。
-    match crate::windows_prepare::wim_full_windows_probe(&params.image_path, index)? {
+    match crate::windows_prepare::wim_full_windows_probe(&params.image_path, index, log_path)? {
         crate::windows_prepare::ProbeOutcome::FullWindows => {
             log(log_path, "镜像完整性预检：只读挂载确认完整 Windows")?;
         }
@@ -1040,7 +1069,16 @@ fn run_capture(
         program,
         args,
         Some(out),
-        if long { INFINITE } else { 60_000 },
+        if long {
+            // DISM 用可配置上限（默认 INFINITE）；其余长命令保持无限等待。
+            if program.to_ascii_lowercase().ends_with("dism.exe") {
+                crate::dism_timeout::wait_ms()
+            } else {
+                INFINITE
+            }
+        } else {
+            60_000
+        },
     );
     // run_program 用作业对象约束子进程树，返回时子进程的 stdout 句柄未必已经释放，
     // 立刻 read 会撞上"另一个程序正在使用此文件"。DISM 尤其明显：它退出后仍可能

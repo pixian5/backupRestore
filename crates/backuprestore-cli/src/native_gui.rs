@@ -124,6 +124,11 @@ const ID_SETTINGS_CANCEL: usize = 3104;
 const ID_SETTINGS_HINT: usize = 3105;
 const ID_SETTINGS_DETAIL_AUTO: usize = 3106;
 const ID_SETTINGS_DETAIL_PAUSE: usize = 3107;
+/// DISM 等待上限（秒）文本框与其说明。
+const ID_SETTINGS_DISM_TIMEOUT_EDIT: usize = 3108;
+const ID_SETTINGS_DISM_TIMEOUT_HINT: usize = 3109;
+/// `pause` 策略的最长等待秒数文本框。
+const ID_SETTINGS_PAUSE_WAIT_EDIT: usize = 3110;
 /// 设置窗口的类名（`RegisterClassExW` 用）。
 const SETTINGS_WINDOW_CLASS: &str = "BackupRestoreSettingsWindow";
 const ID_OPERATION_BACKUP: usize = 1101;
@@ -640,6 +645,10 @@ struct State {
     /// 恢复环境失败处理策略（设置窗口读写；创建任务时随参数落盘进
     /// `RecoveryTask.env`）。启动时从程序目录的 `BackupRestore.settings.ini` 读。
     failure_policy: crate::failure_policy::FailurePolicy,
+    /// DISM 等待上限（秒；0 = 不限制 = 历史行为）。来源 = 设置窗口
+    /// `BackupRestore.settings.ini` 的 `dism_timeout_secs`。创建任务时随
+    /// `--dism-timeout-secs` 传给 prepare，落盘进 `RecoveryTask.env`。
+    dism_timeout_secs: u32,
 }
 
 /// State for the PE recovery-desktop window. The operation the technician
@@ -2678,6 +2687,15 @@ fn existing_boot_entry_names(state: &State) -> Vec<String> {
                 append_gui_log(state, "boot entries JSON parse failed; precheck skipped");
                 return Vec::new();
             };
+            // 【2026-10-16 审查修订，日志缺口 10】`bcdedit /enum` 失败时 CLI 会在
+            // JSON 里带一个 `error` 字段。此前失败与"真的没有启动项"都表现为空
+            // 列表，撞名预检会**静默失效**——名字重名要到任务创建时才炸。
+            if let Some(error) = value.get("error").and_then(|item| item.as_str()) {
+                append_gui_log(
+                    state,
+                    &format!("boot entries probe failed; collision precheck skipped: {error}"),
+                );
+            }
             value
                 .get("descriptions")
                 .and_then(|items| items.as_array())
@@ -3251,9 +3269,25 @@ static SETTINGS_INITIAL_THRESHOLD: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(crate::failure_policy::DEFAULT_THRESHOLD);
 /// 设置窗口打开时的初始行为（0=auto-escape 1=pause）。
 static SETTINGS_INITIAL_ACTION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 设置窗口打开时的初始 DISM 等待上限（秒；0=不限制）。
+static SETTINGS_INITIAL_DISM_TIMEOUT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::dism_timeout::DEFAULT_SECS);
+/// 设置窗口打开时的初始 `pause` 最长等待秒数（0=不限制）。
+static SETTINGS_INITIAL_PAUSE_WAIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::failure_policy::DEFAULT_PAUSE_MAX_WAIT_SECS);
 /// 用户点「保存」且校验通过时写入新策略；`None` = 取消或直接关窗。
 static SETTINGS_RESULT: std::sync::Mutex<Option<crate::failure_policy::FailurePolicy>> =
     std::sync::Mutex::new(None);
+/// 用户点「保存」且校验通过时写入新的 DISM 等待上限（秒）。
+static SETTINGS_DISM_TIMEOUT_RESULT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(u32::MAX);
+/// 用户点「保存」且校验通过时写入新的 `pause` 最长等待秒数。
+static SETTINGS_PAUSE_WAIT_RESULT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(u32::MAX);
+/// 两个 `*_RESULT` 的哨兵：`u32::MAX` = 本次没保存（取消/关窗）。
+/// 用它而不是 `Option`：这些 static 没有外部所有权，哨兵比加锁更省事，
+/// 且 0 是一个**合法**值（= 不限制），不能拿 0 当"未保存"。
+const SETTINGS_RESULT_UNSET: u32 = u32::MAX;
 
 /// GUI 的 `Language` → `pe_safety` 的 `MessageLanguage`（判据/文案的语言维度）。
 fn message_language(language: Language) -> crate::pe_safety::MessageLanguage {
@@ -3380,6 +3414,112 @@ unsafe extern "system" fn window_proc_settings(
             56,
             ID_SETTINGS_DETAIL_PAUSE,
         );
+        // 第三行：DISM 等待上限（秒）。0 = 不限制 = 历史行为。
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "Maximum wait for DISM"
+            } else {
+                "DISM 最长等待"
+            },
+            0,
+            24,
+            244,
+            150,
+            20,
+            0,
+        );
+        create_control(
+            hwnd,
+            "EDIT",
+            "",
+            WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
+            180,
+            242,
+            56,
+            24,
+            ID_SETTINGS_DISM_TIMEOUT_EDIT,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            if english { "seconds:" } else { "秒（0=不限制）：" },
+            0,
+            244,
+            244,
+            120,
+            20,
+            0,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            crate::dism_timeout::hint(ml),
+            0,
+            24,
+            272,
+            500,
+            56,
+            ID_SETTINGS_DISM_TIMEOUT_HINT,
+        );
+        // 第四行：`pause` 策略的最长等待秒数（只对「暂停」生效）。
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "Maximum wait when paused in the recovery environment"
+            } else {
+                "暂停在恢复环境时最长等待"
+            },
+            0,
+            24,
+            334,
+            260,
+            20,
+            0,
+        );
+        create_control(
+            hwnd,
+            "EDIT",
+            "",
+            WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
+            180,
+            332,
+            56,
+            24,
+            ID_SETTINGS_PAUSE_WAIT_EDIT,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "seconds (0 = wait indefinitely):"
+            } else {
+                "秒（0=一直等）："
+            },
+            0,
+            244,
+            334,
+            200,
+            20,
+            0,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "Only applies to the \"pause\" option above. After the limit expires the program runs the same cleanup as \"Yes\" and reboots to Windows. Leave 0 to wait indefinitely (the previous behaviour)."
+            } else {
+                "只对上面选「暂停在恢复环境」时生效。超时后程序执行与「是」完全相同的清理并重启回正常 Windows。填 0 = 一直等（与旧版一致）。"
+            },
+            0,
+            24,
+            360,
+            500,
+            44,
+            0,
+        );
         // 保存位置说明（让用户知道改的是哪个文件、对哪些任务生效）。
         create_control(
             hwnd,
@@ -3391,7 +3531,7 @@ unsafe extern "system" fn window_proc_settings(
             },
             0,
             24,
-            256,
+            412,
             500,
             44,
             0,
@@ -3402,7 +3542,7 @@ unsafe extern "system" fn window_proc_settings(
             if english { "Cancel" } else { "取消" },
             WS_TABSTOP,
             330,
-            314,
+            470,
             96,
             30,
             ID_SETTINGS_CANCEL,
@@ -3413,16 +3553,30 @@ unsafe extern "system" fn window_proc_settings(
             if english { "Save" } else { "保存" },
             WS_TABSTOP | BS_DEFPUSHBUTTON,
             434,
-            314,
+            470,
             96,
             30,
             ID_SETTINGS_SAVE,
         );
-        // 初值：次数 + 选中的行为。
+        // 初值：次数 + 选中的行为 + DISM 等待上限 + pause 最长等待。
         set_child_text(
             hwnd,
             ID_SETTINGS_THRESHOLD_EDIT,
             &SETTINGS_INITIAL_THRESHOLD
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .to_string(),
+        );
+        set_child_text(
+            hwnd,
+            ID_SETTINGS_DISM_TIMEOUT_EDIT,
+            &SETTINGS_INITIAL_DISM_TIMEOUT
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .to_string(),
+        );
+        set_child_text(
+            hwnd,
+            ID_SETTINGS_PAUSE_WAIT_EDIT,
+            &SETTINGS_INITIAL_PAUSE_WAIT
                 .load(std::sync::atomic::Ordering::SeqCst)
                 .to_string(),
         );
@@ -3490,6 +3644,52 @@ unsafe extern "system" fn window_proc_settings(
                 } else {
                     FailureAction::AutoEscape
                 };
+                // DISM 等待上限：校验复用 `dism_timeout` 的解析（同一来源）。
+                let dism_raw = get_text(GetDlgItem(hwnd, ID_SETTINGS_DISM_TIMEOUT_EDIT as i32));
+                let Ok(dism_secs) = crate::dism_timeout::parse_secs(&dism_raw) else {
+                    show_message(
+                        hwnd,
+                        if english {
+                            "Enter a whole number of seconds between 0 and 86400 (0 = unlimited)."
+                        } else {
+                            "请输入 0 到 86400 之间的整数秒（0 = 不限制）。"
+                        },
+                        if english {
+                            "Invalid value"
+                        } else {
+                            "取值无效"
+                        },
+                        MB_OK | MB_ICONWARNING,
+                    );
+                    SetFocus(GetDlgItem(hwnd, ID_SETTINGS_DISM_TIMEOUT_EDIT as i32));
+                    return 0;
+                };
+                // `pause` 最长等待秒数：校验复用 `failure_policy` 的解析（同一来源）。
+                let pause_wait_raw =
+                    get_text(GetDlgItem(hwnd, ID_SETTINGS_PAUSE_WAIT_EDIT as i32));
+                let Ok(pause_wait_secs) =
+                    crate::failure_policy::parse_pause_max_wait_text(&pause_wait_raw, ml)
+                else {
+                    show_message(
+                        hwnd,
+                        if english {
+                            "Enter a whole number of seconds between 0 and 86400 (0 = wait indefinitely)."
+                        } else {
+                            "请输入 0 到 86400 之间的整数秒（0 = 一直等）。"
+                        },
+                        if english {
+                            "Invalid value"
+                        } else {
+                            "取值无效"
+                        },
+                        MB_OK | MB_ICONWARNING,
+                    );
+                    SetFocus(GetDlgItem(hwnd, ID_SETTINGS_PAUSE_WAIT_EDIT as i32));
+                    return 0;
+                };
+                SETTINGS_DISM_TIMEOUT_RESULT.store(dism_secs, std::sync::atomic::Ordering::SeqCst);
+                SETTINGS_PAUSE_WAIT_RESULT
+                    .store(pause_wait_secs, std::sync::atomic::Ordering::SeqCst);
                 if let Ok(policy) = crate::failure_policy::FailurePolicy::new(threshold, action)
                     && let Ok(mut slot) = SETTINGS_RESULT.lock()
                 {
@@ -3512,6 +3712,7 @@ unsafe fn ask_settings_dialog(
     hwnd: Hwnd,
     language: Language,
     current: crate::failure_policy::FailurePolicy,
+    executable_dir: &std::path::Path,
 ) -> Option<crate::failure_policy::FailurePolicy> {
     use crate::failure_policy::FailureAction;
     let instance = GetModuleHandleW(null());
@@ -3546,6 +3747,17 @@ unsafe fn ask_settings_dialog(
         },
         std::sync::atomic::Ordering::SeqCst,
     );
+    SETTINGS_INITIAL_DISM_TIMEOUT.store(
+        crate::dism_timeout::load_from_dir(executable_dir),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    SETTINGS_INITIAL_PAUSE_WAIT.store(
+        current.pause_max_wait_secs,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    // 哨兵：本次没保存。0 是合法值（= 不限制），不能拿 0 当"未保存"。
+    SETTINGS_DISM_TIMEOUT_RESULT.store(SETTINGS_RESULT_UNSET, std::sync::atomic::Ordering::SeqCst);
+    SETTINGS_PAUSE_WAIT_RESULT.store(SETTINGS_RESULT_UNSET, std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut slot) = SETTINGS_RESULT.lock() {
         *slot = None;
     }
@@ -3554,19 +3766,20 @@ unsafe fn ask_settings_dialog(
     } else {
         "程序设置"
     });
-    // 客户区高度需要 ≈ 344（按钮底缘 344），总高 400 才不会被裁掉
-    //（项目此前在 460×268 上裁掉过「取消」按钮）。
+    // 客户区高度需要 ≈ 500（按钮底缘 500），总高 560 才不会被裁掉
+    //（项目此前在 460×268 上裁掉过「取消」按钮；2026-10-16 依次加了
+    // DISM 等待上限与 pause 最长等待两行，从 400 → 480 → 560）。
     let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
-    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(560);
     let dialog = CreateWindowExW(
         0,
         class_name.as_ptr(),
         caption.as_ptr(),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (screen_w - 560) / 2,
-        (screen_h - 400) / 2,
+        (screen_h - 560) / 2,
         560,
-        400,
+        560,
         hwnd,
         null_mut(),
         instance,
@@ -3598,50 +3811,79 @@ unsafe fn ask_settings_dialog(
     SETTINGS_RESULT.lock().ok().and_then(|mut slot| slot.take())
 }
 
-/// 顶栏「设置…」按钮的处理：弹窗 → 保存到设置文件 → 更新内存策略。
+/// 顶栏「设置…」按钮的处理：弹窗 → 保存到设置文件 → 更新内存策略与 DISM 上限。
 unsafe fn open_settings(state: &mut State) {
     let language = selected_language(state);
-    let Some(policy) = ask_settings_dialog(state.root, language, state.failure_policy) else {
+    let Some(policy) =
+        ask_settings_dialog(state.root, language, state.failure_policy, &state.executable_dir)
+    else {
         append_gui_log(state, "settings dialog: cancelled (policy unchanged)");
         return;
     };
     state.failure_policy = policy;
-    match policy.save_to_dir(&state.executable_dir) {
-        Ok(()) => {
-            append_gui_log(
-                state,
-                &format!(
-                    "settings saved: threshold={} action={}",
-                    policy.threshold,
-                    policy.action.env_name()
-                ),
-            );
-        }
-        Err(error) => {
-            // 写盘失败不能让内存里的策略与界面不一致：如实报错，但仍然生效本次会话
-            //（下次启动会回到旧值——把这件事明确告诉用户，而不是静默丢掉）。
-            append_gui_log(
-                state,
-                &format!("settings save failed: {error} (in-memory policy still applied)"),
-            );
-            show_message(
-                state.root,
-                &if language == Language::English {
-                    format!(
-                        "The setting is applied for this session, but could not be saved to the program directory: {error}"
-                    )
-                } else {
-                    format!("设置已在本次会话生效，但写入程序目录失败：{error}")
-                },
-                if language == Language::English {
-                    "Settings not saved"
-                } else {
-                    "设置未保存"
-                },
-                MB_OK | MB_ICONWARNING,
-            );
-        }
+    // DISM 等待上限、pause 最长等待与失败策略写在**同一个**文件里、由同一次
+    // 保存触发。用哨兵区分"本次没保存"（取消/关窗）与"保存成 0"（= 不限制）。
+    let saved_dism_secs = SETTINGS_DISM_TIMEOUT_RESULT.load(std::sync::atomic::Ordering::SeqCst);
+    let dism_secs = if saved_dism_secs == SETTINGS_RESULT_UNSET {
+        state.dism_timeout_secs
+    } else {
+        saved_dism_secs
+    };
+    state.dism_timeout_secs = dism_secs;
+    let saved_pause_wait = SETTINGS_PAUSE_WAIT_RESULT.load(std::sync::atomic::Ordering::SeqCst);
+    let pause_wait_secs = if saved_pause_wait == SETTINGS_RESULT_UNSET {
+        state.failure_policy.pause_max_wait_secs
+    } else {
+        saved_pause_wait
+    };
+    let mut failures: Vec<String> = Vec::new();
+    let policy_with_wait = crate::failure_policy::FailurePolicy {
+        pause_max_wait_secs: pause_wait_secs,
+        ..policy
+    };
+    state.failure_policy = policy_with_wait;
+    if let Err(error) = policy_with_wait.save_to_dir(&state.executable_dir) {
+        failures.push(format!("failure policy: {error}"));
     }
+    if let Err(error) = crate::dism_timeout::save_to_dir(dism_secs, &state.executable_dir) {
+        failures.push(format!("DISM timeout: {error}"));
+    }
+    if failures.is_empty() {
+        append_gui_log(
+            state,
+            &format!(
+                "settings saved: threshold={} action={} pause_max_wait_secs={} dism_timeout_secs={}",
+                policy_with_wait.threshold,
+                policy_with_wait.action.env_name(),
+                pause_wait_secs,
+                dism_secs
+            ),
+        );
+        return;
+    }
+    // 写盘失败不能让内存里的设置与界面不一致：如实报错，但仍然生效本次会话
+    //（下次启动会回到旧值——把这件事明确告诉用户，而不是静默丢掉）。
+    let joined = failures.join("；");
+    append_gui_log(
+        state,
+        &format!("settings save failed: {joined} (in-memory settings still applied)"),
+    );
+    show_message(
+        state.root,
+        &if language == Language::English {
+            format!(
+                "The settings are applied for this session, but could not be saved to the program directory: {joined}"
+            )
+        } else {
+            format!("设置已在本次会话生效，但写入程序目录失败：{joined}")
+        },
+        if language == Language::English {
+            "Settings not saved"
+        } else {
+            "设置未保存"
+        },
+        MB_OK | MB_ICONWARNING,
+    );
 }
 
 unsafe fn is_elevated() -> bool {
@@ -4641,6 +4883,10 @@ unsafe fn install_pe_ramdisk(state: &State) {
     //    it to the display order.
     let guid_out = state.executable_dir.join("_pe-bcd-guid.txt");
     let guid_out = guid_out.to_string_lossy().to_string();
+    // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出目录先建好：下面 GUID
+    // 解析失败与每个 /set 步骤失败都要把原始输出落到这里，而不是进 NUL。
+    let bcd_out_dir = state.executable_dir.join("logs");
+    let _ = std::fs::create_dir_all(&bcd_out_dir);
     let _ = std::fs::remove_file(&guid_out);
     let ram_guid_path = "{ramdiskoptions}".to_string();
     let mut steps = vec![
@@ -4677,6 +4923,21 @@ unsafe fn install_pe_ramdisk(state: &State) {
         match extract_bcd_guid(&guid_out) {
             Some(guid) => guid,
             None => {
+                // 【2026-10-16 审查修订，日志缺口 8】把 bcdedit 的原始输出落盘：
+                // 此前解析失败只弹一句"无法读取 GUID"，输出本身没进任何地方，
+                // 事后无从判断是 bcdedit 没输出、还是输出格式变了（后者才是
+                // 真正需要修的地方）。
+                let raw = std::fs::read(&guid_out)
+                    .map(|bytes| decode_bcdedit_bytes(&bytes))
+                    .unwrap_or_default();
+                let _ = std::fs::copy(
+                    &guid_out,
+                    bcd_out_dir.join("pe-install-bcdedit-create.out"),
+                );
+                append_gui_log(
+                    state,
+                    &format!("PE install failed: could not parse GUID from bcdedit output: {raw}"),
+                );
                 show_message(
                     state.root,
                     if language == Language::English {
@@ -4715,11 +4976,37 @@ unsafe fn install_pe_ramdisk(state: &State) {
     ));
     steps.push(format!("bcdedit.exe /displayorder {os_guid_path} /addlast"));
     let mut failed_step: Option<String> = None;
-    for step in &steps {
-        let code = run_cmd_to_file(step, None);
-        append_gui_log(state, &format!("PE install bcdedit: {step} -> {code}"));
+    // 【2026-10-16 审查修订，日志缺口 8】每个 bcdedit 步骤的输出落到独立文件：
+    // 此前 `run_cmd_to_file(step, None)` 把三流全部送进 NUL，失败时只剩一个
+    // 退出码，而 bcdedit 的真实原因（"拒绝访问"/"找不到元素"/GUID 拼错）
+    // 恰恰写在输出里。文件放在程序目录，与 `_pe-bcd-guid.txt` 同一处。
+    let bcd_out_dir = state.executable_dir.join("logs");
+    let _ = std::fs::create_dir_all(&bcd_out_dir);
+    for (index, step) in steps.iter().enumerate() {
+        let out_file = bcd_out_dir.join(format!("pe-install-bcdedit-{index}.out"));
+        let _ = std::fs::remove_file(&out_file);
+        let code = run_cmd_to_file(step, Some(&out_file));
+        let detail = std::fs::read(&out_file)
+            .map(|bytes| decode_bcdedit_bytes(&bytes))
+            .unwrap_or_default();
+        let detail = detail.trim();
+        append_gui_log(
+            state,
+            &format!(
+                "PE install bcdedit: {step} -> {code}{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | 输出：{detail}")
+                }
+            ),
+        );
         if !code.is_success() {
-            failed_step = Some(step.clone());
+            failed_step = Some(if detail.is_empty() {
+                step.clone()
+            } else {
+                format!("{step}\n{detail}")
+            });
             break;
         }
     }
@@ -5033,12 +5320,18 @@ unsafe fn install_pe_harddisk(state: &State) {
         return;
     }
     // 2. Apply PE WIM（索引 1 = WinPE）到分区
+    // 【2026-10-16 审查修订，卡死 3】等待上限可配置（`dism_timeout`），默认仍
+    // INFINITE。此前硬编码 INFINITE，且这条调用链从 `WM_COMMAND` **同步**执行
+    // （`4367 install_pe_entry` → `4779 install_pe_harddisk`，不开线程）：
+    // DISM 挂死则主窗口消息循环被阻塞，整窗「未响应」、无进度、无取消，
+    // 只能任务管理器杀进程。
+    let apply_wait_ms = crate::dism_timeout::wait_ms();
     let apply_code = run_cmd_to_file_timeout(
         &format!(
             "dism /Apply-Image /ImageFile:\"{image_path}\" /Index:1 /ApplyDir:{drive_char}:\\"
         ),
         None,
-        crate::windows_command::INFINITE,
+        apply_wait_ms,
     );
     if !apply_code.is_success() {
         append_gui_log(
@@ -5062,6 +5355,10 @@ unsafe fn install_pe_harddisk(state: &State) {
         return;
     }
     // 3. BCD：建 osloader 条目（winpe/detecthal 标志齐全），加到显示顺序
+    // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出目录先建好：下面
+    // GUID 解析失败与每个 /set 步骤失败都要把原始输出落到这里，而不是进 NUL。
+    let bcd_out_dir = state.executable_dir.join("logs");
+    let _ = std::fs::create_dir_all(&bcd_out_dir);
     let guid_out = state
         .executable_dir
         .join("_pe-bcd-guid.txt")
@@ -5097,6 +5394,21 @@ unsafe fn install_pe_harddisk(state: &State) {
         match extract_bcd_guid(&guid_out) {
             Some(guid) => guid,
             None => {
+                // 【2026-10-16 审查修订，日志缺口 8】同上：原始输出落盘 + 写进
+                // GUI 日志，事后能区分"bcdedit 没输出"与"输出格式变了"。
+                let raw = std::fs::read(&guid_out)
+                    .map(|bytes| decode_bcdedit_bytes(&bytes))
+                    .unwrap_or_default();
+                let _ = std::fs::copy(
+                    &guid_out,
+                    bcd_out_dir.join("pe-hdd-bcdedit-create.out"),
+                );
+                append_gui_log(
+                    state,
+                    &format!(
+                        "PE hard disk install failed: could not parse GUID from bcdedit output: {raw}"
+                    ),
+                );
                 show_message(
                     state.root,
                     if language == Language::English {
@@ -5128,11 +5440,36 @@ unsafe fn install_pe_harddisk(state: &State) {
         format!("bcdedit.exe /displayorder {os_guid_path} /addlast"),
     ];
     let mut failed_step: Option<String> = None;
-    for step in &steps {
-        let code = run_cmd_to_file(step, None);
-        append_gui_log(state, &format!("PE hard disk bcdedit: {step} -> {code}"));
+    // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出落盘而不是进 NUL：
+    // 此前 `run_cmd_to_file(step, None)` 把三流全送 NUL，失败只剩退出码，
+    // 而 bcdedit 的真实原因（拒绝访问 / 找不到元素 / GUID 拼错）写在输出里。
+    let bcd_out_dir = state.executable_dir.join("logs");
+    let _ = std::fs::create_dir_all(&bcd_out_dir);
+    for (index, step) in steps.iter().enumerate() {
+        let out_file = bcd_out_dir.join(format!("pe-hdd-bcdedit-{index}.out"));
+        let _ = std::fs::remove_file(&out_file);
+        let code = run_cmd_to_file(step, Some(&out_file));
+        let detail = std::fs::read(&out_file)
+            .map(|bytes| decode_bcdedit_bytes(&bytes))
+            .unwrap_or_default();
+        let detail = detail.trim();
+        append_gui_log(
+            state,
+            &format!(
+                "PE hard disk bcdedit: {step} -> {code}{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | 输出：{detail}")
+                }
+            ),
+        );
         if !code.is_success() {
-            failed_step = Some(step.clone());
+            failed_step = Some(if detail.is_empty() {
+                step.clone()
+            } else {
+                format!("{step}\n{detail}")
+            });
             break;
         }
     }
@@ -6653,6 +6990,13 @@ unsafe fn create_task(state: &mut State) {
         state.failure_policy.threshold.to_string(),
         "--fail-action".to_string(),
         state.failure_policy.action.env_name().to_string(),
+        // `pause` 策略的最长等待秒数（0 = 一直等 = 旧版行为）。
+        "--fail-pause-max-wait-secs".to_string(),
+        state.failure_policy.pause_max_wait_secs.to_string(),
+        // DISM 等待上限（2026-10-16 审查补上）：显式传给 prepare，由它落盘进
+        // `RecoveryTask.env`，恢复环境在入口灌进进程环境变量。0 = 不限制。
+        "--dism-timeout-secs".to_string(),
+        state.dism_timeout_secs.to_string(),
         "--ui-language".to_string(),
         if language == Language::English {
             "en".to_string()
@@ -6961,11 +7305,21 @@ unsafe fn run_online_operation(
     let spawn = std::thread::Builder::new()
         .name("online-operation".into())
         .spawn(move || {
+            // payload 一并带进结果：2026-10-16 审查发现原实现是
+            // `unwrap_or_else(|_| …)`，把 panic 载荷（断言消息、文件行号）整个
+            // 丢掉，只留一句「线程异常退出」。windows subsystem 没有控制台，
+            // 而 `install_panic_logging` 装的 hook 也已把同一份内容写进
+            // `<exe>\logs\panic.log`，两边互为兜底。
             let result = std::panic::catch_unwind(|| crate::online_operation::execute(&params))
-                .unwrap_or_else(|_| OnlineResult {
-                    success: false,
-                    detail: "在线执行线程异常退出，请检查本轮日志和候选目录；不能判定为成功。"
-                        .into(),
+                .unwrap_or_else(|payload| {
+                    let detail = crate::panic_payload_text(payload.as_ref());
+                    OnlineResult {
+                        success: false,
+                        detail: format!(
+                            "在线执行线程异常退出（{detail}）。完整调用栈见 \
+                             <程序目录>\\logs\\panic.log；请检查本轮日志和候选目录；不能判定为成功。"
+                        ),
+                    }
                 });
             *ONLINE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
             unsafe {
@@ -7482,6 +7836,7 @@ unsafe extern "system" fn window_proc(
         // 设置文件在程序目录；读不到 / 值非法一律回退默认（3 次 + 自动逃出）。
         // 必须在把 `executable_dir` 移进 State 之前算好。
         let failure_policy = crate::failure_policy::FailurePolicy::load_from_dir(&executable_dir);
+        let dism_timeout_secs = crate::dism_timeout::load_from_dir(&executable_dir);
         let state = Box::new(State {
             root: hwnd,
             tooltip: null_mut(),
@@ -7496,6 +7851,7 @@ unsafe extern "system" fn window_proc(
             index_name_touched: false,
             index_name_auto: None,
             failure_policy,
+            dism_timeout_secs,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
