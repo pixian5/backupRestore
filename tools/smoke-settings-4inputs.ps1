@@ -50,7 +50,14 @@ public class SW {
 
 $BM_CLICK = 0x00F5
 $WM_SETTEXT = 0x000C
-$EXE_DIR = "C:\Users\Public\backupRestore-package"
+# The settings file lives next to the RUNNING executable (`save_to_dir(executable_dir)`),
+# which is NOT always the package dir: restart-gui-h.ps1 starts the GUI from H:\brwork.
+# Hard-coding the package dir produced a misleading "settings.ini not created" FAIL on
+# 2026-10-17 even though the file was written correctly to H:\brwork. Resolve it from the
+# live process instead.
+$guiProc = Get-Process -Name BackupRestore -ErrorAction SilentlyContinue | Select-Object -First 1
+$EXE_DIR = if ($guiProc) { Split-Path $guiProc.Path } else { "C:\Users\Public\backupRestore-package" }
+Write-Output ("exe-dir=" + $EXE_DIR + " (gui-path=" + $(if ($guiProc) { $guiProc.Path } else { "<not running>" }) + ")")
 
 # --- collect all top-level windows: "hwnd|class|title" ---
 $script:winList = New-Object System.Collections.ArrayList
@@ -143,9 +150,9 @@ function Set-EditText([int]$ctrlId, [string]$value) {
     Write-Output ("set edit " + $ctrlId + " = " + $value + " (readback=" + (Get-EditText $ctrlId) + ")")
 }
 
-Set-EditText 3100 "7"       # failure threshold
-Set-EditText 3108 "900"     # DISM wait secs
-Set-EditText 3110 "300"     # pause wait secs
+Set-EditText 3100 "8"       # failure threshold
+Set-EditText 3108 "300"     # DISM wait secs
+Set-EditText 3110 "480"     # pause wait secs
 $radio = [SW]::GetDlgItem($dlg, 3102)   # action = pause in recovery
 Write-Output ("pause-radio=" + $radio)
 [SW]::PostMessage($radio, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
