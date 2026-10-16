@@ -145,6 +145,61 @@ pub(crate) fn load_from_dir(executable_dir: &Path) -> u32 {
     }
 }
 
+/// 【2026-10-17 修复】进程启动时把设置文件里的秒数灌进进程环境变量。
+///
+/// ## 修的是什么
+///
+/// `wait_ms()` 只读**进程环境变量**。而给这个变量赋值的唯一位置是
+/// `recover_env`（恢复环境入口）——于是三处消费方里有两处**永远读不到**：
+///
+/// - `online_operation::dism`（**在线还原**）：跑在普通 Windows 里的 CLI/GUI 进程，
+///   从不经过 `recover-env`。
+/// - `native_gui` 的「安装 PE」（`dism /Apply-Image`）：GUI 进程，同上。
+///
+/// 也就是说：用户在设置窗口里配了 `dism_timeout_secs=300`，对这两条路**完全不生效**，
+/// `wait_ms()` 恒为 `INFINITE`。模块头部却把「程序设置 ini」列为三个入口之一 ——
+/// 文档与行为不符，且失效是**静默**的（没有报错、没有日志）。
+///
+/// ## 修法
+///
+/// 在 `main()` 最早处（任何子命令分派与子进程派生之前）调一次
+/// `init_process_env_from_settings()`：环境变量**未被显式设置**时，用 ini 的值补上。
+/// 已经设了的（命令行 / 父进程 / `recover-env` 的任务级值）**一律不覆盖**——
+/// 显式优先于文件，否则 `recover_env` 的任务级值会被 ini 悄悄改掉。
+// 调用点在 `main()`，那里是 `#[cfg(windows)]`（模块本身在非 Windows 非测试
+// 构建里被裁掉）；非 Windows 构建下允许未使用，免得 `dead_code` 噪音。
+// 行为由本文件 `plan_env_value` 的单测在 macOS 上照常锁定。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn init_process_env_from_settings() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    if let Some(secs) = plan_env_value(std::env::var(ENV_VAR).is_ok(), load_from_dir(dir)) {
+        // set_var 在 2024 edition 里是 unsafe；此刻在单线程入口，且在任何
+        // 子进程派生之前。
+        unsafe { std::env::set_var(ENV_VAR, secs.to_string()) };
+    }
+}
+
+/// 上一条的**纯判据**：给定「环境变量是否已显式设置」与「ini 里的秒数」，
+/// 决定要不要灌入（`Some(secs)`）以及灌多少。
+///
+/// 抽成纯函数是为了单测能锁定"显式优先 / 0 不写"两条规则，且**不碰进程环境**
+/// —— 直接改环境变量的测试在 `cargo test` 的并行调度下会互相干扰（本文件既有
+/// 的 `wait_ms` 测试已经动过它）。
+pub(crate) fn plan_env_value(env_already_set: bool, settings_secs: u32) -> Option<u32> {
+    if env_already_set {
+        // 显式设置优先：命令行 / 父进程 / recover-env 的任务级值不能被 ini 覆盖。
+        return None;
+    }
+    // 0 不写：让 `wait_ms()` 的"读不到 = 不限制"保持单一语义，
+    // 也避免给每个进程都多设一个没有信息量的 0。
+    (settings_secs != DEFAULT_SECS).then_some(settings_secs)
+}
+
 /// 把秒数**合并写进**设置文件：只替换自己那一行，其余键原样保留。
 ///
 /// 为什么不能像 `failure_policy::save_to_dir` 那样整文件重写：那两个键和这个键
@@ -167,7 +222,9 @@ pub(crate) fn save_to_dir(secs: u32, executable_dir: &Path) -> std::io::Result<(
     let mut text = kept.join("\n");
     text.push('\n');
     fs::write(&path, text)
-}/// 设置窗口里的说明文字（解释 0 的含义与风险）。
+}
+
+/// 设置窗口里的说明文字（解释 0 的含义与风险）。
 pub(crate) fn hint(language: MessageLanguage) -> &'static str {
     match language {
         MessageLanguage::Chinese => {
@@ -310,6 +367,34 @@ mod tests {
         assert_eq!(wait_ms(), WAIT_MS_UNLIMITED);
         unsafe { std::env::remove_var(ENV_VAR) };
         assert_eq!(wait_ms(), WAIT_MS_UNLIMITED);
+    }
+
+    #[test]
+    fn plan_env_value_keeps_explicit_settings_and_skips_zero() {
+        // 【2026-10-17 修复】这两条规则是 Bug 1 的核心，必须钉死：
+        // ① 已显式设置 → 绝不覆盖（否则 recover-env 的任务级值会被 ini 改掉）；
+        // ② ini 为 0（默认）→ 不写，保持"读不到 = 不限制"的单一语义。
+        assert_eq!(plan_env_value(true, 300), None);
+        assert_eq!(plan_env_value(true, 0), None);
+        assert_eq!(plan_env_value(false, 0), None);
+        // 未显式设置且 ini 有值 → 灌入，让在线还原 / GUI 安装 PE 也能读到。
+        assert_eq!(plan_env_value(false, 300), Some(300));
+        assert_eq!(plan_env_value(false, MAX_SECS), Some(MAX_SECS));
+    }
+
+    #[test]
+    fn init_from_settings_survives_a_missing_settings_file() {
+        // 设置文件不存在是常态（用户从没打开过设置窗口）：init 必须静默无操作，
+        // 不能让程序起不来。用一个注定没有 ini 的临时目录验证纯读取那一步。
+        let dir = std::env::temp_dir().join(format!(
+            "backuprestore-dism-timeout-nosettings-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        assert_eq!(load_from_dir(&dir), DEFAULT_SECS);
+        assert_eq!(plan_env_value(false, load_from_dir(&dir)), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

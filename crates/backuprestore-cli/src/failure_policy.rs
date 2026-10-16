@@ -279,6 +279,26 @@ impl FailurePolicy {
         self.action == FailureAction::PauseInRecovery && self.pause_max_wait_secs > 0
     }
 
+    /// 【2026-10-17 修复】暂停总上限**灌进进程环境变量**时应写的秒数。
+    ///
+    /// 为什么必须有这个函数：`pause_max_wait_secs` 此前只驱动
+    /// `MessageBoxTimeoutW`（失败达阈值弹框那条路），而恢复链里**用户点「暂停」
+    /// 按钮**后的等待走的是 `recovery_progress::wait_if_paused`，它读环境变量
+    /// `PAUSE_TIMEOUT_ENV_VAR` —— 那个变量**全仓没有任何写入方**，等于永久 0。
+    /// 结果是：用户在设置里配了上限，对"暂停后没人来点继续"这一路完全不生效。
+    /// `has_pause_wait_limit` 只回答"有没有"，这里给出"值是多少"，两者同源。
+    // 只在 Windows 的 `recover_env` 里被调用；非 Windows 构建下允许未使用，
+    // 避免 `dead_code` 噪音（行为由上面的单测在 macOS 上照常锁定）。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn pause_timeout_env_value(&self) -> u32 {
+        if self.action == FailureAction::PauseInRecovery {
+            self.pause_max_wait_secs
+        } else {
+            // auto-escape 从不进入暂停态；写 0 让读取方保持"不限制"。
+            0
+        }
+    }
+
     /// 是否已达到触发次数（两种行为共用这个判据）。
     pub(crate) fn reached(&self, consecutive_failures: u32) -> bool {
         consecutive_failures >= self.threshold
@@ -532,6 +552,16 @@ pub(crate) const SETTINGS_THRESHOLD_KEY: &str = "failure_threshold";
 pub(crate) const SETTINGS_ACTION_KEY: &str = "failure_action";
 pub(crate) const SETTINGS_PAUSE_MAX_WAIT_KEY: &str = "failure_pause_max_wait_secs";
 
+/// 【2026-10-17 修复】暂停总上限的进程环境变量名。
+///
+/// 常量必须放在这里而不是让读取方（`recovery_progress`）自己写字符串字面量：
+/// 那正是本 bug 的成因 —— 写入方与读取方各写各的，谁也没对上，
+/// 于是"配了上限却不生效"是**静默**的。键名单一来源，改一处即同步。
+// 只在 Windows 的 `recover_env` 写入 / `recovery_progress` 读取；非 Windows 构建
+// 下没有引用点，允许未使用以免 `dead_code` 噪音。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const PAUSE_TIMEOUT_ENV_VAR: &str = "BACKUPRESTORE_PAUSE_TIMEOUT_SECS";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,6 +722,34 @@ mod tests {
             ..FailurePolicy::default()
         };
         assert!(!auto.has_pause_wait_limit());
+    }
+
+    #[test]
+    fn pause_timeout_env_value_feeds_the_progress_window_wait() {
+        // 【2026-10-17 修复】`wait_if_paused`（用户点「暂停」那条路）读的是进程
+        // 环境变量，而它的写入方此前**不存在** → 恒为 0。这里钉死导出值：
+        // pause 策略给出配置值，auto-escape 给 0（它从不进入暂停态）。
+        let pause = FailurePolicy {
+            threshold: 3,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 600,
+        };
+        assert_eq!(pause.pause_timeout_env_value(), 600);
+        // 配了上限但策略是 auto-escape：暂停态不会来临，导出 0 让读取方不限制，
+        // 免得拿一个无关的数字去中断恢复链。
+        let auto = FailurePolicy {
+            threshold: 3,
+            action: FailureAction::AutoEscape,
+            pause_max_wait_secs: 600,
+        };
+        assert_eq!(auto.pause_timeout_env_value(), 0);
+        // pause 且未配上限 → 0 = 不限制（默认零回归）。
+        let unlimited = FailurePolicy {
+            threshold: 3,
+            action: FailureAction::PauseInRecovery,
+            pause_max_wait_secs: 0,
+        };
+        assert_eq!(unlimited.pause_timeout_env_value(), 0);
     }
 
     #[test]

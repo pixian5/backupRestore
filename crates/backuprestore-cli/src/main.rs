@@ -98,6 +98,14 @@ fn usage() -> ! {
 fn main() {
     #[cfg(windows)]
     install_panic_logging();
+    // 【2026-10-17 修复】在任何子命令分派与子进程派生之前，把设置文件里的
+    // DISM 等待上限灌进进程环境变量。缺这一步时，`wait_ms()` 只在
+    // `recover-env`（恢复环境）里被赋过值，在线还原与 GUI「安装 PE」两条路
+    // 恒为不限制 —— 用户在设置里配的上限静默失效。
+    // 模块是 `cfg(any(windows, test))`：macOS 的非测试构建里没有它，这里必须
+    // 同样门控，否则本机 `cargo build` 会报找不到模块（DISM 也只存在于 Windows）。
+    #[cfg(windows)]
+    crate::dism_timeout::init_process_env_from_settings();
     let arguments: Vec<String> = env::args().skip(1).collect();
     if arguments.is_empty() && should_launch_gui() {
         if let Err(error) = launch_gui() {
@@ -1356,6 +1364,18 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         // 此刻还在单线程入口，且必须在任何子进程派生之前完成。
         unsafe { std::env::set_var(crate::dism_timeout::ENV_VAR, secs.to_string()) };
         meta_log(&format!("DISM wait limit: {secs} sec (0 = unlimited)"));
+    }
+    // 【2026-10-17 修复】暂停总上限同样灌进进程环境变量。此前
+    // `recovery_progress::wait_if_paused` 读的 `PAUSE_TIMEOUT_ENV_VAR` 全仓没有
+    // 写入方 → 永久 0（不限制），用户在设置里配的 `failure_pause_max_wait_secs`
+    // 对「暂停后无人点继续」这一路完全不生效；只有失败弹框那条路
+    // （`MessageBoxTimeoutW`）用到了它。这里让两条路**同源**。
+    {
+        let policy = crate::failure_policy::FailurePolicy::from_values(&values);
+        let secs = policy.pause_timeout_env_value();
+        // 0 也要显式写：避免父进程遗留的旧值干扰（与 DISM 同一个理由）。
+        unsafe { std::env::set_var(crate::failure_policy::PAUSE_TIMEOUT_ENV_VAR, secs.to_string()) };
+        meta_log(&format!("pause total limit: {secs} sec (0 = unlimited)"));
     }
     let workspace_root_rel = env_required(&values, "WORKSPACE_ROOT_REL")?;
     let store_rel = split_workspace_root_rel(&workspace_root_rel, &task_id)?;

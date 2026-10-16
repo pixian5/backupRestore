@@ -116,7 +116,11 @@ const CLEARTYPE_QUALITY: u32 = 5;
 /// **关闭进度窗口**——那 unmistakably 表示放弃（见 `pause_abandoned`）。
 /// 这个上限只作为第二道保险，留给运维通过环境变量打开。
 fn pause_total_timeout() -> u64 {
-    std::env::var("BACKUPRESTORE_PAUSE_TIMEOUT_SECS")
+    // 【2026-10-17 修复】键名取自 `failure_policy` 的单一来源常量。此前这里是
+    // 一枚裸字符串字面量，而全仓**没有任何写入方**设置它 → 永久 0 → 用户在设置
+    // 里配的 `failure_pause_max_wait_secs` 对"暂停后没人来点继续"这一路不生效。
+    // 写入方现位于 `recover_env`（把策略值灌进来）。
+    std::env::var(crate::failure_policy::PAUSE_TIMEOUT_ENV_VAR)
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0)
