@@ -8808,3 +8808,67 @@ pub fn run() -> Result<(), super::TaskError> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod p4_precise_drive_tests {
+    use super::*;
+
+    fn drive(letter: &str, partition_type_guid: &str) -> DriveInfo {
+        DriveInfo {
+            letter: letter.to_string(),
+            label: String::new(),
+            filesystem: "NTFS".to_string(),
+            size_bytes: Some(1024),
+            free_bytes: Some(1024),
+            volume_guid: String::new(),
+            disk_number: Some(0),
+            partition_number: Some(1),
+            partition_type_guid: partition_type_guid.to_string(),
+            has_windows_installation: false,
+        }
+    }
+
+    /// 2026-10-16 P4：盘符判定不再写死 'C'/'S'。ESP 只认分区类型 GUID，
+    /// 与盘符无关——「ESP 不在 S」和「S 是数据盘」都不能误判。
+    #[test]
+    fn esp_is_judged_by_partition_type_guid_not_letter() {
+        let esp = Some(drive("S", crate::windows_prepare::EFI_TYPE));
+        assert!(is_efi_system_partition(esp.as_ref()));
+        // 同样在 S:，但分区类型是基本数据 → 不是 ESP，不能误拦。
+        let data_on_s = Some(drive("S", "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}"));
+        assert!(!is_efi_system_partition(data_on_s.as_ref()));
+        // ESP 换了字母（M:）照样认得出；GUID 大小写不敏感。
+        let esp_on_m = Some(drive("M", &crate::windows_prepare::EFI_TYPE.to_lowercase()));
+        assert!(is_efi_system_partition(esp_on_m.as_ref()));
+        // 卷信息缺失（枚举失败）时判「不是」，不猜。
+        assert!(!is_efi_system_partition(None));
+    }
+
+    /// 程序所在卷判定：与可执行文件目录首字母比较，大小写不敏感；
+    /// 取不到程序路径时判「不是」——既不能误判「是」，也不假设成 C。
+    #[test]
+    fn program_drive_compares_executable_directory_prefix() {
+        assert!(is_program_drive('H', Path::new("H:\\brwork")));
+        assert!(is_program_drive('h', Path::new("H:\\brwork")));
+        assert!(!is_program_drive('C', Path::new("H:\\brwork")));
+        assert!(!is_program_drive('H', Path::new("")));
+    }
+
+    /// 系统盘判定只信 `%SystemDrive%`：本测试不改环境变量，
+    /// 而是按同一变量独立解析期望值后比对，锁住「解析逻辑与变量一致」，
+    /// 且绝不出现「取不到就退回 C」的写死行为。
+    #[test]
+    fn system_drive_letter_parses_environment_variable() {
+        let expected = std::env::var("SystemDrive")
+            .ok()
+            .and_then(|value| {
+                value
+                    .trim_end_matches('\\')
+                    .trim_end_matches(':')
+                    .chars()
+                    .next()
+            })
+            .map(|letter| letter.to_ascii_uppercase());
+        assert_eq!(system_drive_letter(), expected);
+    }
+}
