@@ -1,20 +1,29 @@
-# run-in-session.ps1 —— 在指定交互会话（默认 Session 1 = 已登录桌面）启动命令
+# run-in-session.ps1 -- start a command inside an interactive session
+# (default Session 1 = the logged-on desktop).
 #
-# 背景：prlctl exec 以 SYSTEM 身份跑在 Session 0（无桌面）。GUI 自动化
-# 必须注入到用户可见的交互桌面（Session 1，console 会话，用户 x 已登录）。
-# 本工具用 WTSQueryUserToken 取交互会话的用户令牌，DuplicateTokenEx 提为
-# 主令牌，再 CreateProcessAsUser 在 winsta0\default 桌面启动目标命令——
-# 全程零下载，只用 Windows 自带 API（SYSTEM 拥有 SeTcbPrivilege，可调用）。
+# Why: prlctl exec runs as SYSTEM in Session 0 (no desktop). GUI automation must
+# be injected into the user-visible interactive desktop (Session 1, console
+# session). This tool takes the interactive session's user token via
+# WTSQueryUserToken, promotes it with DuplicateTokenEx, then CreateProcessAsUser
+# on winsta0\default -- no downloads, only built-in Windows APIs (SYSTEM holds
+# SeTcbPrivilege so it may call them).
 #
-# 用法（VM 内，SYSTEM 上下文）：
+# ASCII ONLY. The first version of this file carried Chinese comments and no BOM;
+# PowerShell 5.1 then decoded the UTF-8 bytes with the system ANSI codepage and
+# the tokenizer broke -- it reported "MissingExpressionAfterToken" on the param
+# block and the tool could never run. Keep every byte ASCII.
+#
+# Usage (inside the VM, SYSTEM context):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File run-in-session.ps1 ^
-#       -SessionId 1 -Command "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\...\clicker.ps1 -X 100 -Y 100 -Click"
+#       -SessionId 1 -Command "powershell.exe -NoProfile -File C:\...\clicker.ps1 -X 100 -Y 100 -Click"
+#
+# prlctl exec strips double quotes, so a -Command containing spaces cannot be
+# passed directly; point -CommandFile at a plain text file holding the full
+# in-session command line instead.
 
 param(
     [int]$SessionId = 1,
     [string]$Command = "",
-    # prlctl exec 会剥掉双引号，含空格的 -Command 无法直接传参；
-    # 用 -CommandFile 指向一个纯文本文件，从中读取完整的会话内命令行。
     [string]$CommandFile = ""
 )
 

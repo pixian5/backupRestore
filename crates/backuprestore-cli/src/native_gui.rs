@@ -113,6 +113,19 @@ const ID_CREATE_TASK: usize = 1003;
 const ID_REFRESH_TASK: usize = 1004;
 const ID_LANGUAGE: usize = 1005;
 const ID_BROWSE_IMAGE: usize = 1006;
+/// 顶栏「设置…」按钮：打开程序设置窗口（当前只有「恢复环境失败处理」一项）。
+const ID_SETTINGS: usize = 1007;
+/// 设置窗口内的控件（独立 ID 段，避免与主窗口控件串号）。
+const ID_SETTINGS_THRESHOLD_EDIT: usize = 3100;
+const ID_SETTINGS_ACTION_AUTO: usize = 3101;
+const ID_SETTINGS_ACTION_PAUSE: usize = 3102;
+const ID_SETTINGS_SAVE: usize = 3103;
+const ID_SETTINGS_CANCEL: usize = 3104;
+const ID_SETTINGS_HINT: usize = 3105;
+const ID_SETTINGS_DETAIL_AUTO: usize = 3106;
+const ID_SETTINGS_DETAIL_PAUSE: usize = 3107;
+/// 设置窗口的类名（`RegisterClassExW` 用）。
+const SETTINGS_WINDOW_CLASS: &str = "BackupRestoreSettingsWindow";
 const ID_OPERATION_BACKUP: usize = 1101;
 const ID_OPERATION_RESTORE: usize = 1102;
 const ID_OPERATION_PE: usize = 1104;
@@ -211,6 +224,8 @@ const WS_HSCROLL: u32 = 0x00100000;
 const PM_REMOVE: u32 = 0x0001;
 const WM_QUIT: u32 = 0x0012;
 const ES_AUTOHSCROLL: u32 = 0x0080;
+/// 只允许输入数字（设置窗口的「失败次数」文本框；保存时仍会再校验一次范围）。
+const ES_NUMBER: u32 = 0x2000;
 const PE_TIMER_ID: usize = 1;
 // COLORREF values are 0x00BBGGRR.
 const PE_BACKGROUND: u32 = 0x00553a2b; // RGB(43, 58, 85), deep blue-grey.
@@ -622,6 +637,9 @@ struct State {
     index_name_touched: bool,
     /// 程序最后一次自动写进索引名文本框的值（判定"手改"的对照）。
     index_name_auto: Option<String>,
+    /// 恢复环境失败处理策略（设置窗口读写；创建任务时随参数落盘进
+    /// `RecoveryTask.env`）。启动时从程序目录的 `BackupRestore.settings.ini` 读。
+    failure_policy: crate::failure_policy::FailurePolicy,
 }
 
 /// State for the PE recovery-desktop window. The operation the technician
@@ -716,6 +734,7 @@ unsafe fn install_tooltips(state: &mut State) {
         ),
         (GetDlgItem(state.root, ID_PE_DIR_EDIT as i32), "pe_dir_edit"),
         (GetDlgItem(state.root, ID_LANGUAGE as i32), "language"),
+        (GetDlgItem(state.root, ID_SETTINGS as i32), "settings"),
     ];
     for (control, key) in controls {
         let text = tooltip_text(language, key);
@@ -797,6 +816,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "language") => {
             "切换界面语言（中文 / English），切换后所有标签、按钮与说明文字随之更新。"
+        }
+        (Language::Chinese, "settings") => {
+            "程序设置：恢复环境连续失败多少次后如何处理。\n• 自动清理并重启回正常 Windows（默认，等于原行为）；\n• 暂停在恢复环境，由你按按钮手动清理。\n设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效。"
         }
         (Language::English, "probe") => {
             "Inspect: validate task, WinRE and volume identities; no disk write or reboot."
@@ -880,6 +902,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::English, "language") => {
             "Switch the UI language (Chinese / English); all labels, buttons and help text update immediately."
         }
+        (Language::English, "settings") => {
+            "Settings: what to do after the recovery environment fails N times in a row.\n• Clean up and reboot to Windows automatically (default, same as before);\n• Pause in the recovery environment and clean up manually.\nSaved to BackupRestore.settings.ini next to the program; applies to tasks created afterwards."
+        }
         _ => "",
     }
 }
@@ -917,6 +942,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "keep") => "保留最近 N 个",
         (Language::Chinese, "verify_hash") => "严格对比哈希（默认仅对比大小）",
         (Language::Chinese, "language") => "语言",
+        (Language::Chinese, "settings") => "设置…",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
         (Language::Chinese, "browse") => "浏览…",
@@ -993,6 +1019,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "keep") => "Keep latest N",
         (Language::English, "verify_hash") => "Verify hash (default: size only)",
         (Language::English, "language") => "Language",
+        (Language::English, "settings") => "Settings...",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
         (Language::English, "browse") => "Browse…",
@@ -1529,6 +1556,15 @@ unsafe fn layout_operation(state: &State) {
         60,
         lang_combo_w,
         300,
+    );
+    // 「设置…」按钮紧靠语言栏左侧、同排右对齐（客户宽变化时一起跟随）。
+    let settings_w = 90;
+    reposition(
+        GetDlgItem(state.root, ID_SETTINGS as i32),
+        client_width - 20 - lang_total - 8 - settings_w,
+        60,
+        settings_w,
+        24,
     );
     reposition(
         state.controls.source,
@@ -2717,6 +2753,7 @@ unsafe fn apply_language(state: &mut State) {
         (ID_PE_DIR_BROWSE, "browse"),
         (ID_CREATE_TASK, "create_task"),
         (ID_REFRESH_TASK, "refresh_task"),
+        (ID_SETTINGS, "settings"),
     ] {
         set_child_text(state.root, id, ui_text(language, key));
     }
@@ -3193,6 +3230,418 @@ unsafe fn ask_invalid_image_path(hwnd: Hwnd, language: Language) -> i32 {
     EnableWindow(hwnd, 1);
     SetForegroundWindow(hwnd);
     result
+}
+
+// ===================== 程序设置窗口（「恢复环境失败处理」） =====================
+//
+// 2026-10-16 用户拍板：把「恢复环境连续失败 N 次后如何处理」做成用户可设置的
+// 选项——次数用文本框（默认 3），处理方式二选一：
+//   ① 自动清理并重启回正常 Windows（默认，= 原有行为）
+//   ② 暂停在恢复环境，由用户按按钮手动执行同一套清理
+//
+// 设置保存在程序目录的 `BackupRestore.settings.ini`；创建任务时随 prepare
+// 参数落盘进 `RecoveryTask.env`，恢复环境按它执行。**判据与文案的单一来源是
+// `crate::failure_policy`**：这个窗口只负责把值读出来/写回去，自己不拼文案，
+// 免得重演「GUI 里复制第二份硬编码文案」的老问题（P3 前科）。
+
+/// 设置窗口的界面语言（0=中文 1=英文）。窗口过程在 `WM_CREATE` 里读。
+static SETTINGS_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 设置窗口打开时的初始失败次数。
+static SETTINGS_INITIAL_THRESHOLD: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::failure_policy::DEFAULT_THRESHOLD);
+/// 设置窗口打开时的初始行为（0=auto-escape 1=pause）。
+static SETTINGS_INITIAL_ACTION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 用户点「保存」且校验通过时写入新策略；`None` = 取消或直接关窗。
+static SETTINGS_RESULT: std::sync::Mutex<Option<crate::failure_policy::FailurePolicy>> =
+    std::sync::Mutex::new(None);
+
+/// GUI 的 `Language` → `pe_safety` 的 `MessageLanguage`（判据/文案的语言维度）。
+fn message_language(language: Language) -> crate::pe_safety::MessageLanguage {
+    match language {
+        Language::Chinese => crate::pe_safety::MessageLanguage::Chinese,
+        Language::English => crate::pe_safety::MessageLanguage::English,
+    }
+}
+
+/// 设置窗口的窗口过程。控件布局是**固定**的（窗口不可缩放），
+/// 因此不像主窗口那样需要 `layout_operation`。
+unsafe extern "system" fn window_proc_settings(
+    hwnd: Hwnd,
+    message: u32,
+    w_param: WParam,
+    l_param: LParam,
+) -> LResult {
+    use crate::failure_policy::FailureAction;
+    if message == WM_CREATE {
+        let english = SETTINGS_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+        let language = if english {
+            Language::English
+        } else {
+            Language::Chinese
+        };
+        let ml = message_language(language);
+        let auto = FailureAction::AutoEscape;
+        let pause = FailureAction::PauseInRecovery;
+        // 第一行：次数文本框。
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "After the recovery environment fails"
+            } else {
+                "恢复环境连续失败"
+            },
+            0,
+            24,
+            20,
+            150,
+            20,
+            0,
+        );
+        create_control(
+            hwnd,
+            "EDIT",
+            "",
+            WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
+            180,
+            18,
+            56,
+            24,
+            ID_SETTINGS_THRESHOLD_EDIT,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            if english { "times:" } else { "次后：" },
+            0,
+            244,
+            20,
+            120,
+            20,
+            0,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "Enter 1-20 (default 3)."
+            } else {
+                "可填 1–20，默认 3。"
+            },
+            0,
+            24,
+            50,
+            500,
+            20,
+            ID_SETTINGS_HINT,
+        );
+        // 第二行：两种处理方式（标签 + 说明各自来自 failure_policy，单一来源）。
+        create_control(
+            hwnd,
+            "BUTTON",
+            auto.label(ml),
+            WS_TABSTOP | BS_AUTORADIOBUTTON | WS_GROUP,
+            24,
+            86,
+            500,
+            22,
+            ID_SETTINGS_ACTION_AUTO,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            auto.detail(ml),
+            0,
+            46,
+            110,
+            480,
+            40,
+            ID_SETTINGS_DETAIL_AUTO,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
+            pause.label(ml),
+            WS_TABSTOP | BS_AUTORADIOBUTTON,
+            24,
+            160,
+            500,
+            22,
+            ID_SETTINGS_ACTION_PAUSE,
+        );
+        create_control(
+            hwnd,
+            "STATIC",
+            pause.detail(ml),
+            0,
+            46,
+            184,
+            480,
+            56,
+            ID_SETTINGS_DETAIL_PAUSE,
+        );
+        // 保存位置说明（让用户知道改的是哪个文件、对哪些任务生效）。
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "Saved to BackupRestore.settings.ini next to the program. It applies to tasks created afterwards; existing tasks keep the setting they were created with."
+            } else {
+                "设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效；已有任务沿用创建时的设置。"
+            },
+            0,
+            24,
+            256,
+            500,
+            44,
+            0,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
+            if english { "Cancel" } else { "取消" },
+            WS_TABSTOP,
+            330,
+            314,
+            96,
+            30,
+            ID_SETTINGS_CANCEL,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
+            if english { "Save" } else { "保存" },
+            WS_TABSTOP | BS_DEFPUSHBUTTON,
+            434,
+            314,
+            96,
+            30,
+            ID_SETTINGS_SAVE,
+        );
+        // 初值：次数 + 选中的行为。
+        set_child_text(
+            hwnd,
+            ID_SETTINGS_THRESHOLD_EDIT,
+            &SETTINGS_INITIAL_THRESHOLD
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .to_string(),
+        );
+        let checked = if SETTINGS_INITIAL_ACTION.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+            ID_SETTINGS_ACTION_PAUSE
+        } else {
+            ID_SETTINGS_ACTION_AUTO
+        };
+        SendMessageW(
+            GetDlgItem(hwnd, checked as i32),
+            BM_SETCHECK,
+            BST_CHECKED,
+            0,
+        );
+        SetFocus(GetDlgItem(hwnd, ID_SETTINGS_THRESHOLD_EDIT as i32));
+        return 0;
+    }
+    if message == WM_KEYDOWN && w_param as u32 == VK_ESCAPE {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        return 0;
+    }
+    if message == WM_CLOSE {
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    if message == WM_COMMAND {
+        let control_id = w_param & 0xffff;
+        match control_id {
+            ID_SETTINGS_CANCEL => {
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return 0;
+            }
+            ID_SETTINGS_SAVE => {
+                let english = SETTINGS_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+                let language = if english {
+                    Language::English
+                } else {
+                    Language::Chinese
+                };
+                let ml = message_language(language);
+                let raw = get_text(GetDlgItem(hwnd, ID_SETTINGS_THRESHOLD_EDIT as i32));
+                // 校验复用 `failure_policy` 的解析：错误文案与 CLI 侧同一来源。
+                let Ok(threshold) =
+                    crate::failure_policy::FailurePolicy::parse_threshold(&raw, ml)
+                else {
+                    show_message(
+                        hwnd,
+                        if english {
+                            "Enter a whole number between 1 and 20."
+                        } else {
+                            "失败次数必须是 1 到 20 之间的整数。"
+                        },
+                        if english {
+                            "Invalid value"
+                        } else {
+                            "取值无效"
+                        },
+                        MB_OK | MB_ICONWARNING,
+                    );
+                    SetFocus(GetDlgItem(hwnd, ID_SETTINGS_THRESHOLD_EDIT as i32));
+                    return 0;
+                };
+                let action = if IsDlgButtonChecked(hwnd, ID_SETTINGS_ACTION_PAUSE as i32) != 0 {
+                    FailureAction::PauseInRecovery
+                } else {
+                    FailureAction::AutoEscape
+                };
+                if let Ok(policy) = crate::failure_policy::FailurePolicy::new(threshold, action)
+                    && let Ok(mut slot) = SETTINGS_RESULT.lock()
+                {
+                    *slot = Some(policy);
+                }
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return 0;
+            }
+            _ => {}
+        }
+    }
+    DefWindowProcW(hwnd, message, w_param, l_param)
+}
+
+/// 打开「程序设置」模态窗口，返回用户保存的新策略（取消/关窗返回 `None`）。
+///
+/// 调用方负责持久化（写 `BackupRestore.settings.ini`）与更新内存里的策略——
+/// 窗口过程只做「取值 + 校验」，不碰磁盘，便于单测与排查。
+unsafe fn ask_settings_dialog(
+    hwnd: Hwnd,
+    language: Language,
+    current: crate::failure_policy::FailurePolicy,
+) -> Option<crate::failure_policy::FailurePolicy> {
+    use crate::failure_policy::FailureAction;
+    let instance = GetModuleHandleW(null());
+    let class_name = wide(SETTINGS_WINDOW_CLASS);
+    let class = WndClassExW {
+        cb_size: size_of::<WndClassExW>() as u32,
+        style: 0,
+        wnd_proc: Some(window_proc_settings),
+        cb_cls_extra: 0,
+        cb_wnd_extra: 0,
+        h_instance: instance,
+        h_icon: null_mut(),
+        h_cursor: null_mut(),
+        h_brush: null_mut(),
+        menu_name: null(),
+        class_name: class_name.as_ptr(),
+        h_icon_sm: null_mut(),
+    };
+    if RegisterClassExW(&class) == 0 && GetLastError() != 1410 {
+        return None;
+    }
+    SETTINGS_LANGUAGE.store(
+        if language == Language::English { 1 } else { 0 },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    SETTINGS_INITIAL_THRESHOLD.store(current.threshold, std::sync::atomic::Ordering::SeqCst);
+    SETTINGS_INITIAL_ACTION.store(
+        if current.action == FailureAction::PauseInRecovery {
+            1
+        } else {
+            0
+        },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    if let Ok(mut slot) = SETTINGS_RESULT.lock() {
+        *slot = None;
+    }
+    let caption = wide(if language == Language::English {
+        "Settings"
+    } else {
+        "程序设置"
+    });
+    // 客户区高度需要 ≈ 344（按钮底缘 344），总高 400 才不会被裁掉
+    //（项目此前在 460×268 上裁掉过「取消」按钮）。
+    let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
+    let dialog = CreateWindowExW(
+        0,
+        class_name.as_ptr(),
+        caption.as_ptr(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        (screen_w - 560) / 2,
+        (screen_h - 400) / 2,
+        560,
+        400,
+        hwnd,
+        null_mut(),
+        instance,
+        null_mut(),
+    );
+    if dialog.is_null() {
+        return None;
+    }
+    EnableWindow(hwnd, 0);
+    ShowWindow(dialog, SW_SHOW);
+    let mut message = Msg {
+        hwnd: null_mut(),
+        message: 0,
+        w_param: 0,
+        l_param: 0,
+        time: 0,
+        point: Point { x: 0, y: 0 },
+    };
+    // 退出条件用 `IsWindow(dialog)`：`WM_COMMAND` 里的 `DestroyWindow` 是同步的，
+    // 处理完消息回到这里窗口已不存在，循环必然结束（与系统盘选择弹窗同一写法）。
+    while IsWindow(dialog) != 0 && GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+        if IsDialogMessageW(dialog, &message) == 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    EnableWindow(hwnd, 1);
+    SetForegroundWindow(hwnd);
+    SETTINGS_RESULT.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// 顶栏「设置…」按钮的处理：弹窗 → 保存到设置文件 → 更新内存策略。
+unsafe fn open_settings(state: &mut State) {
+    let language = selected_language(state);
+    let Some(policy) = ask_settings_dialog(state.root, language, state.failure_policy) else {
+        append_gui_log(state, "settings dialog: cancelled (policy unchanged)");
+        return;
+    };
+    state.failure_policy = policy;
+    match policy.save_to_dir(&state.executable_dir) {
+        Ok(()) => {
+            append_gui_log(
+                state,
+                &format!(
+                    "settings saved: threshold={} action={}",
+                    policy.threshold,
+                    policy.action.env_name()
+                ),
+            );
+        }
+        Err(error) => {
+            // 写盘失败不能让内存里的策略与界面不一致：如实报错，但仍然生效本次会话
+            //（下次启动会回到旧值——把这件事明确告诉用户，而不是静默丢掉）。
+            append_gui_log(
+                state,
+                &format!("settings save failed: {error} (in-memory policy still applied)"),
+            );
+            show_message(
+                state.root,
+                &if language == Language::English {
+                    format!(
+                        "The setting is applied for this session, but could not be saved to the program directory: {error}"
+                    )
+                } else {
+                    format!("设置已在本次会话生效，但写入程序目录失败：{error}")
+                },
+                if language == Language::English {
+                    "Settings not saved"
+                } else {
+                    "设置未保存"
+                },
+                MB_OK | MB_ICONWARNING,
+            );
+        }
+    }
 }
 
 unsafe fn is_elevated() -> bool {
@@ -6196,6 +6645,21 @@ unsafe fn create_task(state: &mut State) {
     if operation == "probe" {
         arguments.push("--no-reboot".to_string());
     }
+    // 恢复环境失败处理策略 + 界面语言（2026-10-16 用户拍板做成设置项）。
+    // 显式传给 prepare，由它落盘进 `RecoveryTask.env`——这样「任务创建时用的是
+    // 哪套策略」被固定在任务里，事后改设置不会改变已有任务的行为。
+    arguments.extend([
+        "--fail-threshold".to_string(),
+        state.failure_policy.threshold.to_string(),
+        "--fail-action".to_string(),
+        state.failure_policy.action.env_name().to_string(),
+        "--ui-language".to_string(),
+        if language == Language::English {
+            "en".to_string()
+        } else {
+            "zh".to_string()
+        },
+    ]);
     let executable_wide = wide(&executable.to_string_lossy());
     let params = arguments
         .iter()
@@ -6860,6 +7324,19 @@ unsafe extern "system" fn window_proc(
         create_control(
             hwnd,
             "BUTTON",
+            "设置…",
+            WS_TABSTOP,
+            // 初始坐标按最小客户宽 1020 右对齐（在语言栏左侧）；
+            // layout_operation 按实际客户宽动态重排。
+            661,
+            60,
+            90,
+            24,
+            ID_SETTINGS,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
             "刷新环境",
             WS_TABSTOP,
             20,
@@ -7002,6 +7479,9 @@ unsafe extern "system" fn window_proc(
             BST_CHECKED,
             0,
         );
+        // 设置文件在程序目录；读不到 / 值非法一律回退默认（3 次 + 自动逃出）。
+        // 必须在把 `executable_dir` 移进 State 之前算好。
+        let failure_policy = crate::failure_policy::FailurePolicy::load_from_dir(&executable_dir);
         let state = Box::new(State {
             root: hwnd,
             tooltip: null_mut(),
@@ -7015,6 +7495,7 @@ unsafe extern "system" fn window_proc(
             menu_name_auto: None,
             index_name_touched: false,
             index_name_auto: None,
+            failure_policy,
         });
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
@@ -7221,6 +7702,7 @@ unsafe extern "system" fn window_proc(
                 ID_PE_DIR_BROWSE => browse_pe_dir(state),
                 ID_CREATE_TASK => create_task(state),
                 ID_REFRESH_TASK => refresh_task_status(state),
+                ID_SETTINGS => open_settings(state),
                 ID_PE_REBOOT_MAIN => {
                     if ONLINE_BUSY.is_busy() {
                         show_message(

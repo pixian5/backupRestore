@@ -41,6 +41,10 @@ pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 mod boot_cleanup;
 #[cfg(windows)]
 mod boot_entry;
+/// 恢复环境「连续失败 N 次后如何处理」策略：判据、文案与设置的单一来源。
+/// **跨平台**（纯逻辑 + 文件读写），本机单测即可覆盖全部分支。
+#[cfg(any(windows, test))]
+mod failure_policy;
 /// 还原末期的引导修复：候选枚举与方案编辑是**跨平台**纯逻辑（有本机单测），
 /// 对话框与实际 bcdboot/bcdedit 执行在 Windows 侧。
 #[cfg(any(windows, test))]
@@ -78,7 +82,7 @@ mod winre_registration;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -855,36 +859,50 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
             flags: u32,
         ) -> i32;
     }
-    // 同一条恢复链连续失败的次数。用于「连败 N 次自动逃出」：
+    // 同一条恢复链连续失败的次数。用于「连败 N 次后如何处理」：
     // 恢复环境里的一次性启动项（bootsequence）在失败后仍指向本恢复环境，
     // 若用户每次都选「重试」而问题又是确定性的，机器会在「失败 → 重启 → 又失败」
     // 之间无限打转（2026-10-16 实测：GUI 与 RE 都没给用户任何自救手段，
-    // 只能从宿主侧挂 PE 光盘手改 BCD 才逃得出来）。到达阈值后：
-    //   ①清掉本任务的一次性启动项（disarm）②把任务写成终态（现场保留）
-    //   ③重启回正常系统，让机器回到一个可用的 Windows，而不是卡在恢复环境里。
+    // 只能从宿主侧挂 PE 光盘手改 BCD 才逃得出来）。
     //
-    // 【2026-10-16 用户拍板：确定性失败 → 终态保留现场】连败达阈值即视为
-    // 确定性失败，**不再等用户选择**，直接自动逃出。第 ② 步的终态标记是关键：
-    // 只 disarm 不标终态的话，任务会停在 TargetErased 等可续跑阶段，下一次从
-    // **任务所在 workspace** 启动程序时 `resume_pending_boot_task` 会再武装一次
-    // 并重启回 RE（`boot-resume-{stage}.attempted` 每阶段只挡一次），而
-    // `abandon-task` 在擦除后又拒绝清理 → 任务永久悬置、用户仍无自救出口。
-    const AUTO_ESCAPE_THRESHOLD: u32 = 3;
+    // 【2026-10-16 用户拍板：次数与处理方式都做成设置项】次数（默认 3）与
+    // 「达阈值后怎么处理」由用户在 Windows 端程序里设置，随任务落进
+    // `RecoveryTask.env`（`FAILURE_THRESHOLD` / `FAILURE_ACTION`）：
+    //   - auto-escape（默认）：达阈值直接自动逃出，不等用户——即 v2.6.8 的行为。
+    //       ①清掉本任务的一次性启动项（disarm）②把任务写成终态（现场保留）
+    //       ③重启回正常系统，让机器回到一个可用的 Windows，而不是卡在恢复环境里。
+    //   - pause：达阈值**不自动处理**，弹框停在恢复环境里（弹框是模态的，机器
+    //       会一直等），由用户按按钮手动执行与 auto-escape 完全相同的那套处理。
+    //
+    // 判据与文案的**单一来源**是 `crate::failure_policy`（GUI 设置窗口 /
+    // prepare 落盘 / 这里三处共用），本函数不再自己写一份阈值或文案——
+    // 项目有 P3「文案分叉」前科（GUI 曾复制一份硬编码的双语硬拒文案）。
+    //
+    // 第 ② 步的终态标记是关键：只 disarm 不标终态的话，任务会停在 TargetErased
+    // 等可续跑阶段，下一次从**任务所在 workspace** 启动程序时
+    // `resume_pending_boot_task` 会再武装一次并重启回 RE
+    // （`boot-resume-{stage}.attempted` 每阶段只挡一次），而 `abandon-task`
+    // 在擦除后又拒绝清理 → 任务永久悬置、用户仍无自救出口。
+    let values = read_env_file(&path).unwrap_or_default();
+    let policy = crate::failure_policy::FailurePolicy::from_values(&values);
+    let language = ui_language(&values);
+    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
+    let _ = append_log(&escape_log, &policy.log_line(0));
     let mut consecutive_failures: u32 = 0;
-    // 自增的失败计数：让用户一眼看出这是第几次失败、离自动逃出还有几次。
     loop {
         match recover_env(path.clone()) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 consecutive_failures += 1;
-                // 连败达阈值 = 确定性失败：直接自动逃出，不再询问用户。
-                if consecutive_failures >= AUTO_ESCAPE_THRESHOLD {
-                    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
+                let _ = append_log(&escape_log, &policy.log_line(consecutive_failures));
+                // 策略 auto-escape：连败达阈值 = 确定性失败，直接自动逃出，不询问用户。
+                if policy.auto_escape_now(consecutive_failures) {
                     let _ = append_log(
                         &escape_log,
                         &format!(
-                            "consecutive failures reached the auto-escape threshold ({consecutive_failures}); \
-                             auto-escape: disarm one-shot boot entry, mark task terminal, reboot to Windows"
+                            "consecutive failures reached the auto-escape threshold ({}); \
+                             auto-escape: disarm one-shot boot entry, mark task terminal, reboot to Windows",
+                            policy.threshold
                         ),
                     );
                     auto_escape_to_windows(&path, &escape_log);
@@ -892,20 +910,66 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                     // 仍要把错误如实返回，让上层记录日志。
                     return Err(error);
                 }
+                // 策略 pause：达阈值**不自动处理**，弹框停在恢复环境等用户按按钮。
+                // 「是」= 立即执行与 auto-escape 完全相同的处理；「否」= 继续重试。
+                // 弹框是模态的：不点就一直等，这就是「暂停在恢复环境里」的语义。
+                if policy.pause_now(consecutive_failures) {
+                    let mut text = policy.pause_prompt(
+                        &error.to_string(),
+                        consecutive_failures,
+                        language,
+                    );
+                    text.push('\0');
+                    let text: Vec<u16> = text.encode_utf16().collect();
+                    let title: Vec<u16> = crate::failure_policy::FailurePolicy::prompt_title(language)
+                        .encode_utf16()
+                        .collect();
+                    let result = unsafe {
+                        // MB_YESNO|MB_ICONWARNING|MB_SETFOREGROUND：
+                        // 恢复环境没有桌面外壳帮错误窗口取得键盘焦点。
+                        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10034)
+                    };
+                    if result == 6 {
+                        let _ = append_log(
+                            &escape_log,
+                            &format!(
+                                "user requested manual cleanup after {consecutive_failures} failure(s) \
+                                 (pause policy); auto-escape: disarm one-shot boot entry, mark task terminal, \
+                                 reboot to Windows"
+                            ),
+                        );
+                        auto_escape_to_windows(&path, &escape_log);
+                        // auto_escape_to_windows 内部会重启；走到这里说明重启失败。
+                        return Err(error);
+                    }
+                    // 用户选「否」= 继续重试：直接进入下一轮，不再弹「重试/取消」框
+                    //（阈值已到，那个框的语义已被本框覆盖）。
+                    let _ = append_log(
+                        &escape_log,
+                        &format!(
+                            "user chose to keep retrying after {consecutive_failures} failure(s) \
+                             (pause policy)"
+                        ),
+                    );
+                    continue;
+                }
                 // 未达阈值：给用户「重试 / 放弃」的选择。
-                let text: Vec<u16> = format!(
-                    "恢复暂未完成：{error}\n\n已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；选择“取消”将立即清理本次一次性启动项、把任务标记为终态（现场保留）并重启回正常 Windows。\n恢复已完成的任务只重试清理，不会再次擦除目标。\n\n这是第 {consecutive_failures} 次失败（累计 {AUTO_ESCAPE_THRESHOLD} 次后会自动清理并重启回正常系统）。\0"
-                )
-                .encode_utf16()
-                .collect();
-                let title: Vec<u16> = "BackupRestore 恢复需要处理\0".encode_utf16().collect();
+                let mut text = policy.retry_prompt(
+                    &error.to_string(),
+                    consecutive_failures,
+                    language,
+                );
+                text.push('\0');
+                let text: Vec<u16> = text.encode_utf16().collect();
+                let title: Vec<u16> = crate::failure_policy::FailurePolicy::prompt_title(language)
+                    .encode_utf16()
+                    .collect();
                 let result = unsafe {
                     // MB_SETFOREGROUND：恢复环境没有桌面外壳帮错误窗口取得键盘焦点。
                     MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10035)
                 };
                 // 选“重试”（IDRETRY=4）继续；其余（含取消、关闭窗口）走自动逃出。
                 if result != 4 {
-                    let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
                     let _ = append_log(
                         &escape_log,
                         &format!(
@@ -922,6 +986,24 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
         }
     }
 }
+
+/// 从 `RecoveryTask.env` 读界面语言：`UI_LANGUAGE=en*` 用英文，其余一律中文
+/// （读不到时保持历史行为 = 中文）。
+///
+/// 为什么要跟着任务走：GUI 的语言选择是**会话级**的、不落盘；如果恢复环境
+/// 固定中文，英文界面的用户会在恢复环境里突然看到中文提示。prepare 创建任务时
+/// 把当时的界面语言写进 env，恢复环境就能与用户当时看到的一致。
+#[cfg(windows)]
+fn ui_language(values: &BTreeMap<String, String>) -> crate::pe_safety::MessageLanguage {
+    match values
+        .get("UI_LANGUAGE")
+        .map(|value| value.trim().to_ascii_lowercase())
+    {
+        Some(value) if value.starts_with("en") => crate::pe_safety::MessageLanguage::English,
+        _ => crate::pe_safety::MessageLanguage::Chinese,
+    }
+}
+
 
 /// 恢复环境失败后「自动逃出」：清掉本任务的一次性启动项、删除本任务载荷，
 /// 然后重启回正常 Windows，避免机器卡在恢复环境里无限重启。

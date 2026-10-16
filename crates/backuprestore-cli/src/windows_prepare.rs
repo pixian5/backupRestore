@@ -126,6 +126,15 @@ pub(crate) struct PrepareOptions {
     /// false = 覆盖式应用（不格式化，卷上镜像没有的文件保留），落盘进
     /// TargetSpec 供 RE 恢复链读取。
     format_target: bool,
+    /// 恢复环境「连续失败 N 次后如何处理」策略（次数 + 行为）。
+    /// 来源优先级：CLI `--fail-threshold` / `--fail-action` > 程序目录的
+    /// `BackupRestore.settings.ini`（GUI 设置窗口写的）> 默认（3 次 + 自动逃出）。
+    /// 落盘进 `RecoveryTask.env`，由恢复环境 `main.rs::recover_env_interactive` 读取。
+    failure_policy: crate::failure_policy::FailurePolicy,
+    /// 创建任务时的界面语言（`zh` / `en`），落盘进 `RecoveryTask.env` 的
+    /// `UI_LANGUAGE`。恢复环境的提示文案跟着它走，避免英文界面用户在恢复
+    /// 环境里突然看到中文。
+    ui_language: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -441,6 +450,10 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
     let mut force_restore_hash = false;
     let mut verify_hash = false;
     let mut format_target = true;
+    // 失败处理策略：CLI 显式传参优先，缺省时读程序目录的设置文件（GUI 写的）。
+    let mut fail_threshold: Option<u32> = None;
+    let mut fail_action: Option<crate::failure_policy::FailureAction> = None;
+    let mut ui_language: Option<String> = None;
     let mut args = arguments.into_iter();
     while let Some(flag) = args.next() {
         let value = |name: &str, args: &mut std::vec::IntoIter<String>| {
@@ -524,6 +537,36 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             // 这一行解析分支，而下面的兜底是 `unknown prepare option` 硬报错——
             // 于是「离线 + 取消格式化」整条通道在 prepare 阶段就直接失败。
             "--skip-format" => format_target = false,
+            // 恢复环境失败处理策略（GUI 设置窗口 → 这两个参数 → RecoveryTask.env）。
+            // 复用 `failure_policy` 的解析与校验，错误文案与 GUI 侧同一来源。
+            "--fail-threshold" => {
+                let raw = value("--fail-threshold", &mut args)?;
+                fail_threshold = Some(
+                    crate::failure_policy::FailurePolicy::parse_threshold(
+                        &raw,
+                        crate::pe_safety::MessageLanguage::Chinese,
+                    )
+                    .map_err(|reason| err(&format!("--fail-threshold: {reason}")))?,
+                );
+            }
+            "--fail-action" => {
+                let raw = value("--fail-action", &mut args)?;
+                fail_action = Some(crate::failure_policy::FailureAction::parse(&raw).ok_or_else(
+                    || err("--fail-action must be auto-escape or pause"),
+                )?);
+            }
+            "--ui-language" => {
+                let raw = value("--ui-language", &mut args)?.trim().to_ascii_lowercase();
+                // 只认 zh*/en* 前缀（`zh-CN`、`en-US` 都接受），其余明确拒绝，
+                // 避免写进 env 一个恢复环境看不懂的值。
+                if raw.starts_with("zh") {
+                    ui_language = Some("zh".to_string());
+                } else if raw.starts_with("en") {
+                    ui_language = Some("en".to_string());
+                } else {
+                    return Err(err("--ui-language must be zh or en"));
+                }
+            }
             other => return Err(err(&format!("unknown prepare option: {other}"))),
         }
     }
@@ -571,6 +614,19 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             "identity-env-mismatch and bcdboot-failure require --test-efi-drive and are development-only",
         ));
     }
+    // 失败处理策略：CLI 传了就用 CLI 的，没传就读程序目录的设置文件
+    //（GUI 设置窗口写的；读不到 → 默认 3 次 + 自动逃出，与 v2.6.8 行为一致）。
+    // 两者都只在 prepare 期解析一次并落盘，恢复环境不再回读设置文件——
+    // 任务一旦创建，它的失败处理策略就固定了，事后改设置不会改变已有任务的行为。
+    let failure_policy = {
+        let base = executable_dir()
+            .map(|dir| crate::failure_policy::FailurePolicy::load_from_dir(&dir))
+            .unwrap_or_default();
+        crate::failure_policy::FailurePolicy {
+            threshold: fail_threshold.unwrap_or(base.threshold),
+            action: fail_action.unwrap_or(base.action),
+        }
+    };
     Ok(PrepareOptions {
         operation,
         source_drive,
@@ -588,6 +644,8 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
         force_restore_hash,
         verify_hash,
         format_target,
+        failure_policy,
+        ui_language: ui_language.unwrap_or_else(|| "zh".to_string()),
     })
 }
 
@@ -2414,6 +2472,12 @@ fn write_recovery_env(
         "BOOT_MENU_NAME",
         options.boot_menu_name.clone(),
     );
+    // 恢复环境失败处理策略 + 界面语言（2026-10-16 用户拍板做成设置项）。
+    // 键名与取值都来自 `crate::failure_policy`，恢复环境读同一份常量。
+    for (key, value) in options.failure_policy.env_pairs() {
+        put_value(&mut values, key, value);
+    }
+    put_value(&mut values, "UI_LANGUAGE", options.ui_language.clone());
     put_value(&mut values, "TASK_CREATED", Utc::now().to_rfc3339());
     put_value(
         &mut values,
