@@ -15,6 +15,7 @@ public class SIP2 {
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hDlg, int id);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool SetDlgItemTextW(IntPtr hDlg, int id, string text);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetDlgItemTextW(IntPtr hDlg, int id, StringBuilder sb, int max);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
 }
 "@
 $f = "C:\Users\Public\backupRestore-package\set-image-path.log"
@@ -32,7 +33,13 @@ $id = 1203
 $ctl = [SIP2]::GetDlgItem($found, $id)
 if ($ctl -eq [IntPtr]::Zero) { Log "CONTROL $id NULL"; Write-Output "CONTROL $id NULL"; exit 1 }
 $ok = [SIP2]::SetDlgItemTextW($found, $id, $Path)
+# SetDlgItemTextW does NOT notify the app: without EN_CHANGE the GUI's internal
+# state stays empty and "read WIM metadata" logs image= (2026-10-16 V1 hit this).
+# Send WM_COMMAND/EN_CHANGE (0x0300) to the parent with the edit as lParam.
+$notify = [IntPtr]([int64]$id -bor (0x300 -shl 16))
+[void][SIP2]::SendMessageW($found, 0x0111, $notify, $ctl)
+Start-Sleep -Milliseconds 300
 $sb = New-Object System.Text.StringBuilder 512
 $n = [SIP2]::GetDlgItemTextW($found, $id, $sb, 512)
-Log "set=$ok len=$n text='$($sb.ToString())' path='$Path'"
+Log "set=$ok len=$n text='$($sb.ToString())' path='$Path' en_change_sent=true"
 Write-Output ("set=$ok len=$n text='$($sb.ToString())'")
