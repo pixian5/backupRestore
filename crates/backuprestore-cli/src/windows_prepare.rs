@@ -247,8 +247,13 @@ pub(crate) fn inspect_environment() -> Result<(), TaskError> {
     // version token instead of leaking mojibake such as `�本` into Chinese UI.
     let windows = windows_version_summary(&output);
     let architecture = native_architecture();
-    let reagent = capture("reagentc.exe", &["/info"])?;
-    let winre_available = reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE");
+    // 同 `assert_environment`：`reagentc /info` 有上下文级失败模式（退出码 9），
+    // 失败不代表 WinRE 不可用；这里只用于**显示**，失败时退回 BCD 判是否有 WinRE，
+    // 绝不因为日志 ACL 问题就让整个「刷新环境」动作失败。
+    let winre_available = match capture("reagentc.exe", &["/info"]) {
+        Ok(reagent) => reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE"),
+        Err(_) => recovery_identity_from_bcd().is_ok(),
+    };
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -2441,8 +2446,15 @@ fn assert_environment(source_drive: char) -> Result<(), TaskError> {
     ))
     .is_file()
     {
-        let reagent = capture("reagentc.exe", &["/info"])?;
-        if !(reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE")) {
+        // `reagentc /info` 有一个上下文级失败模式（退出码 9，DISM 写不了
+        // `C:\Windows\Logs\DISM` 日志），**不代表 WinRE 真不可用**。所以：
+        // /info 成功 → 按原判据（须报 GLOBALROOT 或 Recovery\WindowsRE）；
+        // /info 失败 → 退回 BCD 能否推出 WinRE 卷来判"是否已注册"，判不出才拒绝。
+        let winre_available = match capture("reagentc.exe", &["/info"]) {
+            Ok(reagent) => reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE"),
+            Err(_) => recovery_identity_from_bcd().is_ok(),
+        };
+        if !winre_available {
             return Err(err("Windows RE is disabled or unavailable"));
         }
     }
@@ -2814,7 +2826,28 @@ fn format_guid(bytes: &[u8]) -> Result<String, TaskError> {
 }
 
 fn recovery_identity() -> Result<VolumeIdentity, TaskError> {
-    let output = capture("reagentc.exe", &["/info"])?;
+    // 首选 `reagentc /info`。但它有一个**上下文级**的已知失败模式：退出码 9
+    // （`WinReGetWimVersion failed to initialize DISM`），根因是 `C:\Windows\Logs\DISM`
+    // 目录的 ACL 不给 Administrators 写权限、DISM 写不了自己的日志（2026-10-16
+    // 实测钉死，见 `docs/20261016-1413` §1）。该失败**不代表 WinRE 真的坏了**，
+    // 却会让整个准备链在 314ms 内 hard-fail（用户 2026-10-16 裁定：这种情况记警告
+    // 继续，别在这里把流程掐死——真有问题是后面的 WIM 挂载/注入会自己报错）。
+    //
+    // 因此这里改为两级：
+    //   ①`reagentc /info` 成功 → 按报告的分区身份继续（原逻辑）。
+    //   ②失败 → 退回从**BCD 的 `recoverysequence` → ramdisk 卷路径**推导 WinRE 所在卷。
+    let output = match capture("reagentc.exe", &["/info"]) {
+        Ok(output) => output,
+        Err(info_error) => {
+            return recovery_identity_from_bcd()
+                .map_err(|bcd_error| {
+                    err(&format!(
+                        "WinRE 身份获取失败：reagentc /info 报错（{info_error}），\
+                         退回读 BCD 也失败（{bcd_error}）"
+                    ))
+                });
+        }
+    };
     let lower = output.to_ascii_lowercase();
     let disk = extract_after(&lower, "harddisk")
         .and_then(|value| value.split('\\').next()?.parse().ok())
@@ -2831,6 +2864,50 @@ fn recovery_identity() -> Result<VolumeIdentity, TaskError> {
     // 与恢复分区同卷”的安全检查，按 reagentc 报告的真实分区继续即可；
     // 若 WinRE 文件缺失，后续 WIM 挂载/注入会自行报错。
     Ok(identity)
+}
+
+/// `reagentc /info` 失败时的兜底：从 BCD 里已注册的 WinRE 启动对象反推其所处卷。
+///
+/// 路径：`bcdedit /enum {bootmgr}` 找到当前系统加载器 → 其 `recoverysequence`
+/// 指向的恢复对象 → 该对象的 `device`/`osdevice` 是
+/// `ramdisk=[X:]\Recovery\WindowsRE\Winre.wim,{设备选项}` → 取出 `[X:]` 卷 → 用
+/// `volume_identity` 拿卷身份（盘符在这里只是**读**的入口，identity 里绝不记它）。
+///
+/// 只在 `/info` 失败时调用，属**尽力而为**：任何一步取不到就如实报错，
+/// 不制造假身份（`recovery` 身份下游还用于定位 boot.sdi 与写 RECOVERY 角色，
+/// 给错比给不出更危险）。
+fn recovery_identity_from_bcd() -> Result<VolumeIdentity, TaskError> {
+    // 当前系统加载器 = `{bootmgr}.default`；`/v` 才输出真实 GUID。
+    let bootmgr = capture(
+        "bcdedit.exe",
+        &["/enum", "{bootmgr}", "/v"],
+    )?;
+    let default_loader = extract_after(&bootmgr.to_ascii_lowercase(), "default")
+        .and_then(|value| value.lines().next())
+        .and_then(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .ok_or_else(|| err("BCD 未报告默认启动加载器"))?;
+    // 该加载器的 recoverysequence（WinRE 恢复对象的 GUID）。
+    let os_block = capture("bcdedit.exe", &["/enum", &default_loader, "/v"])?;
+    let recovery_guid = extract_after(&os_block.to_ascii_lowercase(), "recoverysequence")
+        .and_then(|value| value.lines().next())
+        .and_then(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .ok_or_else(|| err("BCD 未报告系统恢复关联（recoverysequence）"))?;
+    // 恢复对象的 device：`ramdisk=[X:]\Recovery\...\Winre.wim,{…}`。
+    let recovery_block = capture("bcdedit.exe", &["/enum", &recovery_guid, "/v"])?;
+    let device = extract_after(&recovery_block, "device")
+        .and_then(|value| value.lines().next())
+        .map(|line| line.trim().to_ascii_lowercase())
+        .ok_or_else(|| err("BCD 恢复对象未报告 device"))?;
+    // 从 `ramdisk=[x:]...` 里取卷标识（单字母盘符）。
+    let letter = device
+        .split_once("ramdisk=[")
+        .and_then(|(_, rest)| rest.split_once(':'))
+        .and_then(|(letter, _)| letter.chars().next())
+        .filter(|c| c.is_ascii_alphanumeric())
+        .ok_or_else(|| err("BCD 恢复对象的 ramdisk 卷形态无法识别"))?;
+    volume_identity(letter.to_ascii_uppercase())
 }
 
 fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskError> {
