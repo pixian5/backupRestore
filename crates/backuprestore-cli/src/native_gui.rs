@@ -57,6 +57,7 @@ const BS_PUSHLIKE: u32 = 0x1000;
 const WS_GROUP: u32 = 0x00020000;
 const CB_ADDSTRING: u32 = 0x0143;
 const CB_RESETCONTENT: u32 = 0x014b;
+const CB_GETCOUNT: u32 = 0x0146;
 const CB_SETCURSEL: u32 = 0x014e;
 const CB_GETCURSEL: u32 = 0x0147;
 const CB_SETDROPPEDWIDTH: u32 = 0x0160;
@@ -828,7 +829,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "RAM disk 模式（适合临时验证）：PE 镜像临时复制到内存盘启动，不占用独立分区、不改变现有分区布局。"
         }
         (Language::Chinese, "pe_mode_disk") => {
-            "硬盘启动模式（更稳定）：把 PE 部署到独立分区并从该分区启动，适合长期保留；需要提供一个空闲分区。"
+            "硬盘启动模式（更稳定）：把 PE 部署到独立分区并从该分区启动，适合长期保留；需要提供一个空闲分区。⚠ 该分区将被格式化，上面的数据全部丢失！"
         }
         (Language::Chinese, "pe_dir_edit") => {
             "PE 目录路径：PE 镜像（boot.wim）存放的文件夹；请输入完整路径（盘符可为任意合法目录，不限于 C）。RAM disk 模式下 WIM 会复制到此路径下。"
@@ -916,7 +917,7 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
             "RAM disk mode (good for quick testing): the PE image is loaded into a memory drive, no partition used, existing layout untouched."
         }
         (Language::English, "pe_mode_disk") => {
-            "Hard-disk mode (more stable): deploy PE to its own partition and boot from it; requires a spare partition."
+            "Hard-disk mode (more stable): deploy PE to its own partition and boot from it; requires a spare partition. WARNING: that partition WILL BE FORMATTED (all data on it is lost)."
         }
         (Language::English, "pe_dir_edit") => {
             "PE folder path: where the PE image (boot.wim) is stored; enter a full path (any valid drive or folder, not only C). In RAM disk mode the WIM is copied here."
@@ -1029,6 +1030,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "pe_hint") => {
             "「安装 PE」部署一个自包含的 PE 备份/恢复环境，作为开机可选启动项：\n\n\
              • 启动方式：RAM disk（不占分区，镜像临时复制到内存盘启动）或硬盘启动（独立分区，更稳定）；\n\
+             • ⚠ 硬盘启动会先格式化所选独立分区（该分区数据全部丢失），请提前确认分区上没有要保留的内容；\n\
              • PE 目录路径 / 目标卷：指定放置 PE 镜像（boot.wim）的目录或分区；启动项名称可自定义；\n\
              • 部署后新增 BCD 启动项「Windows PE (BackupRestore)」，不改变当前 Windows 默认启动；\n\
              • 用途：当系统无法启动时，可进入 PE 离线备份、还原、安装第二系统、打开完整程序或返回 Windows；\n\
@@ -1078,7 +1080,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "pe") => "Install PE",
         (Language::English, "pe_hint") => {
-            "Install PE deploys a self-contained PE backup/restore environment as an optional boot entry.\n\n• Boot mode: RAM disk (no partition; image loaded into a memory drive) or hard-disk boot (own partition, more stable);\n• PE folder path / target volume: where the PE image (boot.wim) is placed; boot name is customizable;\n• Adds a BCD entry \"Windows PE (BackupRestore)\" without changing the current Windows default boot;\n• Purpose: when the system cannot boot, enter PE to back up, restore, install a second system, open the full program, or return to Windows;\n• Enable 'Reboot into PE' to verify it boots; PE uses the bundled standard PE image (not WinRE)."
+            "Install PE deploys a self-contained PE backup/restore environment as an optional boot entry.\n\n• Boot mode: RAM disk (no partition; image loaded into a memory drive) or hard-disk boot (own partition, more stable);\n• WARNING: hard-disk boot FORMATS the chosen partition first (all data on it is lost) — confirm it holds nothing you need;\n• PE folder path / target volume: where the PE image (boot.wim) is placed; boot name is customizable;\n• Adds a BCD entry \"Windows PE (BackupRestore)\" without changing the current Windows default boot;\n• Purpose: when the system cannot boot, enter PE to back up, restore, install a second system, open the full program, or return to Windows;\n• Enable 'Reboot into PE' to verify it boots; PE uses the bundled standard PE image (not WinRE)."
         }
         _ => "",
     }
@@ -1415,10 +1417,10 @@ unsafe fn set_operation_visibility(state: &State) {
     );
     // A/B/C/新增第二系统都要手选 WIM 索引 + 副档校验复选框。
     let show_index = is_image_restore_entry(operation);
-    // 源卷行只在「备份」（选备份来源）与「新增第二系统」（显示保留系统）出现；
-    // A/B/C 的源卷没有用户语义（A/B 源=目标，C 源=当前系统盘），隐藏以免误导
-    // （原 P3 待办的「源卷（当前系统）」文案问题随隐藏一并消除）。
-    let show_source = matches!(operation, "backup" | "create-secondary");
+    // 源卷行只在「备份」出现（选备份来源）。还原类一律隐藏：A/B 源=目标、
+    // C 源恒为当前系统盘（active_system_letter()，创建任务处读取，不给用户
+    // 改的机会），显示一个改不了的卷只会误导（v2.6.13 起 C 页移除源卷行）。
+    let show_source = operation == "backup";
     // WIM 压缩方式（fast/none）只对备份首次创建有意义，仅「备份」tab 显示。
     let show_compress = operation == "backup";
     // 「第二系统名称」在「新增第二系统」与 C（他盘系统还原，离线 prepare 必填）
@@ -1503,10 +1505,11 @@ unsafe fn layout_operation(state: &State) {
     let field_width = (client_width - field_x - 24).max(700);
     let details_height = 112;
     let row_gap = 8;
-    // 三入口拆分后的行可见性：源卷行仅备份/新增第二系统显示（A/B/C 隐藏），
-    // 通道单选行仅 B/C 显示。隐藏的行不占位，目标行相应上移。
+    // 行可见性：源卷行仅「备份」显示（A/B/C 隐藏——C 源恒为当前系统盘，
+    // v2.6.13 起从 C 页移除），通道单选行仅 B/C 显示。隐藏的行不占位，
+    // 目标行相应上移。
     let layout_op = selected_operation(state);
-    let source_visible = matches!(layout_op, "backup" | "create-secondary");
+    let source_visible = layout_op == "backup";
     let target_visible = matches!(
         layout_op,
         "restore-existing" | "restore-data" | "create-secondary"
@@ -2057,6 +2060,26 @@ unsafe fn select_operation(state: &mut State, index: usize) {
             BST_UNCHECKED,
             0,
         );
+    }
+    // C 入口目标 combo 排除当前系统盘；离开 C 回别处时恢复全量（A 页要能
+    // 选中系统盘）。combo 内容只在 set_drive_items 填充时定死、tab 切换
+    // 本身不重填——这里按「当前入口期望项数 vs 实际项数」校验，不符即带
+    // 选中重填（v2.6.13；少了这步，从备份 tab 进 C 会残留全量枚举，系统盘
+    // 又出现在下拉里）。
+    if target_combo_expected_count(state)
+        != SendMessageW(state.controls.target, CB_GETCOUNT, 0, 0) as usize
+    {
+        let keep = selected_drive_letter(state, state.controls.target);
+        append_gui_log(
+            state,
+            &format!(
+                "target combo refilled: op={operation} keep={}",
+                keep.clone().unwrap_or_else(|| "<none>".into())
+            ),
+        );
+        set_drive_items(state, [None, None, keep]);
+    }
+    if matches!(operation, "restore-data" | "create-secondary") {
         // 目标若还停在初始默认的系统盘（B/C 都禁止的目标），自动跳到第一个
         // 合法卷：B=非系统且非 Windows 卷；C=非系统卷。找不到就保持原样，
         // 由「创建任务」时的目标闸门给出明确报错（不做静默猜测）。
@@ -2093,10 +2116,61 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     UpdateWindow(state.root);
 }
 
+/// C 入口（新增非 C 盘第二系统）目标卷枚举视图：排除当前系统盘。
+///
+/// combo 索引与 `state.drives` 索引的默认映射是恒等的；过滤开启后所有
+/// CB_GETCURSEL/CB_SETCURSEL 都必须经本视图换算，否则 combo 索引会错位到
+/// 别的卷——「选了 E: 实际写到 F:」比不过滤更危险。返回 None = 不过滤
+/// （恒等映射，其余入口保持原行为）。
+unsafe fn target_combo_indices(state: &State) -> Option<Vec<usize>> {
+    if selected_operation(state) != "create-secondary" {
+        return None;
+    }
+    let system = active_system_letter();
+    Some(
+        state
+            .drives
+            .iter()
+            .enumerate()
+            .filter(|(_, drive)| !drive.letter.eq_ignore_ascii_case(&system))
+            .map(|(index, _)| index)
+            .collect(),
+    )
+}
+
+/// 目标 combo 在当前入口下的期望项数（与 set_drive_items 填充结果对称）：
+/// 入口视图空/无卷时下拉里是 1 个占位提示项，否则等于视图大小。
+unsafe fn target_combo_expected_count(state: &State) -> usize {
+    match target_combo_indices(state) {
+        Some(view) if !view.is_empty() => view.len(),
+        Some(_) => 1,
+        None if state.drives.is_empty() => 1,
+        None => state.drives.len(),
+    }
+}
+
+/// 盘符 → target combo 项索引（经过滤视图换算；view=None 直查 drives）。
+fn drive_combo_position(view: Option<&[usize]>, state: &State, letter: &str) -> Option<usize> {
+    match view {
+        Some(view) => view
+            .iter()
+            .copied()
+            .position(|index| state.drives[index].letter == letter),
+        None => state.drives.iter().position(|drive| drive.letter == letter),
+    }
+}
+
 unsafe fn selected_drive_letter(state: &State, control: Hwnd) -> Option<String> {
-    combo_selection(control)
-        .and_then(|index| state.drives.get(index))
-        .map(|drive| drive.letter.clone())
+    let index = combo_selection(control)?;
+    let drive_index = if control == state.controls.target {
+        match target_combo_indices(state) {
+            Some(view) => *view.get(index)?,
+            None => index,
+        }
+    } else {
+        index
+    };
+    state.drives.get(drive_index).map(|drive| drive.letter.clone())
 }
 
 fn drive_display(drive: &DriveInfo, language: Language) -> String {
@@ -2213,9 +2287,6 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
         (Language::Chinese, "source", "restore-existing") => {
             "源卷用途：当前要替换的 Windows 分区；单系统还原会强制目标卷与它相同。"
         }
-        (Language::Chinese, "source", "create-secondary") => {
-            "源卷用途：当前保留不覆盖的 Windows 分区；新增第二系统时目标卷必须与它不同。"
-        }
         (Language::Chinese, "source", _) => {
             "源卷用途：探测时只核验当前 Windows 分区身份；不会备份、还原或写入。"
         }
@@ -2226,7 +2297,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "目标卷用途：接收数据卷镜像。默认勾选「格式化目标分区」=清空后写入（卷序列号改变）；取消勾选=覆盖式应用（多余文件保留）。不能选当前系统盘或已有 Windows 的分区。"
         }
         (Language::Chinese, "target", "create-secondary") => {
-            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项，完成后默认启动项切换为这台新系统（原系统仍可选）。必须不同于当前系统盘。"
+            "目标卷用途：将被格式化并写入完整 Windows 作为第二系统，新增启动菜单项，完成后默认启动项切换为这台新系统（原系统仍可选）。下拉列表已排除当前系统盘（C:）。"
         }
         (Language::Chinese, "target", "backup") => {
             "目标卷用途：备份模式不会写入此卷；镜像保存位置由“镜像绝对路径”决定。"
@@ -2240,9 +2311,6 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
         (Language::English, "source", "restore-existing") => {
             "Purpose: current Windows partition to replace; single-system restore forces target to match it."
         }
-        (Language::English, "source", "create-secondary") => {
-            "Purpose: kept untouched during deployment; the secondary target must differ from it."
-        }
         (Language::English, "source", _) => {
             "Purpose: probe only checks the current Windows volume identity; it never writes the volume."
         }
@@ -2253,7 +2321,7 @@ fn drive_role_description(role: &str, operation: &str, language: Language) -> &'
             "Purpose: receives the data-volume image. 'Format target volume' checked (default) = erase then write (serial changes); unchecked = overlay apply. Never the system drive or an existing Windows partition."
         }
         (Language::English, "target", "create-secondary") => {
-            "Purpose: formatted and written as a second Windows with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable). Must differ from the system drive."
+            "Purpose: formatted and written as a second Windows with a new boot entry; after the restore the default boot entry switches to this new system (the previous system stays selectable). The dropdown already excludes the current system drive (C:)."
         }
         (Language::English, "target", "backup") => {
             "Purpose: backup does not write this volume; image storage comes from Image absolute path."
@@ -2311,40 +2379,91 @@ unsafe fn set_drive_details(state: &State) {
 }
 
 unsafe fn set_drive_items(state: &State, desired: [Option<String>; 3]) {
-    let controls = [state.controls.source, state.controls.target];
-    for control in controls {
-        reset_combo(control);
-        if state.drives.is_empty() {
-            add_combo_item(
-                control,
-                if selected_language(state) == Language::English {
-                    "No eligible mounted volume"
-                } else {
-                    "没有可选择的已挂载卷"
-                },
-            );
-            SendMessageW(control, CB_SETCURSEL, 0, 0);
-            continue;
-        }
+    // 源卷：全量枚举（备份入口选备份来源；还原类不读它的选择）。
+    reset_combo(state.controls.source);
+    if state.drives.is_empty() {
+        add_combo_item(
+            state.controls.source,
+            if selected_language(state) == Language::English {
+                "No eligible mounted volume"
+            } else {
+                "没有可选择的已挂载卷"
+            },
+        );
+        SendMessageW(state.controls.source, CB_SETCURSEL, 0, 0);
+    } else {
         for drive in &state.drives {
-            add_combo_item(control, &drive_display(drive, selected_language(state)));
+            add_combo_item(
+                state.controls.source,
+                &drive_display(drive, selected_language(state)),
+            );
         }
     }
-    for (control, wanted) in controls.into_iter().zip(desired.into_iter().skip(1)) {
+    // 目标卷：C 入口排除当前系统盘（combo 索引经 target_combo_indices 换算）。
+    let target_view = target_combo_indices(state);
+    let target_positions: Vec<usize> = match &target_view {
+        Some(view) if !view.is_empty() => view.clone(),
+        // 唯一卷恰是当前系统盘：明确告知排除规则，不留静默空 combo。
+        Some(_) => Vec::new(),
+        None => (0..state.drives.len()).collect(),
+    };
+    reset_combo(state.controls.target);
+    if state.drives.is_empty() {
+        add_combo_item(
+            state.controls.target,
+            if selected_language(state) == Language::English {
+                "No eligible mounted volume"
+            } else {
+                "没有可选择的已挂载卷"
+            },
+        );
+        SendMessageW(state.controls.target, CB_SETCURSEL, 0, 0);
+    } else if target_positions.is_empty() {
+        add_combo_item(
+            state.controls.target,
+            if selected_language(state) == Language::English {
+                "No eligible target (current system drive excluded)"
+            } else {
+                "没有可选目标卷（已排除当前系统盘）"
+            },
+        );
+        SendMessageW(state.controls.target, CB_SETCURSEL, 0, 0);
+    } else {
+        for &drive_index in &target_positions {
+            add_combo_item(
+                state.controls.target,
+                &drive_display(&state.drives[drive_index], selected_language(state)),
+            );
+        }
+    }
+    for (control, wanted, view) in [
+        (state.controls.source, desired[1].clone(), None),
+        (state.controls.target, desired[2].clone(), target_view.as_deref()),
+    ] {
         let position = wanted
-            .and_then(|letter| state.drives.iter().position(|drive| drive.letter == letter))
+            .as_deref()
+            .and_then(|letter| drive_combo_position(view, state, letter))
             .unwrap_or(0);
-        SendMessageW(control, CB_SETCURSEL, position, 0);
+        SendMessageW(control, CB_SETCURSEL, position as usize, 0);
     }
 }
 
 unsafe fn select_drive(state: &State, control: Hwnd, letter: &str) {
-    if let Some(position) = state
-        .drives
-        .iter()
-        .position(|drive| drive.letter.eq_ignore_ascii_case(letter))
-    {
-        SendMessageW(control, CB_SETCURSEL, position, 0);
+    let position = if control == state.controls.target {
+        // C 入口过滤后 combo 索引经视图换算；视图里找不到就保持不动
+        // （绝不可回退到全量索引——那会选中错误的分区）。
+        target_combo_indices(state).as_deref().and_then(|view| {
+            view.iter()
+                .position(|&index| state.drives[index].letter.eq_ignore_ascii_case(letter))
+        })
+    } else {
+        state
+            .drives
+            .iter()
+            .position(|drive| drive.letter.eq_ignore_ascii_case(letter))
+    };
+    if let Some(position) = position {
+        SendMessageW(control, CB_SETCURSEL, position as usize, 0);
     }
 }
 
@@ -4587,12 +4706,9 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         }
     }
     if let Some(vol) = json.get("target_volume").and_then(|v| v.as_str()) {
-        if let Some(pos) = state
-            .drives
-            .iter()
-            .position(|d| d.letter.eq_ignore_ascii_case(vol))
-        {
-            SendMessageW(state.controls.target, CB_SETCURSEL, pos, 0);
+        let view = target_combo_indices(state);
+        if let Some(pos) = drive_combo_position(view.as_deref(), state, vol) {
+            SendMessageW(state.controls.target, CB_SETCURSEL, pos as usize, 0);
             append_gui_log(state, &format!("test hook: target={vol} pos={pos}"));
         } else {
             append_gui_log(state, &format!("test hook: target vol {vol} not found"));
