@@ -719,6 +719,9 @@ unsafe fn install_tooltips(state: &mut State) {
         ),
         (state.controls.source, "source"),
         (state.controls.target, "target"),
+        (state.controls.source_details, "source_details"),
+        (state.controls.target_details, "target_details"),
+        (state.controls.status, "status"),
         (state.controls.image, "image"),
         (state.controls.index, "index"),
         (state.controls.menu, "menu"),
@@ -792,6 +795,15 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "source") => "选择备份来源或当前 Windows 分区；身份按 GUID 校验。",
         (Language::Chinese, "target") => "还原时将被格式化的目标分区；备份和探测模式不使用。",
+        (Language::Chinese, "source_details") => {
+            "显示所选源卷的详细信息：卷标、文件系统、容量、分区位置与卷 GUID（身份校验按 GUID 而非盘符，同一分区换盘符仍能认出）。"
+        }
+        (Language::Chinese, "target_details") => {
+            "显示所选目标卷的详细信息：卷标、文件系统、剩余空间、分区位置与卷 GUID。还原/新增第二系统前请确认这就是要操作的分区——目标卷会被格式化，数据全部丢失。"
+        }
+        (Language::Chinese, "status") => {
+            "实时显示当前环境信息（Windows 版本、恢复环境状态、可用卷数量）与最近一次操作的结果提示；操作前后的校验结论也显示在这里。"
+        }
         (Language::Chinese, "image") => {
             "镜像文件必须是绝对路径，例如 B:\\BackupRestore\\Windows.wim。"
         }
@@ -873,6 +885,15 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "target") => {
             "Restore target to be formatted; unused by backup and inspect."
+        }
+        (Language::English, "source_details") => {
+            "Detailed information of the selected source volume: label, file system, size, partition location and volume GUID (identity is matched by GUID, not drive letter, so a partition is still recognized after its letter changes)."
+        }
+        (Language::English, "target_details") => {
+            "Detailed information of the selected target volume: label, file system, free space, partition location and volume GUID. Confirm this is the right partition before restoring / adding a second system - the target volume is formatted and all data on it is lost."
+        }
+        (Language::English, "status") => {
+            "Live environment information (Windows build, recovery environment status, number of eligible volumes) plus the result of the most recent action; validation verdicts before/after operations also appear here."
         }
         (Language::English, "image") => {
             "The image file must be an absolute path, such as B:\\BackupRestore\\Windows.wim."
@@ -3241,6 +3262,8 @@ unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) -> i32 {
 const ID_CHOICE_CHOOSE_LOCATION: usize = 3001;
 const ID_CHOICE_PATH_CANCEL: usize = 3002;
 static INVALID_PATH_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 「镜像路径」提示框的触发原因：true=用户根本没输入（空串），false=输入了但不合法。
+static INVALID_PATH_EMPTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "system" fn window_proc_invalid_path_choice(
     hwnd: Hwnd,
@@ -3250,14 +3273,16 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
 ) -> LResult {
     if message == WM_CREATE {
         let english = INVALID_PATH_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
+        let empty = INVALID_PATH_EMPTY.load(std::sync::atomic::Ordering::SeqCst);
         let font = GetStockObject(DEFAULT_GUI_FONT) as Handle;
         let body = create_control(
             hwnd,
             "STATIC",
-            if english {
-                "The image absolute path is invalid or has not been specified.\n\nPlease click [Choose image location] to select a file, or [Cancel] to return."
-            } else {
-                "镜像绝对路径无效或尚未指定。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。"
+            match (english, empty) {
+                (true, true) => "The image absolute path has not been entered yet.\n\nClick [Choose image location] to select a file, or [Cancel] to return.",
+                (true, false) => "The image absolute path is invalid.\n\nClick [Choose image location] to select a file, or [Cancel] to return.",
+                (false, true) => "尚未输入镜像绝对路径。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
+                (false, false) => "镜像绝对路径无效。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
             },
             0,
             30,
@@ -3328,9 +3353,10 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
     DefWindowProcW(hwnd, message, w_param, l_param)
 }
 
-/// 路径不合法时弹出的模态对话框，提供【选择镜像位置】与【取消】两个按钮。
-/// 返回 1=选择镜像位置，0=取消。
-unsafe fn ask_invalid_image_path(hwnd: Hwnd, language: Language) -> i32 {
+/// 镜像路径为空或不合法时弹出的模态对话框（不用错误图标报错，改为引导式提示），
+/// 提供【选择镜像位置】与【取消】两个按钮。返回 1=选择镜像位置，0=取消。
+/// `empty` = 用户根本没输入路径（文案「没有输入镜像路径」）；否则为「镜像路径无效」。
+unsafe fn ask_invalid_image_path(hwnd: Hwnd, language: Language, empty: bool) -> i32 {
     let instance = GetModuleHandleW(null());
     let class_name = wide("BackupRestoreInvalidPathChoice");
     let class = WndClassExW {
@@ -3354,10 +3380,12 @@ unsafe fn ask_invalid_image_path(hwnd: Hwnd, language: Language) -> i32 {
         if language == Language::English { 1 } else { 0 },
         std::sync::atomic::Ordering::SeqCst,
     );
-    let caption = wide(if language == Language::English {
-        "Invalid image path"
-    } else {
-        "镜像路径无效"
+    INVALID_PATH_EMPTY.store(empty, std::sync::atomic::Ordering::SeqCst);
+    let caption = wide(match (language, empty) {
+        (Language::English, true) => "No image path entered",
+        (Language::English, false) => "Invalid image path",
+        (Language::Chinese, true) => "没有输入镜像路径",
+        (Language::Chinese, false) => "镜像路径无效",
     });
     let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
     let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
@@ -4316,24 +4344,48 @@ unsafe fn read_image(state: &mut State) {
         &format!("GUI action started: read WIM metadata; image={image_path}"),
     );
     if let Err(error) = backuprestore_core::validate_absolute_path(&image_path) {
+        let kind = if image_path.is_empty() { "empty" } else { "invalid" };
         append_gui_log(
             state,
-            &format!("GUI action blocked: invalid WIM path: {error}"),
+            &format!(
+                "GUI read WIM blocked: path kind={kind} detail={error}; guidance dialog opened"
+            ),
         );
-        show_message(
-            state.root,
+        set_text(
+            state.controls.status,
             &if language == Language::English {
-                format!("Invalid image absolute path: {error}")
+                if image_path.is_empty() {
+                    "No image path entered. Choose [Choose image location] to pick a file, or [Cancel] to return.".to_string()
+                } else {
+                    "The image absolute path is invalid. Choose [Choose image location] to pick a file, or [Cancel] to return.".to_string()
+                }
+            } else if image_path.is_empty() {
+                "尚未输入镜像绝对路径。请点击【选择镜像位置】选择文件，或点击【取消】返回。".to_string()
             } else {
-                format!("镜像绝对路径无效：{error}")
+                "镜像绝对路径无效。请点击【选择镜像位置】选择文件，或点击【取消】返回。".to_string()
             },
-            if language == Language::English {
-                "Validation failed"
-            } else {
-                "参数校验失败"
-            },
-            MB_OK | MB_ICONERROR,
         );
+        // 与「创建任务」同一套引导：空/非法路径弹提示框（非错误图标），
+        // 提供【选择镜像位置】/【取消】；选浏览则回填后自动重读 WIM。
+        let choice = ask_invalid_image_path(state.root, language, image_path.is_empty());
+        append_gui_log(
+            state,
+            &format!("GUI read WIM guidance: user choice={choice} (1=browse 0=cancel)"),
+        );
+        if choice == 1 {
+            browse_image(state);
+            let updated = get_text(state.controls.image).trim().to_string();
+            let valid = backuprestore_core::validate_absolute_path(&updated).is_ok();
+            append_gui_log(
+                state,
+                &format!("GUI browse returned: updated={updated} valid={valid}"),
+            );
+            if valid {
+                read_image(state);
+            } else {
+                SetFocus(state.controls.image);
+            }
+        }
         return;
     }
     let output = match rust_cli_output(&["wim-info", &image_path]) {
@@ -6362,16 +6414,44 @@ unsafe fn create_task(state: &mut State) {
     if operation != "probe"
         && let Err(error) = backuprestore_core::validate_absolute_path(&image_path)
     {
+        let kind = if image_path.is_empty() { "empty" } else { "invalid" };
         append_gui_log(
             state,
-            &format!("GUI action blocked: invalid image path: {error}"),
+            &format!(
+                "GUI image path check: kind={kind} detail={error}; guidance dialog opened"
+            ),
         );
-        let choice = ask_invalid_image_path(state.root, language);
+        set_text(
+            state.controls.status,
+            &if language == Language::English {
+                if image_path.is_empty() {
+                    "No image path entered. Choose [Choose image location] to pick a file, or [Cancel] to return.".to_string()
+                } else {
+                    "The image absolute path is invalid. Choose [Choose image location] to pick a file, or [Cancel] to return.".to_string()
+                }
+            } else if image_path.is_empty() {
+                "尚未输入镜像绝对路径。请点击【选择镜像位置】选择文件，或点击【取消】返回。".to_string()
+            } else {
+                "镜像绝对路径无效。请点击【选择镜像位置】选择文件，或点击【取消】返回。".to_string()
+            },
+        );
+        // 空路径与非法路径分别用不同文案引导，均提供【选择镜像位置】/【取消】
+        // （用户 2026-10-18 要求：不要弹错误图标报错，改成提示 + 浏览 + 取消）。
+        let choice = ask_invalid_image_path(state.root, language, image_path.is_empty());
+        append_gui_log(
+            state,
+            &format!("GUI image path guidance: user choice={choice} (1=browse 0=cancel)"),
+        );
         if choice == 1 {
             // 用户点击【选择镜像位置】：立即弹出文件浏览窗口
             browse_image(state);
             let updated = get_text(state.controls.image).trim().to_string();
-            if backuprestore_core::validate_absolute_path(&updated).is_ok() {
+            let valid = backuprestore_core::validate_absolute_path(&updated).is_ok();
+            append_gui_log(
+                state,
+                &format!("GUI browse returned: updated={updated} valid={valid}"),
+            );
+            if valid {
                 set_text(
                     btn_task,
                     if language == Language::English {
