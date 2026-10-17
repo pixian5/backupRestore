@@ -3154,6 +3154,8 @@ fn recover_windows(
                 minimum_target_size: context_u64("MINIMUM_TARGET_SIZE", source_partition_size),
                 volume_serial: source_volume_serial,
                 program_version: PROGRAM_VERSION.into(),
+                // 与 DISM /Name 的有效索引名一致，供 sidecar 快速路径呈现真名
+                image_name: Some(image_name),
             };
             previous_metadata.insert(new_index, metadata.clone());
             backuprestore_core::image_metadata::write_sidecars(

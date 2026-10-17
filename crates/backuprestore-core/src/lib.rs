@@ -561,6 +561,12 @@ pub struct BackupMetadata {
     pub minimum_target_size: u64,
     pub volume_serial: String,
     pub program_version: String,
+    /// DISM `/Name` 真正写进 WIM 的索引名（备份时的有效名，空 image_name 时
+    /// 备份侧记为 "Windows Backup"）。旧版副档（2.6.15 及以前）没有此字段，
+    /// 读取侧据此回退 DISM 取真名——不得用占位名冒充（占位名会经 GUI 预填
+    /// 流进 BCD 描述，2026-10-18 阶段3 实测踩坑）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_name: Option<String>,
 }
 impl BackupMetadata {
     pub fn required_target_size(&self) -> u64 {
@@ -2528,6 +2534,7 @@ mod tests {
             minimum_target_size: 90,
             volume_serial: "x".into(),
             program_version: "0.0.0".into(),
+            image_name: None,
         };
         assert_eq!(metadata.required_target_size(), 100);
         assert!(ensure_capacity(99, &metadata).is_err());

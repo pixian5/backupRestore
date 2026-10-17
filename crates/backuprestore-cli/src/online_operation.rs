@@ -1257,6 +1257,9 @@ pub(crate) fn capture(
             minimum_target_size: source_size,
             volume_serial: serial,
             program_version: backuprestore_core::PROGRAM_VERSION.into(),
+            // 记录 DISM /Name 的有效索引名：sidecar 快速路径直接用它呈现，
+            // 不再合成 "Windows Backup (index N)" 占位名冒充镜像真名。
+            image_name: Some(name.to_string()),
         },
     );
     log(log_path, "STEP 3/4 保留策略、索引回读和最终哈希校验")?;

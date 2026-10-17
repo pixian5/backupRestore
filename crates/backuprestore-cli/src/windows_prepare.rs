@@ -351,6 +351,90 @@ mod environment_tests {
     }
 }
 
+#[cfg(test)]
+mod sidecar_name_tests {
+    use super::sidecar_image_name;
+
+    #[test]
+    fn sidecar_image_name_fallback_chain() {
+        // 副档记了真名：直接采用（2.6.16 起备份必记）
+        assert_eq!(
+            sidecar_image_name(Some("Windows 11 26200.9550 20261018"), 1, None),
+            "Windows 11 26200.9550 20261018"
+        );
+        // 副档空白 + DISM 真名：用 DISM
+        assert_eq!(sidecar_image_name(Some("  "), 1, Some("Real")), "Real");
+        // 旧副档无此字段 + DISM 真名：用 DISM
+        assert_eq!(sidecar_image_name(None, 2, Some("Real")), "Real");
+        // 两者皆无：才落占位名，且带对索引号
+        assert_eq!(
+            sidecar_image_name(None, 3, None),
+            "Windows Backup (index 3)"
+        );
+        assert_eq!(
+            sidecar_image_name(None, 3, Some(" ")),
+            "Windows Backup (index 3)"
+        );
+    }
+}
+
+/// sidecar 索引名的回退链：副档记录 → DISM 真名 → 占位名。
+/// 占位名只允许出现在「副档没记、DISM 也没问到」的极端情况；正常情况下
+/// 调用方（GUI 下拉、BCD 描述预填）拿到的是前两者之一。
+fn clean_sidecar_name(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|name| !name.is_empty())
+}
+
+fn sidecar_image_name(recorded: Option<&str>, index: u32, dism_name: Option<&str>) -> String {
+    if let Some(name) = clean_sidecar_name(recorded) {
+        return name.to_string();
+    }
+    if let Some(name) = clean_sidecar_name(dism_name) {
+        return name.to_string();
+    }
+    format!("Windows Backup (index {index})")
+}
+
+/// 任一索引缺少副档记录的索引名时，用一次 `/Get-WimInfo` 补齐（返回 索引→真名）。
+/// DISM 失败不致命：退回占位名（与修复前行为一致），wim_info 的整体契约是「尽力呈现」。
+fn sidecar_dism_names(
+    image_path: &str,
+    entries: &[(u32, backuprestore_core::BackupMetadata)],
+) -> Result<std::collections::HashMap<u32, String>, TaskError> {
+    let needs = entries.iter().any(|(_, meta)| {
+        meta.image_name
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    });
+    if !needs {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut names = std::collections::HashMap::new();
+    if let Ok(output) = capture(
+        "dism.exe",
+        &[
+            "/English",
+            "/Get-WimInfo",
+            &format!("/WimFile:{image_path}"),
+        ],
+    ) && let Ok(parsed) = parse_dism_images(&output)
+    {
+        for image in &parsed {
+            let index = image.get("ImageIndex").and_then(|v| v.as_u64());
+            let name = image
+                .get("ImageName")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+            if let (Some(index), Some(name)) = (index, name) {
+                names.insert(index as u32, name.to_string());
+            }
+        }
+    }
+    Ok(names)
+}
+
 pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskError> {
     use backuprestore_core::read_json;
 
@@ -391,14 +475,22 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
         if !sidecar_entries.is_empty() {
             // 按索引号升序排列
             sidecar_entries.sort_by_key(|(idx, _)| *idx);
-            // 用 sidecar 数据直接输出，无需启动 DISM 或读取 WIM
+            // 老副档（2.6.15 及以前备份）没有 image_name 字段：问一次 DISM 拿真名。
+            // 只读 WIM 目录（/Get-WimInfo 不解压镜像内容），新副档不受影响。
+            let dism_names = sidecar_dism_names(&image_path, &sidecar_entries)?;
+            // 用 sidecar 数据直接输出；索引名优先取副档记录，其次 DISM 真名
             let images: Vec<serde_json::Value> = sidecar_entries
                 .iter()
                 .map(|(idx, meta)| {
+                    let display_name = sidecar_image_name(
+                        meta.image_name.as_deref(),
+                        *idx,
+                        dism_names.get(idx).map(String::as_str),
+                    );
                     json!({
                         // 标准 DISM 字段（大驼峰，保证 GUI 及现有解析器无缝识别）
                         "ImageIndex": idx,
-                        "ImageName": format!("Windows Backup (index {})", idx),
+                        "ImageName": display_name.clone(),
                         "ImageSize": meta.image_size,
                         "ImageDescription": format!("Computer: {}, Build: {}", meta.computer, meta.windows_build),
                         "ImageVersion": meta.windows_build,
@@ -407,7 +499,7 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
                         "InstallationType": "Client",
                         // 扩展字段（小驼峰，供现代 CLI/sidecar 特性使用）
                         "index": idx,
-                        "name": format!("Windows Backup (index {})", idx),
+                        "name": display_name,
                         "imageSize": meta.image_size,
                         "sha256": meta.image_sha256,
                         "createdAt": meta.created,

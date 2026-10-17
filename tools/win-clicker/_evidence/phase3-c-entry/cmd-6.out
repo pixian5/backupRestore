@@ -1,0 +1,2662 @@
+
+固件启动管理器
+---------------------
+标识符                  {a5a30fa2-3d06-4e9f-b5f4-a01df9d1fcba}
+displayorder            {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+                        {183260a9-c6ee-11f1-b477-806e6f6e6963}
+                        {68321b05-c7cd-11f1-b35f-806e6f6e6963}
+                        {183260a8-c6ee-11f1-b477-806e6f6e6963}
+                        {183260ad-c6ee-11f1-b477-806e6f6e6963}
+                        {7b9becb0-c9ab-11f1-92a8-806e6f6e6963}
+                        {183260aa-c6ee-11f1-b477-806e6f6e6963}
+                        {183260ab-c6ee-11f1-b477-806e6f6e6963}
+timeout                 0
+
+Windows 启动管理器
+--------------------
+标识符                  {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=S:
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-us
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+default                 {e9da2caf-ca71-11f1-8996-bf36f1146d2e}
+resumeobject            {72447cbb-c905-11f1-821e-94dfab58078e}
+displayorder            {e9da2caf-ca71-11f1-8996-bf36f1146d2e}
+                        {72447cbc-c905-11f1-821e-94dfab58078e}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 10
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {183260a8-c6ee-11f1-b477-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {183260a9-c6ee-11f1-b477-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {183260aa-c6ee-11f1-b477-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {183260ab-c6ee-11f1-b477-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {183260ad-c6ee-11f1-b477-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {68321b05-c7cd-11f1-b35f-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601119-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660111a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660111b-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660111c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660111d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660111e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660111f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601120-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601121-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601122-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601123-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601124-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601125-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601126-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601127-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601128-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601129-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660112a-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660112b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660112c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660112d-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660112e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660112f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601130-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601131-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601132-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601133-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601134-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601135-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601136-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601137-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601138-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601139-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660113a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660113b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660113c-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660113d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660113e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660113f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601140-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601141-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601142-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601143-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601144-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601145-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601146-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601147-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601148-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601149-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660114a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660114b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660114c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660114d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660114e-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660114f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601150-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601151-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601152-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601153-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601154-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601155-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601156-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601157-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601158-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601159-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660115a-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660115b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660115c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660115d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660115e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660115f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601160-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601161-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601162-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601163-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601164-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601165-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601166-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601167-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601168-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601169-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660116a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660116b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660116c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660116d-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660116e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660116f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601170-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601171-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601172-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601173-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601174-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601175-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601176-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601177-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601178-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601179-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660117a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660117b-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660117c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660117d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660117e-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660117f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601180-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601181-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601182-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601183-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601184-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601185-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601186-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601187-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601188-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601189-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660118a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660118b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660118c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660118d-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660118e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660118f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601190-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601191-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601192-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601193-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601194-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601195-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601196-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601197-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601198-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601199-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660119a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660119b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660119c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660119d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660119e-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660119f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a2-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a8-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011a9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011aa-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ab-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ac-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ad-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ae-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011af-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b1-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b5-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011b9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ba-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011bb-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011bc-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011bd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011be-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011bf-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c3-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c6-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011c9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ca-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011cb-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011cc-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011cd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ce-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011cf-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d0-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d5-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d8-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011d9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011da-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011db-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011dc-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011dd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011de-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011df-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e1-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e6-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011e9-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ea-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011eb-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ec-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ed-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ee-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ef-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f2-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f7-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011f9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011fa-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011fb-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011fc-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011fd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011fe-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766011ff-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601200-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601201-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601202-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601203-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601204-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601205-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601206-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601207-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601208-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601209-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660120a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660120b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660120c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660120d-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660120e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660120f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601210-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601211-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601212-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601213-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601214-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601215-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601216-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601217-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601218-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601219-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660121a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660121b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660121c-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660121d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660121e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660121f-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601220-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601221-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601222-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601223-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601224-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601225-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601226-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601227-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601228-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601229-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660122a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660122b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660122c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660122d-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660122e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660122f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601230-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601231-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601232-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601233-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601234-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601235-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601236-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601237-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601238-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601239-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660123a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660123b-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660123c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660123d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660123e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660123f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601240-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601241-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601242-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601243-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601244-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601245-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601246-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601247-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601248-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601249-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660124a-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660124b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660124c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660124d-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660124e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660124f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601250-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601251-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601252-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601253-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601254-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601255-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601256-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601257-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601258-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601259-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660125a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660125b-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660125c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660125d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660125e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660125f-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601260-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601261-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601262-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601263-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601264-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601265-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601266-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601267-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601268-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601269-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660126a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660126b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660126c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660126d-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660126e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660126f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601270-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601271-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601272-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601273-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601274-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601275-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601276-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601277-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601278-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601279-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660127a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660127b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660127c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660127d-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660127e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660127f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601280-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601281-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601282-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601283-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601284-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601285-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601286-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601287-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601288-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601289-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660128a-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660128b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660128c-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660128d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660128e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660128f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601290-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601291-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601292-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601293-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601294-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601295-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601296-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601297-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601298-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601299-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660129a-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660129b-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660129c-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660129d-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660129e-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7660129f-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a2-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a6-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012a9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012aa-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ab-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ac-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ad-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ae-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012af-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b4-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b7-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012b9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ba-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012bb-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012bc-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012bd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012be-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012bf-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c4-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c8-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012c9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ca-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012cb-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012cc-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012cd-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ce-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012cf-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d1-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d7-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012d9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012da-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012db-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012dc-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012dd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012de-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012df-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e2-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e3-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e5-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012e9-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ea-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012eb-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ec-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ed-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ee-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ef-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f0-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f1-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f2-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f3-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f4-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f5-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f6-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f7-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f8-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012f9-c96c-11f1-8993-806e6f6e6963}
+description             UEFI BR217-secondary Q5X9ZQ0VPAKMZDRZT2RA
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012fa-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012fb-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012fc-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012fd-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk SSD YAX4SSCGKFHM9FJYJ9G6
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012fe-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk1 SSD B6KMC5D6D1TM52SMP18Z
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {766012ff-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601300-c96c-11f1-8993-806e6f6e6963}
+description             No OS found
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601301-c96c-11f1-8993-806e6f6e6963}
+description             UEFI Shell
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601302-c96c-11f1-8993-806e6f6e6963}
+description             UEFI harddisk2 SSD SAAAT07N98D4XAVSQ4ZT
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {76601303-c96c-11f1-8993-806e6f6e6963}
+description             UiApp
+
+固件应用程序(101fffff)
+-------------------------------
+标识符                  {7b9becb0-c9ab-11f1-92a8-806e6f6e6963}
+description             UEFI Virtual DVD-ROM 
+
+Windows 启动加载器
+-------------------
+标识符                  {0cec537a-c913-11f1-8987-86bb9001dde7}
+device                  ramdisk=[C:]\Recovery\WindowsRE\Winre.wim,{0cec537b-c913-11f1-8987-86bb9001dde7}
+path                    \windows\system32\winload.efi
+description             Windows Recovery Environment
+locale                  en-us
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+displaymessage          Recovery
+osdevice                ramdisk=[C:]\Recovery\WindowsRE\Winre.wim,{0cec537b-c913-11f1-8987-86bb9001dde7}
+systemroot              \windows
+nx                      OptIn
+bootmenupolicy          Standard
+winpe                   Yes
+custom:46000010         Yes
+
+Windows 启动加载器
+-------------------
+标识符                  {72447cbc-c905-11f1-821e-94dfab58078e}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             本次还原的 Windows
+locale                  en-us
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+recoverysequence        {0cec537a-c913-11f1-8987-86bb9001dde7}
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {72447cbb-c905-11f1-821e-94dfab58078e}
+nx                      OptIn
+bootmenupolicy          Standard
+
+Windows 启动加载器
+-------------------
+标识符                  {e9da2caf-ca71-11f1-8996-bf36f1146d2e}
+device                  partition=F:
+path                    \Windows\system32\winload.efi
+description             Windows 11
+locale                  en-us
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=F:
+systemroot              \Windows
+resumeobject            {e9da2cae-ca71-11f1-8996-bf36f1146d2e}
+nx                      OptIn
+bootmenupolicy          Standard
+
+从休眠状态恢复
+---------------------
+标识符                  {72447cbb-c905-11f1-821e-94dfab58078e}
+device                  partition=C:
+path                    \Windows\system32\winresume.efi
+description             Windows Resume Application
+locale                  en-us
+inherit                 {1afa9c49-16ab-4a5c-901b-212802da9460}
+recoverysequence        {0cec537a-c913-11f1-8987-86bb9001dde7}
+recoveryenabled         Yes
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+filedevice              partition=C:
+custom:21000026         partition=C:
+filepath                \hiberfil.sys
+bootmenupolicy          Standard
+debugoptionenabled      No
+
+从休眠状态恢复
+---------------------
+标识符                  {e9da2cae-ca71-11f1-8996-bf36f1146d2e}
+device                  partition=F:
+path                    \Windows\system32\winresume.efi
+description             Windows Resume Application
+locale                  en-us
+inherit                 {1afa9c49-16ab-4a5c-901b-212802da9460}
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+filepath                \hiberfil.sys
+bootmenupolicy          Standard
+
+Windows 内存测试程序
+---------------------
+标识符                  {b2721d73-1db4-4c62-bf78-c548a880142d}
+device                  partition=S:
+path                    \EFI\Microsoft\Boot\memtest.efi
+description             Windows Memory Diagnostic
+locale                  en-us
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+badmemoryaccess         Yes
+
+EMS 设置
+------------
+标识符                  {0ce4991b-e6b3-4b16-b23c-5e0d9250e5d9}
+bootems                 No
+
+调试器设置
+-----------------
+标识符                  {4636856e-540f-4170-a130-a84776f4c654}
+debugtype               Local
+
+RAM 故障
+-----------
+标识符                  {5189b25c-5558-4bf2-bca4-289b11bd29e2}
+
+全局设置
+---------------
+标识符                  {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+inherit                 {4636856e-540f-4170-a130-a84776f4c654}
+                        {0ce4991b-e6b3-4b16-b23c-5e0d9250e5d9}
+                        {5189b25c-5558-4bf2-bca4-289b11bd29e2}
+
+启动加载器设置
+--------------------
+标识符                  {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+                        {7ff607e0-4395-11db-b0de-0800200c9a66}
+
+虚拟机监控程序设置
+-------------------
+标识符                  {7ff607e0-4395-11db-b0de-0800200c9a66}
+hypervisordebugtype     Serial
+hypervisordebugport     1
+hypervisorbaudrate      115200
+
+恢复加载器设置
+----------------------
+标识符                  {1afa9c49-16ab-4a5c-901b-212802da9460}
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+
+设备选项
+--------------
+标识符                  {0cec537b-c913-11f1-8987-86bb9001dde7}
+description             Windows Recovery
+ramdisksdidevice        partition=C:
+ramdisksdipath          \Recovery\WindowsRE\boot.sdi
+
+安装程序 Ramdisk 选项
+---------------------
+标识符                  {ae5534e0-a924-466c-b836-758539a3ee3a}
+description             MyCustomPE
+ramdisksdidevice        unknown
+ramdisksdipath          \Windows\System32\Recovery\boot.sdi

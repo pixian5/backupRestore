@@ -198,6 +198,7 @@ mod tests {
             minimum_target_size: index as u64 * 1000,
             volume_serial: format!("serial-{index}"),
             program_version: "test".into(),
+            image_name: None,
         }
     }
     #[test]

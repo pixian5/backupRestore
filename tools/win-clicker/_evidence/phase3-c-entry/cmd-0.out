@@ -1,0 +1,29 @@
+
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.9549
+
+Details for image : H:\BRImages\BR-sys-20261018.wim
+
+Index : 1
+Name : Windows 11 26200.9550 20261018
+Description : <undefined>
+Size : 89,712,207,378 bytes
+WIM Bootable : No
+Architecture : arm64
+Hal : COMPUTER\Generic
+Version : 10.0.26200
+ServicePack Build : 9550
+ServicePack Level : 0
+Edition : Professional
+Installation : Client
+ProductType : WinNT
+ProductSuite : Terminal Server
+System Root : WINDOWS
+Directories : 130782
+Files : 502825
+Created : 2026/10/18 - 5:04:35
+Modified : 2026/10/18 - 5:04:36
+Languages :
+	zh-CN (Default)
+
+The operation completed successfully.
