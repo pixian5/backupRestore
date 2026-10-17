@@ -178,3 +178,4 @@ agents/
 context/
 memory/
 messages/
+main.rs
