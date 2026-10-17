@@ -43,6 +43,7 @@ const WS_POPUP: u32 = 0x80000000;
 const WS_EX_TOPMOST: u32 = 0x00000008;
 const TTS_ALWAYSTIP: u32 = 0x0001;
 const TTS_NOPREFIX: u32 = 0x0002;
+const TTS_BALLOON: u32 = 0x0040;
 const WS_VISIBLE: u32 = 0x10000000;
 const WS_CHILD: u32 = 0x40000000;
 const WS_BORDER: u32 = 0x00800000;
@@ -178,6 +179,7 @@ const EM_SETLIMITTEXT: u32 = 0x00C5;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_ELEVATION_CLASS: u32 = 20;
 const TTM_ADDTOOLW: u32 = 0x0432;
+const TTM_GETTOOLCOUNT: u32 = 0x040d;
 const TTF_IDISHWND: u32 = 0x0001;
 const TTF_SUBCLASS: u32 = 0x0010;
 const ICC_WIN95_CLASSES: u32 = 0x000000ff;
@@ -296,6 +298,12 @@ struct OpenFileNameW {
     flags_ex: u32,
 }
 
+/// 手工 mirror C 的 `TOOLINFOW`（x64，总 64 字节）。
+///
+/// **不要加 `reserved` 字段**：2026-10-18 实机抓到「tooltips installed:
+/// added=34 tool_count=0」——此前版本末尾多一个 usize reserved 使结构变成
+/// 72 字节，comctl32 按 cbSize 校验后拒绝每一次 TTM_ADDTOOLW，34 个控件
+/// 全部注册失败（而应用层毫无知觉，只因没人悬停看过一眼）。
 #[repr(C)]
 struct ToolInfoW {
     cb_size: u32,
@@ -306,7 +314,6 @@ struct ToolInfoW {
     hinst: HInstance,
     lpsz_text: *const u16,
     l_param: isize,
-    reserved: usize,
 }
 
 #[repr(C)]
@@ -668,11 +675,16 @@ struct PeDesktopState {
     tooltip: Hwnd,
 }
 
-/// GUI diagnostics follow the executable, so moving the complete program
-/// directory also moves its audit trail. A failed diagnostic write must not
-/// alter a safety check or a pending preparation operation.
-fn append_gui_log(state: &State, message: &str) {
-    let _ = super::append_log(&state.executable_dir.join("logs").join("gui.log"), message);
+/// GUI diagnostics land in the dedicated log root (see `crate::log_root`),
+/// never beside the executable: 2026-10-18 用户要求「日志放到一个不是 PE、
+/// 不是目标分区的一个地方」，而程序目录可能在系统盘/还原目标上。A failed
+/// diagnostic write must not alter a safety check or a pending preparation
+/// operation.
+///
+/// `state` 保留在签名里（调用点遍布全文件）；当前实现不再需要它——
+/// 日志根是进程级单例，与窗口状态无关。
+fn append_gui_log(_state: &State, message: &str) {
+    let _ = super::append_log(&crate::log_root::logs_dir().join("gui.log"), message);
 }
 
 unsafe fn install_tooltips(state: &mut State) {
@@ -685,7 +697,7 @@ unsafe fn install_tooltips(state: &mut State) {
         WS_EX_TOPMOST,
         tooltip_class.as_ptr(),
         null(),
-        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX | TTS_BALLOON,
         0,
         0,
         0,
@@ -696,6 +708,7 @@ unsafe fn install_tooltips(state: &mut State) {
         null_mut(),
     );
     if tooltip.is_null() {
+        append_gui_log(state, "tooltip create failed (window null)");
         return;
     }
     let language = selected_language(state);
@@ -759,10 +772,24 @@ unsafe fn install_tooltips(state: &mut State) {
             "cancel_pending",
         ),
     ];
+    let mut added = 0usize;
+    let mut missing = 0usize;
     for (control, key) in controls {
+        if control.is_null() {
+            missing += 1;
+            continue;
+        }
         let text = tooltip_text(language, key);
         add_tooltip(tooltip, state.root, control, text);
+        added += 1;
     }
+    let tool_count = SendMessageW(tooltip, TTM_GETTOOLCOUNT, 0, 0) as usize;
+    append_gui_log(
+        state,
+        &format!(
+            "tooltips installed: added={added} missing={missing} tool_count={tool_count} balloon=true"
+        ),
+    );
     // Keep the tooltip handle alive by storing it in the state object. The
     // control owns the subclass hooks and automatically tracks child bounds.
     state.tooltip = tooltip;
@@ -1167,7 +1194,6 @@ unsafe fn add_tooltip(tooltip: Hwnd, parent: Hwnd, control: Hwnd, text: &str) {
         hinst: null_mut(),
         lpsz_text: text.as_ptr(),
         l_param: 0,
-        reserved: 0,
     };
     SendMessageW(tooltip, TTM_ADDTOOLW, 0, &info as *const ToolInfoW as isize);
 }
@@ -3020,13 +3046,10 @@ const ID_CHOICE_PE: usize = 2001;
 const ID_CHOICE_RE: usize = 2002;
 const ID_CHOICE_CANCEL: usize = 2003;
 /// 系统选择对话框的日志位置：与 GUI 主日志同目录，故障时一起看。
+/// 2026-10-18 起统一走 `log_root::logs_dir()`——这里曾自己拼
+/// `<exe>\logs`，与 `append_gui_log` 各写各的，路径说变就变。
 fn system_choice_log_path() -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("logs")
-        .join("gui.log")
+    crate::log_root::logs_dir().join("gui.log")
 }
 /// 对话框文案语言：0=中文 1=English（模态期间单实例，用静态即可）。
 static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -5099,7 +5122,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
     let guid_out = guid_out.to_string_lossy().to_string();
     // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出目录先建好：下面 GUID
     // 解析失败与每个 /set 步骤失败都要把原始输出落到这里，而不是进 NUL。
-    let bcd_out_dir = state.executable_dir.join("logs");
+    let bcd_out_dir = crate::log_root::logs_dir().to_path_buf();
     let _ = log_fs(
         state,
         &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
@@ -5199,7 +5222,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
     // 此前 `run_cmd_to_file(step, None)` 把三流全部送进 NUL，失败时只剩一个
     // 退出码，而 bcdedit 的真实原因（"拒绝访问"/"找不到元素"/GUID 拼错）
     // 恰恰写在输出里。文件放在程序目录，与 `_pe-bcd-guid.txt` 同一处。
-    let bcd_out_dir = state.executable_dir.join("logs");
+    let bcd_out_dir = crate::log_root::logs_dir().to_path_buf();
     let _ = log_fs(
         state,
         &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
@@ -5486,7 +5509,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         &format!("PE hard disk install started: wim={image_path} partition={drive_char}:"),
     );
     // 不能仅依赖 diskpart 退出码：按物理分区选择、保存输出，并核对新文件系统序列号。
-    let format_log = state.executable_dir.join("pe-format.log");
+    let format_log = crate::log_root::logs_dir().join("pe-format.log");
     let format_result = (|| -> Result<(), backuprestore_core::TaskError> {
         let before = crate::windows_prepare::volume_identity(drive_char)?;
         if before.volume_serial.is_empty() {
@@ -5580,7 +5603,7 @@ unsafe fn install_pe_harddisk(state: &State) {
     // 3. BCD：建 osloader 条目（winpe/detecthal 标志齐全），加到显示顺序
     // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出目录先建好：下面
     // GUID 解析失败与每个 /set 步骤失败都要把原始输出落到这里，而不是进 NUL。
-    let bcd_out_dir = state.executable_dir.join("logs");
+    let bcd_out_dir = crate::log_root::logs_dir().to_path_buf();
     let _ = log_fs(
         state,
         &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
@@ -5671,7 +5694,7 @@ unsafe fn install_pe_harddisk(state: &State) {
     // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出落盘而不是进 NUL：
     // 此前 `run_cmd_to_file(step, None)` 把三流全送 NUL，失败只剩退出码，
     // 而 bcdedit 的真实原因（拒绝访问 / 找不到元素 / GUID 拼错）写在输出里。
-    let bcd_out_dir = state.executable_dir.join("logs");
+    let bcd_out_dir = crate::log_root::logs_dir().to_path_buf();
     let _ = log_fs(
         state,
         &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
@@ -5885,20 +5908,13 @@ unsafe fn pe_create_shortcut(state: &State) {
 /// 都没有），而 **bcdedit 的真实输出**（元素未找到 / 拒绝访问 / 参数无效）
 /// 一个字都没留下 —— 偏偏这几处的后果是**马上重启这台机器**。
 ///
-/// `state` 为 `None` 时（桌面快捷方式入口，没有主窗口）用 exe 目录自己拼
-/// 日志路径，行为一致。
+/// 日志路径统一取 `log_root::logs_dir()`（2026-10-18 用户要求：不放 PE、
+/// 不放目标分区）——`state` 只用于决定日志行要不要同步进 GUI 状态栏。
 unsafe fn run_boot_command_logged(state: Option<&State>, label: &str, command: &str) -> CmdOutcome {
-    let dir = match state {
-        Some(state) => state.executable_dir.clone(),
-        None => std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
-            .unwrap_or_default(),
-    };
-    let logs = dir.join("logs");
+    let logs = crate::log_root::logs_dir();
     // 这两个 helper 可能在没有 `State` 的入口里跑（桌面快捷方式 / PE 桌面），
     // 建目录失败就由随后的写日志失败如实暴露，不在这里假装记一笔。
-    let _ = std::fs::create_dir_all(&logs);
+    let _ = std::fs::create_dir_all(logs);
     let out = logs.join("boot-sequence.log");
     let code = run_cmd_to_file(command, Some(&out));
     let message = format!(
@@ -5922,14 +5938,10 @@ unsafe fn run_boot_command_logged(state: Option<&State>, label: &str, command: &
 /// 没日志、没兜底、失败后 PE 桌面毫无反应，用户面对一台卡住的机器不知道
 /// 发生了什么（2026-10-17 第二轮核查，日志缺口 4）。
 unsafe fn pe_reboot_with_fallback() {
-    let dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
-        .unwrap_or_default();
-    let logs = dir.join("logs");
+    let logs = crate::log_root::logs_dir();
     // 这两个 helper 可能在没有 `State` 的入口里跑（桌面快捷方式 / PE 桌面），
     // 建目录失败就由随后的写日志失败如实暴露，不在这里假装记一笔。
-    let _ = std::fs::create_dir_all(&logs);
+    let _ = std::fs::create_dir_all(logs);
     let out = logs.join("pe-reboot.log");
     let first = run_cmd_to_file("wpeutil.exe reboot", Some(&out));
     let _ = super::append_log(
@@ -6107,9 +6119,12 @@ pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
     Ok(())
 }
 
-/// 读取最近一次 launcher-errors.log 里的错误信息（用于 prepare 异常退出感知）
-fn read_latest_launcher_error(executable_dir: &std::path::Path) -> Option<String> {
-    let log_path = executable_dir.join("logs").join("launcher-errors.log");
+/// 读取最近一次 launcher-errors.log 里的错误信息（用于 prepare 异常退出感知）。
+/// 与写方（`main::record_launch_error` / `windows_prepare` 的 UAC 前置）
+/// 同源：都走 `log_root::logs_dir()`。写的是 CLI 进程、读的是 GUI 进程，
+/// 两边各解析一次——策略确定才拿得到同一份文件，否则 GUI 读到空气。
+fn read_latest_launcher_error() -> Option<String> {
+    let log_path = crate::log_root::logs_dir().join("launcher-errors.log");
     let content = std::fs::read_to_string(log_path).ok()?;
     content
         .lines()
@@ -7435,14 +7450,13 @@ unsafe fn create_task(state: &mut State) {
             GetExitCodeProcess(exec_info.h_process, &mut exit_code);
             CloseHandle(exec_info.h_process);
             if exit_code != 0 {
-                let last_error = read_latest_launcher_error(&state.executable_dir)
-                    .unwrap_or_else(|| {
-                        if language == Language::English {
-                            format!("Preparation process terminated abnormally with exit code {exit_code}")
-                        } else {
-                            format!("管理员准备进程异常退出，退出码：{exit_code}")
-                        }
-                    });
+                let last_error = read_latest_launcher_error().unwrap_or_else(|| {
+                    if language == Language::English {
+                        format!("Preparation process terminated abnormally with exit code {exit_code}")
+                    } else {
+                        format!("管理员准备进程异常退出，退出码：{exit_code}")
+                    }
+                });
                 append_gui_log(
                     state,
                     &format!(

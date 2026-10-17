@@ -200,7 +200,10 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     }
     // Perform the no-overwrite guard before elevation. A direct CLI call must
     // fail locally without triggering UAC or touching any boot configuration.
-    require_administrator(&executable_dir.join("logs").join("launcher-errors.log"))?;
+    // 2026-10-18：launcher-errors.log 与 GUI 读取方同走 `log_root`——这条日志
+    // 记录的恰是「连任务都没建成就失败了」的最早期故障，不能放在可能正是
+    // 还原目标的程序目录里。
+    require_administrator(&crate::log_root::logs_dir().join("launcher-errors.log"))?;
     prepare_task(&executable_dir, &workspace, target, options)
 }
 
@@ -890,7 +893,8 @@ fn prepare_task(
     // 准备日志先建好再跑输入校验：`validate_operation_inputs` 里的 DISM 预检
     // （镜像完整性探测）要往这里写 stdout/stderr。早先日志目录在校验**之后**
     // 才创建，那段失败就无处落盘——正是 2026-10-16 审查点名的日志缺口 1。
-    let bootstrap_log = executable_dir.join(r"logs\prepare-bootstrap.log");
+    // 2026-10-18：落点改走 `log_root`（用户要求：不放 PE、不放目标分区）。
+    let bootstrap_log = crate::log_root::logs_dir().join("prepare-bootstrap.log");
     if let Some(parent) = bootstrap_log.parent() {
         fs::create_dir_all(parent)?;
     }

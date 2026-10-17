@@ -64,7 +64,7 @@ mod boot_menu;
 mod boot_record;
 #[cfg(windows)]
 mod native_gui;
-/// 在线任务本轮工作目录的选址：`<exe>\logs` 优先、`%TEMP%` 兜底。
+/// 在线任务本轮工作目录的选址：统一日志根（`log_root`）优先、`%TEMP%` 兜底。
 /// 纯路径决策，本机单测即可覆盖全部分支。
 #[cfg(any(windows, test))]
 mod online_log;
@@ -85,6 +85,9 @@ mod secondary_registry;
 /// 会话日志落点：主路径 + **跨重启存活的镜像**（PE/RE 的 `X:` 是内存盘）。
 /// 无条件编译：`append_log` 已委托给它，本机（macOS）构建也要能过。
 mod session_log;
+/// 日志根目录的统一解析（用户 2026-10-18：不放 PE、不放目标分区）。
+/// 无条件编译：`append_log` / panic hook / launcher 都走它，本机构建也要能过。
+mod log_root;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
 #[cfg(windows)]
@@ -381,18 +384,16 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
 
 /// Preparation can fail before a task directory exists, for example while the
 /// native volume identity preflight is opening a newly attached disk. Persist
-/// that diagnostic beside the program without creating a task or changing
-/// WinRE/BCD, so the GUI and non-console executable do not lose the reason.
+/// that diagnostic in the dedicated log root (see `crate::log_root`) without
+/// creating a task or changing WinRE/BCD, so the GUI and non-console
+/// executable do not lose the reason.
 #[cfg(windows)]
 fn record_launch_error(error: &TaskError) {
-    let Ok(executable) = env::current_exe() else {
-        return;
-    };
-    let Some(directory) = executable.parent() else {
-        return;
-    };
+    // 2026-10-18：与 GUI 的读取方（`native_gui::read_latest_launcher_error`）
+    // 同源。曾写 `<exe>\logs`——程序目录可能在系统盘/还原目标上，而这条日志
+    // 记录的恰是「连任务都还没建成就失败了」的最早期故障。
     let _ = append_log(
-        &directory.join("logs").join("launcher-errors.log"),
+        &crate::log_root::logs_dir().join("launcher-errors.log"),
         &error.to_string(),
     );
 }
@@ -442,14 +443,11 @@ fn install_panic_logging() {
             .name()
             .map(|name| name.to_string())
             .unwrap_or_else(|| "<unnamed thread>".to_string());
-        let Ok(executable) = env::current_exe() else {
-            return;
-        };
-        let Some(directory) = executable.parent() else {
-            return;
-        };
+        // 2026-10-18：panic.log 与其它日志同源（`log_root::logs_dir()`）。
+        // 程序目录可能在系统盘/还原目标上，而 panic 恰恰最容易发生在动那些
+        // 卷的时候——日志不能跟着陪葬。
         let _ = append_log(
-            &directory.join("logs").join("panic.log"),
+            &crate::log_root::logs_dir().join("panic.log"),
             &format!(
                 "panic in thread [{thread}] at {location}: {payload}\n\
                  backtrace (RUST_BACKTRACE=1 可展开): {:?}",

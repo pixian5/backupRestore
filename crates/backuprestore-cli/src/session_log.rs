@@ -8,7 +8,10 @@
 //! - `main.rs` 的逃生决策日志 `X:\BackupRestore-escape.log`、早期日志
 //!   `X:\BackupRestore-Recovery-early.log`；
 //! - `native_gui` 的 `gui.log`、`main` 的 `panic.log` / `launcher-errors.log`、
-//!   在线操作日志 —— 这些走「`<exe>\logs`」的日志，在 PE/RE 里等于 `X:\Windows\System32\logs`；
+//!   在线操作日志 —— 这些走 `log_root::logs_dir()` 的日志，主路径优先
+//!   `H:\brwork\logs`（2026-10-18 用户要求：不放 PE、不放目标分区）；
+//!   只有在 PE/RE 里连工作卷都探不到时，主路径才退到 `X:\Windows\System32\logs`，
+//!   此时正是本镜像机制兜底的场景；
 //!
 //! **全部在重启瞬间消失**。而它们记录的恰恰是最需要复盘的东西：连败几次、
 //! 用户选了「是/否/超时」、逃出时清了什么。上一轮审查只问「这段有没有

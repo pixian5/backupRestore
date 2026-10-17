@@ -56,12 +56,10 @@ fn step1_notice(operation: &str) -> String {
 /// 【2026-10-16 审查修订，日志缺口 9】此前固定写 `%TEMP%\BackupRestore-online-*`：
 /// 磁盘清理、甚至「把含 TEMP 的卷还原掉」这类操作都会把完整现场连带删掉，
 /// 事后只剩 `gui.log` 里一行含路径的摘要，而现场恰恰是排查还原失败唯一的材料。
-/// 选址规则见 `online_log`（纯逻辑 + 本机单测），这里只消费结果。
+/// 【2026-10-18 用户要求】落点再搬到 `log_root::logs_dir()`（不放 PE、
+/// 不放目标分区）。选址规则见 `online_log`（纯逻辑 + 本机单测），这里只消费结果。
 pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()));
-    let (dir, placement_note) = match crate::online_log::resolve_dir(exe_dir.as_deref()) {
+    let (dir, placement_note) = match crate::online_log::resolve_dir() {
         Ok(found) => found,
         Err(error) => {
             return OnlineResult {
@@ -76,7 +74,7 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
     let _ = log(
         &path,
         &if placement_note.is_empty() {
-            format!("日志位置：{}（程序目录 logs，不随 %TEMP% 清理丢失）", path.display())
+            format!("日志位置：{}（统一日志根，不随 %TEMP% 清理丢失）", path.display())
         } else {
             format!("日志位置：{}；{}", path.display(), placement_note)
         },
