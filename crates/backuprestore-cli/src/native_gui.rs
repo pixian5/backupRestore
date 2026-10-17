@@ -1274,6 +1274,19 @@ fn is_image_restore_entry(gui: &str) -> bool {
     )
 }
 
+/// 「格式化目标分区」复选框的入口集合：A/B/C 三个还原入口。
+/// set_operation_visibility 的可见性列表与 layout_operation 的重排条件
+/// **必须共用本函数**：2026-10-17 修复的 C 页遮挡 bug 即因
+/// v2.6.4 合并入口时可见性列表把 restore-system-other 改名 create-secondary、
+/// 而 layout 的排除条件 `!= "create-secondary"` 漏改——复选框显示却不参与
+/// 排版，停在后创建控件的下层被按钮行/详情框盖住。单一来源杜绝再次漂移。
+fn is_format_target_entry(gui: &str) -> bool {
+    matches!(
+        gui,
+        "restore-existing" | "restore-data" | "create-secondary"
+    )
+}
+
 /// 当前活动系统盘符（`%SystemDrive%`，无冒号大写）。
 /// GUI 侧只用于锁定 A 的目标、B/C 的目标预检——真正的卷身份比对在
 /// prepare 的 P0 安全闸里做，这里不做安全承诺。
@@ -1455,13 +1468,7 @@ unsafe fn set_operation_visibility(state: &State) {
     //（2026-10-14 用户拍板：所有还原都要有格式化选项，在线离线全通道生效）。
     set_child_visible(ID_CHANNEL_ONLINE as i32, show_channel);
     set_child_visible(ID_CHANNEL_OFFLINE as i32, show_channel);
-    set_child_visible(
-        ID_FORMAT_TARGET as i32,
-        matches!(
-            operation,
-            "restore-existing" | "restore-data" | "create-secondary"
-        ),
-    );
+    set_child_visible(ID_FORMAT_TARGET as i32, is_format_target_entry(operation));
     // 「重启进入 PE」「创建快捷方式」只在 安装 PE tab 显示
     set_child_visible(ID_PE_REBOOT_MAIN as i32, operation == "install-pe-entry");
     set_child_visible(ID_PE_SHORTCUT as i32, operation == "install-pe-entry");
@@ -1518,7 +1525,7 @@ unsafe fn layout_operation(state: &State) {
     let target_details_y = target_combo_y + 36;
     // 通道单选行：目标卷详情框下方；三个还原入口再加一行「格式化目标分区」复选框
     let channel_y = target_details_y + details_height + 8;
-    let show_format_target = is_image_restore_entry(layout_op) && layout_op != "create-secondary";
+    let show_format_target = is_format_target_entry(layout_op);
     let format_y = channel_y + 26;
     let last_details_y = if show_format_target {
         format_y + 24
