@@ -4775,6 +4775,13 @@ unsafe fn test_hook_auto_install(state: &mut State) {
             .position(|d| d.letter.eq_ignore_ascii_case(vol))
         {
             SendMessageW(state.controls.source, CB_SETCURSEL, pos, 0);
+            // 补发 CBN_SELCHANGE：CB_SETCURSEL 只是换选中项，不产生通知，
+            // 父窗口的 WM_COMMAND 分支（set_drive_details + refresh_backup_index_name）
+            // 不会跑——信息框会停驻在初始卷、备份索引名不随新源卷降级
+            // （2026-10-18 实测：数据卷备份把系统版本名写进了 WIM，改不了）。
+            // 与真实用户点选下拉等价。
+            let notify = (CBN_SELCHANGE << 16) | ID_SOURCE;
+            SendMessageW(state.root, WM_COMMAND, notify, state.controls.source as isize);
             append_gui_log(state, &format!("test hook: source={vol} pos={pos}"));
         } else {
             append_gui_log(state, &format!("test hook: source vol {vol} not found"));
@@ -4784,6 +4791,9 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         let view = target_combo_indices(state);
         if let Some(pos) = drive_combo_position(view.as_deref(), state, vol) {
             SendMessageW(state.controls.target, CB_SETCURSEL, pos as usize, 0);
+            // 同上：目标卷变更也要让父窗口刷新目标信息框等联动显示。
+            let notify = (CBN_SELCHANGE << 16) | ID_TARGET;
+            SendMessageW(state.root, WM_COMMAND, notify, state.controls.target as isize);
             append_gui_log(state, &format!("test hook: target={vol} pos={pos}"));
         } else {
             append_gui_log(state, &format!("test hook: target vol {vol} not found"));
