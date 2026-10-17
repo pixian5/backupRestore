@@ -138,6 +138,14 @@ pub struct ProgressShared {
     // 窗口尚未创建时收到关闭请求也要记住，避免快速失败留下孤立进度窗。
     close_requested: AtomicBool,
     window_thread: Mutex<Option<thread::JoinHandle<()>>>,
+    /// 【2026-10-17 第二轮核查，卡死 5】窗口线程的「我结束了」信号。
+    /// `JoinHandle` 没有带超时的 join：此前 `close_and_wait` 是裸 `join()`，
+    /// 窗口线程一旦卡在 `refresh_from_log`（日志增量巨大时一次读全量）或
+    /// BCD 回退闭包（持锁跑 bcdedit），恢复链就**永久阻塞在这里**，连失败重试
+    /// 弹框都到不了 —— 上面所有逃生阀都在它下游。现在先等信号（带超时），
+    /// 只有确认线程真的结束了才 join；超时就放弃 join 并如实记一行。
+    window_done_tx: std::sync::mpsc::Sender<()>,
+    window_done_rx: Mutex<std::sync::mpsc::Receiver<()>>,
     /// 标记是否已对齐到 STEP 1/4 的开始时间
     pub start_time_aligned: AtomicBool,
     /// 任务开始时间戳，用于计算已用时间与预估剩余时间。
@@ -1413,6 +1421,7 @@ fn encode(text: &str) -> Vec<u16> {
 
 /// 启动恢复进度窗口线程，返回共享状态句柄（主线程用于切换日志路径）。
 pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShared> {
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
     let shared = Arc::new(ProgressShared {
         log_path: Mutex::new(initial_log),
         steps: Mutex::new(crate::text_parsing::StepTracker::new()),
@@ -1423,6 +1432,8 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         window_up: AtomicBool::new(false),
         close_requested: AtomicBool::new(false),
         window_thread: Mutex::new(None),
+        window_done_tx: done_tx,
+        window_done_rx: Mutex::new(done_rx),
         start_time_aligned: AtomicBool::new(false),
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
@@ -1437,17 +1448,50 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
     let handle = thread::spawn(move || {
         // 窗口线程：创建 Win32 进度窗口并进入消息循环。
         unsafe { run_window(&thread_shared) };
+        // 退出前发信号，让 `close_and_wait` 能区分「已结束」与「还卡着」。
+        // 收不收得到无所谓（主线程可能已经超时放弃），故忽略返回值。
+        let _ = thread_shared.window_done_tx.send(());
     });
     *shared.window_thread.lock().unwrap() = Some(handle);
     shared
 }
 
 /// 等旧窗口彻底退出，再显示重试窗口，避免异步销毁抢走新窗口焦点。
+///
+/// 【2026-10-17 第二轮核查，卡死 5】join **带超时**：等不到「窗口线程已结束」
+/// 的信号就放弃 join（detach）并如实记一行，绝不把恢复链永久钉在这里 ——
+/// 卡在 join 上时，失败重试弹框、自动逃出、BCD 回退**全都到不了**。
 pub fn close_and_wait(shared: &ProgressShared) {
+    /// 给窗口线程收尾的时间。正常关闭是毫秒级；这只是防止「永久阻塞」的闸门。
+    const JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     request_close(shared);
     let handle = shared.window_thread.lock().unwrap().take();
-    if let Some(handle) = handle {
+    let Some(handle) = handle else {
+        return;
+    };
+    let finished = match shared.window_done_rx.lock() {
+        Ok(receiver) => receiver.recv_timeout(JOIN_TIMEOUT).is_ok(),
+        Err(_) => false,
+    };
+    if finished {
         let _ = handle.join();
+        return;
+    }
+    // 超时：放弃 join（drop 即 detach），让恢复链继续往下走，并把这件事
+    // 写进日志——事后看得到"进度窗没能正常退出"这个事实，而不是凭空猜测。
+    let log = shared
+        .log_path
+        .lock()
+        .map(|path| path.clone())
+        .unwrap_or_default();
+    if !log.as_os_str().is_empty() {
+        let _ = crate::append_log(
+            &log,
+            &format!(
+                "进度窗口线程 {} 秒内没有退出，`close_and_wait` 放弃等待并继续恢复链（窗口可能卡在日志刷新或 BCD 回退）",
+                JOIN_TIMEOUT.as_secs()
+            ),
+        );
     }
 }
 

@@ -92,6 +92,8 @@ const MB_YESNOCANCEL: u32 = 0x00000003;
 const MB_ICONWARNING: u32 = 0x00000030;
 const MB_ICONINFORMATION: u32 = 0x00000040;
 const MB_ICONQUESTION: u32 = 0x00000020;
+/// 让消息框在最前台（恢复环境没有外壳帮它抢焦点；待续跑询问框也需要）。
+const MB_SETFOREGROUND: u32 = 0x00010000;
 const IDYES: i32 = 6;
 const IDNO: i32 = 7;
 const IDOK: i32 = 1;
@@ -115,6 +117,10 @@ const ID_LANGUAGE: usize = 1005;
 const ID_BROWSE_IMAGE: usize = 1006;
 /// 顶栏「设置…」按钮：打开程序设置窗口（当前只有「恢复环境失败处理」一项）。
 const ID_SETTINGS: usize = 1007;
+/// 顶栏「取消待重启任务…」按钮：把「上次没跑完、每次启动都想重启机器」的任务
+/// 交回给用户处置（继续 / 放弃）。此前 GUI 完全没有这个出口（2026-10-17
+/// 第二轮核查，逃生 A/D）。
+const ID_CANCEL_PENDING: usize = 1008;
 /// 设置窗口内的控件（独立 ID 段，避免与主窗口控件串号）。
 const ID_SETTINGS_THRESHOLD_EDIT: usize = 3100;
 const ID_SETTINGS_ACTION_AUTO: usize = 3101;
@@ -744,6 +750,10 @@ unsafe fn install_tooltips(state: &mut State) {
         (GetDlgItem(state.root, ID_PE_DIR_EDIT as i32), "pe_dir_edit"),
         (GetDlgItem(state.root, ID_LANGUAGE as i32), "language"),
         (GetDlgItem(state.root, ID_SETTINGS as i32), "settings"),
+        (
+            GetDlgItem(state.root, ID_CANCEL_PENDING as i32),
+            "cancel_pending",
+        ),
     ];
     for (control, key) in controls {
         let text = tooltip_text(language, key);
@@ -828,6 +838,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::Chinese, "settings") => {
             "程序设置：恢复环境连续失败多少次后如何处理。\n• 自动清理并重启回正常 Windows（默认，等于原行为）；\n• 暂停在恢复环境，由你按按钮手动清理。\n设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效。"
+        }
+        (Language::Chinese, "cancel_pending") => {
+            "处置「上次没跑完」的还原任务：放弃并清理（清掉一次性启动项、按终态收口、保留证据），或查看它当前停在哪一步。\n没有这类任务时按钮只提示，不做任何改动。"
         }
         (Language::English, "probe") => {
             "Inspect: validate task, WinRE and volume identities; no disk write or reboot."
@@ -914,6 +927,9 @@ fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::English, "settings") => {
             "Settings: what to do after the recovery environment fails N times in a row.\n• Clean up and reboot to Windows automatically (default, same as before);\n• Pause in the recovery environment and clean up manually.\nSaved to BackupRestore.settings.ini next to the program; applies to tasks created afterwards."
         }
+        (Language::English, "cancel_pending") => {
+            "Handle an unfinished recovery task: abandon and clean it up (clears the one-shot boot entry, marks it terminal, keeps the evidence), or just see which stage it stopped at. With nothing pending the button only reports that."
+        }
         _ => "",
     }
 }
@@ -952,6 +968,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "verify_hash") => "严格对比哈希（默认仅对比大小）",
         (Language::Chinese, "language") => "语言",
         (Language::Chinese, "settings") => "设置…",
+        (Language::Chinese, "cancel_pending") => "取消待重启任务…",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
         (Language::Chinese, "browse") => "浏览…",
@@ -1029,6 +1046,7 @@ fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "verify_hash") => "Verify hash (default: size only)",
         (Language::English, "language") => "Language",
         (Language::English, "settings") => "Settings...",
+        (Language::English, "cancel_pending") => "Cancel pending reboot...",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
         (Language::English, "browse") => "Browse…",
@@ -1568,11 +1586,23 @@ unsafe fn layout_operation(state: &State) {
     );
     // 「设置…」按钮紧靠语言栏左侧、同排右对齐（客户宽变化时一起跟随）。
     let settings_w = 90;
+    let settings_x = client_width - 20 - lang_total - 8 - settings_w;
     reposition(
         GetDlgItem(state.root, ID_SETTINGS as i32),
-        client_width - 20 - lang_total - 8 - settings_w,
+        settings_x,
         60,
         settings_w,
+        24,
+    );
+    // 「取消待重启任务…」在「设置…」左侧，同排右对齐。
+    // 2026-10-17 教训：这个按钮最初漏了这条重排，停留在创建坐标 760，把语言
+    // 标签和 combo 压掉半个 —— 顶栏三个右对齐控件必须一起进 layout_operation。
+    let cancel_w = 150;
+    reposition(
+        GetDlgItem(state.root, ID_CANCEL_PENDING as i32),
+        settings_x - 8 - cancel_w,
+        60,
+        cancel_w,
         24,
     );
     reposition(
@@ -2772,6 +2802,7 @@ unsafe fn apply_language(state: &mut State) {
         (ID_CREATE_TASK, "create_task"),
         (ID_REFRESH_TASK, "refresh_task"),
         (ID_SETTINGS, "settings"),
+        (ID_CANCEL_PENDING, "cancel_pending"),
     ] {
         set_child_text(state.root, id, ui_text(language, key));
     }
@@ -2967,17 +2998,13 @@ unsafe extern "system" fn window_proc_system_choice(
                 // 记下用户到底点了哪个按钮：2026-09-30 用户反馈「进入 Windows RE
                 // 点了没反应」，而日志里连一行都没有，无法判断是点击没送达还是
                 // 后续步骤静默失败。这一行就是为了让下次一眼看出区别。
-                let _ = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(system_choice_log_path())
-                    .and_then(|mut file| {
-                        use std::io::Write;
-                        writeln!(
-                            file,
-                            "[gui] system drive choice: button clicked, choice={result}"
-                        )
-                    });
+                // 走 `append_log` 而不是自己拼 OpenOptions：落点与 `gui.log`
+                // 完全一致（该函数返回的就是它），还额外获得 PE/RE 里的持久化
+                // 镜像（`session_log`）。此前这一行是手写的，换个地方就找不到。
+                let _ = super::append_log(
+                    &system_choice_log_path(),
+                    &format!("system drive choice: button clicked, choice={result}"),
+                );
                 *state_ptr = result;
                 // **不能在这里直接 DestroyWindow**：WM_COMMAND 是在按钮处理
                 // BM_CLICK 时同步发过来的，销毁父窗口会连带销毁正在执行窗口过程的
@@ -4797,13 +4824,21 @@ unsafe fn install_pe_ramdisk(state: &State) {
     //    existing file as .stock on first install.
     let sources_dir = format!("{target_root}sources");
     if !PathBuf::from(&sources_dir).is_dir() {
-        let _ = std::fs::create_dir_all(&sources_dir);
+        let _ = log_fs(
+            state,
+            &format!("创建 PE 源目录 {sources_dir}"),
+            std::fs::create_dir_all(&sources_dir),
+        );
     }
     let wim_dest = PathBuf::from(format!("{sources_dir}\\boot.wim"));
     if wim_dest.is_file() {
         let stock = PathBuf::from(format!("{sources_dir}\\boot.wim.stock"));
         if !stock.is_file() {
-            let _ = std::fs::copy(&wim_dest, &stock);
+            let _ = log_fs(
+                state,
+                &format!("备份既有 boot.wim 到 {}", stock.display()),
+                std::fs::copy(&wim_dest, &stock),
+            );
             append_gui_log(
                 state,
                 "PE install: existing boot.wim kept as boot.wim.stock",
@@ -4835,7 +4870,11 @@ unsafe fn install_pe_ramdisk(state: &State) {
     let boot_dir = format!("{target_root}boot");
     let sdi_dest = PathBuf::from(format!("{boot_dir}\\boot.sdi"));
     if !sdi_dest.is_file() {
-        let _ = std::fs::create_dir_all(&boot_dir);
+        let _ = log_fs(
+            state,
+            &format!("创建 PE 引导目录 {boot_dir}"),
+            std::fs::create_dir_all(&boot_dir),
+        );
         let mut sdi_source: Option<PathBuf> = None;
         for candidate in [
             "C:\\WinPE_arm64\\media\\boot\\boot.sdi",
@@ -4886,7 +4925,11 @@ unsafe fn install_pe_ramdisk(state: &State) {
     // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出目录先建好：下面 GUID
     // 解析失败与每个 /set 步骤失败都要把原始输出落到这里，而不是进 NUL。
     let bcd_out_dir = state.executable_dir.join("logs");
-    let _ = std::fs::create_dir_all(&bcd_out_dir);
+    let _ = log_fs(
+        state,
+        &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
+        std::fs::create_dir_all(&bcd_out_dir),
+    );
     let _ = std::fs::remove_file(&guid_out);
     let ram_guid_path = "{ramdiskoptions}".to_string();
     let mut steps = vec![
@@ -4930,9 +4973,10 @@ unsafe fn install_pe_ramdisk(state: &State) {
                 let raw = std::fs::read(&guid_out)
                     .map(|bytes| decode_bcdedit_bytes(&bytes))
                     .unwrap_or_default();
-                let _ = std::fs::copy(
-                    &guid_out,
-                    bcd_out_dir.join("pe-install-bcdedit-create.out"),
+                let _ = log_fs(
+                    state,
+                    "留存 bcdedit 原始输出",
+                    std::fs::copy(&guid_out, bcd_out_dir.join("pe-install-bcdedit-create.out")),
                 );
                 append_gui_log(
                     state,
@@ -4981,7 +5025,11 @@ unsafe fn install_pe_ramdisk(state: &State) {
     // 退出码，而 bcdedit 的真实原因（"拒绝访问"/"找不到元素"/GUID 拼错）
     // 恰恰写在输出里。文件放在程序目录，与 `_pe-bcd-guid.txt` 同一处。
     let bcd_out_dir = state.executable_dir.join("logs");
-    let _ = std::fs::create_dir_all(&bcd_out_dir);
+    let _ = log_fs(
+        state,
+        &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
+        std::fs::create_dir_all(&bcd_out_dir),
+    );
     for (index, step) in steps.iter().enumerate() {
         let out_file = bcd_out_dir.join(format!("pe-install-bcdedit-{index}.out"));
         let _ = std::fs::remove_file(&out_file);
@@ -5358,7 +5406,11 @@ unsafe fn install_pe_harddisk(state: &State) {
     // 【2026-10-16 审查修订，日志缺口 8】bcdedit 的输出目录先建好：下面
     // GUID 解析失败与每个 /set 步骤失败都要把原始输出落到这里，而不是进 NUL。
     let bcd_out_dir = state.executable_dir.join("logs");
-    let _ = std::fs::create_dir_all(&bcd_out_dir);
+    let _ = log_fs(
+        state,
+        &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
+        std::fs::create_dir_all(&bcd_out_dir),
+    );
     let guid_out = state
         .executable_dir
         .join("_pe-bcd-guid.txt")
@@ -5399,9 +5451,10 @@ unsafe fn install_pe_harddisk(state: &State) {
                 let raw = std::fs::read(&guid_out)
                     .map(|bytes| decode_bcdedit_bytes(&bytes))
                     .unwrap_or_default();
-                let _ = std::fs::copy(
-                    &guid_out,
-                    bcd_out_dir.join("pe-hdd-bcdedit-create.out"),
+                let _ = log_fs(
+                    state,
+                    "留存 bcdedit 原始输出",
+                    std::fs::copy(&guid_out, bcd_out_dir.join("pe-hdd-bcdedit-create.out")),
                 );
                 append_gui_log(
                     state,
@@ -5444,7 +5497,11 @@ unsafe fn install_pe_harddisk(state: &State) {
     // 此前 `run_cmd_to_file(step, None)` 把三流全送 NUL，失败只剩退出码，
     // 而 bcdedit 的真实原因（拒绝访问 / 找不到元素 / GUID 拼错）写在输出里。
     let bcd_out_dir = state.executable_dir.join("logs");
-    let _ = std::fs::create_dir_all(&bcd_out_dir);
+    let _ = log_fs(
+        state,
+        &format!("创建日志输出目录 {}", &bcd_out_dir.display()),
+        std::fs::create_dir_all(&bcd_out_dir),
+    );
     for (index, step) in steps.iter().enumerate() {
         let out_file = bcd_out_dir.join(format!("pe-hdd-bcdedit-{index}.out"));
         let _ = std::fs::remove_file(&out_file);
@@ -5646,6 +5703,100 @@ unsafe fn pe_create_shortcut(state: &State) {
     }
 }
 
+/// 「改引导 + 立刻重启」这类动作的统一执行入口。
+///
+/// 为什么要有它（2026-10-17 第二轮核查，日志缺口 3）：三处设置
+/// `bootsequence` 的入口此前都只留「命令 + 退出码」两行（快捷方式那条连这两行
+/// 都没有），而 **bcdedit 的真实输出**（元素未找到 / 拒绝访问 / 参数无效）
+/// 一个字都没留下 —— 偏偏这几处的后果是**马上重启这台机器**。
+///
+/// `state` 为 `None` 时（桌面快捷方式入口，没有主窗口）用 exe 目录自己拼
+/// 日志路径，行为一致。
+unsafe fn run_boot_command_logged(state: Option<&State>, label: &str, command: &str) -> CmdOutcome {
+    let dir = match state {
+        Some(state) => state.executable_dir.clone(),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
+            .unwrap_or_default(),
+    };
+    let logs = dir.join("logs");
+    // 这两个 helper 可能在没有 `State` 的入口里跑（桌面快捷方式 / PE 桌面），
+    // 建目录失败就由随后的写日志失败如实暴露，不在这里假装记一笔。
+    let _ = std::fs::create_dir_all(&logs);
+    let out = logs.join("boot-sequence.log");
+    let code = run_cmd_to_file(command, Some(&out));
+    let message = format!(
+        "{label}: {command} -> exit code={code}（bcdedit 完整输出：{}）",
+        out.display()
+    );
+    match state {
+        Some(state) => append_gui_log(state, &message),
+        None => {
+            // PE/RE 里这一行会由 `session_log` 自动镜像到持久化卷。
+            let _ = super::append_log(&logs.join("gui.log"), &message);
+        }
+    }
+    code
+}
+
+/// PE 桌面里的重启：先 `wpeutil`（PE 原生），失败再 `shutdown.exe`，
+/// 两条都失败**必须**告诉用户。
+///
+/// 旧代码是 `let _ = run_cmd_to_file("wpeutil.exe reboot", None);`：
+/// 没日志、没兜底、失败后 PE 桌面毫无反应，用户面对一台卡住的机器不知道
+/// 发生了什么（2026-10-17 第二轮核查，日志缺口 4）。
+unsafe fn pe_reboot_with_fallback() {
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
+        .unwrap_or_default();
+    let logs = dir.join("logs");
+    // 这两个 helper 可能在没有 `State` 的入口里跑（桌面快捷方式 / PE 桌面），
+    // 建目录失败就由随后的写日志失败如实暴露，不在这里假装记一笔。
+    let _ = std::fs::create_dir_all(&logs);
+    let out = logs.join("pe-reboot.log");
+    let first = run_cmd_to_file("wpeutil.exe reboot", Some(&out));
+    let _ = super::append_log(
+        &logs.join("gui.log"),
+        &format!("pe_reboot: wpeutil.exe reboot -> exit code={first}"),
+    );
+    if first.is_success() {
+        return;
+    }
+    let second = run_cmd_to_file("shutdown.exe /r /t 0 /f", None);
+    let _ = super::append_log(
+        &logs.join("gui.log"),
+        &format!("pe_reboot: shutdown.exe fallback -> exit code={second}"),
+    );
+    if second.is_success() {
+        return;
+    }
+    message_box_standalone(
+        "自动重启失败：wpeutil 与 shutdown.exe 都失败了。\n\
+         请在命令提示符里手动执行 wpeutil reboot，或长按电源键重启。\n\n\
+         Auto-reboot failed: both wpeutil and shutdown.exe failed. \
+         Run 'wpeutil reboot' manually or power-cycle the machine.",
+        "重启失败 / Reboot failed",
+        MB_OK | MB_ICONERROR,
+    );
+}
+
+/// 记下「原本被 `let _ =` 吞掉」的文件系统操作。
+///
+/// 为什么要有它（2026-10-17 第二轮核查，日志缺口 5）：PE 安装期间多处
+/// `fs::copy` / `create_dir_all` 的失败被直接丢弃，故障要延后到后面的步骤才炸，
+/// 而日志里看不出「到底是哪一步没拷成」。
+unsafe fn log_fs<T>(state: &State, what: &str, result: std::io::Result<T>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            append_gui_log(state, &format!("{what} 失败：{error}"));
+            None
+        }
+    }
+}
+
 /// 设置一次性 PE 启动项并重启，进入恢复桌面等待用户选择操作。
 unsafe fn pe_reboot_to_pe(state: &State) {
     let language = selected_language(state);
@@ -5673,9 +5824,7 @@ unsafe fn pe_reboot_to_pe(state: &State) {
     };
     // 单纯进入恢复桌面，无需写入可执行文本任务。
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
-    append_gui_log(state, &format!("PE reboot to PE: {command}"));
-    let code = run_cmd_to_file(&command, None);
-    append_gui_log(state, &format!("PE reboot to PE: exit code={code}"));
+    let code = run_boot_command_logged(Some(state), "PE reboot to PE", &command);
     if code.is_success() {
         // 配置成功：立即自动重启进入 PE（无需用户手动重启）
         append_gui_log(state, "PE reboot to PE: bootsequence set, auto reboot now");
@@ -5756,7 +5905,9 @@ pub unsafe fn pe_reboot_standalone() -> Result<(), super::TaskError> {
         return Ok(());
     };
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
-    let code = run_cmd_to_file(&command, None);
+    // 这个入口**没有主窗口**（桌面快捷方式）：此前连一行日志都没有，
+    // 进程退出后完全看不出这台机器被设置过一次性启动项。
+    let code = run_boot_command_logged(None, "pe-reboot standalone", &command);
     if code.is_success() {
         let text = wide(
             "已设置一次性启动项。重启后自动进入 PE 恢复桌面；PE 启动时会自动清除该启动项，之后重启正常回到 Windows。\n\nBoot sequence set. Reboot to enter the PE recovery desktop automatically.",
@@ -7208,12 +7359,7 @@ unsafe fn schedule_pe_task(
         return;
     }
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
-    append_gui_log(state, &format!("schedule_pe_task: {command}"));
-    let code = run_cmd_to_file(&command, None);
-    append_gui_log(
-        state,
-        &format!("schedule_pe_task: bcdedit exit code={code}"),
-    );
+    let code = run_boot_command_logged(Some(state), "schedule_pe_task", &command);
     if code.is_success() && write_ok {
         append_gui_log(state, "schedule_pe_task: bootsequence set, auto reboot now");
         if ExitWindowsEx(EWX_REBOOT, 0) == 0 {
@@ -7691,6 +7837,19 @@ unsafe extern "system" fn window_proc(
         create_control(
             hwnd,
             "BUTTON",
+            "取消待重启任务…",
+            WS_TABSTOP,
+            // 初始坐标按最小客户宽 1020：在「设置…」(661-751) 左侧，
+            // 503-653。layout_operation 按实际客户宽动态重排到「设置…」左边。
+            503,
+            60,
+            150,
+            24,
+            ID_CANCEL_PENDING,
+        );
+        create_control(
+            hwnd,
+            "BUTTON",
             "刷新环境",
             WS_TABSTOP,
             20,
@@ -8059,6 +8218,7 @@ unsafe extern "system" fn window_proc(
                 ID_CREATE_TASK => create_task(state),
                 ID_REFRESH_TASK => refresh_task_status(state),
                 ID_SETTINGS => open_settings(state),
+                ID_CANCEL_PENDING => cancel_pending_task(state),
                 ID_PE_REBOOT_MAIN => {
                     if ONLINE_BUSY.is_busy() {
                         show_message(
@@ -9519,7 +9679,7 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
         // 领取类型化请求；失败停留桌面，无请求则等待用户操作。
         let auto_reboot = pe_task_execute();
         if auto_reboot {
-            let _ = run_cmd_to_file("wpeutil.exe reboot", None);
+            pe_reboot_with_fallback();
             return Ok(None);
         }
         let instance = GetModuleHandleW(null());
@@ -9566,6 +9726,30 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
             null_mut(),
         );
         if window.is_null() {
+            // 【2026-10-17 第二轮核查，逃生 C】PE 是 **shell-free** 的
+            // （`winpeshl.ini` 直接拉起本程序）：建窗失败后直接 `return Err`
+            // 的话，屏幕上什么都没有、没有任务栏也没有命令行，而一次性启动项
+            // 仍指向 PE —— 硬断电重启又会再进 PE，真正的死循环。
+            // 这里先开一个最大化的命令提示符当手动出口，再让用户选去留。
+            let _ = super::append_log(
+                &std::path::PathBuf::from(r"X:\BackupRestore-pe-desktop.log"),
+                "PE desktop: CreateWindowExW failed; offering a console escape hatch",
+            );
+            let _ = super::launch_background_console();
+            let answer = message_box_standalone(
+                "PE 恢复桌面创建窗口失败。\n\
+                 已打开一个**最大化**的命令提示符窗口，可用它手动处理\n\
+                 （例如 bcdedit /deletevalue {bootmgr} bootsequence、wpeutil reboot）。\n\n\
+                 是 = 立即重启（wpeutil reboot）\n\
+                 否 = 留在 PE，用命令提示符手动处理\n\n\
+                 PE desktop failed to create its window. A maximized console has been\n\
+                 opened for manual recovery. Yes = reboot now; No = stay in PE.",
+                "PE 桌面启动失败 / PE desktop failed to start",
+                MB_YESNO | MB_ICONERROR,
+            );
+            if answer == IDYES {
+                pe_reboot_with_fallback();
+            }
             return Err(super::err("CreateWindowExW failed (PE desktop)"));
         }
         ShowWindow(window, SW_SHOW);
@@ -9599,6 +9783,174 @@ pub unsafe fn run_pe_desktop() -> Result<Option<usize>, super::TaskError> {
     }
 }
 
+/// 用户对待续跑任务的选择。
+///
+/// 为什么要有它（2026-10-17 第二轮核查，逃生 A）：此前 GUI 一启动就把
+/// `resume_pending_boot_task` 的返回值当开关用——有任务就 `shutdown /r`，
+/// **窗口都没创建完机器就重启了**，界面上也没有任何叫停手段。现在先问。
+enum PendingResumeChoice {
+    /// 立即重启继续这个任务
+    Reboot,
+    /// 本次不重启，任务保留
+    Defer,
+}
+
+/// 启动早期（还没有主窗口）弹一个框问用户怎么处理待续跑任务。
+///
+/// 三选一而不是「是/否」：这正是缺口所在——旧逻辑里用户**没有第三个选项**，
+/// 想停下这台机器只能去手敲 `abandon-task`，而它在目标卷已擦除后还会拒绝。
+unsafe fn ask_pending_resume(pending: &super::PendingResume) -> PendingResumeChoice {
+    let text = format!(
+        "检测到上次没跑完的还原任务：\n\n\
+         任务：{}\n\
+         操作：{:?}\n\
+         停在：{:?}\n\n\
+         是   = 立即重启，继续这个任务\n\
+         否   = 本次不重启（任务与启动项都保留，以后再处理）\n\
+         取消 = 放弃这个任务并清理（清掉一次性启动项，证据保留）\n\n\
+         Detected an unfinished recovery task.\n\
+         Yes = reboot now and continue it; No = not this time (task and boot entry are kept); \
+         Cancel = abandon and clean it up (one-shot boot entry cleared, evidence kept).",
+        pending.task_id, pending.operation, pending.stage
+    );
+    let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = "待续跑的还原任务 / Unfinished recovery task"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let answer = MessageBoxW(
+        null_mut(),
+        text.as_ptr(),
+        title.as_ptr(),
+        MB_YESNOCANCEL | MB_ICONWARNING | MB_SETFOREGROUND,
+    );
+    match answer {
+        IDYES => PendingResumeChoice::Reboot,
+        // 「否」「取消」与**直接关窗**都按「本次不重启」处理：
+        // 不重启永远是最保守的那个分支 —— 绝不能把「没看清楚就关了窗口」
+        // 当成同意重启，更不能当成同意放弃。放弃要走主窗口顶栏那个按钮，
+        // 那里有独立的二次确认。
+        _ => PendingResumeChoice::Defer,
+    }
+}
+
+/// 没有主窗口时用的消息框（启动早期 / PE 桌面建窗失败时）。
+/// 返回 `MessageBoxW` 的返回值，调用方据此判断用户选了哪个按钮。
+unsafe fn message_box_standalone(text: &str, title: &str, flags: u32) -> i32 {
+    let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    MessageBoxW(
+        null_mut(),
+        text.as_ptr(),
+        title.as_ptr(),
+        flags | MB_SETFOREGROUND,
+    )
+}
+
+/// 顶栏「取消待重启任务…」：GUI 里唯一一个「让机器别再重启」的出口。
+///
+/// 复用 `abandon-task` 那条已经实机验收过的收口路径，不另写清理逻辑；
+/// 目标卷已擦除时它会拒绝，那正是既定的安全边界，如实转达给用户。
+unsafe fn cancel_pending_task(state: &mut State) {
+    let language = selected_language(state);
+    let pending = match super::find_pending_boot_task() {
+        Ok(pending) => pending,
+        Err(error) => {
+            append_gui_log(state, &format!("cancel_pending: scan failed: {error}"));
+            show_message(
+                state.root,
+                &format!("扫描任务失败：{error}"),
+                if language == Language::English {
+                    "Scan failed"
+                } else {
+                    "扫描失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+    };
+    let Some(pending) = pending else {
+        append_gui_log(state, "cancel_pending: no pending boot task");
+        show_message(
+            state.root,
+            if language == Language::English {
+                "No unfinished recovery task is waiting for a reboot."
+            } else {
+                "当前没有等待重启的未完成任务。"
+            },
+            if language == Language::English {
+                "Nothing pending"
+            } else {
+                "没有待重启任务"
+            },
+            MB_OK | MB_ICONINFORMATION,
+        );
+        return;
+    };
+    let prompt = format!(
+        "任务：{}\n操作：{:?}\n停在：{:?}\n\n\
+         放弃这个任务并清理？（清掉它的一次性启动项、按终态收口，任务目录与日志等证据保留）\n\n\
+         Abandon this task and clean it up? (one-shot boot entry cleared, task marked terminal, logs kept)",
+        pending.task_id, pending.operation, pending.stage
+    );
+    let answer = show_message(
+        state.root,
+        &prompt,
+        if language == Language::English {
+            "Abandon pending task?"
+        } else {
+            "放弃待重启任务？"
+        },
+        MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND,
+    );
+    if answer != IDYES {
+        append_gui_log(state, "cancel_pending: user declined; nothing changed");
+        return;
+    }
+    match super::abandon_pending_task(&pending) {
+        Ok(()) => {
+            append_gui_log(
+                state,
+                &format!("cancel_pending: abandoned task {}", pending.task_id),
+            );
+            show_message(
+                state.root,
+                if language == Language::English {
+                    "Task abandoned and cleaned up. This machine will no longer reboot into the recovery environment for it."
+                } else {
+                    "已放弃并清理该任务。本机不会再为它重启进恢复环境。"
+                },
+                if language == Language::English {
+                    "Done"
+                } else {
+                    "已完成"
+                },
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+        Err(error) => {
+            append_gui_log(
+                state,
+                &format!("cancel_pending: abandon failed for {}: {error}", pending.task_id),
+            );
+            show_message(
+                state.root,
+                &format!(
+                    "放弃失败：{error}\n\n（目标卷已擦除的任务按设计不予清理；\
+                     可查看该任务的 prepare.log，或用 resume 命令继续。）"
+                ),
+                if language == Language::English {
+                    "Abandon failed"
+                } else {
+                    "放弃失败"
+                },
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+}
+
 pub fn run() -> Result<(), super::TaskError> {
     unsafe {
         let common_controls = InitCommonControlsEx {
@@ -9609,8 +9961,30 @@ pub fn run() -> Result<(), super::TaskError> {
         if !is_elevated() {
             return relaunch_elevated();
         }
-        if super::resume_pending_boot_task()? {
-            return Ok(());
+        // 【2026-10-17 第二轮核查，逃生 A】待续跑任务**先问再做**：
+        // 旧代码在这里一路做到 `shutdown /r`，用户只是想打开程序、
+        // 主窗口都还没创建就被重启了，而且界面上没有任何叫停手段。
+        match super::find_pending_boot_task()? {
+            None => {}
+            Some(pending) => match ask_pending_resume(&pending) {
+                PendingResumeChoice::Reboot => match super::resume_pending_now(&pending) {
+                    // 重启已发起：这台机器马上就要重启，GUI 不必再起来。
+                    Ok(true) => return Ok(()),
+                    // 被闸门挡住（per-stage / 跨阶段总闸）：不重启，继续开窗口，
+                    // 用户还能用顶栏「取消待重启任务」处置它。
+                    Ok(false) => {}
+                    Err(error) => {
+                        message_box_standalone(
+                            &format!("重启续跑失败：{error}"),
+                            "重启失败 / Reboot failed",
+                            MB_OK | MB_ICONERROR,
+                        );
+                    }
+                },
+                PendingResumeChoice::Defer => {
+                    let _ = super::defer_pending_task(&pending);
+                }
+            },
         }
         close_previous_gui_windows();
         let instance = GetModuleHandleW(null());
@@ -9636,7 +10010,6 @@ pub fn run() -> Result<(), super::TaskError> {
             return Err(super::err("RegisterClassExW failed"));
         }
         let title = wide(&format!("BackupRestore - Rust GUI v{PROGRAM_VERSION}"));
-        let _ = std::fs::write("C:\\brgui-trace.txt", "before-create-window\n");
         let window = CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -9651,16 +10024,10 @@ pub fn run() -> Result<(), super::TaskError> {
             instance,
             null_mut(),
         );
-        let _ = std::fs::write(
-            "C:\\brgui-trace.txt",
-            format!("after-create-window null={}\n", window.is_null()),
-        );
         if window.is_null() {
             return Err(super::err("CreateWindowExW failed"));
         }
-        let _ = std::fs::write("C:\\brgui-trace.txt", "before-show-window\n");
         ShowWindow(window, SW_MAXIMIZE);
-        let _ = std::fs::write("C:\\brgui-trace.txt", "message-loop-start\n");
         let mut message = Msg {
             hwnd: null_mut(),
             message: 0,

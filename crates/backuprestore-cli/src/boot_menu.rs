@@ -1409,7 +1409,9 @@ mod tests {
         // 字符串后对齐到 4 字节边界，紧接着就是 VS_FIXEDFILEINFO。
         let fixed = (version + 6 + 32 + 3) & !3;
         bytes[fixed..fixed + 4].copy_from_slice(&0xFEEF_04BDu32.to_le_bytes());
-        let ms: u32 = (10u32 << 16) | 0;
+        // 主版本固定 10（资源里的占位值；真实版本写在 Cargo.toml / VERSION），
+        // 与下一行的 `| ubr` 保持形状一致但不写 `| 0` 占位（clippy identity_op）。
+        let ms: u32 = 10u32 << 16;
         let ls: u32 = (u32::from(build) << 16) | u32::from(ubr);
         bytes[fixed + 8..fixed + 12].copy_from_slice(&ms.to_le_bytes());
         bytes[fixed + 12..fixed + 16].copy_from_slice(&ls.to_le_bytes());

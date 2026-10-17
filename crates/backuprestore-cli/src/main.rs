@@ -15,9 +15,14 @@ use backuprestore_core::canonical_compression;
 #[cfg(windows)]
 use backuprestore_core::{BootMode, Operation, PayloadManifest, verify_image_file};
 use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
+// 非 Windows 构建里 `Utc` 只被 `#[cfg(windows)]` 的代码用到（备份时间戳等）；
+// macOS 上留着它会产生 unused import，门控掉。
+#[cfg_attr(not(windows), allow(unused_imports))]
 use chrono::Utc;
 use std::collections::BTreeMap;
 use std::env;
+// 同上：`OpenOptions` 只被 `#[cfg(any(windows, test))]` 的续跑标记用到。
+#[cfg_attr(not(windows), allow(unused_imports))]
 use std::fs::{self, OpenOptions};
 use std::io::BufReader;
 use std::io::Read;
@@ -77,6 +82,9 @@ mod recovery_progress;
 mod resume_safety;
 #[cfg(any(windows, test))]
 mod secondary_registry;
+/// 会话日志落点：主路径 + **跨重启存活的镜像**（PE/RE 的 `X:` 是内存盘）。
+/// 无条件编译：`append_log` 已委托给它，本机（macOS）构建也要能过。
+mod session_log;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
 #[cfg(windows)]
@@ -96,6 +104,11 @@ fn usage() -> ! {
 }
 
 fn main() {
+    // 必须最先做：`session_log::append` 之后的每一次落盘都要知道该不该镜像。
+    // PE / WinRE 里主日志落在内存盘 `X:` 上，重启即丢（2026-10-17 第二轮核查
+    // 日志缺口 1/2），镜像是唯一能跨重启活下来的那一份。
+    #[cfg(windows)]
+    crate::session_log::init();
     #[cfg(windows)]
     install_panic_logging();
     // 【2026-10-17 修复】在任何子命令分派与子进程派生之前，把设置文件里的
@@ -552,22 +565,101 @@ fn release_boot_resume_attempt(task_dir: &Path, stage: Stage) -> Result<(), Task
     }
 }
 
-/// Resume a task that reached a durable non-terminal stage but returned to
-/// normal Windows before making further progress. The task was already
-/// explicitly authorized by the user; on the next normal launch we revalidate
-/// its durable records and request one automatic WinRE retry for that stage.
-/// A persistent per-stage marker prevents a failed handoff from creating an
-/// infinite reboot loop. We require exactly one valid pending task and never
-/// guess when records are malformed or ambiguous.
+/// 跨阶段**自动续跑的总次数上限**。
+///
+/// 为什么需要它（2026-10-17 第二轮核查，逃生 B）：`claim_boot_resume_attempt`
+/// 的标记是**每阶段一个**，而可续跑阶段有 8 个 —— 阶段一推进，计数就归零。
+/// 于是「回 Windows → 启动程序 → 又重启进恢复环境」最多能走 8 轮，每轮都重启
+/// 用户的机器，而且**全程没问过用户一次**。
+/// 这里再加一道**跨阶段**的总闸：累计到上限就**不再自动重启**，改由用户决定
+/// （继续 / 放弃）。两者是互补关系，不是替代：per-stage 标记防「同一阶段反复
+/// 重启」，总闸防「阶段推进式地被反复重启」。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const MAX_TOTAL_RESUME_ATTEMPTS: u32 = 3;
+
+/// 纯判据：累计已重启 `count` 次之后，是否还允许下一次自动续跑。
+/// `count` 从 0 起算（0 = 一次都没重启过）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn allow_total_attempt(count: u32, max: u32) -> bool {
+    count < max
+}
+
+#[cfg(test)]
+mod total_resume_attempt_tests {
+    use super::{MAX_TOTAL_RESUME_ATTEMPTS, allow_total_attempt};
+
+    /// 默认上限下恰好允许 3 次：第 4 次必须被挡住 —— 这正是「阶段推进式
+    /// 反复重启」的总闸（2026-10-17 第二轮核查，逃生 B）。
+    #[test]
+    fn allows_exactly_the_configured_number_of_reboots() {
+        assert!(allow_total_attempt(0, MAX_TOTAL_RESUME_ATTEMPTS));
+        assert!(allow_total_attempt(1, MAX_TOTAL_RESUME_ATTEMPTS));
+        assert!(allow_total_attempt(2, MAX_TOTAL_RESUME_ATTEMPTS));
+        assert!(
+            !allow_total_attempt(3, MAX_TOTAL_RESUME_ATTEMPTS),
+            "第 4 次必须被挡住"
+        );
+        assert_eq!(MAX_TOTAL_RESUME_ATTEMPTS, 3);
+    }
+
+    /// `max = 0` 的语义是「一次都不自动重启」，不能因为 0 < 0 不成立之外的
+    /// 任何理由放行第一次。
+    #[test]
+    fn zero_max_forbids_every_attempt() {
+        assert!(!allow_total_attempt(0, 0));
+        assert!(!allow_total_attempt(5, 0));
+    }
+}
+
+/// 一个「已经授权、但被中断」的待续跑任务。
+///
+/// 只携带**展示与执行**需要的最小信息：不持有 `Task` 本身，避免调用方拿着
+/// 一份可能已经过期的完整记录去写盘。
 #[cfg(windows)]
-pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
+#[derive(Clone)]
+pub(crate) struct PendingResume {
+    pub task_id: String,
+    pub workspace: PathBuf,
+    pub task_dir: PathBuf,
+    pub operation: Operation,
+    pub stage: Stage,
+}
+
+/// 跨阶段计数文件（任务目录内，与 per-stage 标记并列）。
+#[cfg_attr(not(windows), allow(dead_code))]
+const TOTAL_RESUME_MARKER: &str = "boot-resume-total.count";
+
+#[cfg(windows)]
+fn total_attempt_count(task_dir: &Path) -> u32 {
+    fs::read_to_string(task_dir.join(TOTAL_RESUME_MARKER))
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn bump_total_attempt(task_dir: &Path) -> Result<u32, TaskError> {
+    let count = total_attempt_count(task_dir) + 1;
+    fs::write(task_dir.join(TOTAL_RESUME_MARKER), count.to_string())?;
+    Ok(count)
+}
+
+/// 找出行李：一个「已经授权、但回到 Windows 后没再推进」的任务。
+///
+/// **只做发现与核验，绝不重启**（2026-10-17 第二轮核查，逃生 A）：此前
+/// `resume_pending_boot_task` 一路做到 `shutdown /r`，调用方
+/// `native_gui::run()` 拿它当 bool 用，于是用户只是想打开程序、窗口都没见着
+/// 就被重启了，界面上也没有任何叫停的手段。现在「要不要重启」交回给调用方，
+/// 由它负责询问用户。
+#[cfg(windows)]
+pub(crate) fn find_pending_boot_task() -> Result<Option<PendingResume>, TaskError> {
     let executable = env::current_exe()?;
     let workspace = executable
         .parent()
         .ok_or_else(|| err("executable has no workspace directory"))?;
     let tasks_root = workspace.join("tasks");
     if !tasks_root.is_dir() {
-        return Ok(false);
+        return Ok(None);
     }
 
     let mut pending = Vec::new();
@@ -597,7 +689,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
     }
 
     if pending.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     if pending.len() != 1 {
         let log = workspace.join("logs").join("launcher-errors.log");
@@ -608,7 +700,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
                 pending.len()
             ),
         )?;
-        return Ok(false);
+        return Ok(None);
     }
 
     let (mut task, task_dir) = pending.pop().expect("pending length checked above");
@@ -618,66 +710,88 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
             &mut task,
             &task_dir.join("prepare.log"),
         )?;
+        return Ok(None);
+    }
+    Ok(Some(PendingResume {
+        task_id: task.task_id.clone(),
+        workspace: workspace.to_path_buf(),
+        task_dir,
+        operation: task.operation.clone(),
+        stage: task.status,
+    }))
+}
+
+/// 立即重启去续跑这个任务。返回 `Ok(true)` = 重启已发起；`Ok(false)` = 被闸门
+/// 挡住、没有重启（per-stage 标记或跨阶段总闸），现场完整保留。
+#[cfg(windows)]
+pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskError> {
+    let log = pending.task_dir.join("prepare.log");
+    let attempts = total_attempt_count(&pending.task_dir);
+    if !allow_total_attempt(attempts, MAX_TOTAL_RESUME_ATTEMPTS) {
+        append_log(
+            &log,
+            &format!(
+                "自动续跑已达跨阶段总上限 {MAX_TOTAL_RESUME_ATTEMPTS} 次（已重启 {attempts} 次）：\
+                 不再自动重启，交由用户决定（任务与载荷全部保留）"
+            ),
+        )?;
         return Ok(false);
     }
-    if !claim_boot_resume_attempt(&task_dir, task.status)? {
+    if !claim_boot_resume_attempt(&pending.task_dir, pending.stage)? {
         append_log(
-            &task_dir.join("prepare.log"),
+            &log,
             &format!(
                 "Automatic WinRE resume suppressed: stage {:?} already had its one retry; manual inspection is required",
-                task.status
+                pending.stage
             ),
         )?;
         // 自动重试次数限制只停止自动重启，绝不删除唯一的恢复入口。
         append_log(
-            &task_dir.join("prepare.log"),
+            &log,
             "自动续跑已暂停；任务阶段、启动对象和恢复载荷全部保留，可使用 resume 命令重试",
         )?;
         return Ok(false);
     }
     for required in [
-        task_dir.join("payload").join("Recovery.exe"),
-        task_dir.join("payload").join("RecoveryTask.env"),
-        task_dir.join("payload").join("task.json"),
-        task_dir.join("manifest.json"),
-        task_dir.join("original").join("Winre.wim"),
-        task_dir.join("stage").join("Winre.wim"),
+        pending.task_dir.join("payload").join("Recovery.exe"),
+        pending.task_dir.join("payload").join("RecoveryTask.env"),
+        pending.task_dir.join("payload").join("task.json"),
+        pending.task_dir.join("manifest.json"),
+        pending.task_dir.join("original").join("Winre.wim"),
+        pending.task_dir.join("stage").join("Winre.wim"),
     ] {
         if !required.is_file() {
             append_log(
-                &task_dir.join("prepare.log"),
+                &log,
                 &format!(
                     "Pending boot recovery refused: required artifact is missing: {}",
                     required.display()
                 ),
             )?;
-            release_boot_resume_attempt(&task_dir, task.status)?;
+            release_boot_resume_attempt(&pending.task_dir, pending.stage)?;
             return Ok(false);
         }
     }
 
-    let log = task_dir.join("prepare.log");
+    let count = bump_total_attempt(&pending.task_dir)?;
     append_log(
         &log,
         &format!(
-            "Detected durable interrupted task after normal Windows startup; resuming task {} operation={:?} stage={:?}",
-            task.task_id, task.operation, task.status
+            "Detected durable interrupted task after normal Windows startup; resuming task {} operation={:?} stage={:?}（跨阶段第 {count}/{MAX_TOTAL_RESUME_ATTEMPTS} 次）",
+            pending.task_id, pending.operation, pending.stage
         ),
     )?;
     // Invariant A before re-arming: the registered WinRE must still be this
     // task's payload, otherwise the reboot lands in the stock Microsoft WinRE
-    // (no winpeshl hook) and the interrupted task silently never resumes. The
-    // previous session may have flipped it clean for the capture, or left it
-    // half-written; both are repaired here before we request the boot.
+    // (no winpeshl hook) and the interrupted task silently never resumes.
     // v1.7.11 新通道：续跑只依赖「我们自建的 BCD 条目 + 镜像卷上的载荷 WIM」，
-    // 与系统注册 WinRE 无关（注册位全程只读）。重武装前先复核条目仍指向我们的载荷、
-    // 且载荷哈希与准备期一致；任何一条不满足都不重启，避免机器进不了任务环境。
-    let Some(entry) = boot_entry::ReBootEntry::read(&task_dir)? else {
+    // 与系统注册 WinRE 无关（注册位全程只读）。
+    let Some(entry) = boot_entry::ReBootEntry::read(&pending.task_dir)? else {
         append_log(
             &log,
             "Pending boot recovery abandoned: task has no recorded boot entry (old WinRE-channel task)",
         )?;
-        release_boot_resume_attempt(&task_dir, task.status)?;
+        release_boot_resume_attempt(&pending.task_dir, pending.stage)?;
         return Ok(false);
     };
     if let Err(error) = boot_entry::rearm(&entry, &log) {
@@ -685,7 +799,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
             &log,
             &format!("Pending boot recovery abandoned: our boot entry is unusable: {error}"),
         )?;
-        release_boot_resume_attempt(&task_dir, task.status)?;
+        release_boot_resume_attempt(&pending.task_dir, pending.stage)?;
         return Ok(false);
     }
     append_log(&log, "Re-armed our one-shot boot entry for pending task")?;
@@ -707,7 +821,7 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
                 shutdown.status, detail
             ),
         )?;
-        release_boot_resume_attempt(&task_dir, task.status)?;
+        release_boot_resume_attempt(&pending.task_dir, pending.stage)?;
         return Err(err(&format!(
             "unable to restart into Windows RE for pending task{}",
             detail
@@ -719,6 +833,37 @@ pub(crate) fn resume_pending_boot_task() -> Result<bool, TaskError> {
     )?;
     Ok(true)
 }
+
+/// 用户选择「本次不重启」：只记一行，任务与载荷原样保留。
+#[cfg(windows)]
+pub(crate) fn defer_pending_task(pending: &PendingResume) -> Result<(), TaskError> {
+    append_log(
+        &pending.task_dir.join("prepare.log"),
+        &format!(
+            "用户选择本次不自动重启续跑（task={} stage={:?}）；任务、启动对象与载荷全部保留，\
+             可用 resume 命令或主窗口「取消待重启任务」继续处理",
+            pending.task_id, pending.stage
+        ),
+    )
+}
+
+/// 用户选择「放弃这个任务」：走 `abandon-task` 那条已经实机验收过的终态收口
+/// （disarm + 清载荷 + 保留证据），不在这里另写一份清理逻辑。
+#[cfg(windows)]
+pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<(), TaskError> {
+    append_log(
+        &pending.task_dir.join("prepare.log"),
+        &format!(
+            "用户放弃待续跑任务（task={} stage={:?}）：按终态收口",
+            pending.task_id, pending.stage
+        ),
+    )?;
+    windows_prepare::abandon_task(
+        pending.workspace.to_string_lossy().into_owned(),
+        pending.task_id.clone(),
+    )
+}
+
 /// A prepared task may be a deliberate `--no-reboot` diagnostic and must not
 /// start WinRE by itself. Every later non-terminal stage, however, represents
 /// an already authorized recovery that was interrupted after WinRE staging;
@@ -811,29 +956,15 @@ fn show_status(root: String, id: String) -> Result<(), TaskError> {
     Ok(())
 }
 
+/// 写一行日志。
+///
+/// 真正的实现在 `session_log`：除主路径外，若本次运行在 PE / WinRE 的**内存盘**
+/// 会话里，还会按文件名往持久化卷的 `BackupRestore-logs\<会话>\` 多写一份。
+/// 理由（2026-10-17 第二轮核查，日志缺口 1/2）：`X:` 上的日志重启即丢，而丢掉的
+/// 恰恰是恢复环境的逃生决策与 PE 会话内的操作记录。普通 Windows 上镜像恒为
+/// `None`，行为与改动前逐字一致。
 pub(crate) fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut options = fs::OpenOptions::new();
-    options.create(true).append(true);
-    // Windows：必须显式放开 Read/Write 共享。进度窗线程正以只读方式持有同一个
-    // 日志文件（recovery_progress 每秒读增量），默认的独占语义会让这里报
-    // "另一个程序正在使用此文件"。2026-10-12 在线还原接上引导修复后必现于此：
-    // prepare 里的 discover 要写日志，而 WinRE 路径原本没有进度窗在读。
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_SHARE_READ: u32 = 0x1;
-        const FILE_SHARE_WRITE: u32 = 0x2;
-        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
-    }
-    let mut file = options.open(path)?;
-    writeln!(file, "[{}] {message}", Utc::now().to_rfc3339())?;
-    // 不再 sync_all：它在 Windows 上等价于 FlushFileBuffers，需要写权限独占，
-    // 会把并发读日志的进度窗挤掉。日志的价值在于内容可见，落盘时机交给文件系统。
-    file.flush()?;
-    Ok(())
+    crate::session_log::append(path, message)
 }
 
 fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), TaskError> {
@@ -1021,6 +1152,16 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                 &format!("reg query MiniNT could not be started ({error}); skipping wpeinit"),
             );
         }
+    }
+    // 【2026-10-17 用户要求】一进恢复环境就在后台开一个最大化的命令提示符：
+    // WinRE 是 shell-free 的，没有它，用户（和我们自己排障时）没有任何命令行
+    // 出口。它留在后台，本程序的弹框用 MB_SETFOREGROUND 保持在前台。
+    // 失败只记日志：cmd 起不来不该让恢复链跟着失败。
+    if let Err(error) = launch_background_console() {
+        let _ = append_log(
+            &escape_log,
+            &format!("recovery console could not be started ({error}); continuing without it"),
+        );
     }
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -1227,6 +1368,102 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
             }
         }
     }
+}
+
+/// 恢复环境里那个「最大化、留在后台」的命令提示符。
+///
+/// ## 为什么要有它（2026-10-17 用户要求 + 第二轮核查逃生 C）
+/// WinRE / WinPE 是 **shell-free** 的：`winpeshl.ini` 直接拉起本程序，屏幕上
+/// 只有我们的窗口 —— 没有任务栏、没有开始菜单、也没有任何命令行。于是：
+/// - 用户想手动查 BCD / 看盘符 / 跑 `wpeutil`，**没有任何入口**；
+/// - 一旦我们的窗口起不来（建窗失败、panic），这台机器就成了黑屏。
+///
+/// 这里在后台开一个**最大化**的 cmd 当常驻退路；本程序的窗口继续用
+/// `MB_SETFOREGROUND` 保持在前台，不会被它抢走。
+///
+/// 刻意用 `CreateProcessW` 而不是 `Command`：`Command` 设不了窗口显示状态，
+/// 而「最大化」是这个需求的一半（另一半是「在后台」）。
+#[cfg(windows)]
+pub(crate) fn launch_background_console() -> Result<(), TaskError> {
+    #[repr(C)]
+    struct StartupInfoW {
+        cb: u32,
+        reserved: *mut u16,
+        desktop: *mut u16,
+        title: *mut u16,
+        x: u32,
+        y: u32,
+        x_size: u32,
+        y_size: u32,
+        x_count_chars: u32,
+        y_count_chars: u32,
+        fill_attribute: u32,
+        flags: u32,
+        show_window: u16,
+        reserved2: u16,
+        reserved2_ptr: *mut u8,
+        std_input: *mut std::ffi::c_void,
+        std_output: *mut std::ffi::c_void,
+        std_error: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    struct ProcessInformation {
+        process: *mut std::ffi::c_void,
+        thread: *mut std::ffi::c_void,
+        process_id: u32,
+        thread_id: u32,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateProcessW(
+            application_name: *const u16,
+            command_line: *mut u16,
+            process_attributes: *mut std::ffi::c_void,
+            thread_attributes: *mut std::ffi::c_void,
+            inherit_handles: i32,
+            creation_flags: u32,
+            environment: *mut std::ffi::c_void,
+            current_directory: *const u16,
+            startup_info: *mut StartupInfoW,
+            process_information: *mut ProcessInformation,
+        ) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    const STARTF_USESHOWWINDOW: u32 = 0x0000_0001;
+    const SW_SHOWMAXIMIZED: u16 = 3;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    // `/k` 让窗口留在屏幕上（不是跑完就消失）；标题只作提示，不参与判据。
+    let mut command_line: Vec<u16> = r#"cmd.exe /k title BackupRestore recovery console"#
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut startup: StartupInfoW = unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of::<StartupInfoW>() as u32;
+    startup.flags = STARTF_USESHOWWINDOW;
+    startup.show_window = SW_SHOWMAXIMIZED;
+    let mut info: ProcessInformation = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        CreateProcessW(
+            std::ptr::null(),
+            command_line.as_mut_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            CREATE_NEW_CONSOLE,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &mut startup,
+            &mut info,
+        )
+    };
+    if ok == 0 {
+        return Err(err("无法启动后台命令提示符（CreateProcessW 失败）"));
+    }
+    unsafe {
+        CloseHandle(info.thread);
+        CloseHandle(info.process);
+    }
+    Ok(())
 }
 
 /// 从 `RecoveryTask.env` 读界面语言：`UI_LANGUAGE=en*` 用英文，其余一律中文

@@ -200,7 +200,7 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     }
     // Perform the no-overwrite guard before elevation. A direct CLI call must
     // fail locally without triggering UAC or touching any boot configuration.
-    require_administrator()?;
+    require_administrator(&executable_dir.join("logs").join("launcher-errors.log"))?;
     prepare_task(&executable_dir, &workspace, target, options)
 }
 
@@ -720,11 +720,13 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
 /// 还在进行中，需要先继续原任务或人工恢复，不能从清理入口直接抹掉。
 #[cfg(windows)]
 pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskError> {
-    require_administrator()?;
+    // 先拿到日志路径再查提权：这样「不是管理员」这件事本身也能落进任务日志，
+    // 而不是只留一句弹框文案。
+    let log = TaskStore::new(root.clone()).log_path(&task_id)?;
+    require_administrator(&log)?;
     let store = TaskStore::new(root);
     let mut task = store.load(&task_id)?;
     let dir = store.task_dir(&task_id)?;
-    let log = store.log_path(&task_id)?;
     let status: backuprestore_core::StatusRecord =
         backuprestore_core::read_json(store.status_path(&task_id)?)?;
     if status.task_id != task.task_id
@@ -2697,17 +2699,18 @@ fn assert_environment(source_drive: char) -> Result<(), TaskError> {
     Ok(())
 }
 
-fn require_administrator() -> Result<(), TaskError> {
-    let status = Command::new("fltmc.exe")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(err("administrator elevation is required"))
+/// 【2026-10-17 第二轮核查，日志缺口 6】`fltmc` 的输出落盘。
+///
+/// 此前三个流全是 `Stdio::null()`，只按退出码判断 —— 提权失败时用户看到
+/// 「需要管理员权限」，而日志里**看不出到底是没提权、还是 fltmc 本身不可用**
+/// （后者在某些精简环境里会出现，此时真正的修法完全不同）。
+fn require_administrator(log: &Path) -> Result<(), TaskError> {
+    match capture_logged("fltmc.exe", &[], log) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let _ = append_log(log, &format!("administrator check failed: {error}"));
+            Err(err("administrator elevation is required"))
+        }
     }
 }
 
