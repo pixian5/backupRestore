@@ -1,0 +1,6 @@
+killing old pid=4864
+br-test.json written
+SENTINEL=E:\BR-222451.txt
+E_SERIAL_BEFORE=3492ACB8
+launched lastResult=267009
+GUI_UP pid=576

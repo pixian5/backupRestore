@@ -1,0 +1,33 @@
+LOG 20:54:40 gui.log 131968
+LOG 20:37:47 log-root.txt 116
+LOG 20:30:36 _bcd-brace.txt 122
+LOG 20:30:11 _probe2.txt 8
+LOG 20:29:11 _bcd-live3.txt 362
+LOG 20:27:22 _bcd-live2.txt 482
+HBRWORK 21:30:39 Recovery.exe 2803712
+HBRWORK 21:30:39 BackupRestore.exe 2803712
+HBRWORK 10:23:52 pre-ui-bootmgr.txt 683
+HBRWORK 10:23:52 pre-ui-bcd.txt 97431
+HBRWORK 09:57:55 bcd-after-boot.txt 1376
+HBRWORK 09:30:16 stage3ch-relaunch.txt 119
+HBRWORK 08:13:32 tier1-menu-name-evidence.txt 656
+HBRWORK 08:12:20 stage3ch-probe-launch.txt 146
+IMG 10-18 05:15 BR-data-20261018.wim 0GB
+IMG 10-18 05:15 BR-data-20261018.wim.index-1.metadata.json 0GB
+IMG 10-18 07:04 BR-PE-marker.wim 0.34GB
+IMG 10-18 05:05 BR-sys-20261018.wim 30.2GB
+IMG 10-18 05:06 BR-sys-20261018.wim.index-1.metadata.json 0GB
+IMG 10-14 21:55 c-full-20261014.wim 30.46GB
+IMG 10-14 21:56 c-full-20261014.wim.index-1.metadata.json 0GB
+IMG 10-14 21:56 c-full-20261014.wim.index-2.metadata.json 0GB
+IMG 10-16 15:29 gui-backup.wim 0.02GB
+IMG 10-14 00:53 gui-backup.wim.index-1.metadata.json 0GB
+IMG 10-14 01:22 gui-click-backup.wim 0.02GB
+IMG 10-14 01:22 gui-click-backup.wim.index-1.metadata.json 0GB
+IMG 10-14 00:28 metadata.json 0GB
+IMG 10-14 01:57 re-channel-t-backup.wim 0.02GB
+IMG 10-14 01:57 re-channel-t-backup.wim.index-1.metadata.json 0GB
+IMG 10-18 06:40 Recovery.log 0.06GB
+IMG 10-18 06:40 Recovery.reagent.log 0GB
+IMG 10-14 00:28 T-drive-backup.wim 0.02GB
+IMG 10-14 00:28 T-drive-backup.wim.index-1.metadata.json 0GB

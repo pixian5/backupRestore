@@ -1,0 +1,71 @@
+
+Windows 启动加载器
+-------------------
+标识符                  {0cec537a-c913-11f1-8987-86bb9001dde7}
+device                  ramdisk=[E:]\Recovery\WindowsRE\Winre.wim,{0cec537b-c913-11f1-8987-86bb9001dde7}
+path                    \windows\system32\winload.efi
+description             Windows Recovery Environment
+locale                  en-us
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+displaymessage          Recovery
+osdevice                ramdisk=[E:]\Recovery\WindowsRE\Winre.wim,{0cec537b-c913-11f1-8987-86bb9001dde7}
+systemroot              \windows
+nx                      OptIn
+bootmenupolicy          Standard
+winpe                   Yes
+custom:46000010         Yes
+
+Windows 启动加载器
+-------------------
+标识符                  {40e4789b-ca7f-11f1-8996-9ba63bacb4b0}
+device                  ramdisk=[T:]\BackupRestorePE\sources\boot.wim,{ae5534e0-a924-466c-b836-758539a3ee3a}
+description             BR PE marker RAM
+osdevice                ramdisk=[T:]\BackupRestorePE\sources\boot.wim,{ae5534e0-a924-466c-b836-758539a3ee3a}
+systemroot              \windows
+nx                      OptIn
+detecthal               Yes
+winpe                   Yes
+
+Windows 启动加载器
+-------------------
+标识符                  {40e4789c-ca7f-11f1-8996-9ba63bacb4b0}
+device                  partition=T:
+path                    \Windows\system32\winload.efi
+description             BR PE marker DISK
+osdevice                partition=T:
+systemroot              \Windows
+nx                      OptIn
+detecthal               Yes
+winpe                   Yes
+
+Windows 启动加载器
+-------------------
+标识符                  {708d1169-ca95-11f1-8999-8cff764e6604}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11 26200.9550 20261018
+locale                  en-us
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {708d1168-ca95-11f1-8999-8cff764e6604}
+nx                      OptIn
+bootmenupolicy          Standard
+
+Windows 启动加载器
+-------------------
+标识符                  {c3adc97f-cb01-11f1-8997-e9cfd361e402}
+device                  partition=E:
+path                    \Windows\system32\winload.efi
+description             Windows 11 26200.9550 20261018-202610182224
+locale                  en-us
+inherit                 {6efb52bf-1766-41db-a6b3-0ee5eff72bd7}
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=E:
+systemroot              \Windows
+resumeobject            {c3adc97e-cb01-11f1-8997-e9cfd361e402}
+nx                      OptIn
+bootmenupolicy          Standard

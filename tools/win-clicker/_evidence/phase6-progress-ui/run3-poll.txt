@@ -1,0 +1,18 @@
+LOG_LINES=11312
+L| [2026-10-18T14:28:19.404816+00:00] plan A: verbatim BCD store path = \\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\EFI\Microsoft\Boot\BCD
+L| [2026-10-18T14:28:19.439130600+00:00] EFI BCD raw restore blocked: ESP 涓婄殑 BCD 姝ｈ绯荤粺鍗犵敤锛堥敊璇?32锛屽叡浜啿绐侊級锛屾棤娉曟寜瀛楄妭鍥為€€銆傝閲嶅惎杩涘叆鎭㈠鐜锛圵inRE/PE锛夊悗閲嶈瘯锛涘湪绾夸細璇濅笅涔熷彲鐢ㄣ€屽紩瀵间慨澶?M)銆嶆墜宸ヨ皟鏁村惎鍔ㄩ」
+L| [2026-10-18T14:28:19.439228600+00:00] 鐢ㄦ埛鎸?B 閿?BCD 鍥為€€澶辫触锛歩nvalid task: ESP 涓婄殑 BCD 姝ｈ绯荤粺鍗犵敤锛堥敊璇?32锛屽叡浜啿绐侊級锛屾棤娉曟寜瀛楄妭鍥為€€銆傝閲嶅惎杩涘叆鎭㈠鐜锛圵inRE/PE锛夊悗閲嶈瘯锛涘湪绾夸細璇濅笅涔熷彲鐢ㄣ€屽紩瀵间慨澶?M)銆嶆墜宸ヨ皟鏁村惎鍔ㄩ」
+L| [2026-10-18T14:39:45.991485700+00:00] STEP 3.5/4 缁戝畾绗簩绯荤粺鐩樼锛堢绾?SYSTEM/SOFTWARE锛屼富绯荤粺涓嶅彈褰卞搷锛?[2026-10-18T14:39:46.664958700+00:00] capturing reg.exe load HKLM\BRSecondaryaa926f46b028488696fff432d0cf5e96 \\?\Volume{761230e8-107c-4396-8c37-82273720183d}\Windows\System32\config\SOFTWARE
+L| [2026-10-18T14:39:47.200072+00:00] STEP 3.6/4 棰勫缓杩樺師绯荤粺鍚姩椤癸紙绛夊緟鏈熼棿鍗冲彲鍦ㄥ惎鍔ㄨ彍鍗曠湅鍒板苟閫夋嫨锛?[2026-10-18T14:39:47.494006600+00:00] STEP 4/4 淇寮曞锛堣彍鍗曞懡鍚?椤哄簭/榛樿椤癸紝榛樿鍚姩椤?鏈杩樺師鐨勭郴缁燂級
+L| [2026-10-18T14:39:47.881395100+00:00] capturing bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /enum all /v
+L| default                 {c3adc97f-cb01-11f1-8997-e9cfd361e402}
+L| [2026-10-18T14:39:48.196104+00:00] running bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /set {c3adc97f-cb01-11f1-8997-e9cfd361e402} description Windows 11 26200.9550 20261018-202610182224
+L| [2026-10-18T14:39:48.227479600+00:00] running bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /default {c3adc97f-cb01-11f1-8997-e9cfd361e402}
+L| [stdout] 鎿嶄綔鎴愬姛瀹屾垚銆?[2026-10-18T14:39:48.256585200+00:00] running bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /set {bootmgr} resumeobject {708d1168-ca95-11f1-8999-8cff764e6604}
+L| [stdout] 鎿嶄綔鎴愬姛瀹屾垚銆?[2026-10-18T14:39:48.285990700+00:00] running bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /displayorder {c3adc97f-cb01-11f1-8997-e9cfd361e402} {708d1169-ca95-11f1-8999-8cff764e6604} {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} {40e4789c-ca7f-11f1-8996-9ba63bacb4b0}
+L| [stdout] 鎿嶄綔鎴愬姛瀹屾垚銆?[2026-10-18T14:39:48.313273300+00:00] running bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /timeout 10
+L| [stdout] 鎿嶄綔鎴愬姛瀹屾垚銆?[2026-10-18T14:39:48.342544900+00:00] capturing bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /enum all /v
+L| default                 {c3adc97f-cb01-11f1-8997-e9cfd361e402}
+L| [2026-10-18T14:39:48.669759100+00:00] capturing bcdedit.exe /store S:\EFI\Microsoft\Boot\BCD /enum {c3adc97f-cb01-11f1-8997-e9cfd361e402} /v
+DISM=IDLE
+BCDBOOT=IDLE

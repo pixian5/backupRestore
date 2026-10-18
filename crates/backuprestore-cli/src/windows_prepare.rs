@@ -2292,18 +2292,31 @@ fn rollback_boot_request(
             match fs::copy(&raw_snapshot, &store) {
                 Ok(_) => {
                     backuprestore_core::verify_sha256(&store, &expected)?;
-                    append_log(
-                        log,
-                        "Restored byte-for-byte EFI BCD snapshot after preparation failure",
-                    )?;
+                    append_log(log, "Restored byte-for-byte EFI BCD snapshot")?;
                 }
                 Err(error) if error.raw_os_error() == Some(32) => {
-                    let snapshot_arg = raw_snapshot.to_string_lossy().into_owned();
-                    run_logged("bcdedit.exe", &["/import", &snapshot_arg], log)?;
-                    append_log(
-                        log,
-                        "Raw EFI BCD restore was locked; imported the saved BCD snapshot",
-                    )?;
+                    // 【2026-10-18 缺陷修复】锁定时**不许**退回 `bcdedit /import`。
+                    //
+                    // 实测（run 2，在线还原 C→E）：ESP BCD 一旦被 BFSVC 以写方式
+                    // 打开（本例是 STEP 3.6 的 bcdboot 预建启动项），原始文件即被
+                    // 独占，raw copy 报错误 32（ERROR_SHARING_VIOLATION）。此时
+                    // 走 `bcdedit /import` 虽能"导入成功"（BCD 文件 mtime 确实
+                    // 变化），但它会替换 BFSVC 已打开的存储文件，使整个会话的引导
+                    // 服务状态失效：此后 bcdboot / bcdedit 全部
+                    // `BcdOpenStore failed ... c0000043`，直到重启才恢复
+                    // （run 2 的 STEP 3.6 之后任务全挂即此链；手动复现两次，
+                    // 重启后 bcdboot EXIT=0 证实毒化仅会话级）。
+                    //
+                    // 字节级快照落不了盘时，唯一安全的动作是明确失败：
+                    // WinRE/PE 下系统未运行，raw 主路径本来就不会遇到这把锁，
+                    // 用户重启进恢复环境后即可正常回退。
+                    let detail = format!(
+                        "ESP 上的 BCD 正被系统占用（错误 32，共享冲突），无法按字节回退。\
+                         请重启进入恢复环境（WinRE/PE）后重试；在线会话下也可用\
+                         「引导修复(M)」手工调整启动项"
+                    );
+                    append_log(log, &format!("EFI BCD raw restore blocked: {detail}"))?;
+                    return Err(err(&detail));
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -2320,6 +2333,15 @@ fn rollback_boot_request(
         }
         return result;
     }
+    // 遗留分支：只有**旧任务**（v2.6.x 之前 prepare、当时 raw 快照被锁而回退到
+    // 逻辑导出的任务目录）才走得通——现行三条准备链都在 raw 快照可用时写入
+    // `bcd-before-raw`，上面的分支才是主路径。
+    //
+    // ⚠️ 毒性警告（2026-10-18 实测，见上面错误 32 分支的详细记录）：
+    // `bcdedit /import` 会替换 BFSVC 已打开的存储文件，毒化当前会话的引导服务
+    // 状态（此后 bcdboot / bcdedit 全部 BcdOpenStore failed，直到重启）。
+    // 此路径仅因「没有字节级快照时至少还能试着逻辑回退」而保留；若将来要清理
+    // 旧任务兼容，第一件该删的就是它，而不是把 /import 挪到别处复用。
     let snapshot = task_dir.join("bcd-before-export");
     if !snapshot.is_file() {
         return Err(err(

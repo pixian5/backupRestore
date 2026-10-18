@@ -1,0 +1,1405 @@
+[2026-10-13T09:01:47.688295900+00:00] GUI started; elevated native Rust window initialized
+[2026-10-13T09:01:47.689346+00:00] PE dev: tab[0] key=backup hwnd=0x330078 text_set
+[2026-10-13T09:01:47.689414100+00:00] PE dev: tab[1] key=restore hwnd=0x10090 text_set
+[2026-10-13T09:01:47.689469800+00:00] PE dev: tab[2] key=secondary hwnd=0x10092 text_set
+[2026-10-13T09:01:47.689529800+00:00] PE dev: tab[3] key=pe hwnd=0x10094 text_set
+[2026-10-13T09:01:47.702947900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-13T09:01:47.713785800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-13T09:01:47.713919700+00:00] PE dev: tab[0] key=backup hwnd=0x330078 text_set
+[2026-10-13T09:01:47.713974500+00:00] PE dev: tab[1] key=restore hwnd=0x10090 text_set
+[2026-10-13T09:01:47.714495100+00:00] PE dev: tab[2] key=secondary hwnd=0x10092 text_set
+[2026-10-13T09:01:47.714537600+00:00] PE dev: tab[3] key=pe hwnd=0x10094 text_set
+[2026-10-13T09:01:47.714604200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-13T16:49:17.972311+00:00] GUI started; elevated native Rust window initialized
+[2026-10-13T16:49:17.973110+00:00] PE dev: tab[0] key=backup hwnd=0x203b0 text_set
+[2026-10-13T16:49:17.973165300+00:00] PE dev: tab[1] key=restore hwnd=0x203b2 text_set
+[2026-10-13T16:49:17.973217300+00:00] PE dev: tab[2] key=secondary hwnd=0x203b4 text_set
+[2026-10-13T16:49:17.973263800+00:00] PE dev: tab[3] key=pe hwnd=0x203b6 text_set
+[2026-10-13T16:49:17.974115400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-13T16:49:17.976265900+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-13T16:49:17.976343600+00:00] PE dev: tab[0] key=backup hwnd=0x203b0 text_set
+[2026-10-13T16:49:17.976394700+00:00] PE dev: tab[1] key=restore hwnd=0x203b2 text_set
+[2026-10-13T16:49:17.976442200+00:00] PE dev: tab[2] key=secondary hwnd=0x203b4 text_set
+[2026-10-13T16:49:17.976484600+00:00] PE dev: tab[3] key=pe hwnd=0x203b6 text_set
+[2026-10-13T16:49:17.976545100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-13T16:50:42.685932300+00:00] GUI action started: refresh environment
+[2026-10-13T16:50:42.968176300+00:00] GUI action completed: refresh environment; eligible_volumes=5
+[2026-10-14T08:01:18.898728200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-14T08:01:18.899410800+00:00] PE dev: tab[0] key=backup hwnd=0x202a6 text_set
+[2026-10-14T08:01:18.899479900+00:00] PE dev: tab[1] key=restore_a hwnd=0x202a8 text_set
+[2026-10-14T08:01:18.899537500+00:00] PE dev: tab[2] key=restore_b hwnd=0x202aa text_set
+[2026-10-14T08:01:18.899590800+00:00] PE dev: tab[3] key=restore_c hwnd=0x202ac text_set
+[2026-10-14T08:01:18.899684600+00:00] PE dev: tab[4] key=secondary hwnd=0x202ae text_set
+[2026-10-14T08:01:18.899783500+00:00] PE dev: tab[5] key=pe hwnd=0x202b0 text_set
+[2026-10-14T08:01:18.900868800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-14T08:01:18.904140400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-14T08:01:18.904231100+00:00] PE dev: tab[0] key=backup hwnd=0x202a6 text_set
+[2026-10-14T08:01:18.904286700+00:00] PE dev: tab[1] key=restore_a hwnd=0x202a8 text_set
+[2026-10-14T08:01:18.904342100+00:00] PE dev: tab[2] key=restore_b hwnd=0x202aa text_set
+[2026-10-14T08:01:18.904392800+00:00] PE dev: tab[3] key=restore_c hwnd=0x202ac text_set
+[2026-10-14T08:01:18.904435600+00:00] PE dev: tab[4] key=secondary hwnd=0x202ae text_set
+[2026-10-14T08:01:18.904488400+00:00] PE dev: tab[5] key=pe hwnd=0x202b0 text_set
+[2026-10-14T08:01:18.904605+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-14T08:02:29.399852400+00:00] PE dev: tab[0] key=backup hwnd=0x202a6 text_set
+[2026-10-14T08:02:29.400943300+00:00] PE dev: tab[1] key=restore_a hwnd=0x202a8 text_set
+[2026-10-14T08:02:29.401619+00:00] PE dev: tab[2] key=restore_b hwnd=0x202aa text_set
+[2026-10-14T08:02:29.402309700+00:00] PE dev: tab[3] key=restore_c hwnd=0x202ac text_set
+[2026-10-14T08:02:29.402791600+00:00] PE dev: tab[4] key=secondary hwnd=0x202ae text_set
+[2026-10-14T08:02:29.403338400+00:00] PE dev: tab[5] key=pe hwnd=0x202b0 text_set
+[2026-10-14T08:02:29.403489600+00:00] target default moved off system drive: C -> F
+[2026-10-14T08:02:29.405274400+00:00] PE visibility: op=restore-system-other pe_visible=false ram_checked=true
+[2026-10-14T08:02:29.431611400+00:00] GUI action completed: operation selected=restore-system-other
+[2026-10-14T08:03:07.954990800+00:00] GUI action started: read WIM metadata; image=H:\BRImages\c-full-20261014.wim
+[2026-10-14T08:03:07.995387100+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-14T08:03:29.658320400+00:00] channel selected: offline
+[2026-10-14T08:03:30.954392100+00:00] GUI action started: create task; operation=restore-system-other
+[2026-10-14T08:03:41.552243700+00:00] channel split: op=restore-system-other online=false
+[2026-10-14T08:03:41.552474800+00:00] elevated prepare: launching (visible) operation=restore-system-other params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 99, 114, 101, 97, 116, 101, 45, 115, 101, 99, 111, 110, 100, 97, 114, 121, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 70, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 31532, 20108, 31995, 32479, 45, 49, 48, 49, 52, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 99, 45, 102, 117, 108, 108, 45, 50, 48, 50, 54, 49, 48, 49, 52, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 49, 32, 45, 45, 97, 108, 108, 111, 119, 45, 100, 101, 115, 116, 114, 117, 99, 116, 105, 118, 101, 0]
+[2026-10-14T08:03:41.612901200+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x574
+[2026-10-14T08:03:43.116084200+00:00] GUI action delegated: elevated prepare launched; operation=restore-system-other; source=C; target=F
+[2026-10-14T16:24:36.944875200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-14T16:24:36.946173400+00:00] PE dev: tab[0] key=backup hwnd=0x202e2 text_set
+[2026-10-14T16:24:36.946582700+00:00] PE dev: tab[1] key=restore_a hwnd=0x202e4 text_set
+[2026-10-14T16:24:36.946751700+00:00] PE dev: tab[2] key=restore_b hwnd=0x202e6 text_set
+[2026-10-14T16:24:36.946890300+00:00] PE dev: tab[3] key=restore_c hwnd=0x202e8 text_set
+[2026-10-14T16:24:36.946967600+00:00] PE dev: tab[4] key=secondary hwnd=0x202ea text_set
+[2026-10-14T16:24:36.947092700+00:00] PE dev: tab[5] key=pe hwnd=0x202ec text_set
+[2026-10-14T16:24:36.948707100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-14T16:24:36.951725400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-14T16:24:36.951844200+00:00] PE dev: tab[0] key=backup hwnd=0x202e2 text_set
+[2026-10-14T16:24:36.951903500+00:00] PE dev: tab[1] key=restore_a hwnd=0x202e4 text_set
+[2026-10-14T16:24:36.951955800+00:00] PE dev: tab[2] key=restore_b hwnd=0x202e6 text_set
+[2026-10-14T16:24:36.952004900+00:00] PE dev: tab[3] key=restore_c hwnd=0x202e8 text_set
+[2026-10-14T16:24:36.952054800+00:00] PE dev: tab[4] key=secondary hwnd=0x202ea text_set
+[2026-10-14T16:24:36.952115200+00:00] PE dev: tab[5] key=pe hwnd=0x202ec text_set
+[2026-10-14T16:24:36.952217800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-14T16:26:10.597812500+00:00] PE dev: tab[0] key=backup hwnd=0x202e2 text_set
+[2026-10-14T16:26:10.598738700+00:00] PE dev: tab[1] key=restore_a hwnd=0x202e4 text_set
+[2026-10-14T16:26:10.599321800+00:00] PE dev: tab[2] key=restore_b hwnd=0x202e6 text_set
+[2026-10-14T16:26:10.599996800+00:00] PE dev: tab[3] key=restore_c hwnd=0x202e8 text_set
+[2026-10-14T16:26:10.600789100+00:00] PE dev: tab[4] key=secondary hwnd=0x202ea text_set
+[2026-10-14T16:26:10.601621300+00:00] PE dev: tab[5] key=pe hwnd=0x202ec text_set
+[2026-10-14T16:26:10.609961+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-14T16:26:10.633305100+00:00] GUI action completed: operation selected=restore-existing
+[2026-10-14T16:34:50.728674400+00:00] GUI action started: read WIM metadata; image=H:\BRImages\c-full-20261014.wim
+[2026-10-14T16:34:50.777695+00:00] GUI action completed: read WIM metadata; indexes=2
+[2026-10-14T16:37:13.744574300+00:00] GUI action started: create task; operation=restore-existing
+[gui] system drive choice: button clicked, choice=2
+[2026-10-14T16:42:55.290209400+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-10-14T16:43:53.933953400+00:00] system drive operation: Windows RE confirm result=6 (6=yes)
+[2026-10-14T16:43:53.934078400+00:00] system drive operation: user chose Windows RE (prepare chain)
+[2026-10-14T16:43:53.934382700+00:00] elevated prepare: launching (visible) operation=restore-existing params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 114, 101, 115, 116, 111, 114, 101, 45, 101, 120, 105, 115, 116, 105, 110, 103, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 22791, 20221, 34, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 99, 45, 102, 117, 108, 108, 45, 50, 48, 50, 54, 49, 48, 49, 52, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 50, 32, 45, 45, 97, 108, 108, 111, 119, 45, 100, 101, 115, 116, 114, 117, 99, 116, 105, 118, 101, 0]
+[2026-10-14T16:43:54.072570600+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x578
+[2026-10-14T16:43:55.581690300+00:00] GUI action delegated: elevated prepare launched; operation=restore-existing; source=C; target=C
+[2026-10-15T02:35:11.880973100+00:00] GUI started; elevated native Rust window initialized
+[2026-10-15T02:35:11.881975500+00:00] PE dev: tab[0] key=backup hwnd=0x402e6 text_set
+[2026-10-15T02:35:11.882056400+00:00] PE dev: tab[1] key=restore_a hwnd=0x402e8 text_set
+[2026-10-15T02:35:11.882113300+00:00] PE dev: tab[2] key=restore_b hwnd=0x402ea text_set
+[2026-10-15T02:35:11.882471400+00:00] PE dev: tab[3] key=restore_c hwnd=0x402ec text_set
+[2026-10-15T02:35:11.882566400+00:00] PE dev: tab[4] key=secondary hwnd=0x402ee text_set
+[2026-10-15T02:35:11.882636100+00:00] PE dev: tab[5] key=pe hwnd=0x402f0 text_set
+[2026-10-15T02:35:11.883465400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T02:35:11.885610600+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-15T02:35:11.885687700+00:00] PE dev: tab[0] key=backup hwnd=0x402e6 text_set
+[2026-10-15T02:35:11.885739100+00:00] PE dev: tab[1] key=restore_a hwnd=0x402e8 text_set
+[2026-10-15T02:35:11.885783400+00:00] PE dev: tab[2] key=restore_b hwnd=0x402ea text_set
+[2026-10-15T02:35:11.885827400+00:00] PE dev: tab[3] key=restore_c hwnd=0x402ec text_set
+[2026-10-15T02:35:11.885863800+00:00] PE dev: tab[4] key=secondary hwnd=0x402ee text_set
+[2026-10-15T02:35:11.885913300+00:00] PE dev: tab[5] key=pe hwnd=0x402f0 text_set
+[2026-10-15T02:35:11.885988400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T02:36:49.704885300+00:00] GUI started; elevated native Rust window initialized
+[2026-10-15T02:36:49.706021700+00:00] PE dev: tab[0] key=backup hwnd=0x502e8 text_set
+[2026-10-15T02:36:49.706117700+00:00] PE dev: tab[1] key=restore_a hwnd=0x502ea text_set
+[2026-10-15T02:36:49.706178700+00:00] PE dev: tab[2] key=restore_b hwnd=0x502ec text_set
+[2026-10-15T02:36:49.706374500+00:00] PE dev: tab[3] key=restore_c hwnd=0x502ee text_set
+[2026-10-15T02:36:49.706437500+00:00] PE dev: tab[4] key=secondary hwnd=0x502f0 text_set
+[2026-10-15T02:36:49.706490500+00:00] PE dev: tab[5] key=pe hwnd=0x502f2 text_set
+[2026-10-15T02:36:49.707440100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T02:36:49.709834700+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-15T02:36:49.709956500+00:00] PE dev: tab[0] key=backup hwnd=0x502e8 text_set
+[2026-10-15T02:36:49.710003700+00:00] PE dev: tab[1] key=restore_a hwnd=0x502ea text_set
+[2026-10-15T02:36:49.710055400+00:00] PE dev: tab[2] key=restore_b hwnd=0x502ec text_set
+[2026-10-15T02:36:49.710100400+00:00] PE dev: tab[3] key=restore_c hwnd=0x502ee text_set
+[2026-10-15T02:36:49.710139200+00:00] PE dev: tab[4] key=secondary hwnd=0x502f0 text_set
+[2026-10-15T02:36:49.710187500+00:00] PE dev: tab[5] key=pe hwnd=0x502f2 text_set
+[2026-10-15T02:36:49.710270700+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T02:38:44.463515900+00:00] PE dev: tab[0] key=backup hwnd=0x502e8 text_set
+[2026-10-15T02:38:44.464264200+00:00] PE dev: tab[1] key=restore_a hwnd=0x502ea text_set
+[2026-10-15T02:38:44.465218500+00:00] PE dev: tab[2] key=restore_b hwnd=0x502ec text_set
+[2026-10-15T02:38:44.466836600+00:00] PE dev: tab[3] key=restore_c hwnd=0x502ee text_set
+[2026-10-15T02:38:44.468493500+00:00] PE dev: tab[4] key=secondary hwnd=0x502f0 text_set
+[2026-10-15T02:38:44.469589700+00:00] PE dev: tab[5] key=pe hwnd=0x502f2 text_set
+[2026-10-15T02:38:44.469899700+00:00] target default moved off system drive: C -> F
+[2026-10-15T02:38:44.475479300+00:00] PE visibility: op=restore-system-other pe_visible=false ram_checked=true
+[2026-10-15T02:38:44.505032300+00:00] GUI action completed: operation selected=restore-system-other
+[2026-10-15T02:38:59.494535100+00:00] GUI action started: read WIM metadata; image=H:\BRImages\c-full-20261014.wim
+[2026-10-15T02:38:59.526383400+00:00] GUI action completed: read WIM metadata; indexes=2
+[2026-10-15T02:39:36.931012+00:00] GUI action started: create task; operation=restore-system-other
+[2026-10-15T02:40:37.669497800+00:00] channel split: op=restore-system-other online=true
+[2026-10-15T02:40:37.669677600+00:00] online params: format_target=true
+[2026-10-15T02:40:37.674763700+00:00] online started: op=create-secondary source=C target=F
+[2026-10-15T02:54:30.323410500+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：C:\Users\x\AppData\Local\Temp\BackupRestore-online-8568-1792032037676051100\Online.log
+[2026-10-15T02:59:36.193897700+00:00] PE dev: tab[0] key=backup hwnd=0x502e8 text_set
+[2026-10-15T02:59:36.195584900+00:00] PE dev: tab[1] key=restore_a hwnd=0x502ea text_set
+[2026-10-15T02:59:36.202705700+00:00] PE dev: tab[2] key=restore_b hwnd=0x502ec text_set
+[2026-10-15T02:59:36.203476+00:00] PE dev: tab[3] key=restore_c hwnd=0x502ee text_set
+[2026-10-15T02:59:36.204345300+00:00] PE dev: tab[4] key=secondary hwnd=0x502f0 text_set
+[2026-10-15T02:59:36.205143200+00:00] PE dev: tab[5] key=pe hwnd=0x502f2 text_set
+[2026-10-15T02:59:36.220639300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T02:59:36.235027200+00:00] GUI action completed: operation selected=backup
+[2026-10-15T03:00:02.011465400+00:00] GUI action started: create task; operation=backup
+[2026-10-15T03:00:14.540682300+00:00] online operation: affected=T system=C
+[2026-10-15T03:00:14.545079900+00:00] online started: op=backup source=T target=F
+[2026-10-15T13:02:35.363771100+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：C:\Users\x\AppData\Local\Temp\BackupRestore-online-8568-1792033214556396300\Online.log
+[2026-10-15T16:25:52.466235+00:00] GUI started; elevated native Rust window initialized
+[2026-10-15T16:25:52.468111400+00:00] PE dev: tab[0] key=backup hwnd=0x60308 text_set
+[2026-10-15T16:25:52.468184800+00:00] PE dev: tab[1] key=restore_a hwnd=0x6030a text_set
+[2026-10-15T16:25:52.468246+00:00] PE dev: tab[2] key=restore_b hwnd=0x6030c text_set
+[2026-10-15T16:25:52.468320300+00:00] PE dev: tab[3] key=restore_c hwnd=0x6030e text_set
+[2026-10-15T16:25:52.468379600+00:00] PE dev: tab[4] key=secondary hwnd=0x60310 text_set
+[2026-10-15T16:25:52.468437800+00:00] PE dev: tab[5] key=pe hwnd=0x60312 text_set
+[2026-10-15T16:25:52.469576900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T16:25:52.474153600+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-15T16:25:52.474235900+00:00] PE dev: tab[0] key=backup hwnd=0x60308 text_set
+[2026-10-15T16:25:52.474300500+00:00] PE dev: tab[1] key=restore_a hwnd=0x6030a text_set
+[2026-10-15T16:25:52.474346500+00:00] PE dev: tab[2] key=restore_b hwnd=0x6030c text_set
+[2026-10-15T16:25:52.474416900+00:00] PE dev: tab[3] key=restore_c hwnd=0x6030e text_set
+[2026-10-15T16:25:52.474475200+00:00] PE dev: tab[4] key=secondary hwnd=0x60310 text_set
+[2026-10-15T16:25:52.474527300+00:00] PE dev: tab[5] key=pe hwnd=0x60312 text_set
+[2026-10-15T16:25:52.474617600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T20:26:36.480223400+00:00] GUI started; elevated native Rust window initialized
+[2026-10-15T20:26:36.481288300+00:00] PE dev: tab[0] key=backup hwnd=0x13044e text_set
+[2026-10-15T20:26:36.481360500+00:00] PE dev: tab[1] key=restore_a hwnd=0x5047a text_set
+[2026-10-15T20:26:36.481427800+00:00] PE dev: tab[2] key=restore_b hwnd=0x15015e text_set
+[2026-10-15T20:26:36.481803300+00:00] PE dev: tab[3] key=secondary hwnd=0x60460 text_set
+[2026-10-15T20:26:36.481876700+00:00] PE dev: tab[4] key=pe hwnd=0x8046c text_set
+[2026-10-15T20:26:36.482838400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T20:26:36.485447400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-15T20:26:36.485545800+00:00] PE dev: tab[0] key=backup hwnd=0x13044e text_set
+[2026-10-15T20:26:36.485595200+00:00] PE dev: tab[1] key=restore_a hwnd=0x5047a text_set
+[2026-10-15T20:26:36.485642100+00:00] PE dev: tab[2] key=restore_b hwnd=0x15015e text_set
+[2026-10-15T20:26:36.485703900+00:00] PE dev: tab[3] key=secondary hwnd=0x60460 text_set
+[2026-10-15T20:26:36.485760700+00:00] PE dev: tab[4] key=pe hwnd=0x8046c text_set
+[2026-10-15T20:26:36.485880200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T23:24:57.888851400+00:00] GUI started; elevated native Rust window initialized
+[2026-10-15T23:24:57.889545400+00:00] PE dev: tab[0] key=backup hwnd=0x202bc text_set
+[2026-10-15T23:24:57.889915600+00:00] PE dev: tab[1] key=restore_a hwnd=0x202be text_set
+[2026-10-15T23:24:57.889977300+00:00] PE dev: tab[2] key=restore_b hwnd=0x202c0 text_set
+[2026-10-15T23:24:57.890034900+00:00] PE dev: tab[3] key=secondary hwnd=0x202c2 text_set
+[2026-10-15T23:24:57.890087700+00:00] PE dev: tab[4] key=pe hwnd=0x202c4 text_set
+[2026-10-15T23:24:57.891094100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T23:24:57.893431400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-15T23:24:57.893527100+00:00] PE dev: tab[0] key=backup hwnd=0x202bc text_set
+[2026-10-15T23:24:57.893575600+00:00] PE dev: tab[1] key=restore_a hwnd=0x202be text_set
+[2026-10-15T23:24:57.893624500+00:00] PE dev: tab[2] key=restore_b hwnd=0x202c0 text_set
+[2026-10-15T23:24:57.893674700+00:00] PE dev: tab[3] key=secondary hwnd=0x202c2 text_set
+[2026-10-15T23:24:57.893723100+00:00] PE dev: tab[4] key=pe hwnd=0x202c4 text_set
+[2026-10-15T23:24:57.893798600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T23:25:58.367803200+00:00] PE dev: tab[0] key=backup hwnd=0x202bc text_set
+[2026-10-15T23:25:58.368266500+00:00] PE dev: tab[1] key=restore_a hwnd=0x202be text_set
+[2026-10-15T23:25:58.368530+00:00] PE dev: tab[2] key=restore_b hwnd=0x202c0 text_set
+[2026-10-15T23:25:58.368938400+00:00] PE dev: tab[3] key=secondary hwnd=0x202c2 text_set
+[2026-10-15T23:25:58.369466+00:00] PE dev: tab[4] key=pe hwnd=0x202c4 text_set
+[2026-10-15T23:25:58.369626900+00:00] target default moved off system drive: C -> F
+[2026-10-15T23:25:58.371017+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-15T23:25:58.401839600+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-15T23:26:17.178604500+00:00] PE dev: tab[0] key=backup hwnd=0x202bc text_set
+[2026-10-15T23:26:17.179299400+00:00] PE dev: tab[1] key=restore_a hwnd=0x202be text_set
+[2026-10-15T23:26:17.179798100+00:00] PE dev: tab[2] key=restore_b hwnd=0x202c0 text_set
+[2026-10-15T23:26:17.180301500+00:00] PE dev: tab[3] key=secondary hwnd=0x202c2 text_set
+[2026-10-15T23:26:17.180839600+00:00] PE dev: tab[4] key=pe hwnd=0x202c4 text_set
+[2026-10-15T23:26:17.182533200+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-15T23:26:17.186484800+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-15T23:26:17.207256900+00:00] GUI action completed: operation selected=install-pe-entry
+[2026-10-15T23:58:54.127863100+00:00] GUI started; elevated native Rust window initialized
+[2026-10-15T23:58:54.130817800+00:00] PE dev: tab[0] key=backup hwnd=0x602b2 text_set
+[2026-10-15T23:58:54.130880+00:00] PE dev: tab[1] key=restore_a hwnd=0x602b4 text_set
+[2026-10-15T23:58:54.130970500+00:00] PE dev: tab[2] key=restore_b hwnd=0x602b6 text_set
+[2026-10-15T23:58:54.131360+00:00] PE dev: tab[3] key=secondary hwnd=0x602b8 text_set
+[2026-10-15T23:58:54.131430400+00:00] PE dev: tab[4] key=pe hwnd=0x602ba text_set
+[2026-10-15T23:58:54.132293500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-15T23:58:54.134509800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-15T23:58:54.134586500+00:00] PE dev: tab[0] key=backup hwnd=0x602b2 text_set
+[2026-10-15T23:58:54.134640300+00:00] PE dev: tab[1] key=restore_a hwnd=0x602b4 text_set
+[2026-10-15T23:58:54.134689+00:00] PE dev: tab[2] key=restore_b hwnd=0x602b6 text_set
+[2026-10-15T23:58:54.134737200+00:00] PE dev: tab[3] key=secondary hwnd=0x602b8 text_set
+[2026-10-15T23:58:54.134793300+00:00] PE dev: tab[4] key=pe hwnd=0x602ba text_set
+[2026-10-15T23:58:54.134881+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:16:56.136358+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T00:16:56.136853100+00:00] PE dev: tab[0] key=backup hwnd=0x802b0 text_set
+[2026-10-16T00:16:56.136960100+00:00] PE dev: tab[1] key=restore_a hwnd=0x702b2 text_set
+[2026-10-16T00:16:56.137019+00:00] PE dev: tab[2] key=restore_b hwnd=0x702b4 text_set
+[2026-10-16T00:16:56.137073400+00:00] PE dev: tab[3] key=secondary hwnd=0x702b6 text_set
+[2026-10-16T00:16:56.137122900+00:00] PE dev: tab[4] key=pe hwnd=0x702b8 text_set
+[2026-10-16T00:16:56.138118300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:16:56.140467800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T00:16:56.140531900+00:00] PE dev: tab[0] key=backup hwnd=0x802b0 text_set
+[2026-10-16T00:16:56.140581700+00:00] PE dev: tab[1] key=restore_a hwnd=0x702b2 text_set
+[2026-10-16T00:16:56.140657300+00:00] PE dev: tab[2] key=restore_b hwnd=0x702b4 text_set
+[2026-10-16T00:16:56.140703500+00:00] PE dev: tab[3] key=secondary hwnd=0x702b6 text_set
+[2026-10-16T00:16:56.140746900+00:00] PE dev: tab[4] key=pe hwnd=0x702b8 text_set
+[2026-10-16T00:16:56.140826100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:16:56.145720800+00:00] test hook: config loaded
+[2026-10-16T00:16:56.145788100+00:00] PE dev: tab[0] key=backup hwnd=0x802b0 text_set
+[2026-10-16T00:16:56.145847700+00:00] PE dev: tab[1] key=restore_a hwnd=0x702b2 text_set
+[2026-10-16T00:16:56.145899600+00:00] PE dev: tab[2] key=restore_b hwnd=0x702b4 text_set
+[2026-10-16T00:16:56.145944100+00:00] PE dev: tab[3] key=secondary hwnd=0x702b6 text_set
+[2026-10-16T00:16:56.145985+00:00] PE dev: tab[4] key=pe hwnd=0x702b8 text_set
+[2026-10-16T00:16:56.146103200+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-16T00:16:56.146657500+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-16T00:16:56.148456600+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=false
+[2026-10-16T00:16:56.149003100+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:16:56.149485500+00:00] test hook: target=S pos=3
+[2026-10-16T00:16:56.149591800+00:00] test hook: fields set
+[2026-10-16T00:16:56.163423400+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:16:56.171105500+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:27:05.698113100+00:00] GUI action started: create task; operation=install-pe-entry
+[2026-10-16T00:27:05.699120+00:00] GUI action blocked: target partition free space < 2GB
+[2026-10-16T00:27:55.182301200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T00:27:55.182727700+00:00] PE dev: tab[0] key=backup hwnd=0x802be text_set
+[2026-10-16T00:27:55.182795900+00:00] PE dev: tab[1] key=restore_a hwnd=0x802c0 text_set
+[2026-10-16T00:27:55.182858100+00:00] PE dev: tab[2] key=restore_b hwnd=0x802c2 text_set
+[2026-10-16T00:27:55.182914900+00:00] PE dev: tab[3] key=secondary hwnd=0x802c4 text_set
+[2026-10-16T00:27:55.182964600+00:00] PE dev: tab[4] key=pe hwnd=0x802c6 text_set
+[2026-10-16T00:27:55.183832100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:27:55.186693800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T00:27:55.186777100+00:00] PE dev: tab[0] key=backup hwnd=0x802be text_set
+[2026-10-16T00:27:55.186828300+00:00] PE dev: tab[1] key=restore_a hwnd=0x802c0 text_set
+[2026-10-16T00:27:55.186877300+00:00] PE dev: tab[2] key=restore_b hwnd=0x802c2 text_set
+[2026-10-16T00:27:55.186924600+00:00] PE dev: tab[3] key=secondary hwnd=0x802c4 text_set
+[2026-10-16T00:27:55.186976800+00:00] PE dev: tab[4] key=pe hwnd=0x802c6 text_set
+[2026-10-16T00:27:55.187062600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:27:55.191456200+00:00] test hook: config loaded
+[2026-10-16T00:27:55.191519800+00:00] PE dev: tab[0] key=backup hwnd=0x802be text_set
+[2026-10-16T00:27:55.191573300+00:00] PE dev: tab[1] key=restore_a hwnd=0x802c0 text_set
+[2026-10-16T00:27:55.191615300+00:00] PE dev: tab[2] key=restore_b hwnd=0x802c2 text_set
+[2026-10-16T00:27:55.191661300+00:00] PE dev: tab[3] key=secondary hwnd=0x802c4 text_set
+[2026-10-16T00:27:55.191705600+00:00] PE dev: tab[4] key=pe hwnd=0x802c6 text_set
+[2026-10-16T00:27:55.191822200+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-16T00:27:55.192311400+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-16T00:27:55.193653+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=false
+[2026-10-16T00:27:55.194044+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:27:55.194492300+00:00] test hook: target=H pos=2
+[2026-10-16T00:27:55.194551+00:00] test hook: fields set
+[2026-10-16T00:27:55.207924400+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:27:55.216598800+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:32:13.536455600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T00:32:13.536878+00:00] PE dev: tab[0] key=backup hwnd=0x902be text_set
+[2026-10-16T00:32:13.536952100+00:00] PE dev: tab[1] key=restore_a hwnd=0x902c0 text_set
+[2026-10-16T00:32:13.537027200+00:00] PE dev: tab[2] key=restore_b hwnd=0x902c2 text_set
+[2026-10-16T00:32:13.537083900+00:00] PE dev: tab[3] key=secondary hwnd=0x902c4 text_set
+[2026-10-16T00:32:13.537139200+00:00] PE dev: tab[4] key=pe hwnd=0x902c6 text_set
+[2026-10-16T00:32:13.538008800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:32:13.540359300+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T00:32:13.540428300+00:00] PE dev: tab[0] key=backup hwnd=0x902be text_set
+[2026-10-16T00:32:13.540480+00:00] PE dev: tab[1] key=restore_a hwnd=0x902c0 text_set
+[2026-10-16T00:32:13.540542100+00:00] PE dev: tab[2] key=restore_b hwnd=0x902c2 text_set
+[2026-10-16T00:32:13.540593400+00:00] PE dev: tab[3] key=secondary hwnd=0x902c4 text_set
+[2026-10-16T00:32:13.540646700+00:00] PE dev: tab[4] key=pe hwnd=0x902c6 text_set
+[2026-10-16T00:32:13.540727200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:32:13.542060800+00:00] test hook: config loaded
+[2026-10-16T00:32:13.542114100+00:00] PE dev: tab[0] key=backup hwnd=0x902be text_set
+[2026-10-16T00:32:13.542171+00:00] PE dev: tab[1] key=restore_a hwnd=0x902c0 text_set
+[2026-10-16T00:32:13.542218200+00:00] PE dev: tab[2] key=restore_b hwnd=0x902c2 text_set
+[2026-10-16T00:32:13.542269700+00:00] PE dev: tab[3] key=secondary hwnd=0x902c4 text_set
+[2026-10-16T00:32:13.542321900+00:00] PE dev: tab[4] key=pe hwnd=0x902c6 text_set
+[2026-10-16T00:32:13.542455+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-16T00:32:13.542977+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-16T00:32:13.544502300+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=false
+[2026-10-16T00:32:13.544953600+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:32:13.546082500+00:00] test hook: target=H pos=2
+[2026-10-16T00:32:13.546154300+00:00] test hook: fields set
+[2026-10-16T00:32:13.558820700+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:32:13.563535900+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-16T00:32:46.015220+00:00] GUI action started: create task; operation=install-pe-entry
+[2026-10-16T00:32:46.015616700+00:00] GUI action blocked: target H: is system=false esp=false program=true
+[2026-10-16T00:36:42.177682600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T00:36:42.178148300+00:00] PE dev: tab[0] key=backup hwnd=0x203b2 text_set
+[2026-10-16T00:36:42.178215900+00:00] PE dev: tab[1] key=restore_a hwnd=0x203b4 text_set
+[2026-10-16T00:36:42.178271700+00:00] PE dev: tab[2] key=restore_b hwnd=0x203b6 text_set
+[2026-10-16T00:36:42.178325+00:00] PE dev: tab[3] key=secondary hwnd=0x203ba text_set
+[2026-10-16T00:36:42.178510500+00:00] PE dev: tab[4] key=pe hwnd=0x203bc text_set
+[2026-10-16T00:36:42.179340500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T00:36:42.181750700+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T00:36:42.181835400+00:00] PE dev: tab[0] key=backup hwnd=0x203b2 text_set
+[2026-10-16T00:36:42.181888100+00:00] PE dev: tab[1] key=restore_a hwnd=0x203b4 text_set
+[2026-10-16T00:36:42.181936700+00:00] PE dev: tab[2] key=restore_b hwnd=0x203b6 text_set
+[2026-10-16T00:36:42.181984900+00:00] PE dev: tab[3] key=secondary hwnd=0x203ba text_set
+[2026-10-16T00:36:42.182034700+00:00] PE dev: tab[4] key=pe hwnd=0x203bc text_set
+[2026-10-16T00:36:42.182117400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T01:11:56.972366200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T01:11:56.973325+00:00] PE dev: tab[0] key=backup hwnd=0x202f2 text_set
+[2026-10-16T01:11:56.973405700+00:00] PE dev: tab[1] key=restore_a hwnd=0x202f4 text_set
+[2026-10-16T01:11:56.973472500+00:00] PE dev: tab[2] key=restore_b hwnd=0x202f6 text_set
+[2026-10-16T01:11:56.973531200+00:00] PE dev: tab[3] key=secondary hwnd=0x202f8 text_set
+[2026-10-16T01:11:56.973588500+00:00] PE dev: tab[4] key=pe hwnd=0x202fa text_set
+[2026-10-16T01:11:56.974710200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T01:11:56.977298400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T01:11:56.977409300+00:00] PE dev: tab[0] key=backup hwnd=0x202f2 text_set
+[2026-10-16T01:11:56.977468800+00:00] PE dev: tab[1] key=restore_a hwnd=0x202f4 text_set
+[2026-10-16T01:11:56.977530700+00:00] PE dev: tab[2] key=restore_b hwnd=0x202f6 text_set
+[2026-10-16T01:11:56.977581800+00:00] PE dev: tab[3] key=secondary hwnd=0x202f8 text_set
+[2026-10-16T01:11:56.977632600+00:00] PE dev: tab[4] key=pe hwnd=0x202fa text_set
+[2026-10-16T01:11:56.977751700+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T01:12:22.275398200+00:00] PE dev: tab[0] key=backup hwnd=0x202f2 text_set
+[2026-10-16T01:12:22.275825900+00:00] PE dev: tab[1] key=restore_a hwnd=0x202f4 text_set
+[2026-10-16T01:12:22.276191+00:00] PE dev: tab[2] key=restore_b hwnd=0x202f6 text_set
+[2026-10-16T01:12:22.276419100+00:00] PE dev: tab[3] key=secondary hwnd=0x202f8 text_set
+[2026-10-16T01:12:22.276644400+00:00] PE dev: tab[4] key=pe hwnd=0x202fa text_set
+[2026-10-16T01:12:22.277649200+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-16T01:12:22.295966100+00:00] GUI action completed: operation selected=restore-existing
+[2026-10-16T01:15:23.296116200+00:00] GUI action started: read WIM metadata; image=
+[2026-10-16T01:15:23.296489300+00:00] GUI action blocked: invalid WIM path: invalid task: path must be a non-empty Windows absolute path
+[2026-10-16T01:20:57.693176500+00:00] GUI action started: read WIM metadata; image=
+[2026-10-16T01:20:57.693486300+00:00] GUI action blocked: invalid WIM path: invalid task: path must be a non-empty Windows absolute path
+[2026-10-16T01:42:40.922043600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T01:42:40.922501600+00:00] PE dev: tab[0] key=backup hwnd=0x302e8 text_set
+[2026-10-16T01:42:40.922573700+00:00] PE dev: tab[1] key=restore_a hwnd=0x302ea text_set
+[2026-10-16T01:42:40.922635600+00:00] PE dev: tab[2] key=restore_b hwnd=0x302ec text_set
+[2026-10-16T01:42:40.922695+00:00] PE dev: tab[3] key=secondary hwnd=0x302ee text_set
+[2026-10-16T01:42:40.922747800+00:00] PE dev: tab[4] key=pe hwnd=0x302f0 text_set
+[2026-10-16T01:42:40.923827600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T01:42:40.926477700+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T01:42:40.926559900+00:00] PE dev: tab[0] key=backup hwnd=0x302e8 text_set
+[2026-10-16T01:42:40.926619100+00:00] PE dev: tab[1] key=restore_a hwnd=0x302ea text_set
+[2026-10-16T01:42:40.926670600+00:00] PE dev: tab[2] key=restore_b hwnd=0x302ec text_set
+[2026-10-16T01:42:40.926721300+00:00] PE dev: tab[3] key=secondary hwnd=0x302ee text_set
+[2026-10-16T01:42:40.926770+00:00] PE dev: tab[4] key=pe hwnd=0x302f0 text_set
+[2026-10-16T01:42:40.926853300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T01:42:40.931917600+00:00] test hook: config loaded
+[2026-10-16T01:42:40.931999300+00:00] PE dev: tab[0] key=backup hwnd=0x302e8 text_set
+[2026-10-16T01:42:40.932064200+00:00] PE dev: tab[1] key=restore_a hwnd=0x302ea text_set
+[2026-10-16T01:42:40.932112300+00:00] PE dev: tab[2] key=restore_b hwnd=0x302ec text_set
+[2026-10-16T01:42:40.932161800+00:00] PE dev: tab[3] key=secondary hwnd=0x302ee text_set
+[2026-10-16T01:42:40.932205300+00:00] PE dev: tab[4] key=pe hwnd=0x302f0 text_set
+[2026-10-16T01:42:40.932354100+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-16T01:42:40.933962500+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-16T01:42:40.934716500+00:00] test hook: fields set
+[2026-10-16T01:43:26.864947600+00:00] GUI action started: read WIM metadata; image=H:\BRImages\c-full-20261014.wim
+[2026-10-16T01:43:26.909269700+00:00] GUI action completed: read WIM metadata; indexes=2
+[2026-10-16T01:47:16.992005200+00:00] GUI action started: create task; operation=restore-existing
+[gui] system drive choice: button clicked, choice=2
+[2026-10-16T01:53:43.184917200+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-10-16T01:55:44.568258400+00:00] system drive operation: Windows RE confirm result=6 (6=yes)
+[2026-10-16T01:55:44.568355200+00:00] system drive operation: user chose Windows RE (prepare chain)
+[2026-10-16T01:55:44.568456600+00:00] elevated prepare: launching (visible) operation=restore-existing params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 114, 101, 115, 116, 111, 114, 101, 45, 101, 120, 105, 115, 116, 105, 110, 103, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 22791, 20221, 34, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 99, 45, 102, 117, 108, 108, 45, 50, 48, 50, 54, 49, 48, 49, 52, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 50, 32, 45, 45, 97, 108, 108, 111, 119, 45, 100, 101, 115, 116, 114, 117, 99, 116, 105, 118, 101, 0]
+[2026-10-16T01:55:44.606834200+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x558
+[2026-10-16T01:55:46.118084+00:00] GUI action delegated: elevated prepare launched; operation=restore-existing; source=C; target=C
+[2026-10-16T02:23:08.637924700+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T02:23:08.639149300+00:00] PE dev: tab[0] key=backup hwnd=0x20346 text_set
+[2026-10-16T02:23:08.639531+00:00] PE dev: tab[1] key=restore_a hwnd=0x20348 text_set
+[2026-10-16T02:23:08.639600800+00:00] PE dev: tab[2] key=restore_b hwnd=0x2034a text_set
+[2026-10-16T02:23:08.639699300+00:00] PE dev: tab[3] key=secondary hwnd=0x2034c text_set
+[2026-10-16T02:23:08.639773500+00:00] PE dev: tab[4] key=pe hwnd=0x2034e text_set
+[2026-10-16T02:23:08.640977300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T02:23:08.644999500+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T02:23:08.645096300+00:00] PE dev: tab[0] key=backup hwnd=0x20346 text_set
+[2026-10-16T02:23:08.645155400+00:00] PE dev: tab[1] key=restore_a hwnd=0x20348 text_set
+[2026-10-16T02:23:08.645206700+00:00] PE dev: tab[2] key=restore_b hwnd=0x2034a text_set
+[2026-10-16T02:23:08.645258900+00:00] PE dev: tab[3] key=secondary hwnd=0x2034c text_set
+[2026-10-16T02:23:08.645402100+00:00] PE dev: tab[4] key=pe hwnd=0x2034e text_set
+[2026-10-16T02:23:08.645505300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T02:23:08.646897400+00:00] test hook: config loaded
+[2026-10-16T02:23:08.646962700+00:00] PE dev: tab[0] key=backup hwnd=0x20346 text_set
+[2026-10-16T02:23:08.647013500+00:00] PE dev: tab[1] key=restore_a hwnd=0x20348 text_set
+[2026-10-16T02:23:08.647097200+00:00] PE dev: tab[2] key=restore_b hwnd=0x2034a text_set
+[2026-10-16T02:23:08.647160800+00:00] PE dev: tab[3] key=secondary hwnd=0x2034c text_set
+[2026-10-16T02:23:08.647275200+00:00] PE dev: tab[4] key=pe hwnd=0x2034e text_set
+[2026-10-16T02:23:08.647442700+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-16T02:23:08.658769600+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-16T02:23:08.659872700+00:00] test hook: fields set
+[2026-10-16T02:23:45.460411500+00:00] GUI action started: read WIM metadata; image=H:\BRImages\c-full-20261014.wim
+[2026-10-16T02:23:45.501607700+00:00] GUI action completed: read WIM metadata; indexes=2
+[2026-10-16T02:32:27.724718100+00:00] GUI action started: create task; operation=restore-existing
+[gui] system drive choice: button clicked, choice=2
+[2026-10-16T02:34:02.447578100+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-10-16T02:34:30.117603+00:00] system drive operation: Windows RE confirm result=6 (6=yes)
+[2026-10-16T02:34:30.117718800+00:00] system drive operation: user chose Windows RE (prepare chain)
+[2026-10-16T02:34:30.118051600+00:00] prepare args: --skip-format (overlay restore)
+[2026-10-16T02:34:30.118302600+00:00] elevated prepare: launching (visible) operation=restore-existing params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 114, 101, 115, 116, 111, 114, 101, 45, 101, 120, 105, 115, 116, 105, 110, 103, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 22791, 20221, 34, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 99, 45, 102, 117, 108, 108, 45, 50, 48, 50, 54, 49, 48, 49, 52, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 50, 32, 45, 45, 97, 108, 108, 111, 119, 45, 100, 101, 115, 116, 114, 117, 99, 116, 105, 118, 101, 32, 45, 45, 115, 107, 105, 112, 45, 102, 111, 114, 109, 97, 116, 0]
+[2026-10-16T02:34:30.166439600+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x560
+[2026-10-16T02:34:30.480073100+00:00] elevated prepare failed early: exit_code=1 error=REAGENTC.EXE: ���ִ���
+[2026-10-16T04:59:29.677314+00:00] GUI action started: create task; operation=restore-existing
+[gui] system drive choice: button clicked, choice=2
+[2026-10-16T05:05:09.859165600+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-10-16T05:06:12.495751600+00:00] system drive operation: Windows RE confirm result=6 (6=yes)
+[2026-10-16T05:06:12.496576100+00:00] system drive operation: user chose Windows RE (prepare chain)
+[2026-10-16T05:06:12.498035500+00:00] prepare args: --skip-format (overlay restore)
+[2026-10-16T05:06:12.499486900+00:00] elevated prepare: launching (visible) operation=restore-existing params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 114, 101, 115, 116, 111, 114, 101, 45, 101, 120, 105, 115, 116, 105, 110, 103, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 22791, 20221, 34, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 99, 45, 102, 117, 108, 108, 45, 50, 48, 50, 54, 49, 48, 49, 52, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 50, 32, 45, 45, 97, 108, 108, 111, 119, 45, 100, 101, 115, 116, 114, 117, 99, 116, 105, 118, 101, 32, 45, 45, 115, 107, 105, 112, 45, 102, 111, 114, 109, 97, 116, 0]
+[2026-10-16T05:06:12.551497300+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x578
+[2026-10-16T05:06:14.056040700+00:00] GUI action delegated: elevated prepare launched; operation=restore-existing; source=C; target=C
+[2026-10-16T12:26:20.325523900+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T12:26:20.326409100+00:00] PE dev: tab[0] key=backup hwnd=0x202c8 text_set
+[2026-10-16T12:26:20.326973100+00:00] PE dev: tab[1] key=restore_a hwnd=0x202ca text_set
+[2026-10-16T12:26:20.327034900+00:00] PE dev: tab[2] key=restore_b hwnd=0x202cc text_set
+[2026-10-16T12:26:20.327086700+00:00] PE dev: tab[3] key=secondary hwnd=0x202ce text_set
+[2026-10-16T12:26:20.327140300+00:00] PE dev: tab[4] key=pe hwnd=0x202d0 text_set
+[2026-10-16T12:26:20.328031300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T12:26:20.330160200+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T12:26:20.330228700+00:00] PE dev: tab[0] key=backup hwnd=0x202c8 text_set
+[2026-10-16T12:26:20.330274700+00:00] PE dev: tab[1] key=restore_a hwnd=0x202ca text_set
+[2026-10-16T12:26:20.330318+00:00] PE dev: tab[2] key=restore_b hwnd=0x202cc text_set
+[2026-10-16T12:26:20.330359500+00:00] PE dev: tab[3] key=secondary hwnd=0x202ce text_set
+[2026-10-16T12:26:20.330403+00:00] PE dev: tab[4] key=pe hwnd=0x202d0 text_set
+[2026-10-16T12:26:20.330484600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T12:56:34.876062500+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T12:56:34.876710500+00:00] PE dev: tab[0] key=backup hwnd=0x202d8 text_set
+[2026-10-16T12:56:34.877336800+00:00] PE dev: tab[1] key=restore_a hwnd=0x202da text_set
+[2026-10-16T12:56:34.877421300+00:00] PE dev: tab[2] key=restore_b hwnd=0x202dc text_set
+[2026-10-16T12:56:34.877482300+00:00] PE dev: tab[3] key=secondary hwnd=0x202de text_set
+[2026-10-16T12:56:34.877538700+00:00] PE dev: tab[4] key=pe hwnd=0x202e0 text_set
+[2026-10-16T12:56:34.878447+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T12:56:34.880730+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T12:56:34.880796700+00:00] PE dev: tab[0] key=backup hwnd=0x202d8 text_set
+[2026-10-16T12:56:34.880838600+00:00] PE dev: tab[1] key=restore_a hwnd=0x202da text_set
+[2026-10-16T12:56:34.880881200+00:00] PE dev: tab[2] key=restore_b hwnd=0x202dc text_set
+[2026-10-16T12:56:34.880919600+00:00] PE dev: tab[3] key=secondary hwnd=0x202de text_set
+[2026-10-16T12:56:34.880956700+00:00] PE dev: tab[4] key=pe hwnd=0x202e0 text_set
+[2026-10-16T12:56:34.881082300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T13:53:03.899573600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T13:53:03.900254100+00:00] PE dev: tab[0] key=backup hwnd=0x30192 text_set
+[2026-10-16T13:53:03.901009700+00:00] PE dev: tab[1] key=restore_a hwnd=0x40190 text_set
+[2026-10-16T13:53:03.901079100+00:00] PE dev: tab[2] key=restore_b hwnd=0x400be text_set
+[2026-10-16T13:53:03.901136800+00:00] PE dev: tab[3] key=secondary hwnd=0x302d4 text_set
+[2026-10-16T13:53:03.901201700+00:00] PE dev: tab[4] key=pe hwnd=0x202d6 text_set
+[2026-10-16T13:53:03.902077600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T13:53:03.904226400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T13:53:03.904296100+00:00] PE dev: tab[0] key=backup hwnd=0x30192 text_set
+[2026-10-16T13:53:03.904344300+00:00] PE dev: tab[1] key=restore_a hwnd=0x40190 text_set
+[2026-10-16T13:53:03.904389800+00:00] PE dev: tab[2] key=restore_b hwnd=0x400be text_set
+[2026-10-16T13:53:03.904435700+00:00] PE dev: tab[3] key=secondary hwnd=0x302d4 text_set
+[2026-10-16T13:53:03.904480900+00:00] PE dev: tab[4] key=pe hwnd=0x202d6 text_set
+[2026-10-16T13:53:03.904552100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T14:07:57.321988900+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T14:07:57.322421700+00:00] PE dev: tab[0] key=backup hwnd=0x302da text_set
+[2026-10-16T14:07:57.322494500+00:00] PE dev: tab[1] key=restore_a hwnd=0x302dc text_set
+[2026-10-16T14:07:57.322563600+00:00] PE dev: tab[2] key=restore_b hwnd=0x302de text_set
+[2026-10-16T14:07:57.322610800+00:00] PE dev: tab[3] key=secondary hwnd=0x302e0 text_set
+[2026-10-16T14:07:57.322656300+00:00] PE dev: tab[4] key=pe hwnd=0x302e2 text_set
+[2026-10-16T14:07:57.324570300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T14:07:57.327029600+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T14:07:57.327106600+00:00] PE dev: tab[0] key=backup hwnd=0x302da text_set
+[2026-10-16T14:07:57.327153900+00:00] PE dev: tab[1] key=restore_a hwnd=0x302dc text_set
+[2026-10-16T14:07:57.327195100+00:00] PE dev: tab[2] key=restore_b hwnd=0x302de text_set
+[2026-10-16T14:07:57.327237600+00:00] PE dev: tab[3] key=secondary hwnd=0x302e0 text_set
+[2026-10-16T14:07:57.327278300+00:00] PE dev: tab[4] key=pe hwnd=0x302e2 text_set
+[2026-10-16T14:07:57.327362900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T14:08:14.872659700+00:00] settings saved: threshold=9 action=auto-escape
+[2026-10-16T14:34:04.511993100+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T14:34:04.512598700+00:00] PE dev: tab[0] key=backup hwnd=0x202e8 text_set
+[2026-10-16T14:34:04.512655400+00:00] PE dev: tab[1] key=restore_a hwnd=0x202ea text_set
+[2026-10-16T14:34:04.512708+00:00] PE dev: tab[2] key=restore_b hwnd=0x202ec text_set
+[2026-10-16T14:34:04.512758700+00:00] PE dev: tab[3] key=secondary hwnd=0x202ee text_set
+[2026-10-16T14:34:04.512808700+00:00] PE dev: tab[4] key=pe hwnd=0x202f0 text_set
+[2026-10-16T14:34:04.513842900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T14:34:04.517843800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T14:34:04.517963+00:00] PE dev: tab[0] key=backup hwnd=0x202e8 text_set
+[2026-10-16T14:34:04.518037700+00:00] PE dev: tab[1] key=restore_a hwnd=0x202ea text_set
+[2026-10-16T14:34:04.518113700+00:00] PE dev: tab[2] key=restore_b hwnd=0x202ec text_set
+[2026-10-16T14:34:04.518163200+00:00] PE dev: tab[3] key=secondary hwnd=0x202ee text_set
+[2026-10-16T14:34:04.518218600+00:00] PE dev: tab[4] key=pe hwnd=0x202f0 text_set
+[2026-10-16T14:34:04.518294500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T14:34:11.134323600+00:00] settings dialog: cancelled (policy unchanged)
+[2026-10-16T14:34:34.901195300+00:00] settings dialog: cancelled (policy unchanged)
+[2026-10-16T16:52:03.165801100+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T16:52:03.166419300+00:00] PE dev: tab[0] key=backup hwnd=0x302d4 text_set
+[2026-10-16T16:52:03.166478900+00:00] PE dev: tab[1] key=restore_a hwnd=0x302d6 text_set
+[2026-10-16T16:52:03.166523400+00:00] PE dev: tab[2] key=restore_b hwnd=0x302d8 text_set
+[2026-10-16T16:52:03.166563300+00:00] PE dev: tab[3] key=secondary hwnd=0x302da text_set
+[2026-10-16T16:52:03.166601800+00:00] PE dev: tab[4] key=pe hwnd=0x302dc text_set
+[2026-10-16T16:52:03.167558400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T16:52:03.169797100+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T16:52:03.169875200+00:00] PE dev: tab[0] key=backup hwnd=0x302d4 text_set
+[2026-10-16T16:52:03.169922200+00:00] PE dev: tab[1] key=restore_a hwnd=0x302d6 text_set
+[2026-10-16T16:52:03.169969900+00:00] PE dev: tab[2] key=restore_b hwnd=0x302d8 text_set
+[2026-10-16T16:52:03.170019900+00:00] PE dev: tab[3] key=secondary hwnd=0x302da text_set
+[2026-10-16T16:52:03.170080300+00:00] PE dev: tab[4] key=pe hwnd=0x302dc text_set
+[2026-10-16T16:52:03.170156200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T16:56:09.682485300+00:00] settings saved: threshold=5 action=pause pause_max_wait_secs=120 dism_timeout_secs=600
+[2026-10-16T16:57:34.601076900+00:00] settings saved: threshold=8 action=pause pause_max_wait_secs=480 dism_timeout_secs=300
+[2026-10-16T17:11:00.843919100+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T17:11:00.844433300+00:00] PE dev: tab[0] key=backup hwnd=0x10088 text_set
+[2026-10-16T17:11:00.844494500+00:00] PE dev: tab[1] key=restore_a hwnd=0x1008a text_set
+[2026-10-16T17:11:00.844544400+00:00] PE dev: tab[2] key=restore_b hwnd=0x1008c text_set
+[2026-10-16T17:11:00.844590700+00:00] PE dev: tab[3] key=secondary hwnd=0x1008e text_set
+[2026-10-16T17:11:00.844636600+00:00] PE dev: tab[4] key=pe hwnd=0x10090 text_set
+[2026-10-16T17:11:00.857419100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T17:11:00.867836300+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T17:11:00.867948500+00:00] PE dev: tab[0] key=backup hwnd=0x10088 text_set
+[2026-10-16T17:11:00.867993800+00:00] PE dev: tab[1] key=restore_a hwnd=0x1008a text_set
+[2026-10-16T17:11:00.868034400+00:00] PE dev: tab[2] key=restore_b hwnd=0x1008c text_set
+[2026-10-16T17:11:00.868079900+00:00] PE dev: tab[3] key=secondary hwnd=0x1008e text_set
+[2026-10-16T17:11:00.868164800+00:00] PE dev: tab[4] key=pe hwnd=0x10090 text_set
+[2026-10-16T17:11:00.868238+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T17:15:16.298863500+00:00] GUI started; elevated native Rust window initialized
+[2026-10-16T17:15:16.299354500+00:00] PE dev: tab[0] key=backup hwnd=0x402d4 text_set
+[2026-10-16T17:15:16.299418500+00:00] PE dev: tab[1] key=restore_a hwnd=0x402d6 text_set
+[2026-10-16T17:15:16.299474300+00:00] PE dev: tab[2] key=restore_b hwnd=0x402d8 text_set
+[2026-10-16T17:15:16.299527700+00:00] PE dev: tab[3] key=secondary hwnd=0x402da text_set
+[2026-10-16T17:15:16.299584300+00:00] PE dev: tab[4] key=pe hwnd=0x402dc text_set
+[2026-10-16T17:15:16.300521800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-16T17:15:16.302998300+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-16T17:15:16.303105200+00:00] PE dev: tab[0] key=backup hwnd=0x402d4 text_set
+[2026-10-16T17:15:16.303157700+00:00] PE dev: tab[1] key=restore_a hwnd=0x402d6 text_set
+[2026-10-16T17:15:16.303206400+00:00] PE dev: tab[2] key=restore_b hwnd=0x402d8 text_set
+[2026-10-16T17:15:16.303256300+00:00] PE dev: tab[3] key=secondary hwnd=0x402da text_set
+[2026-10-16T17:15:16.303305400+00:00] PE dev: tab[4] key=pe hwnd=0x402dc text_set
+[2026-10-16T17:15:16.303384300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:02:23.473988400+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T01:02:23.474688200+00:00] PE dev: tab[0] key=backup hwnd=0x502d4 text_set
+[2026-10-17T01:02:23.474752400+00:00] PE dev: tab[1] key=restore_a hwnd=0x502d6 text_set
+[2026-10-17T01:02:23.474842200+00:00] PE dev: tab[2] key=restore_b hwnd=0x502d8 text_set
+[2026-10-17T01:02:23.474904100+00:00] PE dev: tab[3] key=secondary hwnd=0x502da text_set
+[2026-10-17T01:02:23.474960400+00:00] PE dev: tab[4] key=pe hwnd=0x502dc text_set
+[2026-10-17T01:02:23.475973400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:02:23.478720700+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T01:02:23.478822300+00:00] PE dev: tab[0] key=backup hwnd=0x502d4 text_set
+[2026-10-17T01:02:23.478871100+00:00] PE dev: tab[1] key=restore_a hwnd=0x502d6 text_set
+[2026-10-17T01:02:23.478917900+00:00] PE dev: tab[2] key=restore_b hwnd=0x502d8 text_set
+[2026-10-17T01:02:23.478961400+00:00] PE dev: tab[3] key=secondary hwnd=0x502da text_set
+[2026-10-17T01:02:23.479054900+00:00] PE dev: tab[4] key=pe hwnd=0x502dc text_set
+[2026-10-17T01:02:23.479149100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:08:11.469474500+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T01:08:11.470179600+00:00] PE dev: tab[0] key=backup hwnd=0x2402b6 text_set
+[2026-10-17T01:08:11.470260400+00:00] PE dev: tab[1] key=restore_a hwnd=0x702d0 text_set
+[2026-10-17T01:08:11.470320200+00:00] PE dev: tab[2] key=restore_b hwnd=0x602d2 text_set
+[2026-10-17T01:08:11.470378800+00:00] PE dev: tab[3] key=secondary hwnd=0x602d4 text_set
+[2026-10-17T01:08:11.470440100+00:00] PE dev: tab[4] key=pe hwnd=0x602d6 text_set
+[2026-10-17T01:08:11.471485100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:08:11.473985700+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T01:08:11.474123+00:00] PE dev: tab[0] key=backup hwnd=0x2402b6 text_set
+[2026-10-17T01:08:11.474178300+00:00] PE dev: tab[1] key=restore_a hwnd=0x702d0 text_set
+[2026-10-17T01:08:11.474229900+00:00] PE dev: tab[2] key=restore_b hwnd=0x602d2 text_set
+[2026-10-17T01:08:11.474281+00:00] PE dev: tab[3] key=secondary hwnd=0x602d4 text_set
+[2026-10-17T01:08:11.474369+00:00] PE dev: tab[4] key=pe hwnd=0x602d6 text_set
+[2026-10-17T01:08:11.474469100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:13:58.574321+00:00] cancel_pending: no pending boot task
+[2026-10-17T01:19:22.939939600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T01:19:22.940319100+00:00] PE dev: tab[0] key=backup hwnd=0x1c01a6 text_set
+[2026-10-17T01:19:22.940377800+00:00] PE dev: tab[1] key=restore_a hwnd=0xb01cc text_set
+[2026-10-17T01:19:22.940434900+00:00] PE dev: tab[2] key=restore_b hwnd=0x2402a0 text_set
+[2026-10-17T01:19:22.940488700+00:00] PE dev: tab[3] key=secondary hwnd=0x1302b4 text_set
+[2026-10-17T01:19:22.940543600+00:00] PE dev: tab[4] key=pe hwnd=0x2502b6 text_set
+[2026-10-17T01:19:22.941453400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:19:22.943641800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T01:19:22.943697800+00:00] PE dev: tab[0] key=backup hwnd=0x1c01a6 text_set
+[2026-10-17T01:19:22.943753100+00:00] PE dev: tab[1] key=restore_a hwnd=0xb01cc text_set
+[2026-10-17T01:19:22.943810+00:00] PE dev: tab[2] key=restore_b hwnd=0x2402a0 text_set
+[2026-10-17T01:19:22.943860600+00:00] PE dev: tab[3] key=secondary hwnd=0x1302b4 text_set
+[2026-10-17T01:19:22.943952700+00:00] PE dev: tab[4] key=pe hwnd=0x2502b6 text_set
+[2026-10-17T01:19:22.944034100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:22:57.011067200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T01:22:57.011412300+00:00] PE dev: tab[0] key=backup hwnd=0xf0084 text_set
+[2026-10-17T01:22:57.011473700+00:00] PE dev: tab[1] key=restore_a hwnd=0x1a0082 text_set
+[2026-10-17T01:22:57.011560+00:00] PE dev: tab[2] key=restore_b hwnd=0x27007c text_set
+[2026-10-17T01:22:57.011617700+00:00] PE dev: tab[3] key=secondary hwnd=0xd01cc text_set
+[2026-10-17T01:22:57.011722500+00:00] PE dev: tab[4] key=pe hwnd=0x1502b4 text_set
+[2026-10-17T01:22:57.012633500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:22:57.014762800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T01:22:57.014841300+00:00] PE dev: tab[0] key=backup hwnd=0xf0084 text_set
+[2026-10-17T01:22:57.014995400+00:00] PE dev: tab[1] key=restore_a hwnd=0x1a0082 text_set
+[2026-10-17T01:22:57.015047300+00:00] PE dev: tab[2] key=restore_b hwnd=0x27007c text_set
+[2026-10-17T01:22:57.015094100+00:00] PE dev: tab[3] key=secondary hwnd=0xd01cc text_set
+[2026-10-17T01:22:57.015140200+00:00] PE dev: tab[4] key=pe hwnd=0x1502b4 text_set
+[2026-10-17T01:22:57.015210900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T01:31:51.967109400+00:00] cancel_pending: user declined; nothing changed
+[2026-10-17T02:00:49.153922200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T02:00:49.154693200+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:00:49.154764900+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:00:49.154823100+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:00:49.154871800+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:00:49.154926300+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:00:49.156301+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T02:00:49.162443400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T02:00:49.162533400+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:00:49.162625600+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:00:49.162684500+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:00:49.162727900+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:00:49.162768500+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:00:49.162865300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T02:00:50.206094500+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:00:50.207162300+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:00:50.207805600+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:00:50.208430600+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:00:50.208997900+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:00:50.209211800+00:00] target default moved off system drive: C -> D
+[2026-10-17T02:00:50.211315200+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T02:00:50.225124700+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T02:01:17.519467500+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:01:17.520225200+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:01:17.520913900+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:01:17.521746100+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:01:17.522479+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:01:17.523424700+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T02:01:17.542630400+00:00] GUI action completed: operation selected=restore-data
+[2026-10-17T02:01:17.960204300+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:01:17.961377600+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:01:17.962349200+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:01:17.963331900+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:01:17.963894400+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:01:17.964865100+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T02:01:17.986092+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T02:01:19.552160800+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:01:19.552852800+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:01:19.553409900+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:01:19.553896500+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:01:19.554710500+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:01:19.557931800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T02:01:19.574597+00:00] GUI action completed: operation selected=backup
+[2026-10-17T02:01:20.848877600+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T02:01:20.849670800+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T02:01:20.850208800+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T02:01:20.850824600+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T02:01:20.851286+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T02:01:20.853370+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T02:01:20.872609600+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T12:56:18.815506900+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T12:56:18.816344800+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T12:56:18.817487400+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T12:56:18.818323800+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T12:56:18.818842200+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T12:56:18.819713300+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T12:56:18.840908300+00:00] GUI action completed: operation selected=restore-data
+[2026-10-17T12:56:19.383313200+00:00] PE dev: tab[0] key=backup hwnd=0x2032a text_set
+[2026-10-17T12:56:19.383975800+00:00] PE dev: tab[1] key=restore_a hwnd=0x20328 text_set
+[2026-10-17T12:56:19.384839+00:00] PE dev: tab[2] key=restore_b hwnd=0x20326 text_set
+[2026-10-17T12:56:19.385624400+00:00] PE dev: tab[3] key=secondary hwnd=0x20324 text_set
+[2026-10-17T12:56:19.386180400+00:00] PE dev: tab[4] key=pe hwnd=0x20322 text_set
+[2026-10-17T12:56:19.387246500+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T12:56:19.407348200+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T19:35:41.520842+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T19:35:41.521741+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T19:35:41.522139700+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T19:35:41.522213800+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T19:35:41.522285+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T19:35:41.522348600+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T19:35:41.522411200+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T19:35:41.523635200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T19:35:41.527606+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T19:35:41.527691400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T19:35:41.527824900+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T19:35:41.527886500+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T19:35:41.527959900+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T19:35:41.528010200+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T19:35:41.528060500+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T19:35:41.528149200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:38:47.913880900+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:38:47.914264500+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:38:47.914549700+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:38:47.914804900+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:38:47.915038500+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:38:47.915147500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:38:47.923935600+00:00] GUI action completed: operation selected=backup
+[2026-10-17T20:38:49.157027400+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:38:49.158017500+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:38:49.158667100+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:38:49.159453100+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:38:49.160162400+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:38:49.164969400+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-17T20:38:49.196193600+00:00] GUI action completed: operation selected=restore-existing
+[2026-10-17T20:38:50.410344300+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:38:50.411210500+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:38:50.413554300+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:38:50.414317+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:38:50.414929500+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:38:50.415304700+00:00] target default moved off system drive: C -> D
+[2026-10-17T20:38:50.416496800+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T20:38:50.448162600+00:00] GUI action completed: operation selected=restore-data
+[2026-10-17T20:38:51.706203600+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:38:51.707215700+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:38:51.707960300+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:38:51.708977500+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:38:51.709716900+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:38:51.709889200+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-17T20:38:51.713532+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T20:38:51.747898900+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T20:38:52.967631500+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:38:52.968621+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:38:52.969375700+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:38:52.971819300+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:38:52.972705500+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:38:52.972857600+00:00] target combo refilled: op=install-pe-entry keep=C
+[2026-10-17T20:38:52.975784600+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T20:38:52.989819600+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T20:38:53.023584500+00:00] GUI action completed: operation selected=install-pe-entry
+[2026-10-17T20:39:06.184994900+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:06.185728600+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:06.186319800+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:06.188095500+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:06.188757900+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:06.192600700+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:39:06.220063700+00:00] GUI action completed: operation selected=backup
+[2026-10-17T20:39:07.485441+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:07.486348+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:07.487020500+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:07.491068300+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:07.491687900+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:07.499750100+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-17T20:39:07.525374800+00:00] GUI action completed: operation selected=restore-existing
+[2026-10-17T20:39:08.756793200+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:08.757865800+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:08.758785+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:08.760030700+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:08.760928400+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:08.761135600+00:00] target default moved off system drive: C -> D
+[2026-10-17T20:39:08.764813900+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T20:39:08.796122900+00:00] GUI action completed: operation selected=restore-data
+[2026-10-17T20:39:10.148449900+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:10.149543600+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:10.150492300+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:10.151492800+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:10.152243700+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:10.152431900+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-17T20:39:10.156843200+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T20:39:10.186980300+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T20:39:11.406879+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:11.407520800+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:11.408128100+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:11.408942800+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:11.409743300+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:11.409906200+00:00] target combo refilled: op=install-pe-entry keep=C
+[2026-10-17T20:39:11.415661800+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T20:39:11.428739800+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T20:39:11.454524100+00:00] GUI action completed: operation selected=install-pe-entry
+[2026-10-17T20:39:37.673812400+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:37.674649+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:37.675224700+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:37.675785700+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:37.676295500+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:37.679984400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:39:37.711021+00:00] GUI action completed: operation selected=backup
+[2026-10-17T20:39:38.992517+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:38.993173600+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:38.993682400+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:38.994924+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:38.995943700+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:39.007933500+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-17T20:39:39.041206500+00:00] GUI action completed: operation selected=restore-existing
+[2026-10-17T20:39:40.359866400+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:40.362097500+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:40.363154500+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:40.363941700+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:40.364676300+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:40.364885+00:00] target default moved off system drive: C -> D
+[2026-10-17T20:39:40.366059200+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T20:39:40.394448400+00:00] GUI action completed: operation selected=restore-data
+[2026-10-17T20:39:41.699111400+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:41.700004600+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:41.700738900+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:41.701616400+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:41.702336200+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:41.702516900+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-17T20:39:41.707205700+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-17T20:39:41.734159+00:00] GUI action completed: operation selected=create-secondary
+[2026-10-17T20:39:42.994809400+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:39:42.997593600+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:39:42.998389600+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:39:42.999212800+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:39:42.999993100+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:39:43.000151800+00:00] target combo refilled: op=install-pe-entry keep=C
+[2026-10-17T20:39:43.006008800+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T20:39:43.018359100+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T20:39:43.041715100+00:00] GUI action completed: operation selected=install-pe-entry
+[2026-10-17T20:41:00.762761+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:41:00.763073900+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:41:00.763316500+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:41:00.763554900+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:41:00.763770800+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:41:00.764745500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:41:00.773474700+00:00] GUI action completed: operation selected=backup
+[2026-10-17T20:41:02.125321600+00:00] GUI action started: create task; operation=backup
+[2026-10-17T20:41:02.126716900+00:00] GUI image path check: kind=empty detail=invalid task: path must be a non-empty Windows absolute path; guidance dialog opened
+[2026-10-17T20:42:27.755827900+00:00] GUI image path guidance: user choice=0 (1=browse 0=cancel)
+[2026-10-17T20:42:28.592477800+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:42:28.593351600+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:42:28.594073500+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:42:28.594718200+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:42:28.595866700+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:42:28.596126300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:42:28.615228200+00:00] GUI action completed: operation selected=backup
+[2026-10-17T20:43:48.336755400+00:00] PE dev: tab[0] key=backup hwnd=0x140294 text_set
+[2026-10-17T20:43:48.337090800+00:00] PE dev: tab[1] key=restore_a hwnd=0xf029c text_set
+[2026-10-17T20:43:48.337335900+00:00] PE dev: tab[2] key=restore_b hwnd=0x10029e text_set
+[2026-10-17T20:43:48.337613+00:00] PE dev: tab[3] key=secondary hwnd=0x902a0 text_set
+[2026-10-17T20:43:48.337839900+00:00] PE dev: tab[4] key=pe hwnd=0x1402d4 text_set
+[2026-10-17T20:43:48.337928600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:43:48.343894500+00:00] GUI action completed: operation selected=backup
+[2026-10-17T20:43:50.256338900+00:00] GUI action started: create task; operation=backup
+[2026-10-17T20:49:57.424738500+00:00] GUI action cancelled: image file dialog
+[2026-10-17T20:50:16.161297400+00:00] GUI action started: create task; operation=backup
+[2026-10-17T20:50:16.162535400+00:00] GUI image path check: kind=empty detail=invalid task: path must be a non-empty Windows absolute path; guidance dialog opened
+[2026-10-17T20:52:47.253658400+00:00] GUI image path guidance: user choice=0 (1=browse 0=cancel)
+[2026-10-17T20:56:20.819887900+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T20:56:20.820490700+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T20:56:20.820732300+00:00] PE dev: tab[0] key=backup hwnd=0x150294 text_set
+[2026-10-17T20:56:20.820796800+00:00] PE dev: tab[1] key=restore_a hwnd=0x10029c text_set
+[2026-10-17T20:56:20.821033100+00:00] PE dev: tab[2] key=restore_b hwnd=0x11029e text_set
+[2026-10-17T20:56:20.821169600+00:00] PE dev: tab[3] key=secondary hwnd=0xa02a0 text_set
+[2026-10-17T20:56:20.821266500+00:00] PE dev: tab[4] key=pe hwnd=0x1502d4 text_set
+[2026-10-17T20:56:20.822542200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:56:20.826185900+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T20:56:20.826277400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T20:56:20.826356+00:00] PE dev: tab[0] key=backup hwnd=0x150294 text_set
+[2026-10-17T20:56:20.826424200+00:00] PE dev: tab[1] key=restore_a hwnd=0x10029c text_set
+[2026-10-17T20:56:20.826487300+00:00] PE dev: tab[2] key=restore_b hwnd=0x11029e text_set
+[2026-10-17T20:56:20.826546300+00:00] PE dev: tab[3] key=secondary hwnd=0xa02a0 text_set
+[2026-10-17T20:56:20.826603300+00:00] PE dev: tab[4] key=pe hwnd=0x1502d4 text_set
+[2026-10-17T20:56:20.826802300+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-17T20:56:20.828874200+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-17T20:56:20.845457300+00:00] GUI action failed: read WIM metadata: error: invalid task: WIM image does not exist: H:\BRImages\BR-sys-20261018.wim
+[2026-10-17T20:56:20.846036500+00:00] test hook: config loaded
+[2026-10-17T20:56:20.846096+00:00] PE dev: tab[0] key=backup hwnd=0x150294 text_set
+[2026-10-17T20:56:20.846152300+00:00] PE dev: tab[1] key=restore_a hwnd=0x10029c text_set
+[2026-10-17T20:56:20.846204400+00:00] PE dev: tab[2] key=restore_b hwnd=0x11029e text_set
+[2026-10-17T20:56:20.846249800+00:00] PE dev: tab[3] key=secondary hwnd=0xa02a0 text_set
+[2026-10-17T20:56:20.846294200+00:00] PE dev: tab[4] key=pe hwnd=0x1502d4 text_set
+[2026-10-17T20:56:20.846464400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:56:20.848617800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T20:56:20.849472900+00:00] test hook: fields set
+[2026-10-17T20:56:20.849511900+00:00] test hook: system_drive_choice=2
+[2026-10-17T20:56:20.849593800+00:00] test hook: install posted
+[2026-10-17T20:56:20.875202300+00:00] test hook: install triggered
+[2026-10-17T20:56:20.875314500+00:00] GUI action started: create task; operation=backup
+[2026-10-17T20:56:20.875985300+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-17T20:56:20.876151+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-10-17T20:56:20.876194+00:00] system drive operation: user chose Windows RE (prepare chain)
+[2026-10-17T20:56:20.876283700+00:00] elevated prepare: launching (visible) operation=backup params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 98, 97, 99, 107, 117, 112, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 22791, 20221, 34, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 66, 82, 45, 115, 121, 115, 45, 50, 48, 50, 54, 49, 48, 49, 56, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 49, 32, 45, 45, 99, 111, 109, 112, 114, 101, 115, 115, 32, 102, 97, 115, 116, 32, 45, 45, 105, 109, 97, 103, 101, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 49, 49, 32, 50, 54, 50, 48, 48, 46, 57, 53, 53, 48, 32, 50, 48, 50, 54, 49, 48, 49, 56, 34, 32, 45, 45, 102, 97, 105, 108, 45, 116, 104, 114, 101, 115, 104, 111, 108, 100, 32, 51, 32, 45, 45, 102, 97, 105, 108, 45, 97, 99, 116, 105, 111, 110, 32, 97, 117, 116, 111, 45, 101, 115, 99, 97, 112, 101, 32, 45, 45, 102, 97, 105, 108, 45, 112, 97, 117, 115, 101, 45, 109, 97, 120, 45, 119, 97, 105, 116, 45, 115, 101, 99, 115, 32, 48, 32, 45, 45, 100, 105, 115, 109, 45, 116, 105, 109, 101, 111, 117, 116, 45, 115, 101, 99, 115, 32, 48, 32, 45, 45, 117, 105, 45, 108, 97, 110, 103, 117, 97, 103, 101, 32, 122, 104, 0]
+[2026-10-17T20:56:20.911575800+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x530
+[2026-10-17T20:56:22.443443500+00:00] GUI action delegated: elevated prepare launched; operation=backup; source=C; target=C
+[2026-10-17T21:06:40.411147+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T21:06:40.412411300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:06:40.412831100+00:00] PE dev: tab[0] key=backup hwnd=0x102d8 text_set
+[2026-10-17T21:06:40.412882500+00:00] PE dev: tab[1] key=restore_a hwnd=0x102da text_set
+[2026-10-17T21:06:40.412932200+00:00] PE dev: tab[2] key=restore_b hwnd=0x102dc text_set
+[2026-10-17T21:06:40.412975700+00:00] PE dev: tab[3] key=secondary hwnd=0x102de text_set
+[2026-10-17T21:06:40.413020800+00:00] PE dev: tab[4] key=pe hwnd=0x102e0 text_set
+[2026-10-17T21:06:40.427233900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:06:40.440291+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:06:40.440348200+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T21:06:40.440405200+00:00] PE dev: tab[0] key=backup hwnd=0x102d8 text_set
+[2026-10-17T21:06:40.440447400+00:00] PE dev: tab[1] key=restore_a hwnd=0x102da text_set
+[2026-10-17T21:06:40.440494400+00:00] PE dev: tab[2] key=restore_b hwnd=0x102dc text_set
+[2026-10-17T21:06:40.440534100+00:00] PE dev: tab[3] key=secondary hwnd=0x102de text_set
+[2026-10-17T21:06:40.440572900+00:00] PE dev: tab[4] key=pe hwnd=0x102e0 text_set
+[2026-10-17T21:06:40.440666100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:11:06.045353+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T21:11:06.045826500+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:11:06.046007900+00:00] PE dev: tab[0] key=backup hwnd=0x202e0 text_set
+[2026-10-17T21:11:06.046059200+00:00] PE dev: tab[1] key=restore_a hwnd=0x202e2 text_set
+[2026-10-17T21:11:06.046139400+00:00] PE dev: tab[2] key=restore_b hwnd=0x202e4 text_set
+[2026-10-17T21:11:06.046185600+00:00] PE dev: tab[3] key=secondary hwnd=0x202e6 text_set
+[2026-10-17T21:11:06.046267900+00:00] PE dev: tab[4] key=pe hwnd=0x202e8 text_set
+[2026-10-17T21:11:06.049749500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:11:06.053997500+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:11:06.054072300+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T21:11:06.054138600+00:00] PE dev: tab[0] key=backup hwnd=0x202e0 text_set
+[2026-10-17T21:11:06.054189300+00:00] PE dev: tab[1] key=restore_a hwnd=0x202e2 text_set
+[2026-10-17T21:11:06.054275800+00:00] PE dev: tab[2] key=restore_b hwnd=0x202e4 text_set
+[2026-10-17T21:11:06.054370700+00:00] PE dev: tab[3] key=secondary hwnd=0x202e6 text_set
+[2026-10-17T21:11:06.054439700+00:00] PE dev: tab[4] key=pe hwnd=0x202e8 text_set
+[2026-10-17T21:11:06.054530600+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:11:06.055901400+00:00] test hook: config loaded
+[2026-10-17T21:11:06.055976600+00:00] PE dev: tab[0] key=backup hwnd=0x202e0 text_set
+[2026-10-17T21:11:06.056025100+00:00] PE dev: tab[1] key=restore_a hwnd=0x202e2 text_set
+[2026-10-17T21:11:06.056073500+00:00] PE dev: tab[2] key=restore_b hwnd=0x202e4 text_set
+[2026-10-17T21:11:06.056115800+00:00] PE dev: tab[3] key=secondary hwnd=0x202e6 text_set
+[2026-10-17T21:11:06.056161100+00:00] PE dev: tab[4] key=pe hwnd=0x202e8 text_set
+[2026-10-17T21:11:06.056242300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:11:06.057483+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:11:06.058306500+00:00] test hook: source=T pos=4
+[2026-10-17T21:11:06.058366300+00:00] test hook: fields set
+[2026-10-17T21:11:06.058410200+00:00] test hook: install posted
+[2026-10-17T21:11:06.078961100+00:00] test hook: install triggered
+[2026-10-17T21:11:06.079066600+00:00] GUI action started: create task; operation=backup
+[2026-10-17T21:11:06.085601100+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-17T21:11:06.085771700+00:00] online operation: affected=T system=C
+[2026-10-17T21:11:06.099358200+00:00] online started: op=backup source=T target=C
+[2026-10-17T21:11:06.209634800+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：H:\brwork\logs\BackupRestore-online-10904-1792271466088411700\Online.log
+[2026-10-17T21:15:01.057360300+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T21:15:01.058279300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:15:01.058720300+00:00] PE dev: tab[0] key=backup hwnd=0x5002c text_set
+[2026-10-17T21:15:01.058805900+00:00] PE dev: tab[1] key=restore_a hwnd=0x50024 text_set
+[2026-10-17T21:15:01.058882600+00:00] PE dev: tab[2] key=restore_b hwnd=0x50016 text_set
+[2026-10-17T21:15:01.058954400+00:00] PE dev: tab[3] key=secondary hwnd=0x502b0 text_set
+[2026-10-17T21:15:01.059026400+00:00] PE dev: tab[4] key=pe hwnd=0x302d8 text_set
+[2026-10-17T21:15:01.060391400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:15:01.063985100+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:15:01.064074600+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T21:15:01.064200100+00:00] PE dev: tab[0] key=backup hwnd=0x5002c text_set
+[2026-10-17T21:15:01.064266600+00:00] PE dev: tab[1] key=restore_a hwnd=0x50024 text_set
+[2026-10-17T21:15:01.064328400+00:00] PE dev: tab[2] key=restore_b hwnd=0x50016 text_set
+[2026-10-17T21:15:01.064388600+00:00] PE dev: tab[3] key=secondary hwnd=0x502b0 text_set
+[2026-10-17T21:15:01.064458600+00:00] PE dev: tab[4] key=pe hwnd=0x302d8 text_set
+[2026-10-17T21:15:01.064568500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:15:01.066240100+00:00] test hook: config loaded
+[2026-10-17T21:15:01.066319500+00:00] PE dev: tab[0] key=backup hwnd=0x5002c text_set
+[2026-10-17T21:15:01.066374600+00:00] PE dev: tab[1] key=restore_a hwnd=0x50024 text_set
+[2026-10-17T21:15:01.066429+00:00] PE dev: tab[2] key=restore_b hwnd=0x50016 text_set
+[2026-10-17T21:15:01.066487600+00:00] PE dev: tab[3] key=secondary hwnd=0x502b0 text_set
+[2026-10-17T21:15:01.066537100+00:00] PE dev: tab[4] key=pe hwnd=0x302d8 text_set
+[2026-10-17T21:15:01.066625800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:15:01.068674800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:15:01.069971400+00:00] test hook: source=T pos=4
+[2026-10-17T21:15:01.070048900+00:00] test hook: fields set
+[2026-10-17T21:15:01.070103100+00:00] test hook: install posted
+[2026-10-17T21:15:01.088811100+00:00] test hook: install triggered
+[2026-10-17T21:15:01.089124800+00:00] GUI action started: create task; operation=backup
+[2026-10-17T21:15:01.090112+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-17T21:15:01.090275600+00:00] online operation: affected=T system=C
+[2026-10-17T21:15:01.094713700+00:00] online started: op=backup source=T target=C
+[2026-10-17T21:15:01.198083500+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：H:\brwork\logs\BackupRestore-online-2328-1792271701093821000\Online.log
+[2026-10-17T21:17:26.624964800+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T21:17:26.625484700+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:17:26.625690500+00:00] PE dev: tab[0] key=backup hwnd=0x700cc text_set
+[2026-10-17T21:17:26.625754400+00:00] PE dev: tab[1] key=restore_a hwnd=0x602b0 text_set
+[2026-10-17T21:17:26.625811200+00:00] PE dev: tab[2] key=restore_b hwnd=0x402d8 text_set
+[2026-10-17T21:17:26.625926100+00:00] PE dev: tab[3] key=secondary hwnd=0x402da text_set
+[2026-10-17T21:17:26.626+00:00] PE dev: tab[4] key=pe hwnd=0x402dc text_set
+[2026-10-17T21:17:26.627569800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:17:26.631144100+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T21:17:26.631226200+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T21:17:26.631296300+00:00] PE dev: tab[0] key=backup hwnd=0x700cc text_set
+[2026-10-17T21:17:26.631351800+00:00] PE dev: tab[1] key=restore_a hwnd=0x602b0 text_set
+[2026-10-17T21:17:26.631412300+00:00] PE dev: tab[2] key=restore_b hwnd=0x402d8 text_set
+[2026-10-17T21:17:26.631477200+00:00] PE dev: tab[3] key=secondary hwnd=0x402da text_set
+[2026-10-17T21:17:26.631538300+00:00] PE dev: tab[4] key=pe hwnd=0x402dc text_set
+[2026-10-17T21:17:26.631643500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T21:17:26.633497400+00:00] test hook: config loaded
+[2026-10-17T21:17:26.633593100+00:00] PE dev: tab[0] key=backup hwnd=0x700cc text_set
+[2026-10-17T21:17:26.633676500+00:00] PE dev: tab[1] key=restore_a hwnd=0x602b0 text_set
+[2026-10-17T21:17:26.633734900+00:00] PE dev: tab[2] key=restore_b hwnd=0x402d8 text_set
+[2026-10-17T21:17:26.633808800+00:00] PE dev: tab[3] key=secondary hwnd=0x402da text_set
+[2026-10-17T21:17:26.633872500+00:00] PE dev: tab[4] key=pe hwnd=0x402dc text_set
+[2026-10-17T21:17:26.633974200+00:00] target default moved off system drive: C -> D
+[2026-10-17T21:17:26.634174800+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T21:17:26.640343900+00:00] PE visibility: op=restore-data pe_visible=false ram_checked=true
+[2026-10-17T21:17:26.641853600+00:00] test hook: target=T pos=4
+[2026-10-17T21:17:26.641933+00:00] test hook: fields set
+[2026-10-17T21:17:26.642006700+00:00] test hook: install posted
+[2026-10-17T21:17:26.666040300+00:00] test hook: install triggered
+[2026-10-17T21:17:26.666136400+00:00] GUI action started: create task; operation=restore-data
+[2026-10-17T21:17:26.666880400+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-data-20261018.wim
+[2026-10-17T21:17:26.683190+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-17T21:17:26.683288400+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-17T21:17:26.683435600+00:00] test hook: metadata confirmation auto-accepted
+[2026-10-17T21:17:26.683486900+00:00] channel split: op=restore-data online=true
+[2026-10-17T21:17:26.683539200+00:00] online params: format_target=true
+[2026-10-17T21:17:26.872573400+00:00] online started: op=restore-existing source=T target=T
+[2026-10-17T21:17:28.689456+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：H:\brwork\logs\BackupRestore-online-8620-1792271846862465100\Online.log
+[2026-10-17T22:15:35.980085700+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T22:15:35.980972300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:15:35.981346900+00:00] PE dev: tab[0] key=backup hwnd=0x102d8 text_set
+[2026-10-17T22:15:35.981406900+00:00] PE dev: tab[1] key=restore_a hwnd=0x102da text_set
+[2026-10-17T22:15:35.981491200+00:00] PE dev: tab[2] key=restore_b hwnd=0x102dc text_set
+[2026-10-17T22:15:35.981558400+00:00] PE dev: tab[3] key=secondary hwnd=0x102de text_set
+[2026-10-17T22:15:35.981632300+00:00] PE dev: tab[4] key=pe hwnd=0x102e0 text_set
+[2026-10-17T22:15:35.995389900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:15:36.007584+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:15:36.007656400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T22:15:36.007717800+00:00] PE dev: tab[0] key=backup hwnd=0x102d8 text_set
+[2026-10-17T22:15:36.007765800+00:00] PE dev: tab[1] key=restore_a hwnd=0x102da text_set
+[2026-10-17T22:15:36.007813900+00:00] PE dev: tab[2] key=restore_b hwnd=0x102dc text_set
+[2026-10-17T22:15:36.007862600+00:00] PE dev: tab[3] key=secondary hwnd=0x102de text_set
+[2026-10-17T22:15:36.007907500+00:00] PE dev: tab[4] key=pe hwnd=0x102e0 text_set
+[2026-10-17T22:15:36.007982500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:27:25.626733400+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T22:27:25.627539900+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:27:25.627866900+00:00] PE dev: tab[0] key=backup hwnd=0x702ae text_set
+[2026-10-17T22:27:25.627943+00:00] PE dev: tab[1] key=restore_a hwnd=0x202d8 text_set
+[2026-10-17T22:27:25.627999100+00:00] PE dev: tab[2] key=restore_b hwnd=0x202da text_set
+[2026-10-17T22:27:25.628054900+00:00] PE dev: tab[3] key=secondary hwnd=0x202dc text_set
+[2026-10-17T22:27:25.628108300+00:00] PE dev: tab[4] key=pe hwnd=0x202de text_set
+[2026-10-17T22:27:25.629217900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:27:25.632423300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:27:25.632500400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T22:27:25.632585900+00:00] PE dev: tab[0] key=backup hwnd=0x702ae text_set
+[2026-10-17T22:27:25.632639400+00:00] PE dev: tab[1] key=restore_a hwnd=0x202d8 text_set
+[2026-10-17T22:27:25.632688900+00:00] PE dev: tab[2] key=restore_b hwnd=0x202da text_set
+[2026-10-17T22:27:25.632735800+00:00] PE dev: tab[3] key=secondary hwnd=0x202dc text_set
+[2026-10-17T22:27:25.632780400+00:00] PE dev: tab[4] key=pe hwnd=0x202de text_set
+[2026-10-17T22:27:25.632860300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:34:19.523836400+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T22:34:19.525321200+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:34:19.525541600+00:00] PE dev: tab[0] key=backup hwnd=0x302da text_set
+[2026-10-17T22:34:19.525607900+00:00] PE dev: tab[1] key=restore_a hwnd=0x302dc text_set
+[2026-10-17T22:34:19.525725300+00:00] PE dev: tab[2] key=restore_b hwnd=0x302de text_set
+[2026-10-17T22:34:19.525807200+00:00] PE dev: tab[3] key=secondary hwnd=0x302e0 text_set
+[2026-10-17T22:34:19.525881600+00:00] PE dev: tab[4] key=pe hwnd=0x302e2 text_set
+[2026-10-17T22:34:19.527348300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:34:19.532008+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:34:19.532092400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T22:34:19.532159400+00:00] PE dev: tab[0] key=backup hwnd=0x302da text_set
+[2026-10-17T22:34:19.532213400+00:00] PE dev: tab[1] key=restore_a hwnd=0x302dc text_set
+[2026-10-17T22:34:19.532274300+00:00] PE dev: tab[2] key=restore_b hwnd=0x302de text_set
+[2026-10-17T22:34:19.532324600+00:00] PE dev: tab[3] key=secondary hwnd=0x302e0 text_set
+[2026-10-17T22:34:19.532373400+00:00] PE dev: tab[4] key=pe hwnd=0x302e2 text_set
+[2026-10-17T22:34:19.532462400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:34:19.533966100+00:00] test hook: config loaded
+[2026-10-17T22:34:19.534030700+00:00] PE dev: tab[0] key=backup hwnd=0x302da text_set
+[2026-10-17T22:34:19.534101800+00:00] PE dev: tab[1] key=restore_a hwnd=0x302dc text_set
+[2026-10-17T22:34:19.534158800+00:00] PE dev: tab[2] key=restore_b hwnd=0x302de text_set
+[2026-10-17T22:34:19.534208300+00:00] PE dev: tab[3] key=secondary hwnd=0x302e0 text_set
+[2026-10-17T22:34:19.534256+00:00] PE dev: tab[4] key=pe hwnd=0x302e2 text_set
+[2026-10-17T22:34:19.534464600+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-17T22:34:19.543326500+00:00] PE visibility: op=restore-existing pe_visible=false ram_checked=true
+[2026-10-17T22:34:19.544531500+00:00] test hook: target=C pos=0
+[2026-10-17T22:34:19.544621600+00:00] test hook: fields set
+[2026-10-17T22:34:19.544662600+00:00] test hook: system_drive_choice=2
+[2026-10-17T22:34:19.544737300+00:00] test hook: install posted
+[2026-10-17T22:34:19.568354600+00:00] test hook: install triggered
+[2026-10-17T22:34:19.568474500+00:00] GUI action started: create task; operation=restore-existing
+[2026-10-17T22:34:19.592890300+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-17T22:34:19.710642500+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-17T22:34:19.710792200+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-17T22:34:19.710982500+00:00] test hook: metadata confirmation auto-accepted
+[2026-10-17T22:34:19.711048600+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-10-17T22:34:19.711089200+00:00] system drive operation: user chose Windows RE (prepare chain)
+[2026-10-17T22:34:19.711188600+00:00] elevated prepare: launching (visible) operation=restore-existing params=[112, 114, 101, 112, 97, 114, 101, 32, 45, 45, 111, 112, 101, 114, 97, 116, 105, 111, 110, 32, 114, 101, 115, 116, 111, 114, 101, 45, 101, 120, 105, 115, 116, 105, 110, 103, 32, 45, 45, 115, 111, 117, 114, 99, 101, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 116, 97, 114, 103, 101, 116, 45, 100, 114, 105, 118, 101, 32, 67, 32, 45, 45, 98, 111, 111, 116, 45, 109, 101, 110, 117, 45, 110, 97, 109, 101, 32, 34, 87, 105, 110, 100, 111, 119, 115, 32, 22791, 20221, 34, 32, 45, 45, 105, 109, 97, 103, 101, 45, 112, 97, 116, 104, 32, 72, 58, 92, 66, 82, 73, 109, 97, 103, 101, 115, 92, 66, 82, 45, 115, 121, 115, 45, 50, 48, 50, 54, 49, 48, 49, 56, 46, 119, 105, 109, 32, 45, 45, 119, 105, 109, 45, 105, 110, 100, 101, 120, 32, 49, 32, 45, 45, 97, 108, 108, 111, 119, 45, 100, 101, 115, 116, 114, 117, 99, 116, 105, 118, 101, 32, 45, 45, 102, 97, 105, 108, 45, 116, 104, 114, 101, 115, 104, 111, 108, 100, 32, 51, 32, 45, 45, 102, 97, 105, 108, 45, 97, 99, 116, 105, 111, 110, 32, 97, 117, 116, 111, 45, 101, 115, 99, 97, 112, 101, 32, 45, 45, 102, 97, 105, 108, 45, 112, 97, 117, 115, 101, 45, 109, 97, 120, 45, 119, 97, 105, 116, 45, 115, 101, 99, 115, 32, 48, 32, 45, 45, 100, 105, 115, 109, 45, 116, 105, 109, 101, 111, 117, 116, 45, 115, 101, 99, 115, 32, 48, 32, 45, 45, 117, 105, 45, 108, 97, 110, 103, 117, 97, 103, 101, 32, 122, 104, 0]
+[2026-10-17T22:34:19.745179100+00:00] elevated prepare: ShellExecuteExW succeeded; h_process=0x510
+[2026-10-17T22:34:21.247327+00:00] GUI action delegated: elevated prepare launched; operation=restore-existing; source=C; target=C
+[2026-10-17T22:50:29.940240600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T22:50:29.940998300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:50:29.941316900+00:00] PE dev: tab[0] key=backup hwnd=0x6006c text_set
+[2026-10-17T22:50:29.941366900+00:00] PE dev: tab[1] key=restore_a hwnd=0x401a4 text_set
+[2026-10-17T22:50:29.941423100+00:00] PE dev: tab[2] key=restore_b hwnd=0x3017e text_set
+[2026-10-17T22:50:29.941476300+00:00] PE dev: tab[3] key=secondary hwnd=0x201a6 text_set
+[2026-10-17T22:50:29.941592100+00:00] PE dev: tab[4] key=pe hwnd=0x602a2 text_set
+[2026-10-17T22:50:29.956518500+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T22:50:29.968728200+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T22:50:29.968814800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T22:50:29.968878900+00:00] PE dev: tab[0] key=backup hwnd=0x6006c text_set
+[2026-10-17T22:50:29.968934200+00:00] PE dev: tab[1] key=restore_a hwnd=0x401a4 text_set
+[2026-10-17T22:50:29.968989+00:00] PE dev: tab[2] key=restore_b hwnd=0x3017e text_set
+[2026-10-17T22:50:29.969039600+00:00] PE dev: tab[3] key=secondary hwnd=0x201a6 text_set
+[2026-10-17T22:50:29.969094700+00:00] PE dev: tab[4] key=pe hwnd=0x602a2 text_set
+[2026-10-17T22:50:29.969187+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:05:33.176083100+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T23:05:33.176740100+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T23:05:33.177369600+00:00] PE dev: tab[0] key=backup hwnd=0x3028e text_set
+[2026-10-17T23:05:33.177441600+00:00] PE dev: tab[1] key=restore_a hwnd=0x30288 text_set
+[2026-10-17T23:05:33.177507800+00:00] PE dev: tab[2] key=restore_b hwnd=0x40280 text_set
+[2026-10-17T23:05:33.177572400+00:00] PE dev: tab[3] key=secondary hwnd=0x30290 text_set
+[2026-10-17T23:05:33.177658800+00:00] PE dev: tab[4] key=pe hwnd=0x60272 text_set
+[2026-10-17T23:05:33.179429+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:05:33.182479700+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T23:05:33.182540400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T23:05:33.182696+00:00] PE dev: tab[0] key=backup hwnd=0x3028e text_set
+[2026-10-17T23:05:33.182751500+00:00] PE dev: tab[1] key=restore_a hwnd=0x30288 text_set
+[2026-10-17T23:05:33.182807100+00:00] PE dev: tab[2] key=restore_b hwnd=0x40280 text_set
+[2026-10-17T23:05:33.182858800+00:00] PE dev: tab[3] key=secondary hwnd=0x30290 text_set
+[2026-10-17T23:05:33.182910700+00:00] PE dev: tab[4] key=pe hwnd=0x60272 text_set
+[2026-10-17T23:05:33.183001900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:05:33.184411400+00:00] test hook: config loaded
+[2026-10-17T23:05:33.184500800+00:00] PE dev: tab[0] key=backup hwnd=0x3028e text_set
+[2026-10-17T23:05:33.184572800+00:00] PE dev: tab[1] key=restore_a hwnd=0x30288 text_set
+[2026-10-17T23:05:33.184635300+00:00] PE dev: tab[2] key=restore_b hwnd=0x40280 text_set
+[2026-10-17T23:05:33.184694100+00:00] PE dev: tab[3] key=secondary hwnd=0x30290 text_set
+[2026-10-17T23:05:33.184751200+00:00] PE dev: tab[4] key=pe hwnd=0x60272 text_set
+[2026-10-17T23:05:33.184907200+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T23:05:33.185528400+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:05:33.200998500+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T23:05:33.201552+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:05:33.202168+00:00] test hook: fields set
+[2026-10-17T23:05:33.202215500+00:00] test hook: install posted
+[2026-10-17T23:05:33.217154200+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:05:33.228646100+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:05:33.230650200+00:00] test hook: install triggered
+[2026-10-17T23:05:33.230756900+00:00] GUI action started: create task; operation=install-pe-entry
+[2026-10-17T23:05:33.230856900+00:00] test hook: RAM disk confirmation auto-accepted
+[2026-10-17T23:05:33.230900100+00:00] PE RAM disk install started: wim=H:\BRImages\BR-PE-marker.wim target=T:\BackupRestorePE
+[2026-10-17T23:05:33.431168800+00:00] PE install bcdedit: bcdedit.exe /set {ramdiskoptions} ramdisksdidevice partition=T: -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.477068+00:00] PE install bcdedit: bcdedit.exe /set {ramdiskoptions} ramdisksdipath \BackupRestorePE\boot\boot.sdi -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.622619500+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} device ramdisk=[T:]\BackupRestorePE\sources\boot.wim,{ramdiskoptions} -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.771538700+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} osdevice ramdisk=[T:]\BackupRestorePE\sources\boot.wim,{ramdiskoptions} -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.805098+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} winpe yes -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.838689900+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} detecthal yes -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.871032400+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} systemroot \windows -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.902341600+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} nx OptIn -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.934257700+00:00] PE install bcdedit: bcdedit.exe /set {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} description "BR PE marker RAM" -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.966731900+00:00] PE install bcdedit: bcdedit.exe /displayorder {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} /addlast -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:05:33.966980700+00:00] GUI action completed: PE installed (RAM disk wim -> T:\BackupRestorePE\sources\boot.wim, BCD entry {40e4789b-ca7f-11f1-8996-9ba63bacb4b0})
+[2026-10-17T23:09:16.494285700+00:00] PE reboot to PE: bcdedit.exe /set {bootmgr} bootsequence {40e4789b-ca7f-11f1-8996-9ba63bacb4b0} -> exit code=退出码 0（bcdedit 完整输出：H:\brwork\logs\boot-sequence.log）
+[2026-10-17T23:09:16.494501800+00:00] PE reboot to PE: bootsequence set, auto reboot now
+[2026-10-17T23:09:16.557626500+00:00] PE reboot to PE: ExitWindowsEx failed, shutdown.exe fallback code=退出码 0
+[2026-10-17T23:13:33.234589500+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T23:13:33.235376400+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T23:13:33.235620400+00:00] PE dev: tab[0] key=backup hwnd=0x4019e text_set
+[2026-10-17T23:13:33.235670100+00:00] PE dev: tab[1] key=restore_a hwnd=0x30030 text_set
+[2026-10-17T23:13:33.235722900+00:00] PE dev: tab[2] key=restore_b hwnd=0x201ec text_set
+[2026-10-17T23:13:33.235773100+00:00] PE dev: tab[3] key=secondary hwnd=0x30028 text_set
+[2026-10-17T23:13:33.235823100+00:00] PE dev: tab[4] key=pe hwnd=0x40020 text_set
+[2026-10-17T23:13:33.250272800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:13:33.262378100+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T23:13:33.262456100+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T23:13:33.262524500+00:00] PE dev: tab[0] key=backup hwnd=0x4019e text_set
+[2026-10-17T23:13:33.262576900+00:00] PE dev: tab[1] key=restore_a hwnd=0x30030 text_set
+[2026-10-17T23:13:33.262651400+00:00] PE dev: tab[2] key=restore_b hwnd=0x201ec text_set
+[2026-10-17T23:13:33.262705100+00:00] PE dev: tab[3] key=secondary hwnd=0x30028 text_set
+[2026-10-17T23:13:33.262756300+00:00] PE dev: tab[4] key=pe hwnd=0x40020 text_set
+[2026-10-17T23:13:33.262839900+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:13:57.274589200+00:00] GUI started; elevated native Rust window initialized
+[2026-10-17T23:13:57.275258800+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T23:13:57.275671500+00:00] PE dev: tab[0] key=backup hwnd=0x3029c text_set
+[2026-10-17T23:13:57.275739700+00:00] PE dev: tab[1] key=restore_a hwnd=0x3029e text_set
+[2026-10-17T23:13:57.275829800+00:00] PE dev: tab[2] key=restore_b hwnd=0x70046 text_set
+[2026-10-17T23:13:57.275896100+00:00] PE dev: tab[3] key=secondary hwnd=0x40032 text_set
+[2026-10-17T23:13:57.275960800+00:00] PE dev: tab[4] key=pe hwnd=0x500f0 text_set
+[2026-10-17T23:13:57.277363100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:13:57.280070400+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-17T23:13:57.280126300+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-17T23:13:57.280261500+00:00] PE dev: tab[0] key=backup hwnd=0x3029c text_set
+[2026-10-17T23:13:57.280310+00:00] PE dev: tab[1] key=restore_a hwnd=0x3029e text_set
+[2026-10-17T23:13:57.280354500+00:00] PE dev: tab[2] key=restore_b hwnd=0x70046 text_set
+[2026-10-17T23:13:57.280400+00:00] PE dev: tab[3] key=secondary hwnd=0x40032 text_set
+[2026-10-17T23:13:57.280440700+00:00] PE dev: tab[4] key=pe hwnd=0x500f0 text_set
+[2026-10-17T23:13:57.280876400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-17T23:13:57.282210300+00:00] test hook: config loaded
+[2026-10-17T23:13:57.282270400+00:00] PE dev: tab[0] key=backup hwnd=0x3029c text_set
+[2026-10-17T23:13:57.282324800+00:00] PE dev: tab[1] key=restore_a hwnd=0x3029e text_set
+[2026-10-17T23:13:57.282373+00:00] PE dev: tab[2] key=restore_b hwnd=0x70046 text_set
+[2026-10-17T23:13:57.282419100+00:00] PE dev: tab[3] key=secondary hwnd=0x40032 text_set
+[2026-10-17T23:13:57.282464300+00:00] PE dev: tab[4] key=pe hwnd=0x500f0 text_set
+[2026-10-17T23:13:57.282626500+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T23:13:57.283236500+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:13:57.297102900+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=true
+[2026-10-17T23:13:57.297823600+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:13:57.298691900+00:00] test hook: target=T pos=4
+[2026-10-17T23:13:57.298772200+00:00] test hook: fields set
+[2026-10-17T23:13:57.312478300+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:13:57.322143800+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=true
+[2026-10-17T23:14:13.302873700+00:00] PE visibility: op=install-pe-entry pe_visible=true ram_checked=false
+[2026-10-17T23:14:13.304163800+00:00] PE layout: last_details_y=248 mode_y=266 ram_checked=false
+[2026-10-17T23:14:22.649974+00:00] GUI action started: create task; operation=install-pe-entry
+[2026-10-17T23:14:32.314207300+00:00] PE hard disk install started: wim=H:\BRImages\BR-PE-marker.wim partition=T:
+[2026-10-17T23:14:56.916258400+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} device partition=T: -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.058371900+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} osdevice partition=T: -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.202153500+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} path \Windows\system32\winload.efi -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.352215100+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} systemroot \Windows -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.494636+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} winpe yes -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.637871900+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} detecthal yes -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.779965300+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} nx OptIn -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.919092500+00:00] PE hard disk bcdedit: bcdedit.exe /set {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} description "BR PE marker DISK" -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.963954800+00:00] PE hard disk bcdedit: bcdedit.exe /displayorder {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} /addlast -> 退出码 0 | 输出：�����ɹ���ɡ�
+[2026-10-17T23:14:57.964508100+00:00] GUI action completed: PE installed (hard disk -> T:\, BCD entry {40e4789c-ca7f-11f1-8996-9ba63bacb4b0})
+[2026-10-17T23:16:41.864999800+00:00] PE reboot to PE: bcdedit.exe /set {bootmgr} bootsequence {40e4789c-ca7f-11f1-8996-9ba63bacb4b0} -> exit code=退出码 0（bcdedit 完整输出：H:\brwork\logs\boot-sequence.log）
+[2026-10-17T23:16:41.865074+00:00] PE reboot to PE: bootsequence set, auto reboot now
+[2026-10-17T23:16:41.915200900+00:00] PE reboot to PE: ExitWindowsEx failed, shutdown.exe fallback code=退出码 0
+[2026-10-18T00:12:12.049693600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-18T00:12:12.051366200+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T00:12:12.052900+00:00] PE dev: tab[0] key=backup hwnd=0x2016a text_set
+[2026-10-18T00:12:12.053175500+00:00] PE dev: tab[1] key=restore_a hwnd=0x200cc text_set
+[2026-10-18T00:12:12.053425700+00:00] PE dev: tab[2] key=restore_b hwnd=0x301c8 text_set
+[2026-10-18T00:12:12.053702300+00:00] PE dev: tab[3] key=secondary hwnd=0x202d2 text_set
+[2026-10-18T00:12:12.053993900+00:00] PE dev: tab[4] key=pe hwnd=0x202ca text_set
+[2026-10-18T00:12:12.068402+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T00:12:12.081104300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T00:12:12.081510400+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-18T00:12:12.081827800+00:00] PE dev: tab[0] key=backup hwnd=0x2016a text_set
+[2026-10-18T00:12:12.082152500+00:00] PE dev: tab[1] key=restore_a hwnd=0x200cc text_set
+[2026-10-18T00:12:12.082469800+00:00] PE dev: tab[2] key=restore_b hwnd=0x301c8 text_set
+[2026-10-18T00:12:12.082764800+00:00] PE dev: tab[3] key=secondary hwnd=0x202d2 text_set
+[2026-10-18T00:12:12.083054600+00:00] PE dev: tab[4] key=pe hwnd=0x202ca text_set
+[2026-10-18T00:12:12.083375300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T00:12:12.084830300+00:00] test hook: config loaded
+[2026-10-18T00:12:12.085131800+00:00] PE dev: tab[0] key=backup hwnd=0x2016a text_set
+[2026-10-18T00:12:12.085431900+00:00] PE dev: tab[1] key=restore_a hwnd=0x200cc text_set
+[2026-10-18T00:12:12.085716500+00:00] PE dev: tab[2] key=restore_b hwnd=0x301c8 text_set
+[2026-10-18T00:12:12.085997100+00:00] PE dev: tab[3] key=secondary hwnd=0x202d2 text_set
+[2026-10-18T00:12:12.086333800+00:00] PE dev: tab[4] key=pe hwnd=0x202ca text_set
+[2026-10-18T00:12:12.086793700+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-18T00:12:12.087317500+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T00:12:12.095413300+00:00] test hook: channel=online
+[2026-10-18T00:12:12.095813400+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T00:12:12.097712+00:00] test hook: target=F pos=1
+[2026-10-18T00:12:12.098015900+00:00] test hook: fields set
+[2026-10-18T00:12:38.126737700+00:00] GUI action started: create task; operation=create-secondary
+[2026-10-18T00:12:38.156459500+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-18T00:12:38.269153700+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-18T00:14:09.430829+00:00] GUI action cancelled: destructive confirmation; operation=create-secondary
+[2026-10-18T01:30:07.116000600+00:00] GUI started; elevated native Rust window initialized
+[2026-10-18T01:30:07.116904200+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T01:30:07.117143100+00:00] PE dev: tab[0] key=backup hwnd=0xc0014 text_set
+[2026-10-18T01:30:07.117206500+00:00] PE dev: tab[1] key=restore_a hwnd=0x70046 text_set
+[2026-10-18T01:30:07.117267500+00:00] PE dev: tab[2] key=restore_b hwnd=0x70062 text_set
+[2026-10-18T01:30:07.117343100+00:00] PE dev: tab[3] key=secondary hwnd=0x6003e text_set
+[2026-10-18T01:30:07.117418+00:00] PE dev: tab[4] key=pe hwnd=0x5003a text_set
+[2026-10-18T01:30:07.118583300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T01:30:07.121773600+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T01:30:07.121860500+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-18T01:30:07.121953300+00:00] PE dev: tab[0] key=backup hwnd=0xc0014 text_set
+[2026-10-18T01:30:07.122014100+00:00] PE dev: tab[1] key=restore_a hwnd=0x70046 text_set
+[2026-10-18T01:30:07.122076500+00:00] PE dev: tab[2] key=restore_b hwnd=0x70062 text_set
+[2026-10-18T01:30:07.122136200+00:00] PE dev: tab[3] key=secondary hwnd=0x6003e text_set
+[2026-10-18T01:30:07.122195700+00:00] PE dev: tab[4] key=pe hwnd=0x5003a text_set
+[2026-10-18T01:30:07.122286100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T01:30:07.123797300+00:00] test hook: config loaded
+[2026-10-18T01:30:07.123861500+00:00] PE dev: tab[0] key=backup hwnd=0xc0014 text_set
+[2026-10-18T01:30:07.123921700+00:00] PE dev: tab[1] key=restore_a hwnd=0x70046 text_set
+[2026-10-18T01:30:07.123973400+00:00] PE dev: tab[2] key=restore_b hwnd=0x70062 text_set
+[2026-10-18T01:30:07.124025+00:00] PE dev: tab[3] key=secondary hwnd=0x6003e text_set
+[2026-10-18T01:30:07.124077700+00:00] PE dev: tab[4] key=pe hwnd=0x5003a text_set
+[2026-10-18T01:30:07.124150700+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-18T01:30:07.124534900+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T01:30:07.128017400+00:00] test hook: channel=online
+[2026-10-18T01:30:07.128138+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T01:30:07.129410800+00:00] test hook: target=F pos=1
+[2026-10-18T01:30:07.129474600+00:00] test hook: fields set
+[2026-10-18T01:30:07.129520100+00:00] test hook: install posted
+[2026-10-18T01:30:07.190701600+00:00] test hook: install triggered
+[2026-10-18T01:30:07.190863500+00:00] GUI action started: create task; operation=create-secondary
+[2026-10-18T01:30:07.196839600+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-18T01:30:07.296380600+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-18T01:30:07.701566400+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-18T01:30:07.701840+00:00] test hook: metadata confirmation auto-accepted
+[2026-10-18T01:30:07.701909300+00:00] channel split: op=create-secondary online=true
+[2026-10-18T01:30:07.701990800+00:00] online params: format_target=true
+[2026-10-18T01:30:07.709363200+00:00] online started: op=create-secondary source=C target=F
+[2026-10-18T01:44:23.705586400+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：H:\brwork\logs\BackupRestore-online-4312-1792287007703341100\Online.log
+[2026-10-18T01:57:18.432634500+00:00] GUI started; elevated native Rust window initialized
+[2026-10-18T01:57:18.433664600+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T01:57:18.434023500+00:00] PE dev: tab[0] key=backup hwnd=0x3001c text_set
+[2026-10-18T01:57:18.434088200+00:00] PE dev: tab[1] key=restore_a hwnd=0x502a2 text_set
+[2026-10-18T01:57:18.434164200+00:00] PE dev: tab[2] key=restore_b hwnd=0x200ce text_set
+[2026-10-18T01:57:18.434217500+00:00] PE dev: tab[3] key=secondary hwnd=0x200da text_set
+[2026-10-18T01:57:18.434271500+00:00] PE dev: tab[4] key=pe hwnd=0x30070 text_set
+[2026-10-18T01:57:18.449481700+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T01:57:18.462993200+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T01:57:18.463082600+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-18T01:57:18.463151+00:00] PE dev: tab[0] key=backup hwnd=0x3001c text_set
+[2026-10-18T01:57:18.463204500+00:00] PE dev: tab[1] key=restore_a hwnd=0x502a2 text_set
+[2026-10-18T01:57:18.463251800+00:00] PE dev: tab[2] key=restore_b hwnd=0x200ce text_set
+[2026-10-18T01:57:18.463301400+00:00] PE dev: tab[3] key=secondary hwnd=0x200da text_set
+[2026-10-18T01:57:18.463355+00:00] PE dev: tab[4] key=pe hwnd=0x30070 text_set
+[2026-10-18T01:57:18.463436700+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T02:26:43.145993400+00:00] GUI started; elevated native Rust window initialized
+[2026-10-18T02:26:43.146561800+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T02:26:43.146895600+00:00] PE dev: tab[0] key=backup hwnd=0x702a4 text_set
+[2026-10-18T02:26:43.147616200+00:00] PE dev: tab[1] key=restore_a hwnd=0x402ac text_set
+[2026-10-18T02:26:43.147726+00:00] PE dev: tab[2] key=restore_b hwnd=0x70032 text_set
+[2026-10-18T02:26:43.147803400+00:00] PE dev: tab[3] key=secondary hwnd=0x6003a text_set
+[2026-10-18T02:26:43.147877900+00:00] PE dev: tab[4] key=pe hwnd=0x402ae text_set
+[2026-10-18T02:26:43.149453400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T02:26:43.153009300+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T02:26:43.153086+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-18T02:26:43.153163300+00:00] PE dev: tab[0] key=backup hwnd=0x702a4 text_set
+[2026-10-18T02:26:43.153215600+00:00] PE dev: tab[1] key=restore_a hwnd=0x402ac text_set
+[2026-10-18T02:26:43.153267100+00:00] PE dev: tab[2] key=restore_b hwnd=0x70032 text_set
+[2026-10-18T02:26:43.153314800+00:00] PE dev: tab[3] key=secondary hwnd=0x6003a text_set
+[2026-10-18T02:26:43.153361400+00:00] PE dev: tab[4] key=pe hwnd=0x402ae text_set
+[2026-10-18T02:26:43.153446100+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T02:26:43.154943900+00:00] test hook: config loaded
+[2026-10-18T02:26:43.155007800+00:00] PE dev: tab[0] key=backup hwnd=0x702a4 text_set
+[2026-10-18T02:26:43.155082500+00:00] PE dev: tab[1] key=restore_a hwnd=0x402ac text_set
+[2026-10-18T02:26:43.155134600+00:00] PE dev: tab[2] key=restore_b hwnd=0x70032 text_set
+[2026-10-18T02:26:43.155338300+00:00] PE dev: tab[3] key=secondary hwnd=0x6003a text_set
+[2026-10-18T02:26:43.155440300+00:00] PE dev: tab[4] key=pe hwnd=0x402ae text_set
+[2026-10-18T02:26:43.155547600+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-18T02:26:43.155822900+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T02:26:43.162199500+00:00] test hook: channel=online
+[2026-10-18T02:26:43.162343400+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T02:26:43.163702700+00:00] test hook: target=E pos=1
+[2026-10-18T02:26:43.163783100+00:00] test hook: fields set
+[2026-10-18T02:26:43.163833300+00:00] test hook: install posted
+[2026-10-18T02:26:43.201917700+00:00] test hook: install triggered
+[2026-10-18T02:26:43.202327300+00:00] GUI action started: create task; operation=create-secondary
+[2026-10-18T02:26:43.241069+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-18T02:26:43.411531400+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-18T02:26:43.880935300+00:00] boot menu name collision resolved: Windows 11 26200.9550 20261018 -> Windows 11 26200.9550 20261018-202610181026
+[2026-10-18T02:34:40.183396900+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-18T02:34:40.184080500+00:00] test hook: metadata confirmation auto-accepted
+[2026-10-18T02:34:40.184153800+00:00] channel split: op=create-secondary online=true
+[2026-10-18T02:34:40.184237900+00:00] online params: format_target=true
+[2026-10-18T02:34:40.190217100+00:00] online started: op=create-secondary source=C target=E
+[2026-10-18T02:48:49.302620800+00:00] online completed: success=true
+操作完成：命令、回读和副档簿记均已通过
+日志：H:\brwork\logs\BackupRestore-online-2232-1792290880187705300\Online.log
+[2026-10-18T12:37:47.087888300+00:00] GUI started; elevated native Rust window initialized
+[2026-10-18T12:37:47.089191+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T12:37:47.089665500+00:00] PE dev: tab[0] key=backup hwnd=0x60026 text_set
+[2026-10-18T12:37:47.089746700+00:00] PE dev: tab[1] key=restore_a hwnd=0x50022 text_set
+[2026-10-18T12:37:47.089824800+00:00] PE dev: tab[2] key=restore_b hwnd=0x700ea text_set
+[2026-10-18T12:37:47.089967800+00:00] PE dev: tab[3] key=secondary hwnd=0x90028 text_set
+[2026-10-18T12:37:47.090073800+00:00] PE dev: tab[4] key=pe hwnd=0x60234 text_set
+[2026-10-18T12:37:47.091698300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T12:37:47.096791700+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T12:37:47.096924900+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-18T12:37:47.097037500+00:00] PE dev: tab[0] key=backup hwnd=0x60026 text_set
+[2026-10-18T12:37:47.097142300+00:00] PE dev: tab[1] key=restore_a hwnd=0x50022 text_set
+[2026-10-18T12:37:47.097210200+00:00] PE dev: tab[2] key=restore_b hwnd=0x700ea text_set
+[2026-10-18T12:37:47.097269500+00:00] PE dev: tab[3] key=secondary hwnd=0x90028 text_set
+[2026-10-18T12:37:47.097329300+00:00] PE dev: tab[4] key=pe hwnd=0x60234 text_set
+[2026-10-18T12:37:47.097427+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T12:37:47.098842200+00:00] test hook: config loaded
+[2026-10-18T12:37:47.098900500+00:00] PE dev: tab[0] key=backup hwnd=0x60026 text_set
+[2026-10-18T12:37:47.098953300+00:00] PE dev: tab[1] key=restore_a hwnd=0x50022 text_set
+[2026-10-18T12:37:47.099004700+00:00] PE dev: tab[2] key=restore_b hwnd=0x700ea text_set
+[2026-10-18T12:37:47.099050100+00:00] PE dev: tab[3] key=secondary hwnd=0x90028 text_set
+[2026-10-18T12:37:47.099141100+00:00] PE dev: tab[4] key=pe hwnd=0x60234 text_set
+[2026-10-18T12:37:47.099227900+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-18T12:37:47.099511400+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T12:37:47.101489900+00:00] test hook: channel=online
+[2026-10-18T12:37:47.101612600+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T12:37:47.103054400+00:00] test hook: target=E pos=1
+[2026-10-18T12:37:47.103145400+00:00] test hook: fields set
+[2026-10-18T12:37:47.103192700+00:00] test hook: install posted
+[2026-10-18T12:37:47.133210600+00:00] test hook: install triggered
+[2026-10-18T12:37:47.133341800+00:00] GUI action started: create task; operation=create-secondary
+[2026-10-18T12:37:47.166632300+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-18T12:37:47.315480+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-18T12:37:47.725188700+00:00] boot menu name collision resolved: Windows 11 26200.9550 20261018 -> Windows 11 26200.9550 20261018-202610182037
+[2026-10-18T12:39:20.360838200+00:00] test hook: destructive confirmation auto-accepted
+[2026-10-18T12:39:20.361161700+00:00] test hook: metadata confirmation auto-accepted
+[2026-10-18T12:39:20.361226400+00:00] channel split: op=create-secondary online=true
+[2026-10-18T12:39:20.361300400+00:00] online params: format_target=true
+[2026-10-18T12:39:20.363461500+00:00] online started: op=create-secondary source=C target=E
+[2026-10-18T12:54:40.919492900+00:00] online completed: success=false
+[ERROR] 在线操作未完成：invalid task: bcdboot.exe 失败：退出码 32
+BFSVC Error: BcdOpenStore failed with unexpected error code, Status = [c0000043]
+；不要将部分产物视为有效备份
+日志：H:\brwork\logs\BackupRestore-online-3128-1792327160363651900\Online.log
+[2026-10-18T13:41:16.781690500+00:00] GUI started; elevated native Rust window initialized
+[2026-10-18T13:41:16.786314400+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T13:41:16.786587400+00:00] PE dev: tab[0] key=backup hwnd=0x60030 text_set
+[2026-10-18T13:41:16.786634500+00:00] PE dev: tab[1] key=restore_a hwnd=0x60036 text_set
+[2026-10-18T13:41:16.786707100+00:00] PE dev: tab[2] key=restore_b hwnd=0x3002e text_set
+[2026-10-18T13:41:16.786766600+00:00] PE dev: tab[3] key=secondary hwnd=0x30020 text_set
+[2026-10-18T13:41:16.786824500+00:00] PE dev: tab[4] key=pe hwnd=0x30022 text_set
+[2026-10-18T13:41:16.800254400+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T13:41:16.812977800+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+[2026-10-18T13:41:16.813050800+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+[2026-10-18T13:41:16.813126700+00:00] PE dev: tab[0] key=backup hwnd=0x60030 text_set
+[2026-10-18T13:41:16.813206100+00:00] PE dev: tab[1] key=restore_a hwnd=0x60036 text_set
+[2026-10-18T13:41:16.813259900+00:00] PE dev: tab[2] key=restore_b hwnd=0x3002e text_set
+[2026-10-18T13:41:16.813311300+00:00] PE dev: tab[3] key=secondary hwnd=0x30020 text_set
+[2026-10-18T13:41:16.813362500+00:00] PE dev: tab[4] key=pe hwnd=0x30022 text_set
+[2026-10-18T13:41:16.813444200+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+[2026-10-18T13:41:16.814772800+00:00] test hook: config loaded
+[2026-10-18T13:41:16.814820100+00:00] PE dev: tab[0] key=backup hwnd=0x60030 text_set
+[2026-10-18T13:41:16.814902200+00:00] PE dev: tab[1] key=restore_a hwnd=0x60036 text_set
+[2026-10-18T13:41:16.814966400+00:00] PE dev: tab[2] key=restore_b hwnd=0x3002e text_set
+[2026-10-18T13:41:16.815019400+00:00] PE dev: tab[3] key=secondary hwnd=0x30020 text_set
+[2026-10-18T13:41:16.815070100+00:00] PE dev: tab[4] key=pe hwnd=0x30022 text_set
+[2026-10-18T13:41:16.815143600+00:00] target combo refilled: op=create-secondary keep=D
+[2026-10-18T13:41:16.815407+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T13:41:16.822651400+00:00] test hook: channel=online
+[2026-10-18T13:41:16.822772800+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+[2026-10-18T13:41:16.823987300+00:00] test hook: target=E pos=1
+[2026-10-18T13:41:16.824052400+00:00] test hook: fields set
+[2026-10-18T13:41:16.824102200+00:00] test hook: install posted
+[2026-10-18T13:41:16.856447100+00:00] test hook: install triggered
+[2026-10-18T13:41:16.856566+00:00] GUI action started: create task; operation=create-secondary
+[2026-10-18T13:41:16.881735+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+[2026-10-18T13:41:16.993091700+00:00] GUI action completed: read WIM metadata; indexes=1
+[2026-10-18T13:41:17.291398300+00:00] boot menu name collision resolved: Windows 11 26200.9550 20261018 -> Windows 11 26200.9550 20261018-202610182141

@@ -1,0 +1,41 @@
+GUI_LOG_LINES=1450
+GUI| 鏃ュ織锛欻:\brwork\logs\BackupRestore-online-4864-1792331399161319300\Online.log
+GUI| [2026-10-18T14:24:52.556543+00:00] GUI started; elevated native Rust window initialized
+GUI| [2026-10-18T14:24:52.557454400+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+GUI| [2026-10-18T14:24:52.557770200+00:00] PE dev: tab[0] key=backup hwnd=0x302ae text_set
+GUI| [2026-10-18T14:24:52.557834300+00:00] PE dev: tab[1] key=restore_a hwnd=0x302aa text_set
+GUI| [2026-10-18T14:24:52.557900600+00:00] PE dev: tab[2] key=restore_b hwnd=0x302b4 text_set
+GUI| [2026-10-18T14:24:52.557957200+00:00] PE dev: tab[3] key=secondary hwnd=0x302b2 text_set
+GUI| [2026-10-18T14:24:52.558011900+00:00] PE dev: tab[4] key=pe hwnd=0x302b6 text_set
+GUI| [2026-10-18T14:24:52.559483800+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+GUI| [2026-10-18T14:24:52.564687700+00:00] tooltips installed: added=34 missing=0 tool_count=34 balloon=true
+GUI| [2026-10-18T14:24:52.564783500+00:00] PE controls: ram_radio_checked=true dir_edit_visible=true
+GUI| [2026-10-18T14:24:52.564865600+00:00] PE dev: tab[0] key=backup hwnd=0x302ae text_set
+GUI| [2026-10-18T14:24:52.564927100+00:00] PE dev: tab[1] key=restore_a hwnd=0x302aa text_set
+GUI| [2026-10-18T14:24:52.564994300+00:00] PE dev: tab[2] key=restore_b hwnd=0x302b4 text_set
+GUI| [2026-10-18T14:24:52.565050100+00:00] PE dev: tab[3] key=secondary hwnd=0x302b2 text_set
+GUI| [2026-10-18T14:24:52.565097200+00:00] PE dev: tab[4] key=pe hwnd=0x302b6 text_set
+GUI| [2026-10-18T14:24:52.565179300+00:00] PE visibility: op=backup pe_visible=false ram_checked=true
+GUI| [2026-10-18T14:24:52.566539100+00:00] test hook: config loaded
+GUI| [2026-10-18T14:24:52.566596300+00:00] PE dev: tab[0] key=backup hwnd=0x302ae text_set
+GUI| [2026-10-18T14:24:52.566650600+00:00] PE dev: tab[1] key=restore_a hwnd=0x302aa text_set
+GUI| [2026-10-18T14:24:52.566697900+00:00] PE dev: tab[2] key=restore_b hwnd=0x302b4 text_set
+GUI| [2026-10-18T14:24:52.566744600+00:00] PE dev: tab[3] key=secondary hwnd=0x302b2 text_set
+GUI| [2026-10-18T14:24:52.566794100+00:00] PE dev: tab[4] key=pe hwnd=0x302b6 text_set
+GUI| [2026-10-18T14:24:52.566879700+00:00] target combo refilled: op=create-secondary keep=D
+GUI| [2026-10-18T14:24:52.567156100+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+GUI| [2026-10-18T14:24:52.569790+00:00] test hook: channel=online
+GUI| [2026-10-18T14:24:52.569943100+00:00] PE visibility: op=create-secondary pe_visible=false ram_checked=true
+GUI| [2026-10-18T14:24:52.571384600+00:00] test hook: target=E pos=1
+GUI| [2026-10-18T14:24:52.571472600+00:00] test hook: fields set
+GUI| [2026-10-18T14:24:52.571514900+00:00] test hook: install posted
+GUI| [2026-10-18T14:24:52.628934100+00:00] test hook: install triggered
+GUI| [2026-10-18T14:24:52.629138200+00:00] GUI action started: create task; operation=create-secondary
+GUI| [2026-10-18T14:24:52.665683400+00:00] GUI action started: read WIM metadata; image=H:\BRImages\BR-sys-20261018.wim
+GUI| [2026-10-18T14:24:52.775101600+00:00] GUI action completed: read WIM metadata; indexes=1
+GUI| [2026-10-18T14:24:53.139685+00:00] boot menu name collision resolved: Windows 11 26200.9550 20261018 -> Windows 11 26200.9550 20261018-202610182224
+GUI| [2026-10-18T14:25:37.701016300+00:00] test hook: destructive confirmation auto-accepted
+GUI| [2026-10-18T14:25:37.701550800+00:00] test hook: metadata confirmation auto-accepted
+GUI| [2026-10-18T14:25:37.701674300+00:00] channel split: op=create-secondary online=true
+GUI| [2026-10-18T14:25:37.701802700+00:00] online params: format_target=true
+GUI| [2026-10-18T14:25:37.707355500+00:00] online started: op=create-secondary source=C target=E

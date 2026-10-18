@@ -111,6 +111,13 @@ const VK_B: usize = 0x42;
 /// Esc/回车/空格/F2/Shift+方向键不撞（见 boot_menu_window::handle_key）。
 const VK_M: usize = 0x4D;
 const VK_ESCAPE: usize = 0x1B;
+/// `MessageBoxW` 按钮组合：仅「确定」——错误提示只需要一个关闭出口。
+const MB_OK: u32 = 0x0000_0000;
+/// `MessageBoxW` 图标：警告。BCD 回退失败必须让用户立刻意识到出了问题。
+const MB_ICONWARNING: u32 = 0x0000_0030;
+/// `MessageBoxW` 置前标志：WinRE/PE 里进度窗未必在最前，错误框要抢到前台，
+/// 否则用户根本看不到刚按的按钮为什么"没反应"。
+const MB_SETFOREGROUND: u32 = 0x0001_0000;
 /// 窗口类背景画刷：`COLOR_WINDOW + 1`。
 ///
 /// 这个值必须给，不能留 `null`：类画刷为空时 Windows 不擦除客户区，
@@ -363,6 +370,7 @@ unsafe extern "system" {
     fn GetParent(hwnd: Hwnd) -> Hwnd;
     fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
     fn GetScrollInfo(hwnd: Hwnd, bar: i32, info: *mut ScrollInfo) -> i32;
+    fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, flags: u32) -> i32;
 }
 
 /// Win32 `RECT`：`GetClientRect` 用它回填客户区尺寸，驱动最大化后的控件重排。
@@ -1158,27 +1166,56 @@ unsafe fn open_boot_menu_editor(hwnd: Hwnd, shared: &ProgressShared) {
 
 /// 触发 BCD 回退：调用恢复主流程装载的闭包（需要任务目录与 ESP 身份）。
 /// WM_COMMAND（点按钮）与全局 B 键共用。
-unsafe fn trigger_bcd_rollback(shared: &ProgressShared, via_key: bool) {
-    let guard = shared.bcd_rollback.lock().unwrap();
-    let log_path = shared.log_path.lock().unwrap().clone();
-    let actor = if via_key { "用户按 B 键" } else { "用户点击" };
-    match guard.as_ref() {
-        Some(action) => match action() {
-            Ok(()) => {
+///
+/// 【2026-10-18 缺陷修复】失败必须让用户**看见**：此前错误只写进日志文件，
+/// 用户按下按钮/快捷键后界面上没有任何反馈，与「按钮没接线」无法区分。
+/// 日志尾部（3 行）稍纵即逝，模态错误框才是明确的失败信号。
+/// 闭包调用结束后再弹（`bcd_rollback` 锁已释放）：模态阻塞的只是本窗口线程，
+/// 恢复主流程在另一条线程继续跑，任务不会因此停摆。
+unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: bool) {
+    let outcome = {
+        let guard = shared.bcd_rollback.lock().unwrap();
+        let log_path = shared.log_path.lock().unwrap().clone();
+        let actor = if via_key { "用户按 B 键" } else { "用户点击" };
+        match guard.as_ref() {
+            Some(action) => match action() {
+                Ok(()) => {
+                    let _ = crate::append_log(
+                        &log_path,
+                        &format!("{actor} BCD 回退：已恢复准备期 BCD 快照"),
+                    );
+                    None
+                }
+                Err(message) => {
+                    let _ = crate::append_log(
+                        &log_path,
+                        &format!("{actor} BCD 回退失败：{message}"),
+                    );
+                    Some(message)
+                }
+            },
+            None => {
                 let _ = crate::append_log(
                     &log_path,
-                    &format!("{actor} BCD 回退：已恢复准备期 BCD 快照"),
+                    "BCD 回退尚不可用：恢复流程尚未装载任务目录/ESP 身份",
                 );
+                None
             }
-            Err(message) => {
-                let _ =
-                    crate::append_log(&log_path, &format!("{actor} BCD 回退失败：{message}"));
-            }
-        },
-        None => {
-            let _ = crate::append_log(
-                &log_path,
-                "BCD 回退尚不可用：恢复流程尚未装载任务目录/ESP 身份",
+        }
+    };
+    if let Some(message) = outcome {
+        let detail = format!("BCD 回退失败：\n{message}");
+        let text: Vec<u16> = detail.encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "BCD 回退 / BCD rollback"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        unsafe {
+            MessageBoxW(
+                hwnd,
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
             );
         }
     }
@@ -1417,7 +1454,7 @@ unsafe extern "system" fn window_proc(
                     toggle_pause(hwnd, shared, false);
                 } else if command_id == ID_BCD_ROLLBACK_BUTTON {
                     // BCD 回退：与全局 B 键共用 trigger_bcd_rollback。
-                    trigger_bcd_rollback(shared, false);
+                    trigger_bcd_rollback(hwnd, shared, false);
                 }
             }
             0
@@ -1708,7 +1745,7 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
                         continue;
                     }
                     if msg_wparam == VK_B {
-                        trigger_bcd_rollback(shared, true);
+                        trigger_bcd_rollback(hwnd, shared, true);
                         continue;
                     }
                 }

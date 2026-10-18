@@ -1,0 +1,5 @@
+br-test.json written
+SENTINEL=E:\BR-214116.txt
+E_SERIAL_BEFORE=B2B5094D
+launched lastResult=267009
+GUI_UP pid=4864

@@ -1,0 +1,17 @@
+
+Windows 启动管理器
+--------------------
+标识符                  {9dea862c-5cdd-4e70-acc1-f32b344d4795}
+device                  partition=S:
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-us
+inherit                 {7ea2e1ac-2e61-4728-aaa3-896d9d0a9f0e}
+default                 {c3adc97f-cb01-11f1-8997-e9cfd361e402}
+resumeobject            {708d1168-ca95-11f1-8999-8cff764e6604}
+displayorder            {c3adc97f-cb01-11f1-8997-e9cfd361e402}
+                        {708d1169-ca95-11f1-8999-8cff764e6604}
+                        {40e4789b-ca7f-11f1-8996-9ba63bacb4b0}
+                        {40e4789c-ca7f-11f1-8996-9ba63bacb4b0}
+toolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}
+timeout                 10

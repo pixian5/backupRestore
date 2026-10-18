@@ -1,0 +1,1 @@
+DISM_CMDLINE="dism.exe" "/English" "/Apply-Image" "/ImageFile:H:\BRImages\BR-sys-20261018.wim" "/Index:1" "/ApplyDir:\\?\Volume{761230e8-107c-4396-8c37-82273720183d}\\" "/CheckIntegrity" "/Verify"

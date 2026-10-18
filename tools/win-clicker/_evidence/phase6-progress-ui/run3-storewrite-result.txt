@@ -1,0 +1,4 @@
+RAW_LOCK=HELD (使用“4”个参数调用“Open”时发生异常:“文件“\\?\Volume{d08d796f-f082-4402-bdbb-a4a6a09ac53f}\EFI\Microsoft\Boot\BCD”正由另一进程使用，因此该进程无法访问此文件。”)
+STORE_WRITE_OUTPUT=操作成功完成。
+
+TIMEOUT_STILL_10=YES
