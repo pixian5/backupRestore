@@ -1,0 +1,29 @@
+{
+  "task_id": "BackupRestore-online-4312-1792287007703341100",
+  "plan": {
+    "entries": [
+      {
+        "drive_letter": "F",
+        "display_name": "Windows 11 26200.9550 20261018",
+        "selected": true,
+        "is_restore_target": true,
+        "volume": {
+          "diskGuid": "{5bc80d3b-e413-4ae3-8f36-1ae133de0611}",
+          "partitionGuid": "{f0753766-30a4-410e-944f-38d139113634}",
+          "volumeGuid": "\\\\?\\Volume{f0753766-30a4-410e-944f-38d139113634}\\",
+          "partitionTypeGuid": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}",
+          "diskNumber": 2,
+          "partitionNumber": 2,
+          "partitionOffset": 16777216,
+          "partitionSize": 375792844288,
+          "filesystem": "NTFS",
+          "volumeSerial": "9A09923A",
+          "driveLetter": "F"
+        },
+        "existing_name": null,
+        "is_current_default": false
+      }
+    ],
+    "timeout_seconds": 10
+  }
+}

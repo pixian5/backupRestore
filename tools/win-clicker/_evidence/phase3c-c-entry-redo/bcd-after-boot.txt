@@ -1,0 +1,38 @@
+
+Windows 启动管理器
+--------------------
+标识符                  {bootmgr}
+device                  partition=S:
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-us
+inherit                 {globalsettings}
+default                 {current}
+resumeobject            {c96bf400-ca7b-11f1-afd9-9c9bf16cadf0}
+displayorder            {current}
+                        {c96bf401-ca7b-11f1-afd9-9c9bf16cadf0}
+                        {40e4789b-ca7f-11f1-8996-9ba63bacb4b0}
+                        {40e4789c-ca7f-11f1-8996-9ba63bacb4b0}
+toolsdisplayorder       {memdiag}
+timeout                 10
+
+Windows 启动加载器
+-------------------
+标识符                  {current}
+device                  partition=C:
+path                    \Windows\system32\winload.efi
+description             Windows 11 26200.9550 20261018
+locale                  en-us
+inherit                 {bootloadersettings}
+isolatedcontext         Yes
+allowedinmemorysettings 0x15000075
+osdevice                partition=C:
+systemroot              \Windows
+resumeobject            {708d1168-ca95-11f1-8999-8cff764e6604}
+nx                      OptIn
+bootmenupolicy          Standard
+===VOLUMES===  
+ 驱动器 C 中的卷没有标签。
+ 卷的序列号是 0A37-B545
+ 驱动器 E 中的卷没有标签。
+ 卷的序列号是 46EB-650C

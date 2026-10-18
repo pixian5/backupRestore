@@ -1,0 +1,3 @@
+select disk 2
+select partition 2
+format fs=ntfs quick

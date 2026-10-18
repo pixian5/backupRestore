@@ -1,0 +1,17 @@
+
+Windows 启动管理器
+--------------------
+标识符                  {bootmgr}
+device                  partition=S:
+path                    \EFI\Microsoft\Boot\bootmgfw.efi
+description             Windows Boot Manager
+locale                  en-us
+inherit                 {globalsettings}
+default                 {current}
+resumeobject            {c96bf400-ca7b-11f1-afd9-9c9bf16cadf0}
+displayorder            {cdeef929-ca7b-11f1-afd9-9c9bf16cadf0}
+                        {current}
+                        {40e4789b-ca7f-11f1-8996-9ba63bacb4b0}
+                        {40e4789c-ca7f-11f1-8996-9ba63bacb4b0}
+toolsdisplayorder       {memdiag}
+timeout                 10

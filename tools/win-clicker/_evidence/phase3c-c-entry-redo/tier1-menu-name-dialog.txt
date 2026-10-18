@@ -1,0 +1,19 @@
+DLGKID hwnd=263024 text=[鏄(&Y)]
+DLGKID hwnd=197494 text=[鍚(&N)]
+DLGKID hwnd=66432 text=[妯″紡锛氭柊澧為潪 C 鐩樼浜岀郴缁
+婧愬嵎锛欳
+闀滃儚缁濆璺緞锛欻:\BRImages\BR-sys-20261018.wim
+鐩爣鍗凤細F
+WIM 绱㈠紩锛1
+鍚姩鑿滃崟鍚嶏細Windows 11 26200.9550 20261018
+
+鐩爣鍒嗗尯灏嗚瑕嗙洊锛岀‘璁ょ户缁紵]
+EDIT hwnd=458940 text=[]
+EDIT hwnd=262816 text=[Windows Backup]
+EDIT hwnd=197252 text=[]
+EDIT hwnd=197248 text=[]
+EDIT hwnd=196882 text=[]
+EDIT hwnd=131298 text=[]
+EDIT hwnd=131312 text=[鍏堢偣鍑烩滃埛鏂扮幆澧冣濈‘璁ょ郴缁熴佹仮澶嶇幆澧冨拰鍗疯韩浠姐傞粯璁ゆā寮忎负澶囦唤銆俔
+EDIT hwnd=66404 text=[]
+EDIT hwnd=66410 text=[]

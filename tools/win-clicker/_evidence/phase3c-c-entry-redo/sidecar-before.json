@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "type": "wim",
+  "created": "2026-10-17T21:06:23.164868600Z",
+  "started": "2026-10-17T20:57:13.465007400Z",
+  "durationSecs": 492,
+  "bytesPerSec": 65904140,
+  "computer": "P8B6",
+  "windowsEdition": "unknown",
+  "architecture": "arm64",
+  "windowsBuild": "unknown",
+  "wimIndex": 1,
+  "imageSha256": "a7d1b8299edd358d8952a960ba15d8211d774ff8c6b619414e4b543d683028f8",
+  "imageSize": 32424837342,
+  "source": {
+    "diskGuid": "{4fabf1d6-0dc9-45b5-82d6-5a117f62e4cd}",
+    "partitionGuid": "{761230e8-107c-4396-8c37-82273720183d}",
+    "volumeGuid": "\\\\?\\Volume{761230e8-107c-4396-8c37-82273720183d}\\",
+    "partitionTypeGuid": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}",
+    "diskNumber": 0,
+    "partitionNumber": 4,
+    "partitionOffset": 764411904,
+    "partitionSize": 267861884928,
+    "filesystem": "NTFS",
+    "volumeSerial": "5C930047",
+    "driveLetter": "C"
+  },
+  "capturedUsedBytes": 78853955584,
+  "reservedBytes": 2147483648,
+  "minimumTargetSize": 267861884928,
+  "volumeSerial": "5C930047",
+  "programVersion": "2.6.15"
+}
