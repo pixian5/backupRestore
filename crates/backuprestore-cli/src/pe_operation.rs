@@ -10,6 +10,7 @@ use std::{
     io::Write,
     os::windows::fs::OpenOptionsExt,
     path::PathBuf,
+    sync::Arc,
 };
 
 fn queue_root() -> Result<PathBuf, TaskError> {
@@ -619,7 +620,7 @@ impl RestoreBackend for Engine {
                 let rollback_dir = self.dir.clone();
                 let rollback_esp = esp.clone();
                 let rollback_log = self.dir.join("operation.log");
-                self.progress.set_bcd_rollback(Box::new(move || {
+                self.progress.set_bcd_rollback(Arc::new(move || {
                     crate::windows_prepare::rollback_bcd_snapshot(
                         &rollback_dir,
                         &rollback_esp,

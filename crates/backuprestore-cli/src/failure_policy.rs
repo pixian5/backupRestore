@@ -512,7 +512,16 @@ impl FailurePolicy {
         let mut kept: Vec<&str> = existing
             .lines()
             .filter(|line| {
-                let key = line.trim().split_once('=').map(|(key, _)| key.trim());
+                let trimmed = line.trim();
+                // 【2026-10-18 缺陷修复 L7】注释行必须**先**整行排除。
+                // 此前只按 `split_once('=')` 取 key 过滤，而三条注释里都含 `=`
+                // （`1..=20`、「 = 」、`（0 = …）`）→ 注释行被当成普通行留下，
+                // 下面又 `kept.extend` 追加三行新注释：每次保存多 3 行，
+                // 设置文件线性膨胀。
+                if trimmed.starts_with('#') || trimmed.starts_with(';') {
+                    return false;
+                }
+                let key = trimmed.split_once('=').map(|(key, _)| key.trim());
                 key != Some(SETTINGS_THRESHOLD_KEY)
                     && key != Some(SETTINGS_ACTION_KEY)
                     && key != Some(SETTINGS_PAUSE_MAX_WAIT_KEY)
@@ -542,7 +551,19 @@ impl FailurePolicy {
         ]);
         let mut text = kept.join("\n");
         text.push('\n');
-        fs::write(&path, text)
+        // 【2026-10-18 缺陷修复 L8】原子落盘（tmp + rename）。
+        // 此前 `fs::write` 直写：写到一半被杀（断电/强杀）会留下截断的设置文件，
+        // `load_from_dir` 只能**静默**退回默认值——连用户显式设过的
+        // `dism_timeout_secs` 一起丢，且没有任何提示。
+        let tmp = path.with_extension("ini.tmp");
+        fs::write(&tmp, text)?;
+        match fs::rename(&tmp, &path) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = fs::remove_file(&tmp);
+                Err(error)
+            }
+        }
     }
 }
 

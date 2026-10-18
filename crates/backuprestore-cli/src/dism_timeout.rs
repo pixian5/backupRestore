@@ -121,7 +121,11 @@ pub(crate) fn from_settings_text(text: &str) -> u32 {
             continue;
         };
         if key.trim() == SETTINGS_KEY {
-            return value.trim().parse::<u32>().unwrap_or(DEFAULT_SECS);
+            // 【2026-10-18 缺陷修复 L11】走与用户输入**同一套**严格口径
+            // （`parse_secs`：只认纯数字 + `MAX_SECS` 上限）。此前这里
+            // `parse::<u32>().unwrap_or(DEFAULT)`，既接受 `999999999`
+            // 这种超出上限的值，也和界面输入的校验规则不一致。
+            return parse_secs(value).unwrap_or(DEFAULT_SECS);
         }
     }
     DEFAULT_SECS

@@ -319,6 +319,33 @@ pub(crate) fn normalize_edit_newlines(value: &str) -> String {
 /// cleanup. Re-enumerating the entry and checking the field is locale-neutral
 /// for the two project-supported images: English prints `bootsequence`, while
 /// zh-CN prints `启动序列`.
+/// BCD **字段名**是否匹配（双语）。
+///
+/// 【2026-10-18 缺陷修复 M8】中文 Windows 的 `bcdedit` 会把字段名一并本地化，
+/// 而各解析器只认 ASCII（只有对象头的 `identifier`/`标识符` 早先补了双语）。
+/// 后果是：非英文/非中文 Windows 上，这些解析会在**破坏性写入之后**硬失败
+/// （`字段缺失或重复` / `续跑启动链字段不符` / `目标引导加载器不唯一`）。
+/// 沿用「只做双语匹配、不猜值形态」的最小改动，把这些点统一到一处。
+pub(crate) fn bcd_field_name_is(actual: &str, expected: &str) -> bool {
+    if actual.eq_ignore_ascii_case(expected) {
+        return true;
+    }
+    const PAIRS: [(&str, &str); 8] = [
+        ("device", "设备"),
+        ("osdevice", "操作系统设备"),
+        ("path", "路径"),
+        ("description", "描述"),
+        ("identifier", "标识符"),
+        ("default", "默认"),
+        ("bootsequence", "启动序列"),
+        ("recoverysequence", "恢复序列"),
+    ];
+    let want = expected.to_ascii_lowercase();
+    PAIRS
+        .iter()
+        .any(|(ascii, zh)| *ascii == want && actual.trim() == *zh)
+}
+
 pub(crate) fn bcd_output_has_bootsequence(text: &str) -> bool {
     text.lines().any(|line| {
         let key = line.trim_start();
@@ -961,7 +988,9 @@ fn split_volume_and_path(wim_path: &str) -> (String, String) {
 pub(crate) fn ramdisk_device_options_guid(text: &str) -> Option<String> {
     for line in text.lines() {
         let trimmed = line.trim_start();
-        if (trimmed.starts_with("device ") || trimmed.starts_with("osdevice "))
+        // M8：字段名按 token 双语匹配，不再只看 ASCII 前缀（`设备 ` / `操作系统设备 `）。
+        let key = trimmed.split_whitespace().next().unwrap_or("");
+        if (bcd_field_name_is(key, "device") || bcd_field_name_is(key, "osdevice"))
             && let Some(guid) = parse_guid(trimmed)
         {
             return Some(guid);

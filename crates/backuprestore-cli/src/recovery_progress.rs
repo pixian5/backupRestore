@@ -115,6 +115,8 @@ const VK_ESCAPE: usize = 0x1B;
 const MB_OK: u32 = 0x0000_0000;
 /// `MessageBoxW` 图标：警告。BCD 回退失败必须让用户立刻意识到出了问题。
 const MB_ICONWARNING: u32 = 0x0000_0030;
+/// `MessageBoxW` 图标：信息。回退成功也要给一条可见回执（此前成功同样静默）。
+const MB_ICONINFORMATION: u32 = 0x0000_0040;
 /// `MessageBoxW` 置前标志：WinRE/PE 里进度窗未必在最前，错误框要抢到前台，
 /// 否则用户根本看不到刚按的按钮为什么"没反应"。
 const MB_SETFOREGROUND: u32 = 0x0001_0000;
@@ -149,7 +151,13 @@ fn pause_total_timeout() -> u64 {
 /// 与窗口线程共享的进度状态：当前活动日志路径（主线程切换日志时更新）。
 /// 「BCD 回退」按钮的动作类型：返回 Ok(()) 表示已回退，Err(说明) 记录失败原因。
 /// 抽成别名是为了避免 clippy 的 type_complexity 告警，也让字段声明更易读。
-type BcdRollbackAction = Box<dyn Fn() -> Result<(), String> + Send>;
+/// 【2026-10-18 缺陷修复 M5】改成 `Arc`：回退动作要被克隆一份丢到工作线程，
+/// 而**留在槽位里**的那份还得供下一次点击使用（`Box<dyn Fn>` 不能克隆）。
+/// 多要一个 `Sync` 是因为 `Arc` 跨线程共享要求 `T: Send + Sync`。
+type BcdRollbackAction = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+/// 【2026-10-18 缺陷修复 M5】BCD 回退是否正在执行（连点/连按的去重闸门）。
+static BCD_ROLLBACK_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub struct ProgressShared {
     pub log_path: Mutex<PathBuf>,
@@ -211,6 +219,13 @@ pub struct ProgressShared {
     /// 装到这里；按钮点击时调用它（回退需要 bcdedit + 卷挂载，只有主流程才有
     /// 这些上下文）。未装载时按钮点击只写一条日志。
     pub bcd_rollback: Mutex<Option<BcdRollbackAction>>,
+    /// 【2026-10-18 缺陷修复 M4】暂停「总」上限的真正截止时间。
+    ///
+    /// 为什么必须落在字段里：此前 `wait_if_paused` **每次进入等待**都新建
+    /// `Instant::now() + limit`，等于「每一次暂停」都能用满 N 秒；日志与文案
+    /// 写的却是「暂停**总**上限」，反复「暂停 → 继续」可无限累积，与承诺不符。
+    /// 现在只在**本任务第一次**暂停时落定，续跑不再重置。
+    pause_deadline: Mutex<Option<std::time::Instant>>,
 }
 
 impl ProgressShared {
@@ -248,12 +263,30 @@ impl ProgressShared {
         }
         let _ = crate::append_log(log, &format!("恢复已暂停（用户请求），停在：{stage}"));
         let limit_secs = pause_total_timeout();
-        let deadline = (limit_secs > 0)
-            .then(|| std::time::Instant::now() + std::time::Duration::from_secs(limit_secs));
-        if limit_secs > 0 {
+        // 【2026-10-18 缺陷修复 M4】截止时刻只在第一次暂停时落定并记进 shared，
+        // 之后「继续 → 再暂停」沿用同一个 deadline —— 「总上限」才是真的总上限。
+        let deadline = if limit_secs == 0 {
+            None
+        } else {
+            let mut slot = self.pause_deadline.lock().unwrap();
+            match *slot {
+                Some(deadline) => Some(deadline),
+                None => {
+                    let deadline =
+                        std::time::Instant::now() + std::time::Duration::from_secs(limit_secs);
+                    *slot = Some(deadline);
+                    Some(deadline)
+                }
+            }
+        };
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             let _ = crate::append_log(
                 log,
-                &format!("暂停总上限 {limit_secs} 秒；超时将中断恢复链并按失败处理"),
+                &format!(
+                    "暂停总上限 {limit_secs} 秒（累计，本次继续后不再重置）；剩余约 {} 秒，超时将中断恢复链并按失败处理",
+                    remaining.as_secs()
+                ),
             );
         }
         // 每 200ms 醒来一次，纯自旋等待；暂停是人手操作，不需要更精细。
@@ -371,6 +404,7 @@ unsafe extern "system" {
     fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: i32) -> i32;
     fn GetScrollInfo(hwnd: Hwnd, bar: i32, info: *mut ScrollInfo) -> i32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, flags: u32) -> i32;
+    fn GetClassNameW(hwnd: Hwnd, class_name: *mut u16, max_count: i32) -> i32;
 }
 
 /// Win32 `RECT`：`GetClientRect` 用它回填客户区尺寸，驱动最大化后的控件重排。
@@ -413,6 +447,7 @@ const IDC_ARROW: *const u16 = 32512u16 as *const u16;
 
 #[link(name = "gdi32")]
 unsafe extern "system" {
+    fn DeleteObject(object: Hwnd) -> i32;
     fn CreateFontW(
         height: i32,
         width: i32,
@@ -435,9 +470,29 @@ unsafe extern "system" {
 const GB2312_CHARSET: u32 = 134;
 
 /// 创建大号中文字体（负高度 = 字符高度；微软雅黑优先，GB2312 字符集确保 WinRE 缺失时正确回退到中文字体）。
+/// 已创建的 HFONT 句柄登记表（【2026-10-18 缺陷修复 L10】）。
+///
+/// 全仓此前**从不**对 `create_font` 建出的字体调 `DeleteObject`：主窗口 WM_CREATE
+/// 里建 3 个大字体、日志弹窗再建若干个，每次在线任务泄漏约 11 个 GDI 字体句柄；
+/// 反复开关「软硬件信息」之类还会继续累积。这里统一登记，主窗口销毁时一次性释放。
+static TRACKED_FONTS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// 释放 `create_font` 建出的全部字体（在主窗口 `WM_DESTROY` 里调用）。
+unsafe fn release_tracked_fonts() {
+    let fonts: Vec<usize> = match TRACKED_FONTS.lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(error) => std::mem::take(&mut *error.into_inner()),
+    };
+    for raw in fonts {
+        unsafe {
+            DeleteObject(raw as Hwnd);
+        }
+    }
+}
+
 fn create_font(height: i32, bold: bool) -> Hwnd {
     let face = encode("Microsoft YaHei");
-    unsafe {
+    let handle = unsafe {
         CreateFontW(
             height,
             0,
@@ -454,7 +509,14 @@ fn create_font(height: i32, bold: bool) -> Hwnd {
             0,
             face.as_ptr(),
         )
+    };
+    // 登记，主窗口 WM_DESTROY 里统一 `DeleteObject`（L10）。
+    if !handle.is_null() {
+        if let Ok(mut fonts) = TRACKED_FONTS.lock() {
+            fonts.push(handle as usize);
+        }
     }
+    handle
 }
 
 /// 格式化秒数为 hh:mm:ss 或 mm:ss。
@@ -1173,51 +1235,94 @@ unsafe fn open_boot_menu_editor(hwnd: Hwnd, shared: &ProgressShared) {
 /// 闭包调用结束后再弹（`bcd_rollback` 锁已释放）：模态阻塞的只是本窗口线程，
 /// 恢复主流程在另一条线程继续跑，任务不会因此停摆。
 unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: bool) {
-    let outcome = {
+    let log_path = shared.log_path.lock().unwrap().clone();
+    // 【2026-10-18 缺陷修复 M5】取到闭包就**立刻放开锁**，回退动作丢工作线程跑。
+    // 此前整段（含 `action()` 里挂 ESP + 跑 bcdedit，实测可达数十秒）都在
+    // `bcd_rollback` 锁内、且就跑在**窗口线程**上 → 消息循环停转、定时器停更，
+    // 进度窗整段「未响应」。现在窗口线程只负责派活，界面全程可响应；
+    // 恢复主流程在另一条线程上照常推进，不会被回退拖住。
+    let action = {
         let guard = shared.bcd_rollback.lock().unwrap();
-        let log_path = shared.log_path.lock().unwrap().clone();
-        let actor = if via_key { "用户按 B 键" } else { "用户点击" };
-        match guard.as_ref() {
-            Some(action) => match action() {
-                Ok(()) => {
-                    let _ = crate::append_log(
-                        &log_path,
-                        &format!("{actor} BCD 回退：已恢复准备期 BCD 快照"),
-                    );
-                    None
-                }
-                Err(message) => {
-                    let _ = crate::append_log(
-                        &log_path,
-                        &format!("{actor} BCD 回退失败：{message}"),
-                    );
-                    Some(message)
-                }
-            },
-            None => {
+        guard.as_ref().cloned()
+    };
+    let Some(action) = action else {
+        let _ = crate::append_log(
+            &log_path,
+            "BCD 回退尚不可用：恢复流程尚未装载任务目录/ESP 身份",
+        );
+        unsafe {
+            show_rollback_result(
+                hwnd,
+                true,
+                "BCD 回退尚不可用：恢复流程还没拿到任务目录与 ESP 身份。\n\
+                 请在「引导修复候选已准备」之后再试。",
+            );
+        }
+        return;
+    };
+    // 连点按钮 / 连按 B 不叠加：第二条并行的 bcdedit 只会互相干扰。
+    if BCD_ROLLBACK_RUNNING.swap(true, Ordering::SeqCst) {
+        let _ = crate::append_log(
+            &log_path,
+            "BCD 回退：上一次回退仍在执行，本次请求已忽略",
+        );
+        return;
+    }
+    let actor: &'static str = if via_key { "用户按 B 键" } else { "用户点击" };
+    // `*mut c_void` 不是 Send，按 usize 过线程再还原；窗口句柄在本进程内有效。
+    let target = hwnd as usize;
+    std::thread::spawn(move || {
+        let message = match action() {
+            Ok(()) => {
                 let _ = crate::append_log(
                     &log_path,
-                    "BCD 回退尚不可用：恢复流程尚未装载任务目录/ESP 身份",
+                    &format!("{actor} BCD 回退：已按字节恢复准备期 BCD 快照"),
                 );
                 None
             }
-        }
-    };
-    if let Some(message) = outcome {
-        let detail = format!("BCD 回退失败：\n{message}");
-        let text: Vec<u16> = detail.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "BCD 回退 / BCD rollback"
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
+            Err(message) => {
+                let _ = crate::append_log(
+                    &log_path,
+                    &format!("{actor} BCD 回退失败：{message}"),
+                );
+                Some(message)
+            }
+        };
+        BCD_ROLLBACK_RUNNING.store(false, Ordering::SeqCst);
+        // 【2026-10-18 缺陷修复 M5 附带】成败都上界面。此前只写日志文件，
+        // 用户点完按钮看不到任何反馈，失败也无法确认（属「静默结果」）。
+        let hwnd = target as Hwnd;
         unsafe {
-            MessageBoxW(
-                hwnd,
-                text.as_ptr(),
-                title.as_ptr(),
-                MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
-            );
+            match message {
+                None => show_rollback_result(
+                    hwnd,
+                    false,
+                    "BCD 回退已完成：ESP 上的 BCD 已恢复为任务准备期保存的快照。",
+                ),
+                Some(message) => {
+                    let detail = format!("BCD 回退失败：\n{message}");
+                    show_rollback_result(hwnd, true, &detail);
+                }
+            }
         }
+    });
+}
+
+/// 弹一条 BCD 回退结果框。`is_error` 决定图标（警告 / 信息），永远带
+/// `MB_SETFOREGROUND`——WinRE/PE 里进度窗未必在最前，否则用户看不到反馈。
+unsafe fn show_rollback_result(hwnd: Hwnd, is_error: bool, detail: &str) {
+    let text: Vec<u16> = detail.encode_utf16().chain(Some(0)).collect();
+    let title: Vec<u16> = "BCD 回退 / BCD rollback"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let flags = if is_error {
+        MB_OK | MB_ICONWARNING
+    } else {
+        MB_OK | MB_ICONINFORMATION
+    };
+    unsafe {
+        MessageBoxW(hwnd, text.as_ptr(), title.as_ptr(), flags | MB_SETFOREGROUND);
     }
 }
 
@@ -1499,6 +1604,8 @@ unsafe extern "system" fn window_proc(
         },
         WM_DESTROY => unsafe {
             KillTimer(hwnd, TIMER_ID);
+            // 【2026-10-18 缺陷修复 L10】窗口没了，它建的所有 GDI 字体也要还回去。
+            release_tracked_fonts();
             // 先销毁详细日志弹窗：它的 GWL_USERDATA 指向本窗口，主窗口销毁后
             // 再刷新会读到悬垂句柄。
             let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
@@ -1519,6 +1626,32 @@ unsafe extern "system" fn window_proc(
 
 fn encode(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// 引导修复编辑器的窗口类名（`boot_menu_window::open_editor` 注册时用的同一个串）。
+const BOOT_MENU_CLASS: &str = "BackupRestoreBootMenuClass";
+
+/// 该窗口是不是引导修复编辑器？
+///
+/// 【2026-10-18 缺陷修复 H3】进度窗消息循环此前对「消息目标窗口及其父链」无条件调用
+/// `boot_menu::handle_key`，而 `handle_key` 的 Esc 分支是 `DestroyWindow(hwnd)`，
+/// 且它的入口守卫（`msg.hwnd != hwnd && IsChild(hwnd, msg.hwnd) == 0`）在
+/// 「以消息目标自身调用」时恒放行。于是焦点落在哪，Esc 就销毁哪个窗口：
+/// 焦点在主进度窗子控件上 → 该控件凭空消失；焦点在主进度窗上 → **整个进度窗被销毁**，
+/// 且 `DestroyWindow` 不走 `WM_CLOSE`，「暂停中关窗」的 `pause_abandoned` 置位被跳过
+/// （恢复线程在 `wait_if_paused` 里无超时自旋）→ 进程活着、无 UI、无出口。
+/// 修法：调用前先认窗口类——只有真正的引导修复编辑器才走它的键盘处理。
+unsafe fn is_boot_menu_window(hwnd: Hwnd) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut buffer = [0u16; 64];
+    let written = unsafe { GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if written <= 0 {
+        return false;
+    }
+    let name = String::from_utf16_lossy(&buffer[..written as usize]);
+    name == BOOT_MENU_CLASS
 }
 
 /// 启动恢复进度窗口线程，返回共享状态句柄（主线程用于切换日志路径）。
@@ -1545,6 +1678,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         paused: AtomicBool::new(false),
         pause_abandoned: AtomicBool::new(false),
         bcd_rollback: Mutex::new(None),
+        pause_deadline: Mutex::new(None),
     });
     let thread_shared = Arc::clone(&shared);
     let handle = thread::spawn(move || {
@@ -1728,6 +1862,14 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
                 // 主窗口家族 = 主窗口自身或其直接子控件（按钮/日志尾部/详情框）。
                 let main_family = msg_hwnd == hwnd || GetParent(msg_hwnd) == hwnd;
                 if main_family {
+                    // 【2026-10-18 缺陷修复 H3】主进度窗家族里 Esc 明确不做事。
+                    // 此前 Esc 在这里不被拦下，会一路落到下面的 `handle_key`，
+                    // 被当成「引导修复编辑器的 Esc」执行 `DestroyWindow`——销毁
+                    // 的是主进度窗或当前焦点子控件（详见 `is_boot_menu_window`）。
+                    // 日志弹窗的 Esc 已在上面单独处理（收起弹窗）。
+                    if msg_wparam == VK_ESCAPE {
+                        continue;
+                    }
                     if msg_wparam == VK_L {
                         open_log_window(hwnd, shared);
                         continue;
@@ -1754,7 +1896,12 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             // 消息可能发给编辑器本身，也可能发给其子控件，因此沿父链尝试。
             let mut key_target = msg_hwnd;
             while !key_target.is_null() {
-                if crate::boot_menu::handle_key(key_target, &*msg.as_ptr()) {
+                // 【2026-10-18 缺陷修复 H3】只对真正的引导修复编辑器调用它的键盘
+                // 处理。此前无条件调用，导致 Esc「焦点在哪销毁哪」，且编辑器的
+                // 其它键位（回车/空格/F2/Shift+方向键）也会被主窗家族误吃。
+                if is_boot_menu_window(key_target)
+                    && crate::boot_menu::handle_key(key_target, &*msg.as_ptr())
+                {
                     break;
                 }
                 let parent = GetParent(key_target);

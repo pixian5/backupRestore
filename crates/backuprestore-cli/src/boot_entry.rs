@@ -697,8 +697,20 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
     bcd(&["/bootsequence", &loader])?;
     let armed = bcd_field(BOOTMGR, "bootsequence")?;
     if armed != loader {
+        // 【2026-10-18 缺陷修复 L5】回读不一致时把刚写进去的 bootsequence 收回来。
+        // `arm_one_shot` 的同款失败会 `delete_best_effort` 清掉，`rearm` 此前只
+        // `return Err`——写入生效而回读异常的话，机器会带着**指向我们条目的**
+        // 一次性启动序列重启，进入非预期环境（且没人知道是谁设的）。
+        //
+        // 注意：`{bootmgr}` 的 bootsequence 是**值**不是对象，回收方式是删值；
+        // 这里用 `/deletevalue`（delete_best_effort 删的是对象，不能用在这里）。
+        let _ = crate::append_log(
+            log,
+            &format!("re-arm failed: bootsequence is {armed}, expected {loader}; rolling back"),
+        );
+        let _ = bcd(&["/deletevalue", BOOTMGR, "bootsequence"]);
         return Err(crate::err(&format!(
-            "re-arm failed: bootsequence is {armed}, expected {loader}"
+            "re-arm failed: bootsequence is {armed}, expected {loader}; rolled back"
         )));
     }
     crate::append_log(

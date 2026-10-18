@@ -196,7 +196,28 @@ pub(crate) fn resolve_menu_name_collision(
             return candidate;
         }
     }
-    trimmed.chars().take(NAME_MAX_CHARS).collect()
+    // 【2026-10-18 缺陷修复 L1】100 次时间戳后缀全撞（同一秒内批量改名）时，
+    // 此前兜底返回的是**撞名的原值**，与函数注释「保证绝不返回重名」直接矛盾：
+    // 随后 `validate()` 报「启动菜单出现同名项」，而此刻**目标卷已格式化、镜像已
+    // 应用**，代价极高。兜底改为追加一段 UUID，保证唯一（截到 NAME_MAX_CHARS 内）。
+    let unique_suffix = format!("-{}", uuid_shard());
+    let keep = NAME_MAX_CHARS.saturating_sub(unique_suffix.chars().count());
+    format!(
+        "{}{unique_suffix}",
+        trimmed.chars().take(keep).collect::<String>()
+    )
+}
+
+/// 短唯一片段，仅用于撞名兜底时保证唯一（纳秒时间 ^ 进程内单调递增计数）。
+fn uuid_shard() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as u64)
+        .unwrap_or(0);
+    format!("{:08x}", nanos ^ COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
 /// 枚举当前 BCD 里所有 loader 的 description，用于识别"哪些卷已有条目、原名叫什么"。
@@ -536,7 +557,19 @@ pub(crate) fn loader_identifier_for_partition(
         }
     }
     if found.len() > 1 {
-        return Err(crate::err("同一系统分区有多个引导项，拒绝猜测"));
+        // 【2026-10-18 缺陷修复 M3】同分区多个 loader 时**降级，不再硬拒**。
+        // 调用点都在「bcdboot 成功之后、镜像已应用、目标卷已格式化之后」
+        // （main.rs 的 `assert_boot_default_points_at_target` 与在线第二系统链）：
+        // 硬拒 = 任务停在 ImageApplied、重试必然同样失败、三次后 auto-escape，
+        // 而磁盘已经擦过了。旧实现不做全枚举，本来就没有这条失败面。
+        // 降级顺序：`{default}` 当前指向的那个 → 都没有就取枚举里的第一个。
+        let default_id = crate::parse_boot_manager_state(output).map(|state| state.default);
+        if let Some(default) = default_id
+            && let Some(hit) = found.iter().find(|id| id.eq_ignore_ascii_case(&default))
+        {
+            return Ok(Some(hit.clone()));
+        }
+        return Ok(found.into_iter().next());
     }
     Ok(found.pop())
 }
@@ -1580,10 +1613,31 @@ Windows Boot Manager\r\nidentifier {bootmgr}\r\n\r\nWindows Boot Loader\r\nident
     }
 
     #[test]
-    fn loader_identifier_refuses_to_guess_between_two_loaders() {
-        // 同卷两个加载器：按枚举顺序猜会把用户引导到错误系统，必须报错。
-        let output = "Windows Boot Loader\r\nidentifier {11111111-1111-1111-1111-111111111111}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\nWindows Boot Loader\r\nidentifier {22222222-2222-2222-2222-222222222222}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\n";
-        assert!(loader_identifier_for_partition(output, 'c').is_err());
+    fn loader_identifier_degrades_to_default_when_two_loaders_share_a_partition() {
+        // 【2026-10-18 缺陷修复 M3】同卷两个加载器**不再硬拒**：调用点都在
+        // 「镜像已应用、目标卷已格式化」之后，硬拒等于把任务钉死在 ImageApplied。
+        // 有 `{default}` 可取时取它（这正是「用户当前在用的那套」的语义）。
+        let two = "Windows Boot Loader\r\nidentifier {11111111-1111-1111-1111-111111111111}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\nWindows Boot Loader\r\nidentifier {22222222-2222-2222-2222-222222222222}\r\npath \\Windows\\system32\\winload.efi\r\ndevice partition=C:\r\nosdevice partition=C:\r\n\r\n";
+        // `parse_boot_manager_state` 只认真正的 Windows Boot Manager 对象
+        // （`/v` 输出里的 {9dea862c-…}，别名 {bootmgr} 不算），故这里用真实 GUID。
+        let with_default = format!(
+            "Windows Boot Manager\r\nidentifier {{9dea862c-5cdd-4e70-acc1-f32b344d4795}}\r\ndefault {{22222222-2222-2222-2222-222222222222}}\r\n\r\n{two}"
+        );
+        assert_eq!(
+            loader_identifier_for_partition(&with_default, 'c')
+                .unwrap()
+                .as_deref(),
+            Some("{22222222-2222-2222-2222-222222222222}"),
+            "多个 loader 时应取 {{default}} 指向的那个"
+        );
+        // 没有 default 可依时退化为第一个枚举结果，而不是失败。
+        assert_eq!(
+            loader_identifier_for_partition(two, 'c')
+                .unwrap()
+                .as_deref(),
+            Some("{11111111-1111-1111-1111-111111111111}"),
+            "无 default 时按枚举顺序取第一个，不再 Err"
+        );
     }
 
     #[test]

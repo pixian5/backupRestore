@@ -186,6 +186,8 @@ fn probe_mirror() -> Option<PathBuf> {
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     let mut candidates = Vec::new();
+    // 探测过程中**由我们新建**的候选目录（L2：没被选中就要删掉）。
+    let mut created: Vec<PathBuf> = Vec::new();
     // 从 C: 起逐个试，跳过系统盘（PE/RE 里就是 X:，写了等于没写）。
     for letter in 'C'..='Z' {
         if Some(letter) == system_letter {
@@ -197,12 +199,25 @@ fn probe_mirror() -> Option<PathBuf> {
         }
         let dir = root.join(MIRROR_DIR_NAME).join(&session);
         // 实测可写才算数：很多卷在 PE 里只读、或者卷根本没格式化。
+        let fresh = !dir.exists();
         let writable = fs::create_dir_all(&dir).is_ok()
             && fs::write(dir.join(".write-probe"), b"probe").is_ok();
         let _ = fs::remove_file(dir.join(".write-probe"));
+        if fresh && writable {
+            created.push(dir.clone());
+        }
         candidates.push((dir, writable));
     }
-    pick_mirror_root(&candidates)
+    let selected = pick_mirror_root(&candidates);
+    // 【2026-10-18 缺陷修复 L2】探测时建出来、又没被选中的目录要清掉：此前每进
+    // 一次 PE/RE 都会在**每一个**可写盘的根留下一个空的 `BackupRestore-logs\<会话>\`
+    // （`log_root::probe_dir` 早就这样做了，这里一直没跟上）。
+    for dir in created {
+        if selected.as_deref() != Some(dir.as_path()) {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+    selected
 }
 
 #[cfg(test)]

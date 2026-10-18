@@ -4,6 +4,7 @@ use backuprestore_core::{BackupMetadata, TaskError, VolumeIdentity, image_metada
 use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct OnlineOpParams {
@@ -377,7 +378,8 @@ fn execute_inner(
                 backuprestore_core::operation_safety::verify_formatted_volume(
                     &identity, &formatted,
                 )?;
-                fs::read_dir(&root)?;
+                // 根目录可读性检查移到下面，改用**卷 GUID 路径**做（见 M6 注释）：
+                // 盘符在格式化后可能被重排到别的卷，用它做检查等于没检查。
                 log(
                     log_path,
                     &format!(
@@ -389,6 +391,19 @@ fn execute_inner(
             } else {
                 identity
             };
+            // 【2026-10-18 缺陷修复 M6】应用目标改用**卷 GUID 路径**（`\\?\Volume{…}\`）。
+            // 此前 `/ApplyDir` 用的是格式化**之前**取定的盘符路径（`{affected}:\`）：
+            // 格式化会换卷序列号、也可能让 mountmgr 把这个盘符重排到别的卷，
+            // 那时 DISM 就把镜像写到了错误的卷上，而事后校验（下面的
+            // `volume_identity(affected)`）只能「写完之后才发现」——破坏性写入
+            // 已经完成。系统卷分支（`restore_to_windows_volume`）早已改用
+            // `volume_path()`，这里与之对齐。
+            let apply_root = PathBuf::from(
+                baseline
+                    .volume_path()
+                    .ok_or_else(|| crate::err("目标卷缺少稳定 GUID 路径，拒绝按盘符应用镜像"))?,
+            );
+            fs::read_dir(&apply_root)?;
             log(
                 log_path,
                 if params.format_target {
@@ -403,7 +418,8 @@ fn execute_inner(
                     "/Apply-Image".into(),
                     format!("/ImageFile:{}", image.display()),
                     format!("/Index:{index}"),
-                    format!("/ApplyDir:{}", root.display()),
+                    // M6：按卷 GUID 路径应用，不按盘符（盘符可能在格式化后被重排）。
+                    format!("/ApplyDir:{}", apply_root.display()),
                     "/CheckIntegrity".into(),
                     "/Verify".into(),
                 ],
@@ -462,7 +478,7 @@ fn execute_inner(
 /// 第二系统即使中途失败也只是不可启动，主系统仍在，重新还原即可，故不引入状态机。
 fn restore_to_windows_volume(
     params: &OnlineOpParams,
-    _root: &Path,
+    root: &Path,
     target: VolumeIdentity,
     index: u32,
     log_path: &Path,
@@ -484,8 +500,13 @@ fn restore_to_windows_volume(
     // 必须在**格式化/应用之前**拦住，绝不能等 DISM exit 5 才失败——那时目标卷已
     // 进入破坏性阶段，且用户会陷入「重试 → 同样失败」的循环。
     // 与离线侧共用同一判据纯函数，避免两处文案分叉（单测在 windows_prepare.rs）。
+    // 【2026-10-18 缺陷修复：设计观察 7】第一个参数传**真实探测结果**，不再硬编码
+    // `true`。C 入口（新增非 C 盘第二系统）的目标常态是**空分区**，用户取消格式化
+    // （覆盖式应用）时，硬编码 true 会以「目标已含 Windows」这一**事实错误**的
+    // 文案拒绝一个本来合法的组合。判据与 `execute_inner` 的分流完全同源。
+    let target_contains_windows = crate::pe_safety::target_is_windows_volume(root)?;
     if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
-        true,
+        target_contains_windows,
         params.format_target,
         crate::pe_safety::MessageLanguage::Chinese,
     ) {
@@ -616,7 +637,7 @@ fn restore_to_windows_volume(
         let rollback_dir = dir.to_path_buf();
         let rollback_esp = esp.clone();
         let rollback_log = log_path.to_path_buf();
-        progress.set_bcd_rollback(Box::new(move || {
+        progress.set_bcd_rollback(Arc::new(move || {
             crate::windows_prepare::rollback_bcd_snapshot(
                 &rollback_dir,
                 &rollback_esp,

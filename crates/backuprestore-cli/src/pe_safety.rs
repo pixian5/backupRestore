@@ -37,7 +37,7 @@ pub(crate) fn target_loader(text: &str, letter: char) -> Result<String, TaskErro
                 .lines()
                 .filter_map(|line| {
                     let mut parts = line.trim().splitn(2, char::is_whitespace);
-                    (parts.next()?.eq_ignore_ascii_case(key))
+                    crate::text_parsing::bcd_field_name_is(parts.next()?, key)
                         .then(|| parts.next().unwrap_or("").trim())
                 })
                 .collect();

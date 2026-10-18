@@ -639,8 +639,16 @@ fn total_attempt_count(task_dir: &Path) -> u32 {
 
 #[cfg(windows)]
 fn bump_total_attempt(task_dir: &Path) -> Result<u32, TaskError> {
-    let count = total_attempt_count(task_dir) + 1;
-    fs::write(task_dir.join(TOTAL_RESUME_MARKER), count.to_string())?;
+    // 【2026-10-18 缺陷修复 L9】`saturating_add`：计数文件若被写成 `u32::MAX`，
+    // 此前 debug 会 panic、release 会回绕成 0（等于把总闸整个失效）。
+    //
+    // 原子落盘（tmp + rename）：此前是 `fs::write` 直写，断电落在「截断」与
+    // 「写完」之间会得到一个空/半截文件 → 解析失败按 0 处理 → 总闸同样失效。
+    let count = total_attempt_count(task_dir).saturating_add(1);
+    let final_path = task_dir.join(TOTAL_RESUME_MARKER);
+    let tmp_path = task_dir.join(format!("{TOTAL_RESUME_MARKER}.tmp"));
+    fs::write(&tmp_path, count.to_string())?;
+    fs::rename(&tmp_path, &final_path)?;
     Ok(count)
 }
 
@@ -651,6 +659,80 @@ fn bump_total_attempt(task_dir: &Path) -> Result<u32, TaskError> {
 /// `native_gui::run()` 拿它当 bool 用，于是用户只是想打开程序、窗口都没见着
 /// 就被重启了，界面上也没有任何叫停的手段。现在「要不要重启」交回给调用方，
 /// 由它负责询问用户。
+#[cfg(windows)]
+/// 【2026-10-18 新增：僵尸任务自动收口 guard（B5）】
+///
+/// 此前「任务停在非终态又永远跑不下去」只能靠人工收口（10-16 那次 `1bb72a5e`
+/// 卡在非终态，最后是手工处置的）。收口判据刻意定得极窄，**只在不可能误伤
+/// 任何还能继续的任务时才动手**：
+///
+/// ① 任务处于非终态（`is_incomplete()`）；
+/// ② 它的阶段在**破坏性边界之前**（`can_abandon_before_target_write`）——
+///    目标卷还没被擦除，此时收口不会留下「已擦除但没应用」的残局；
+/// ③ 任务目录里**没有一次性启动项记录**——没有启动项就意味着它**永远不可能**
+///    被续跑（续跑链第一步就是读这条记录），继续挂着只会阻塞新任务。
+///
+/// 三条全中才写 `Failed` 并清理工作产物（证据目录与日志保留，与
+/// `abandon-task` 的收口口径一致）。任何一步出错都只记日志、不动任务。
+pub(crate) fn collect_orphan_tasks() -> Result<usize, TaskError> {
+    let executable = env::current_exe()?;
+    let workspace = executable
+        .parent()
+        .ok_or_else(|| err("executable has no workspace directory"))?;
+    let tasks_root = workspace.join("tasks");
+    if !tasks_root.is_dir() {
+        return Ok(0);
+    }
+    let store = TaskStore::new(workspace);
+    let log = crate::log_root::logs_dir().join("gui.log");
+    let mut collected = 0usize;
+    for entry in fs::read_dir(&tasks_root)? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let task_id = entry.file_name().to_string_lossy().to_string();
+        let Ok(mut task) = store.load(&task_id) else {
+            continue;
+        };
+        if !task.status.is_incomplete() || !task.status.can_abandon_before_target_write() {
+            continue;
+        }
+        // 有启动项 = 还能续跑，绝不能碰。
+        if crate::boot_entry::ReBootEntry::read(&entry.path())
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            continue;
+        }
+        let _ = crate::append_log(
+            &log,
+            &format!(
+                "orphan task guard: task {task_id} stage={:?} has no boot entry and cannot resume; marking Failed",
+                task.status
+            ),
+        );
+        if store
+            .write_failure(&mut task, 2, "自动收口：无一次性启动项，任务无法续跑")
+            .is_err()
+        {
+            continue;
+        }
+        let _ = store.cleanup_task_artifacts(&task_id);
+        collected += 1;
+    }
+    Ok(collected)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn collect_orphan_tasks() -> Result<usize, TaskError> {
+    Ok(0)
+}
+
 #[cfg(windows)]
 pub(crate) fn find_pending_boot_task() -> Result<Option<PendingResume>, TaskError> {
     let executable = env::current_exe()?;
@@ -773,11 +855,16 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
         }
     }
 
-    let count = bump_total_attempt(&pending.task_dir)?;
+    // 【2026-10-18 缺陷修复 M1】计数**不再在重启之前**落盘。
+    // 此前 `bump_total_attempt` 在 `shutdown` 之前就 +1，而 shutdown 失败只回滚
+    // per-stage 标记、不回滚总计数：于是「连续三次重启失败、机器一次都没重启」
+    // 也会把总闸烧到上限 → 自动续跑被永久关闭，日志却只写「已达总上限」，
+    // 看不出其实一次都没重启过。现在只在 `shutdown` 真的成功之后才计数。
+    let planned = total_attempt_count(&pending.task_dir).saturating_add(1);
     append_log(
         &log,
         &format!(
-            "Detected durable interrupted task after normal Windows startup; resuming task {} operation={:?} stage={:?}（跨阶段第 {count}/{MAX_TOTAL_RESUME_ATTEMPTS} 次）",
+            "Detected durable interrupted task after normal Windows startup; resuming task {} operation={:?} stage={:?}（计划中的跨阶段第 {planned}/{MAX_TOTAL_RESUME_ATTEMPTS} 次）",
             pending.task_id, pending.operation, pending.stage
         ),
     )?;
@@ -827,9 +914,13 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
             detail
         )));
     }
+    // 重启确实发出去了，此刻才把「跨阶段第 N 次」记进计数（M1：失败不计数）。
+    let count = bump_total_attempt(&pending.task_dir)?;
     append_log(
         &log,
-        "Restart requested to resume pending task in Windows RE",
+        &format!(
+            "Restart requested to resume pending task in Windows RE（跨阶段第 {count}/{MAX_TOTAL_RESUME_ATTEMPTS} 次）"
+        ),
     )?;
     Ok(true)
 }
@@ -1028,8 +1119,12 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
             ),
         )?;
     }
+    // 【2026-10-18 缺陷修复 M7】手动 `recover` 也要把任务 env 交给恢复链。
+    // 此前这里传 `None`，于是：①擦除前**不重新武装**一次性启动项（中断后落回
+    // 原版 WinRE、无法续跑）；②不校验「续跑载荷卷 ≠ 擦除目标卷」（可能误擦
+    // 载荷所在卷）；③副档元数据拿不到 env 里的值，只能走兜底。
     #[cfg(windows)]
-    {
+    let metadata_values: Option<BTreeMap<String, String>> = {
         let dir = store.task_dir(&id)?;
         let env = dir.join("payload/RecoveryTask.env");
         let values = if env.is_file() {
@@ -1041,13 +1136,16 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
         if task.status == Stage::RecoveryComplete {
             return complete_recovery_cleanup(&store, &mut task, &log);
         }
-    }
+        Some(values)
+    };
+    #[cfg(not(windows))]
+    let metadata_values: Option<BTreeMap<String, String>> = None;
     let result = recover_windows(
         &store,
         &mut task,
         &log,
         options.efi_root.as_deref(),
-        None,
+        metadata_values.as_ref(),
         false,
         None,
     );
@@ -1558,12 +1656,11 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     use backuprestore_core::{validate_payload_files, validate_task_id};
 
     // === 持久早期日志 ===
-    // 写在系统卷 C: 与 C:\WinRE-PoC（WinRE 中即真实系统分区），跨重启仍可回读，
-    // 用于在无交互的 WinRE 引导里定位 Recovery.exe 是否启动、卡在哪一步。
-    let persistent_logs = [
-        PathBuf::from(r"C:\BackupRestore-Recovery-early.log"),
-        PathBuf::from(r"C:\WinRE-PoC\BackupRestore-Recovery-early.log"),
-    ];
+    // 【2026-10-18 缺陷修复 L4】此前硬编码 `C:\…` 与 `C:\WinRE-PoC\…`：
+    // WinRE 里 C: 常常正是**离线 Windows = 还原目标卷**，这些「跨重启可回读」
+    // 的日志会在随后的格式化中被一起抹掉，与 v2.6.15 定下的「日志根不落在
+    // PE、不落在目标卷」（`log_root::logs_dir()`）自相矛盾。现在统一走日志根。
+    let persistent_logs = [crate::log_root::logs_dir().join("recovery-early.log")];
     let meta_log = |line: &str| {
         use std::io::Write;
         for p in &persistent_logs {
@@ -3303,7 +3400,7 @@ fn recover_windows(
                     // 用免盘符探测避免抢盘符。
                     let rollback_task_dir = store.task_dir(&task.task_id)?;
                     let rollback_log = log.to_path_buf();
-                    p.set_bcd_rollback(Box::new(move || {
+                    p.set_bcd_rollback(Arc::new(move || {
                         let efi = windows_prepare::esp_identity_without_drive_letter()
                             .map_err(|error| error.to_string())?;
                         windows_prepare::rollback_bcd_snapshot(

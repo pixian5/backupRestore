@@ -96,11 +96,26 @@ fn probe_dir() -> Option<PathBuf> {
             fresh,
             writable,
             is_work,
+            letter,
         });
     }
+    // 【2026-10-18 缺陷修复 L3】兜底轮排除「装着 Windows 的离线卷」。
+    // 注释早就写着「可能撞见还原目标卷（正是用户要躲开的）」，但实现只按可写取
+    // 第一个：在 RE 里系统盘是 X:（RAM），真正的 Windows 在 C: ——而 C: 往往正是
+    // 本次还原的目标卷，日志落上去会在格式化时被抹掉，还原成功即丢证据。
+    // 先看有没有「既不是工作卷、也不像 Windows 卷」的可写卷；实在没有才退回任意
+    // 可写卷（日志再差也要能写，不能因为挑地方而完全不写）。
+    let looks_like_windows = |letter: char| {
+        PathBuf::from(format!(r"{letter}:\Windows\System32\config\SYSTEM")).is_file()
+    };
     let selected = candidates
         .iter()
         .find(|candidate| candidate.is_work && candidate.writable)
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.writable && !looks_like_windows(candidate.letter))
+        })
         .or_else(|| candidates.iter().find(|candidate| candidate.writable))
         .map(|candidate| candidate.dir.clone());
     // 探测时建出来又没被选中的目录清掉，不在各个卷根留垃圾。
@@ -119,6 +134,8 @@ struct Candidate {
     writable: bool,
     /// 卷根是否带 `brwork`（按内容认工作卷）。
     is_work: bool,
+    /// 卷盘符（L3：判断该卷是不是「装着 Windows 的离线卷」需要它）。
+    letter: char,
 }
 
 /// 候选目录：卷根已有 `brwork` 就认它（按内容认工作卷），否则

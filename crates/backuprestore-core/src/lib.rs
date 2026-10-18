@@ -135,6 +135,15 @@ impl Stage {
                 | (Capturing, RecoveryComplete)
                 | (BootRepaired, RecoveryComplete)
                 | (RecoveryComplete, Success)
+                // 【2026-10-18 缺陷修复 H2】允许从 RecoveryComplete 标失败。
+                // 此前这条边缺失，而 `write_failure` 第一行就是
+                // `if !task.status.can_transition_to(Stage::Failed) { return Err(…) }`：
+                // 任务在 STEP 4 清理阶段失败 → 自动逃出写失败被拒 → 只记一行日志 →
+                // 任务**永远停在 RecoveryComplete**。而该阶段仍在
+                // `can_resume_after_interruption` 里 → 下次启动又被发现 → 再提示重启
+                // → 再失败，`abandon-task` 在该阶段同样被拒：**用户没有任何自救出口**。
+                // 此刻磁盘/引导/恢复注册都已验证完毕，标失败只影响清理的记账口径。
+                | (RecoveryComplete, Failed)
         )
     }
     /// A task at one of these stages has not begun modifying its restore target,
@@ -143,7 +152,18 @@ impl Stage {
     pub fn can_abandon_before_target_write(self) -> bool {
         matches!(
             self,
-            Self::Prepared | Self::BootRequested | Self::RecoveryStarted | Self::Preflight
+            Self::Prepared
+                | Self::BootRequested
+                | Self::RecoveryStarted
+                | Self::Preflight
+                // 【2026-10-18 缺陷修复：ef71fccc 三按钮死锁】`Capturing` 也要可放弃。
+                // 该阶段是「把源卷捕获成暂存 WIM」——**还原目标卷还没被碰过**
+                // （目标擦除发生在后面的 `TargetErased`，故它不在
+                // `is_destructive_boundary` 里）。此前它不在这个集合里，于是
+                // 「存在未完成任务」对话框的三条路全部走不通：是=重启续跑
+                // （状态机不推进）、否=放弃清理（被本函数拒）、取消=不建新任务
+                // → 任务永久卡在 Capturing，还会被 DISM 烘进备份镜像。
+                | Self::Capturing
         )
     }
     /// A task past preparation may be resumed through its persisted boot entry.
@@ -2254,17 +2274,34 @@ mod tests {
     }
 
     #[test]
+    fn recovery_complete_can_transition_to_failed_so_cleanup_failures_can_close_the_task() {
+        // 【2026-10-18 缺陷修复 H2】`RecoveryComplete` 现在有 `(…, Failed)` 出边。
+        // 缺这条边时，STEP 4 清理阶段失败 → `write_failure` 被状态机拒 → 任务
+        // 永远停在 RecoveryComplete，而它仍在 `can_resume_after_interruption` 里
+        // （下次启动又被发现 → 再失败），`abandon-task` 在该阶段同样被拒。
+        assert!(Stage::RecoveryComplete.can_transition_to(Stage::Failed));
+        assert!(Stage::RecoveryComplete.can_transition_to(Stage::Success));
+        // 只放开通往终态的出边，不开放倒回中间阶段。
+        assert!(!Stage::RecoveryComplete.can_transition_to(Stage::Prepared));
+        assert!(!Stage::RecoveryComplete.can_transition_to(Stage::ImageApplied));
+    }
+
+    #[test]
     fn pending_task_policy_only_abandons_before_target_writes_and_resumes_persisted_stages() {
+        // 【2026-10-18 缺陷修复：ef71fccc 三按钮死锁】`Capturing` **加入**可放弃
+        // 集合：该阶段只是把源卷捕获成暂存 WIM，还原目标还没被碰过（目标擦除发生
+        // 在 `TargetErased`），而此前它不在集合里会让「存在未完成任务」对话框的
+        // 三条路全部走不通（是=重启续跑不推进 / 否=放弃被本策略拒 / 取消=不建任务）。
         for stage in [
             Stage::Prepared,
             Stage::BootRequested,
             Stage::RecoveryStarted,
             Stage::Preflight,
+            Stage::Capturing,
         ] {
             assert!(stage.can_abandon_before_target_write(), "{stage:?}");
         }
         for stage in [
-            Stage::Capturing,
             Stage::TargetErased,
             Stage::ImageApplied,
             Stage::BootRepaired,

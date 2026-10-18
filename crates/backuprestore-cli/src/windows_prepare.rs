@@ -2424,6 +2424,22 @@ fn validate_operation_inputs(
                     "create-secondary target must not be the active Windows volume",
                 ));
             }
+            // 【2026-10-18 缺陷修复 H1 第二层：prepare 侧同判据】
+            // restore-existing **反过来**：它的目标必须是当前正在运行的系统卷
+            // （重建唯一系统）。此前这里只断言 `source == target`，而 A 入口的
+            // GUI 目标自动选中会静默失效（下拉停在上一个入口选中的盘），于是
+            // 「源＝目标＝某个数据盘」也能一路通到「格式化该盘 + 灌镜像」。
+            // GUI 已加同判据拦截，这里是**不依赖 GUI 的最终防线**（CLI 直通、
+            // 测试钩子、GUI 绕过都挡在这里）。
+            //
+            // 前提：`prepare` 只在线上 Windows 会话里跑（GUI/CLI 建任务阶段），
+            // 故 `%SystemDrive%` 就是那套正在运行的 Windows；RE 侧执行的是
+            // recover/resume，不走本函数。
+            if options.operation == Operation::RestoreExisting && !target_is_active {
+                return Err(err(
+                    "restore-existing target must be the active Windows volume",
+                ));
+            }
             let path = image_path.ok_or_else(|| err("restore image is missing"))?;
             if !Path::new(path).is_file() {
                 return Err(err("restore image does not exist"));
@@ -2823,7 +2839,15 @@ fn assert_environment(source_drive: char) -> Result<(), TaskError> {
 /// 「需要管理员权限」，而日志里**看不出到底是没提权、还是 fltmc 本身不可用**
 /// （后者在某些精简环境里会出现，此时真正的修法完全不同）。
 fn require_administrator(log: &Path) -> Result<(), TaskError> {
-    match capture_logged("fltmc.exe", &[], log) {
+    // 【2026-10-18 缺陷修复 M10】先跑真正的权限判据（`fltmc` 的退出码），
+    // 日志写入单独容错。此前用 `capture_logged`：它第一行就是
+    // `append_log(log, …)?`，一旦日志不可写（目录满 / ACL 限制 / `logs_dir`
+    // 回退到不可写目录），错误会在 `fltmc` **之前**就返回，被这里一律翻成
+    // 「administrator elevation is required」——用户反复提权仍然失败，
+    // 真正的原因（日志写不了）被彻底带偏。
+    // 用不写日志的 `capture`（非零退出即 Err），把「提权不够」与「日志写不了」
+    // 两种失败分开：只有前者才报「需要管理员」。
+    match capture("fltmc.exe", &[]) {
         Ok(_) => Ok(()),
         Err(error) => {
             let _ = append_log(log, &format!("administrator check failed: {error}"));

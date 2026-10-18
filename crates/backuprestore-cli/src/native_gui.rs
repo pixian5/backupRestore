@@ -2083,6 +2083,14 @@ unsafe fn set_volume_labels(state: &State) {
 }
 
 unsafe fn select_operation(state: &mut State, index: usize) {
+    // 【2026-10-18 缺陷修复 M2】两个「当前选中项」都必须在**改 operation_index
+    // 之前**读取。combo 里的项是**旧入口**填充的，而 `selected_drive_letter`
+    // 按**当前** operation_index 决定用不用过滤视图来解释索引——顺序一颠倒，
+    // 就是用新视图去读旧内容，选中项被静默移位（从 C 切到 A 会把用户选的
+    // F: 读成 E:）。源卷同理：此前重填时 source 传 `None`，等于把备份页的
+    // 源卷静默重置为第 0 项，切走再切回可能备份到错误的分区。
+    let keep_target = selected_drive_letter(state, state.controls.target);
+    let keep_source = selected_drive_letter(state, state.controls.source);
     state.operation_index = index.min(4);
     set_operation_tabs(state, selected_language(state));
     let operation = selected_operation(state);
@@ -2116,15 +2124,16 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     if target_combo_expected_count(state)
         != SendMessageW(state.controls.target, CB_GETCOUNT, 0, 0) as usize
     {
-        let keep = selected_drive_letter(state, state.controls.target);
         append_gui_log(
             state,
             &format!(
-                "target combo refilled: op={operation} keep={}",
-                keep.clone().unwrap_or_else(|| "<none>".into())
+                "target combo refilled: op={operation} keep={} keep_source={}",
+                keep_target.clone().unwrap_or_else(|| "<none>".into()),
+                keep_source.clone().unwrap_or_else(|| "<none>".into())
             ),
         );
-        set_drive_items(state, [None, None, keep]);
+        // 源卷选中项一并传下去（M2）：不传就是「静默重置为第 0 项」。
+        set_drive_items(state, [None, keep_source, keep_target]);
     }
     if matches!(operation, "restore-data" | "create-secondary") {
         // 目标若还停在初始默认的系统盘（B/C 都禁止的目标），自动跳到第一个
@@ -2202,8 +2211,11 @@ fn drive_combo_position(view: Option<&[usize]>, state: &State, letter: &str) -> 
         Some(view) => view
             .iter()
             .copied()
-            .position(|index| state.drives[index].letter == letter),
-        None => state.drives.iter().position(|drive| drive.letter == letter),
+            .position(|index| state.drives[index].letter.eq_ignore_ascii_case(letter)),
+        None => state
+            .drives
+            .iter()
+            .position(|drive| drive.letter.eq_ignore_ascii_case(letter)),
     }
 }
 
@@ -2496,18 +2508,19 @@ unsafe fn set_drive_items(state: &State, desired: [Option<String>; 3]) {
 }
 
 unsafe fn select_drive(state: &State, control: Hwnd, letter: &str) {
+    // 【2026-10-18 缺陷修复 H1】此前目标分支写作
+    // `target_combo_indices(state).as_deref().and_then(|view| …)`：视图为 `None`
+    // （除 C 入口外的**所有**入口，含 A）时 `and_then` 直接得到 `None`，
+    // `CB_SETCURSEL` 从不发出。A 入口「自动选中当前系统盘」的意图因此落空——
+    // 下拉停在上一个入口选中的盘，界面却写着「目标卷（当前系统盘 C:）」，
+    // **显示卷 ≠ 操作卷**（prepare 只要求 source==target 即放行 → 格式化错盘）。
+    // 现在与 `drive_combo_position` 完全同源：视图在就按视图换算（视图里找不到
+    // 就保持不动，绝不回退全量索引），视图为 None 就用全量索引。
     let position = if control == state.controls.target {
-        // C 入口过滤后 combo 索引经视图换算；视图里找不到就保持不动
-        // （绝不可回退到全量索引——那会选中错误的分区）。
-        target_combo_indices(state).as_deref().and_then(|view| {
-            view.iter()
-                .position(|&index| state.drives[index].letter.eq_ignore_ascii_case(letter))
-        })
+        let view = target_combo_indices(state);
+        drive_combo_position(view.as_deref(), state, letter)
     } else {
-        state
-            .drives
-            .iter()
-            .position(|drive| drive.letter.eq_ignore_ascii_case(letter))
+        drive_combo_position(None, state, letter)
     };
     if let Some(position) = position {
         SendMessageW(control, CB_SETCURSEL, position as usize, 0);
@@ -6583,6 +6596,51 @@ unsafe fn create_task(state: &mut State) {
             return;
         }
     };
+    // 【2026-10-18 缺陷修复 H1 第二层：A 入口目标硬闸】
+    // 光修好「自动选中」不够——H1 的成因正是 UI 自动选中**静默失效**而下游没有
+    // 任何一道断言兜住：A 页文案写死「目标卷（当前系统盘 X:）」、下拉被禁用，
+    // prepare 侧又只要求 `source == target` 就放行。于是只要选中项不是系统盘，
+    // 整条链就会格式化那个盘并灌入镜像。这里按入口性质断言到底：
+    // restore-existing 的目标必须就是当前运行的系统盘，否则直接拦下。
+    if operation == "restore-existing"
+        && !target_drive.eq_ignore_ascii_case(&active_system_letter())
+    {
+        let message = if language == Language::English {
+            format!(
+                "The 'Restore C:' entry must target the currently running system drive ({}:), \
+                 but {} is selected. Refusing to continue — nothing was changed. \
+                 (Pick the 'Restore C:' entry only when you intend to overwrite the running system.)",
+                active_system_letter(),
+                target_drive
+            )
+        } else {
+            format!(
+                "「还原系统到 C 盘」入口的目标必须是当前正在运行的系统盘（{}:），\n\
+                 而当前选中的是 {}。已拒绝执行，未做任何更改。",
+                active_system_letter(),
+                target_drive
+            )
+        };
+        append_gui_log(
+            state,
+            &format!(
+                "GUI action blocked: restore-existing target {} != active system drive {}",
+                target_drive,
+                active_system_letter()
+            ),
+        );
+        show_message(
+            state.root,
+            &message,
+            if language == Language::English {
+                "Restore blocked"
+            } else {
+                "还原已停止"
+            },
+            MB_OK | MB_ICONERROR,
+        );
+        return;
+    }
     let source_drive = match operation.as_str() {
         "restore-existing" | "restore-data" => target_drive.clone(),
         "create-secondary" => active_system_letter(),
@@ -10033,11 +10091,12 @@ unsafe fn ask_pending_resume(pending: &super::PendingResume) -> PendingResumeCho
          操作：{:?}\n\
          停在：{:?}\n\n\
          是   = 立即重启，继续这个任务\n\
-         否   = 本次不重启（任务与启动项都保留，以后再处理）\n\
-         取消 = 放弃这个任务并清理（清掉一次性启动项，证据保留）\n\n\
+         否 / 取消 / 直接关窗 = 本次不重启（任务与启动项都保留，以后再处理）\n\
+         想放弃这个任务：进主窗口，用顶栏「取消待重启任务…」\n\n\
          Detected an unfinished recovery task.\n\
-         Yes = reboot now and continue it; No = not this time (task and boot entry are kept); \
-         Cancel = abandon and clean it up (one-shot boot entry cleared, evidence kept).",
+         Yes = reboot now and continue it; No / Cancel / closing the box = not this time \
+         (task and boot entry are kept). To abandon it, use the top-bar \
+         \"Cancel pending reboot task...\" in the main window.",
         pending.task_id, pending.operation, pending.stage
     );
     let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
@@ -10187,6 +10246,24 @@ pub fn run() -> Result<(), super::TaskError> {
         InitCommonControlsEx(&common_controls);
         if !is_elevated() {
             return relaunch_elevated();
+        }
+        // 【2026-10-18 新增 B5】先把「注定跑不下去」的僵尸任务收口，再问续跑。
+        // 判据极窄（非终态 + 破坏性边界之前 + 没有一次性启动项），只在不可能
+        // 误伤还能续跑的任务时才动手；失败只记日志，不阻塞启动。
+        match super::collect_orphan_tasks() {
+            Ok(0) => {}
+            Ok(count) => {
+                let _ = crate::append_log(
+                    &crate::log_root::logs_dir().join("gui.log"),
+                    &format!("orphan task guard: collected {count} unresumable task(s)"),
+                );
+            }
+            Err(error) => {
+                let _ = crate::append_log(
+                    &crate::log_root::logs_dir().join("gui.log"),
+                    &format!("orphan task guard failed: {error}"),
+                );
+            }
         }
         // 【2026-10-17 第二轮核查，逃生 A】待续跑任务**先问再做**：
         // 旧代码在这里一路做到 `shutdown /r`，用户只是想打开程序、

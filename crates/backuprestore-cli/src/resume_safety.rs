@@ -12,7 +12,7 @@ pub(crate) fn field(text: &str, key: &str) -> Result<String, TaskError> {
         let mut parts = trimmed.splitn(2, char::is_whitespace);
         if parts
             .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case(key))
+            .is_some_and(|name| crate::text_parsing::bcd_field_name_is(name, key))
         {
             if found {
                 return Err(crate::err("BCD 字段重复，拒绝继续"));

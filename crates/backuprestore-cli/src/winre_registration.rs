@@ -46,8 +46,9 @@ fn parse_info(text: &str) -> Result<Info, TaskError> {
                 return None;
             }
             match value.trim().to_ascii_lowercase().as_str() {
-                "enabled" => Some(true),
-                "disabled" => Some(false),
+                // M8：简体中文 `reagentc /info` 输出「已启用 / 已禁用」。
+                "enabled" | "已启用" => Some(true),
+                "disabled" | "已禁用" => Some(false),
                 _ => None,
             }
         })
@@ -97,9 +98,9 @@ fn field(block: &str, name: &str) -> Result<String, TaskError> {
         .lines()
         .filter_map(|line| {
             let mut parts = line.trim().splitn(2, char::is_whitespace);
-            parts
-                .next()?
-                .eq_ignore_ascii_case(name)
+            let key = parts.next()?;
+            // M8：字段名双语匹配（中文 Windows 的「设备 / 操作系统设备 / 路径」）。
+            crate::text_parsing::bcd_field_name_is(key, name)
                 .then(|| parts.next().unwrap_or("").trim().to_ascii_lowercase())
         })
         .collect();

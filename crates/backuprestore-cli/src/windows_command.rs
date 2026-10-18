@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 type Handle = *mut c_void;
@@ -12,6 +12,8 @@ pub(crate) const INFINITE: u32 = u32::MAX;
 const WAIT_TIMEOUT: u32 = 258;
 // 进程树未确认退出时，禁止本实例再次发起外部写操作。
 static CONTAINMENT_FAILED: AtomicBool = AtomicBool::new(false);
+/// 最近一次「分离启动的交互式控制台」进程句柄（0 = 无），用于连点去重（L6）。
+static CONSOLE_PROCESS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CmdOutcome {
@@ -21,6 +23,10 @@ pub(crate) enum CmdOutcome {
     ExitCodeUnavailable(u32),
     WaitFailed { error: u32, terminated: bool },
     ContainmentFailed,
+    /// 【2026-10-18 缺陷修复 M9】主进程已退出（携带真实退出码），但后代进程
+    /// 未能确认全部结束。与 `ContainmentFailed` 的区别：它**不**把整个进程
+    /// 拉进永久失败域，只让本次调用按失败处理。
+    TreeNotStopped { code: u32 },
 }
 impl CmdOutcome {
     pub(crate) fn is_success(self) -> bool {
@@ -43,6 +49,10 @@ impl std::fmt::Display for CmdOutcome {
             Self::ContainmentFailed => write!(
                 f,
                 "无法确认进程树已结束，禁止重试；请检查后台进程或重启系统"
+            ),
+            Self::TreeNotStopped { code } => write!(
+                f,
+                "主进程已退出（退出码 {code}），但后代进程未能确认全部结束；本次按失败处理"
             ),
         }
     }
@@ -218,6 +228,20 @@ fn quote(arg: &str) -> String {
 pub(crate) fn spawn_detached_interactive(program: &str) -> bool {
     const STARTF_USESHOWWINDOW: u32 = 0x0000_0001;
     const SW_SHOWNORMAL: u16 = 1;
+    // 【2026-10-18 缺陷修复 L6】去重：上一次开的控制台还活着就直接返回成功，
+    // 不再叠第二个窗口（连点 K / 连按按钮此前会开出一排 cmd）。
+    let previous = CONSOLE_PROCESS.load(Ordering::SeqCst);
+    if previous != 0 {
+        let handle = previous as Handle;
+        if unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT {
+            return true;
+        }
+        // 已退出：关掉旧句柄，避免每次调用都留一个。
+        unsafe {
+            CloseHandle(handle);
+        }
+        CONSOLE_PROCESS.store(0, Ordering::SeqCst);
+    }
     // CreateProcessW 可能改写命令行缓冲，给可变缓冲而非字面量指针。
     let mut line = program.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
     let mut startup = StartupInfo {
@@ -246,7 +270,16 @@ pub(crate) fn spawn_detached_interactive(program: &str) -> bool {
             &mut info,
         )
     };
-    ok != 0
+    if ok == 0 {
+        return false;
+    }
+    // L6：线程句柄立刻关掉；进程句柄留着（用于上面的存活判断），下一次调用时
+    // 若发现已退出会顺手关掉。此前两个句柄**从不 CloseHandle** —— 每次调用泄漏 2 个。
+    unsafe {
+        CloseHandle(info.thread);
+    }
+    CONSOLE_PROCESS.store(info.process as usize, Ordering::SeqCst);
+    true
 }
 
 /// 用户输入以独立参数传给 DISM，不经过命令解释器，避免名称/路径中的元字符被执行。
@@ -291,13 +324,15 @@ fn stopped(job: Handle) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
-fn stop_tree(job: Handle) -> bool {
+/// `fatal = true`：确认不了归零就把整个进程拉进「禁止再发起外部写操作」的失败域。
+/// `fatal = false`：只把结果如实返回给**本次**调用，不上升为进程级禁用（M9）。
+fn stop_tree(job: Handle, fatal: bool) -> bool {
     // 即使 API 报错，也查询活动进程数；只有确认归零才能允许重试。
     unsafe {
         TerminateJobObject(job, 1);
     }
     let done = stopped(job);
-    if !done {
+    if !done && fatal {
         CONTAINMENT_FAILED.store(true, Ordering::SeqCst);
     }
     done
@@ -403,7 +438,7 @@ fn run_line(line: &str, out: Option<&Path>, ms: u32) -> CmdOutcome {
         }
         if ResumeThread(thread.0) == u32::MAX {
             let error = GetLastError();
-            return if stop_tree(job.0) {
+            return if stop_tree(job.0, true) {
                 CmdOutcome::SpawnFailed(error)
             } else {
                 CmdOutcome::ContainmentFailed
@@ -416,8 +451,16 @@ fn run_line(line: &str, out: Option<&Path>, ms: u32) -> CmdOutcome {
                 let read = GetExitCodeProcess(process.0, &mut code);
                 let error = GetLastError();
                 // 主进程即使退出，也不能把仍在写入的后代留在后台。
-                if !stop_tree(job.0) {
-                    return CmdOutcome::ContainmentFailed;
+                //
+                // 【2026-10-18 缺陷修复 M9】**成功路径不再置位进程级禁用**：
+                // 此前这里 `!stop_tree(...)` 就直接把 `CONTAINMENT_FAILED` 拉成
+                // true，而该标志一旦置上，本进程此后**所有**外部命令永久失败、
+                // 且不可复位——一次瞬时的「作业对象未归零」（DISM 退出后残留
+                // worker）就会让 RE 链里后续的 dism/bcdboot 全灭（目标卷已清空
+                // 却写不进去）。现在：①本次调用如实报「后代未确认停止」并保留
+                // 真实退出码；②失败域只留在这一次命令上，不禁用整个进程。
+                if !stop_tree(job.0, false) {
+                    return CmdOutcome::TreeNotStopped { code };
                 }
                 if read == 0 {
                     CmdOutcome::ExitCodeUnavailable(error)
@@ -427,7 +470,7 @@ fn run_line(line: &str, out: Option<&Path>, ms: u32) -> CmdOutcome {
             }
             WAIT_TIMEOUT => CmdOutcome::TimedOut {
                 after_ms: ms,
-                terminated: stop_tree(job.0),
+                terminated: stop_tree(job.0, true),
             },
             other => {
                 let error = if other == u32::MAX {
@@ -437,7 +480,7 @@ fn run_line(line: &str, out: Option<&Path>, ms: u32) -> CmdOutcome {
                 };
                 CmdOutcome::WaitFailed {
                     error,
-                    terminated: stop_tree(job.0),
+                    terminated: stop_tree(job.0, true),
                 }
             }
         }
