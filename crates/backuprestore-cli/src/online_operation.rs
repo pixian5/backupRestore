@@ -602,6 +602,29 @@ fn restore_to_windows_volume(
         .ok_or_else(|| crate::err("引导管理器状态未知，拒绝继续"))?;
     fs::copy(&store, dir.join("bcd-before"))?;
     fs::write(dir.join("bootmgr-before.txt"), &before)?;
+    // 与 WinRE 执行链对齐的第二个名字：进度窗「BCD 回退」按钮（与 B 快捷键）
+    // 复用 windows_prepare::rollback_bcd_snapshot，它认的是 bcd-before-raw
+    // （与离线 prepare 链同一命名）。同一字节写两份，磁盘代价约百 KB。
+    fs::copy(&store, dir.join("bcd-before-raw"))?;
+    // 【2026-10-18 补线】装载 BCD 回退闭包。
+    // 在此之前 set_bcd_rollback 全仓没有调用方：进度窗的「BCD 回退(B)」按钮
+    // 从加上那天起每次点击都只能记一行「尚不可用」——功能等于不存在。
+    // 快照已落盘、ESP 身份在手，此刻装载可覆盖后续全部引导改写
+    // （bcdboot 预建项 / 菜单命名 / default 归属），用户在恢复环境里改坏
+    // 引导后能一键退回准备期状态，不必再从宿主侧挂 PE 光盘手改。
+    {
+        let rollback_dir = dir.to_path_buf();
+        let rollback_esp = esp.clone();
+        let rollback_log = log_path.to_path_buf();
+        progress.set_bcd_rollback(Box::new(move || {
+            crate::windows_prepare::rollback_bcd_snapshot(
+                &rollback_dir,
+                &rollback_esp,
+                &rollback_log,
+            )
+            .map_err(|error| error.to_string())
+        }));
+    }
 
     // 格式化选项（GUI「格式化目标分区」复选框，默认勾选）：取消勾选=跳过格式化
     // 与格式化后校验，直接覆盖应用（盘符重绑/bcdboot/菜单命名照常——它们要求

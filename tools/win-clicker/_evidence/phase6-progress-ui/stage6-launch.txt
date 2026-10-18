@@ -1,0 +1,5 @@
+killing old pid=2232
+br-test.json written
+action ok: H:\brwork\BackupRestore.exe --test-hook
+C launched lastResult=267009
+GUI_UP pid=3128

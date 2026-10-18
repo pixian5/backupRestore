@@ -605,6 +605,29 @@ impl RestoreBackend for Engine {
             );
             fs::copy(&store, self.dir.join("bcd-before"))?;
             fs::write(self.dir.join("bootmgr-before.txt"), &before)?;
+            // 与在线链、离线 prepare 链对齐的第二个名字：进度窗「BCD 回退」按钮
+            // （与 B 快捷键）复用 windows_prepare::rollback_bcd_snapshot，它认的是
+            // bcd-before-raw。同一字节写两份，磁盘代价约百 KB。
+            fs::copy(&store, self.dir.join("bcd-before-raw"))?;
+            // 【2026-10-18 补线】装载 BCD 回退闭包。
+            // 在此之前 set_bcd_rollback 全仓没有调用方：进度窗的「BCD 回退(B)」
+            // 按钮从加上那天起每次点击都只能记一行「尚不可用」——功能等于不存在。
+            // 快照已落盘、ESP 身份在手，此刻装载可覆盖后续全部引导改写
+            // （bcdboot / 菜单命名 / default 归属），用户在恢复环境里改坏引导后
+            // 能一键退回准备期状态，不必再从宿主侧挂 PE 光盘手改。
+            {
+                let rollback_dir = self.dir.clone();
+                let rollback_esp = esp.clone();
+                let rollback_log = self.dir.join("operation.log");
+                self.progress.set_bcd_rollback(Box::new(move || {
+                    crate::windows_prepare::rollback_bcd_snapshot(
+                        &rollback_dir,
+                        &rollback_esp,
+                        &rollback_log,
+                    )
+                    .map_err(|error| error.to_string())
+                }));
+            }
             self.esp = Some(esp);
         }
         Ok(())
