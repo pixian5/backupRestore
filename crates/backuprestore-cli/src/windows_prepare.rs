@@ -880,7 +880,20 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
         ),
     )?;
     let efi = efi_identity(None)?;
-    compensate_prepare_failure(&dir, &efi, &log)?;
+    // 【2026-10-18 缺陷修复：ef71fccc 三按钮死锁（续）】补偿失败**不再中断收口**。
+    // 能走到这里的任务都在破坏性边界之前（目标卷还没动过），补偿只是尽量把准备期
+    // 对 BCD 的改动还原。ESP 上的 BCD 被系统占用（错误 32，BFSVC 持锁）时还原不了，
+    // 此时中断整个放弃流程 = 用户又被卡住——和刚修好的阶段闸门是同一个死锁，
+    // 只是换了个位置复发。改为记 ERROR 后继续：BCD 保持现状（可用「引导修复(M)」
+    // 或 bcdedit 手工处理），任务照样标终态、一次性启动项照样撤销。
+    if let Err(cleanup) = compensate_prepare_failure(&dir, &efi, &log) {
+        append_log(
+            &log,
+            &format!(
+                "[ERROR] abandon: BCD compensation incomplete ({cleanup}); continuing to close the task"
+            ),
+        )?;
+    }
     // create_entry can copy the WIM to staging before its final boot-entry
     // record is durable. Re-check by stable volume identity and remove only
     // this task's directory, even if no ReBootEntry record survived.
