@@ -2975,6 +2975,24 @@ fn recover_windows(
     ))
 }
 
+/// 离线还原是否需要准备「引导修复会话」（STEP 1 预应用判据）。
+///
+/// 必须与另外两处同源，否则判据漂移会让会话该建没建、收尾却按 Windows 走，
+/// 在 STEP 4 炸「Windows 系统卷缺少引导修复方案」：
+/// 1. 收尾路由：灌完镜像后探测 `Windows\System32\config\SYSTEM` 是否存在；
+/// 2. `resolve_efi_root_for_recovery`：决定要不要提前挂 ESP；
+/// 3. 本函数：决定要不要建会话（第二阶段「引导修复」按钮也挂在它上面）。
+///
+/// create-secondary 的常态是「prepare 刚格式化完的空卷」：灌镜像前探测必然
+/// false，所以必须认 `role=NewWindows`。2026-10-19 实机撞见（06fc5e8 引入时
+/// 即只认前者；run10 能过只因那次目标卷已装着 Windows）。
+fn recovery_needs_boot_menu_session(
+    target_is_windows: bool,
+    role: backuprestore_core::TargetRole,
+) -> bool {
+    target_is_windows || role == backuprestore_core::TargetRole::NewWindows
+}
+
 #[cfg(windows)]
 fn recover_windows(
     store: &TaskStore,
@@ -3402,7 +3420,17 @@ fn recover_windows(
             let target_is_secondary = !target.is_active_system;
             // 第二阶段按钮需要在目标身份确认后尽早出现；方案落盘并不修改 BCD，
             // 实际写入延后到映像应用完成后的引导修复阶段。
-            let boot_menu_session = if pe_safety::target_is_windows_volume(&target_root)? {
+            // 判据必须与收尾路由（下方「灌完镜像后探测 SYSTEM hive」那扇门）和
+            // `resolve_efi_root_for_recovery` 完全一致：目标**当前**是 Windows 卷，
+            // 或本次要把完整系统装进一个空卷（`role=NewWindows`，create-secondary
+            // 的常态——prepare 刚格式化完目标，灌镜像前探测必然 false）。
+            // 只认前者会让 C 入口离线流在 STEP 4 炸「Windows 系统卷缺少引导修复
+            // 方案」：会话没建，收尾却按 Windows 走（2026-10-19 实机撞见，
+            // 06fc5e8 引入时即如此；run10 能过只因那次目标已装着 Windows）。
+            let boot_menu_session = if recovery_needs_boot_menu_session(
+                pe_safety::target_is_windows_volume(&target_root)?,
+                target.role.clone(),
+            ) {
                 // 优先用任务里记录的第二系统菜单名（用户在准备阶段自己起的）；
                 // 没有它才由 BootMenuSession 按镜像副档版本自动起名。
                 let preferred_name = target.boot_menu_name.clone();
@@ -4934,6 +4962,33 @@ mod tests {
         parse_boot_manager_state, parse_recover_options, split_workspace_root_rel,
         stage_resumable_after_interruption,
     };
+
+    #[test]
+    fn recovery_boot_menu_gate_matches_finalize_routing() {
+        use backuprestore_core::TargetRole;
+        // create-secondary 的常态：prepare 刚格式化完的空卷——灌镜像前探测必然
+        // false，但收尾按 Windows 走，会话必须建（2026-10-19 实机缺陷）。
+        assert!(super::recovery_needs_boot_menu_session(
+            false,
+            TargetRole::NewWindows
+        ));
+        // A 入口（重建唯一系统）：目标当前就是 Windows 卷。
+        assert!(super::recovery_needs_boot_menu_session(
+            true,
+            TargetRole::ExistingWindows
+        ));
+        // 数据卷还原：目标无 Windows、也不是新增系统——会话不该建，
+        // 否则空会话反而会在 STEP 4 被无条件要求。
+        assert!(!super::recovery_needs_boot_menu_session(
+            false,
+            TargetRole::ExistingWindows
+        ));
+        // 既有 Windows 卷上新增第二系统（覆盖式）：两个条件都真。
+        assert!(super::recovery_needs_boot_menu_session(
+            true,
+            TargetRole::NewWindows
+        ));
+    }
 
     #[test]
     fn secondary_menu_omits_deleted_objects_and_requires_primary() {
