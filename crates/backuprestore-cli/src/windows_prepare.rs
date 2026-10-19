@@ -3124,6 +3124,22 @@ fn storage_device_number(letter: char) -> Result<u32, TaskError> {
     storage_device_number_at(&format!(r"\\.\{letter}:"))
 }
 
+/// 把 BCD 里的设备路径（`\Device\HarddiskVolume6` 或 `\\.\HarddiskVolume6`）
+/// 解析成「磁盘号 + 分区号」。
+///
+/// 【2026-10-19 D4】独立恢复分区通常没有盘符，`reagentc` 写进 BCD 的恢复对象
+/// 就是这种设备路径形态。要把「恢复对象指向哪个分区」这件事真正核验出来，
+/// 只能走 `IOCTL_STORAGE_GET_DEVICE_NUMBER` + `IOCTL_DISK_GET_PARTITION_INFO_EX`，
+/// 不能靠字符串比盘符（没有盘符可比）。
+pub(crate) fn partition_of_device_path(device: &str) -> Result<(u32, u32), TaskError> {
+    let name = crate::text_parsing::device_path_volume_name(device)
+        .ok_or_else(|| err(&format!("设备路径形态无法识别：{device}")))?;
+    let path = format!(r"\\.\{name}");
+    let disk = storage_device_number_at(&path)?;
+    let physical = physical_volume_identity_at(&path, disk)?;
+    Ok((disk, physical.partition_number))
+}
+
 fn open_device(path: &[u16]) -> Result<*mut c_void, TaskError> {
     let handle = unsafe {
         CreateFileW(

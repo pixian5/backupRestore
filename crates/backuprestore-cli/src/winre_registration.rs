@@ -133,6 +133,56 @@ fn object<'a>(text: &'a str, id: &str) -> Result<&'a str, TaskError> {
     Ok(blocks[0])
 }
 
+/// 已启用的 WinRE 实际落在哪个分区，以及本次会话里它的盘符（若该分区有盘符）。
+///
+/// 【2026-10-19 D4】旧代码假设「WinRE 一定在目标系统分区上」，把「已启用 WinRE
+/// 在独立恢复分区」直接判成异常。实机上本机 WinRE 就在 `disk0/partition6`
+/// （独立恢复分区，Y:），于是 bcdboot 成功后 `reconnect` 硬失败 → 任务 failed、
+/// WinRE 被禁用、recoverysequence 被清。恢复分区是 Windows 的正常布局之一，
+/// 只要它能被验证（分区存在 + winre.wim/boot.sdi 齐备），重接就是合法动作。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveryPayload {
+    location: String,
+    disk: u32,
+    partition: u32,
+    letter: Option<char>,
+}
+
+impl RecoveryPayload {
+    /// 同分区场景（WinRE 就在目标系统卷上）：盘符即目标盘符。
+    fn at_location(location: &str, letter: char) -> Self {
+        let (disk, partition) = parse_recovery_location(location).unwrap_or((0, 0));
+        Self {
+            location: location.to_string(),
+            disk,
+            partition,
+            letter: Some(letter),
+        }
+    }
+}
+
+/// 从 `reagentc /info` 的 WinRE 位置里解析磁盘号/分区号。
+///
+/// 接受 `\\?\globalroot\device\harddisk0\partition6\recovery\windowsre` 与
+/// `\device\harddisk0\partition6\...` 两种写法；解析不出就返回 `None`，
+/// 由调用方决定是拒绝还是退回原判据（绝不猜一个分区号出来）。
+fn parse_recovery_location(value: &str) -> Option<(u32, u32)> {
+    let normalized = value.trim().to_ascii_lowercase().replace('/', "\\");
+    let mut disk = None;
+    let mut partition = None;
+    for part in normalized.split('\\').filter(|part| !part.is_empty()) {
+        if let Some(rest) = part.strip_prefix("harddisk") {
+            disk = rest.parse::<u32>().ok();
+        } else if let Some(rest) = part.strip_prefix("partition") {
+            partition = rest.parse::<u32>().ok();
+        }
+    }
+    match (disk, partition) {
+        (Some(disk), Some(partition)) if partition > 0 => Some((disk, partition)),
+        _ => None,
+    }
+}
+
 fn verify(
     info: &Info,
     text: &str,
@@ -140,10 +190,31 @@ fn verify(
     letter: char,
     location: &str,
 ) -> Result<(), TaskError> {
-    if !info.enabled || info.location.as_deref() != Some(location) {
+    verify_with_payload(
+        info,
+        text,
+        loader,
+        letter,
+        &RecoveryPayload::at_location(location, letter),
+    )
+}
+
+fn verify_with_payload(
+    info: &Info,
+    text: &str,
+    loader: &str,
+    system_letter: char,
+    payload: &RecoveryPayload,
+) -> Result<(), TaskError> {
+    if !info.enabled
+        || !info
+            .location
+            .as_deref()
+            .is_some_and(|location| location.eq_ignore_ascii_case(&payload.location))
+    {
         return Err(crate::err("WinRE 未启用或注册位置与目标分区不符"));
     }
-    if !crate::pe_safety::target_loader(text, letter)?.eq_ignore_ascii_case(loader) {
+    if !crate::pe_safety::target_loader(text, system_letter)?.eq_ignore_ascii_case(loader) {
         return Err(crate::err("WinRE 关联的目标系统加载器已变化"));
     }
     let text = text.replace("\r\n", "\n");
@@ -158,30 +229,138 @@ fn verify(
     if info.recovery_id.as_deref() != Some(recovery.as_str()) {
         return Err(crate::err("BCD 恢复关联与 WinRE 注册标识符不一致"));
     }
-    verify_recovery_object(&text, &recovery, letter)
+    verify_recovery_object(&text, &recovery, payload)
 }
 
-fn verify_recovery_object(text: &str, recovery: &str, letter: char) -> Result<(), TaskError> {
+/// 把 `ramdisk=[<分区>]<路径>,{选项对象}` 拆成三段。
+fn split_ramdisk_device(device: &str) -> Result<(String, String, String), TaskError> {
+    let rest = device
+        .strip_prefix("ramdisk=")
+        .ok_or_else(|| crate::err("恢复加载器设备不是内存盘"))?;
+    let (token, rest) = rest
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']'))
+        .ok_or_else(|| crate::err("恢复加载器设备缺少分区标识"))?;
+    let (path, options) = rest
+        .rsplit_once(',')
+        .ok_or_else(|| crate::err("恢复加载器设备缺少选项对象"))?;
+    Ok((
+        token.trim().to_string(),
+        path.trim().to_string(),
+        options.trim().to_string(),
+    ))
+}
+
+/// 恢复对象里引用的分区，必须就是 `reagentc` 登记的 WinRE 所在分区。
+///
+/// 两种合法写法：盘符 `x:` 与设备路径 `\device\harddiskvolumen`（独立恢复分区
+/// 没有盘符时 BCD 只能写设备路径）。判据统一落到「磁盘号 + 分区号」上。
+fn verify_partition_token(
+    token: &str,
+    payload: &RecoveryPayload,
+    label: &str,
+) -> Result<(), TaskError> {
+    let token = token.trim().trim_end_matches('\\');
+    if token.len() == 2
+        && token.ends_with(':')
+        && let Some(letter) = token.chars().next().filter(char::is_ascii_alphabetic)
+    {
+        if let Some(expected) = payload.letter
+            && letter.eq_ignore_ascii_case(&expected)
+        {
+            return Ok(());
+        }
+        return verify_partition_token_by_letter(letter, payload, label);
+    }
+    // 【2026-10-19 实机缺陷修复】前缀必须大小写无关：本 crate 的 field() 把 BCD
+    // 字段值统一小写化（`\device\harddiskvolume6`），而 bcdedit/bcdboot 写出的是
+    // 大写 `\Device\HarddiskVolume6`。只认一种写法就会把合法设备路径误判成
+    // 「分区标识无法识别」，或在下一跳 partition_of_device_path 里再栽一次。
+    let lowered = token.to_ascii_lowercase();
+    if lowered.starts_with(r"\device\") || lowered.starts_with(r"\\.\") {
+        return verify_partition_token_by_device(token, payload, label);
+    }
+    Err(crate::err(&format!("{label}的分区标识无法识别：{token}")))
+}
+
+#[cfg(windows)]
+fn verify_partition_token_by_letter(
+    letter: char,
+    payload: &RecoveryPayload,
+    label: &str,
+) -> Result<(), TaskError> {
+    let live = crate::windows_prepare::volume_identity(letter)?;
+    if live.disk_number == Some(payload.disk) && live.partition_number == Some(payload.partition) {
+        return Ok(());
+    }
+    Err(crate::err(&format!(
+        "{label}指向的 {letter}: 不是登记位置所在的 disk{}/partition{}",
+        payload.disk, payload.partition
+    )))
+}
+
+#[cfg(not(windows))]
+fn verify_partition_token_by_letter(
+    _letter: char,
+    _payload: &RecoveryPayload,
+    _label: &str,
+) -> Result<(), TaskError> {
+    Err(crate::err("恢复对象分区核对仅在 Windows 上可用"))
+}
+
+#[cfg(windows)]
+fn verify_partition_token_by_device(
+    token: &str,
+    payload: &RecoveryPayload,
+    label: &str,
+) -> Result<(), TaskError> {
+    let (disk, partition) = crate::windows_prepare::partition_of_device_path(token)?;
+    if disk == payload.disk && partition == payload.partition {
+        return Ok(());
+    }
+    Err(crate::err(&format!(
+        "{label}指向的 {token} 是 disk{disk}/partition{partition}，不是登记位置所在的 disk{}/partition{}",
+        payload.disk, payload.partition
+    )))
+}
+
+#[cfg(not(windows))]
+fn verify_partition_token_by_device(
+    _token: &str,
+    _payload: &RecoveryPayload,
+    _label: &str,
+) -> Result<(), TaskError> {
+    Err(crate::err("恢复对象分区核对仅在 Windows 上可用"))
+}
+
+fn verify_recovery_object(
+    text: &str,
+    recovery: &str,
+    payload: &RecoveryPayload,
+) -> Result<(), TaskError> {
     let re = object(text, recovery)?;
     let device = field(re, "device")?;
-    let prefix = format!(
-        "ramdisk=[{}:]\\recovery\\windowsre\\winre.wim,",
-        letter.to_ascii_lowercase()
-    );
-    let options = device
-        .strip_prefix(&prefix)
-        .ok_or_else(|| crate::err("恢复加载器未指向目标原始 Winre.wim"))?;
-    if crate::bcd_identifier_from_line(options) != Some(options)
-        || field(re, "osdevice")? != device
+    let (token, path, options) = split_ramdisk_device(&device)?;
+    if !path.eq_ignore_ascii_case("\\recovery\\windowsre\\winre.wim") {
+        return Err(crate::err("恢复加载器未指向原始 Winre.wim"));
+    }
+    if crate::bcd_identifier_from_line(&options) != Some(options.as_str()) {
+        return Err(crate::err("恢复加载器选项对象标识符无效"));
+    }
+    verify_partition_token(&token, payload, "恢复加载器设备")?;
+    if field(re, "osdevice")? != device
         || field(re, "path")? != "\\windows\\system32\\winload.efi"
         || field(re, "winpe")? != "yes"
     {
         return Err(crate::err("恢复加载器设备或执行模式不完整"));
     }
-    let ramdisk = object(text, options)?;
-    if field(ramdisk, "ramdisksdidevice")? != format!("partition={}:", letter.to_ascii_lowercase())
-        || field(ramdisk, "ramdisksdipath")? != "\\recovery\\windowsre\\boot.sdi"
-    {
+    let ramdisk = object(text, &options)?;
+    let sdi_device = field(ramdisk, "ramdisksdidevice")?;
+    let sdi_token = sdi_device
+        .strip_prefix("partition=")
+        .ok_or_else(|| crate::err("恢复内存盘启动设备格式无效"))?;
+    verify_partition_token(sdi_token, payload, "恢复内存盘启动设备")?;
+    if field(ramdisk, "ramdisksdipath")? != "\\recovery\\windowsre\\boot.sdi" {
         return Err(crate::err("恢复内存盘启动文件不在目标注册目录"));
     }
     Ok(())
@@ -298,6 +477,54 @@ fn repair_with_mode(
         }
         fn identity(&self) -> Result<(), TaskError> {
             pe_safety::verify_binding(self.expected, &wp::volume_identity(self.letter)?, false)
+        }
+        /// 已启用 WinRE 的恢复载荷位置（D4）。
+        ///
+        /// 同分区（WinRE 在目标系统卷上）→ 直接用目标盘符，行为与旧代码一致。
+        /// 独立恢复分区 → **必须**先证明它是一个真实存在、原件齐备的分区，才允许
+        /// 重接；证明不了就硬失败，绝不在"位置不明"的情况下改 BCD。
+        fn recovery_payload(&self, info: &Info) -> Result<RecoveryPayload, TaskError> {
+            let location = info
+                .location
+                .clone()
+                .ok_or_else(|| crate::err("已启用 WinRE 缺少注册位置"))?;
+            let (disk, partition) = parse_recovery_location(&location).ok_or_else(|| {
+                crate::err(&format!("已启用 WinRE 的注册位置无法解析：{location}"))
+            })?;
+            if location.eq_ignore_ascii_case(&self.location) {
+                return Ok(RecoveryPayload {
+                    location,
+                    disk,
+                    partition,
+                    letter: Some(self.letter),
+                });
+            }
+            let letter = crate::letter_for_partition(disk, partition, self.log)?;
+            let root = format!(
+                r"\\?\GLOBALROOT\device\harddisk{disk}\partition{partition}\recovery\windowsre"
+            );
+            for name in ["winre.wim", "boot.sdi"] {
+                let path = format!(r"{root}\{name}");
+                let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                if size == 0 {
+                    return Err(crate::err(&format!(
+                        "已启用 WinRE 位于独立恢复分区（{location}），但该分区缺少可用的 {name}，拒绝重接"
+                    )));
+                }
+            }
+            append_log(
+                self.log,
+                &format!(
+                    "已启用 WinRE 位于独立恢复分区 {location}（现场盘符 {:?}），恢复原件齐备，按独立分区重接",
+                    letter
+                ),
+            )?;
+            Ok(RecoveryPayload {
+                location,
+                disk,
+                partition,
+                letter,
+            })
         }
     }
     impl Backend for WindowsBackend<'_> {
@@ -493,9 +720,7 @@ fn repair_with_mode(
         }
         fn reconnect(&mut self, info: &Info) -> Result<(), TaskError> {
             self.identity()?;
-            if info.location.as_deref() != Some(self.location.as_str()) {
-                return Err(crate::err("已启用 WinRE 不在目标分区，拒绝重接"));
-            }
+            let payload = self.recovery_payload(info)?;
             let recovery = info
                 .recovery_id
                 .as_deref()
@@ -504,7 +729,7 @@ fn repair_with_mode(
             // 两个存储都必须拥有经过完整核验的原件链；不能凭注册状态臆造恢复对象。
             for active in [false, true] {
                 let text = self.bcd(active)?.replace("\r\n", "\n");
-                verify_recovery_object(&text, recovery, self.letter)?;
+                verify_recovery_object(&text, recovery, &payload)?;
                 let os = object(&text, &self.loader)?;
                 let links: Vec<_> = os
                     .lines()
@@ -547,20 +772,9 @@ fn repair_with_mode(
         }
         fn verify(&mut self, info: &Info) -> Result<(), TaskError> {
             self.identity()?;
-            verify(
-                info,
-                &self.bcd(false)?,
-                &self.loader,
-                self.letter,
-                &self.location,
-            )?;
-            verify(
-                info,
-                &self.bcd(true)?,
-                &self.loader,
-                self.letter,
-                &self.location,
-            )?;
+            let payload = self.recovery_payload(info)?;
+            verify_with_payload(info, &self.bcd(false)?, &self.loader, self.letter, &payload)?;
+            verify_with_payload(info, &self.bcd(true)?, &self.loader, self.letter, &payload)?;
             for (file, hash) in &self.hashes {
                 if crate::sha256_file(file)? != *hash {
                     return Err(crate::err("注册过程改变了恢复原件"));
@@ -756,6 +970,103 @@ mod tests {
             "identifier {OS}\ndevice partition=P:\nosdevice partition=P:\npath \\Windows\\system32\\winload.efi\nrecoverysequence {RE}\nrecoveryenabled Yes\n\nidentifier {RE}\ndevice ramdisk=[P:]\\Recovery\\WindowsRE\\Winre.wim,{RD}\nosdevice ramdisk=[P:]\\Recovery\\WindowsRE\\Winre.wim,{RD}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n\nidentifier {RD}\nramdisksdidevice partition=P:\nramdisksdipath \\Recovery\\WindowsRE\\boot.sdi\n"
         )
     }
+    /// D4：`reagentc /info` 的 WinRE 位置必须能解析出磁盘/分区，否则无法判断
+    /// 「它是不是本机真实存在的独立恢复分区」。
+    #[test]
+    fn recovery_location_parses_both_spellings() {
+        assert_eq!(
+            parse_recovery_location(LOC),
+            Some((1, 2)),
+            "globalroot 形态"
+        );
+        assert_eq!(
+            parse_recovery_location(r"\device\harddisk0\partition6\Recovery\WindowsRE"),
+            Some((0, 6)),
+            "设备路径形态"
+        );
+        assert_eq!(
+            parse_recovery_location(r"\\?\GLOBALROOT\device\harddisk12\partition3\recovery\windowsre"),
+            Some((12, 3)),
+            "大写与多位数"
+        );
+        for bad in [
+            "",
+            "enabled",
+            r"\device\harddisk0\partition0\recovery\windowsre",
+            r"\device\harddisk0\recovery\windowsre",
+            r"\device\harddiskx\partition2\recovery",
+        ] {
+            assert_eq!(parse_recovery_location(bad), None, "{bad}");
+        }
+    }
+
+    /// D4：独立恢复分区上的恢复对象（设备路径写法）必须能通过校验，
+    /// 指向别的分区则必须被拒。非 Windows 构建下设备号无法核对，一律拒绝。
+    #[test]
+    fn recovery_object_accepts_only_the_registered_partition() {
+        let device_bcd = format!(
+            "identifier {OS}\ndevice partition=P:\nosdevice partition=P:\npath \\Windows\\system32\\winload.efi\nrecoverysequence {RE}\nrecoveryenabled Yes\n\nidentifier {RE}\ndevice ramdisk=[\\Device\\HarddiskVolume6]\\Recovery\\WindowsRE\\Winre.wim,{RD}\nosdevice ramdisk=[\\Device\\HarddiskVolume6]\\Recovery\\WindowsRE\\Winre.wim,{RD}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n\nidentifier {RD}\nramdisksdidevice partition=\\Device\\HarddiskVolume6\nramdisksdipath \\Recovery\\WindowsRE\\boot.sdi\n"
+        );
+        let independent = RecoveryPayload {
+            location: r"\\?\globalroot\device\harddisk0\partition6\recovery\windowsre".into(),
+            disk: 0,
+            partition: 6,
+            letter: None,
+        };
+        // 设备路径写法：只能在 Windows 上真正解析设备号。
+        let outcome = verify_recovery_object(&device_bcd, RE, &independent);
+        if cfg!(windows) {
+            assert!(outcome.is_ok(), "{outcome:?}");
+        } else {
+            assert!(outcome.is_err(), "非 Windows 不得凭设备路径放行");
+        }
+        // 盘符写法在独立分区没有盘符时必须拒绝（不能拿目标盘符顶替）。
+        assert!(verify_recovery_object(&bcd(), RE, &independent).is_err());
+        // 同分区场景：盘符写法照旧通过。
+        let same = RecoveryPayload::at_location(LOC, 'P');
+        assert!(verify_recovery_object(&bcd(), RE, &same).is_ok());
+        // 盘符指向别的分区仍然拒绝。
+        assert!(verify_recovery_object(&bcd(), RE, &RecoveryPayload::at_location(LOC, 'Q')).is_err());
+    }
+
+    /// 【2026-10-19 实机缺陷修复】设备路径的两种大小写写法都必须路由到
+    /// 「磁盘号 + 分区号」核对（macOS 上即平台存根报错），而不是在前置字符串
+    /// 检查里就被判「无法识别」。本 crate 的 field() 把 BCD 字段值统一小写化，
+    /// 而 bcdedit/bcdboot 写大写 `\Device\`——旧实现两处判据各只认一种写法，
+    /// 实机 PE 内 recover 的 WinRE 重接因此失败。
+    #[test]
+    fn partition_token_routing_is_case_insensitive() {
+        let payload = RecoveryPayload {
+            location: LOC.into(),
+            disk: 0,
+            partition: 6,
+            letter: None,
+        };
+        for accepted in [
+            r"\Device\HarddiskVolume6",
+            r"\device\harddiskvolume6",
+            r"\DEVICE\HARDDISKVOLUME6",
+            r"\\.\HarddiskVolume6",
+        ] {
+            let error = verify_partition_token(accepted, &payload, "测试")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("仅在 Windows 上可用"),
+                "{accepted} 应路由到设备号核对，实际：{error}"
+            );
+        }
+        for rejected in ["C", r"\Device", r"\DeviceHarddiskVolume6", "partition=C:", ""] {
+            let error = verify_partition_token(rejected, &payload, "测试")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("无法识别"),
+                "{rejected} 应被判无法识别，实际：{error}"
+            );
+        }
+    }
+
     #[test]
     fn info_requires_unique_known_status() {
         assert!(!parse_info("Windows RE 状态: Disabled").unwrap().enabled);

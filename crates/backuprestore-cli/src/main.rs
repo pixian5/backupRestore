@@ -1060,6 +1060,20 @@ pub(crate) fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
 
 fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), TaskError> {
     let store = TaskStore::new(root);
+    // 【2026-10-19 D1】`recover` 的第一个参数是**工作区根**，内部再拼 `tasks/<id>`。
+    // 传成 `...\tasks` 时旧代码只报 `os error 3`，连是哪个路径都看不出来——在 PE 里
+    // 排查这个代价极高（无 shell、无 tasklist，只能截图猜）。先做一次显式存在性
+    // 检查，把完整路径和正确用法一起写进错误。
+    let task_path = store
+        .task_path(&id)
+        .map_err(|error| err(&format!("任务标识无效：{id}（{error}）")))?;
+    if !task_path.is_file() {
+        return Err(err(&format!(
+            "任务文件不存在：{}；recover 的第一个参数必须是**工作区根目录**\
+             （包含 tasks 子目录的那一层，例如 H:\\brwork），不是 tasks 目录本身",
+            task_path.display()
+        )));
+    }
     let mut task = store.load(&id)?;
     let log = store.log_path(&id)?;
     append_log(
@@ -1140,11 +1154,22 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
     };
     #[cfg(not(windows))]
     let metadata_values: Option<BTreeMap<String, String>> = None;
+    // 【2026-10-19 D3】EFI 根必须在这里（STEP 1 之前）就解析好。旧代码把它留到
+    // STEP 3，而 PE 里 ESP 默认没有盘符：镜像照灌 30GB 之后才发现没有 EFI 根，
+    // 等于白灌一遍（D3）。现在提前解析，并且不再强制 `--efi-root`——能自动挂载
+    // 就自动挂载，挂不上就在**任何写盘动作之前**失败。
+    #[cfg(windows)]
+    let efi_root: Option<PathBuf> = match options.efi_root.clone() {
+        Some(root) => Some(root),
+        None => resolve_efi_root_for_recovery(&task, &log, metadata_values.as_ref())?,
+    };
+    #[cfg(not(windows))]
+    let efi_root: Option<PathBuf> = options.efi_root.clone();
     let result = recover_windows(
         &store,
         &mut task,
         &log,
-        options.efi_root.as_deref(),
+        efi_root.as_deref(),
         metadata_values.as_ref(),
         false,
         None,
@@ -2973,7 +2998,7 @@ fn recover_windows(
     let image_path = task
         .image
         .as_ref()
-        .map(|image| resolve_volume_path(&image.volume, &image.relative_path))
+        .map(|image| resolve_volume_path(&image.volume, &image.relative_path, log))
         .transpose()?;
     if let Some(path) = &image_path {
         let image = task.image.as_ref().expect("image path implies image");
@@ -3057,11 +3082,11 @@ fn recover_windows(
                 .destination
                 .clone()
                 .ok_or_else(|| err("missing destination"))?;
-            let source_path = resolve_volume_root(&source)?;
+            let source_path = resolve_volume_root(&source, log)?;
             // v1.7.11 新通道：载荷只在镜像卷上，注册位全程只读，所以捕获进镜像的
             // 天生就是任务前的干净 WinRE —— 方案 D 的「捕获前翻回干净件」不再需要。
             let destination_path =
-                resolve_volume_path(&destination.volume, &destination.relative_path)?;
+                resolve_volume_path(&destination.volume, &destination.relative_path, log)?;
             // 备份索引名：任务自定义（GUI 默认「系统版本+年月日」，如
             // `Windows 11 26200.9550 20261015`）或兜底默认名。CLI 侧没有
             // image_name 时不能照搬 GUI 的算法——这里可能跑在 RE 里，读到的
@@ -3345,11 +3370,12 @@ fn recover_windows(
                 return Err(err("secondary target requires add-secondary boot plan"));
             }
             let image_path = image_path.ok_or_else(|| err("missing image"))?;
-            let target_root = resolve_volume_root(&target.volume)?;
-            let target_letter = target
-                .volume
-                .drive_letter
-                .ok_or_else(|| err("目标盘符缺失"))?;
+            // 目标卷同样按身份解析：PE 里记录盘符可能已被别的卷占用，而
+            // `diskpart select disk/partition` 用的磁盘编号是稳定的，所以只要
+            // 拿到"这个卷现在叫什么字母"就能安全格式化/应用。
+            let target_letter = resolve_volume_letter(&target.volume, log)?;
+            let target_root = PathBuf::from(format!("{target_letter}:\\"));
+            target.volume.drive_letter = Some(target_letter);
             let live = windows_prepare::volume_identity(target_letter)?;
             let previous = (target.volume.disk_number, target.volume.partition_number);
             target.volume = pe_safety::rebind_after_boot(
@@ -3746,14 +3772,292 @@ fn interrupt_after_stage_if_requested(
     std::process::exit(0);
 }
 
+/// 记录的身份与现场身份是否指向**同一个卷**。
+///
+/// 判据全部是「格式化也不会变」的稳定标识：卷 GUID、分区 GUID、磁盘 GUID +
+/// 分区偏移/大小。**绝不**用盘符或卷序列号——盘符重启就重排（D2 的根因），
+/// 序列号格式化就变。
 #[cfg(windows)]
-fn resolve_volume_root(volume: &backuprestore_core::VolumeIdentity) -> Result<PathBuf, TaskError> {
-    volume
-        .drive_letter
-        .map(|letter| PathBuf::from(format!("{}:\\", letter)))
-        .ok_or_else(|| {
-            err("Recovery volume has no resolved drive letter; front end must record or assign one")
-        })
+fn volume_identity_matches(
+    recorded: &backuprestore_core::VolumeIdentity,
+    live: &backuprestore_core::VolumeIdentity,
+) -> bool {
+    if !recorded.volume_guid.is_empty()
+        && crate::text_parsing::same_volume(&recorded.volume_guid, &live.volume_guid)
+    {
+        return true;
+    }
+    if !recorded.partition_guid.is_empty()
+        && recorded.partition_guid.eq_ignore_ascii_case(&live.partition_guid)
+        && recorded.partition_offset == live.partition_offset
+        && recorded.partition_size == live.partition_size
+    {
+        return true;
+    }
+    // 老任务（副档里没有卷 GUID/分区 GUID）的兜底：磁盘 GUID + 偏移 + 大小。
+    // 偏移必须非零，否则「同一块盘上偏移 0 的假匹配」会把别的卷当成目标。
+    !recorded.disk_guid.is_empty()
+        && recorded.partition_offset > 0
+        && recorded.disk_guid.eq_ignore_ascii_case(&live.disk_guid)
+        && recorded.partition_offset == live.partition_offset
+        && recorded.partition_size == live.partition_size
+}
+
+/// 把任务记录的卷身份解析成**本次运行里真实可用**的盘符。
+///
+/// 【2026-10-19 D2】旧实现直接用任务里记的盘符。PE/WinRE 的盘符是启动时按
+/// 发现顺序分配的，与准备阶段记的字母没有任何契约：实机里记录 `H:` 的镜像卷
+/// 在 PE 里变成了 `E:`，于是 `failed to read image metadata (os error 3)`——
+/// 连"哪个卷没找到"都看不出来。现在按顺序：
+///   ① 记录盘符（必须复核身份，防止它已经指向别的卷）；
+///   ② `mountvol` 现挂载表里按卷 GUID 找它当前的字母；
+///   ③ 逐字母探测（老任务没有卷 GUID 时的兜底）；
+///   ④ 卷在、但当前没有盘符（PE 常见）→ 按 GUID 分配一个空闲字母。
+#[cfg(windows)]
+fn resolve_volume_letter(
+    volume: &backuprestore_core::VolumeIdentity,
+    log: &Path,
+) -> Result<char, TaskError> {
+    let mut tried: Vec<String> = Vec::new();
+    if let Some(letter) = volume.drive_letter {
+        match crate::windows_prepare::volume_identity(letter) {
+            Ok(live) if volume_identity_matches(volume, &live) => {
+                append_log(
+                    log,
+                    &format!("卷已解析：记录盘符 {letter}: 仍指向同一卷（身份复核通过）"),
+                )?;
+                return Ok(letter);
+            }
+            Ok(live) => tried.push(format!(
+                "{letter}: 已被别的卷占用（现场卷 GUID {}）",
+                live.volume_guid
+            )),
+            Err(error) => tried.push(format!("{letter}: 不可读（{error}）")),
+        }
+    }
+    let listing = match enumerate_mounted_volumes(log) {
+        Ok(listing) => listing,
+        Err(error) => {
+            append_log(
+                log,
+                &format!("mountvol 挂载表不可用（{error}）；退回逐字母探测"),
+            )?;
+            Vec::new()
+        }
+    };
+    if !volume.volume_guid.is_empty() {
+        for (guid, letters) in &listing {
+            if !crate::text_parsing::same_volume(guid, &volume.volume_guid) {
+                continue;
+            }
+            for &letter in letters {
+                if let Ok(live) = crate::windows_prepare::volume_identity(letter)
+                    && volume_identity_matches(volume, &live)
+                {
+                    append_log(
+                        log,
+                        &format!(
+                            "卷已按卷 GUID 解析到现场盘符 {letter}:（任务记录 {:?}）",
+                            volume.drive_letter
+                        ),
+                    )?;
+                    return Ok(letter);
+                }
+            }
+        }
+    }
+    // 逐字母探测：老任务可能没有卷 GUID，或 mountvol 输出不可解析。
+    for letter in ('A'..='Z').filter(|letter| !matches!(letter, 'A' | 'B' | 'X')) {
+        match crate::windows_prepare::volume_identity(letter) {
+            Ok(live) if volume_identity_matches(volume, &live) => {
+                append_log(
+                    log,
+                    &format!("卷已按身份逐字母探测解析到 {letter}:（任务记录 {:?}）", volume.drive_letter),
+                )?;
+                return Ok(letter);
+            }
+            Ok(_) => {}
+            Err(_) => {}
+        }
+    }
+    // 卷存在但没有盘符：按卷 GUID 分配一个空闲字母（PE 里恢复分区/ESP 常见）。
+    if !volume.volume_guid.is_empty()
+        && let Ok(letter) = assign_letter_by_volume_guid(volume, &listing, log)
+    {
+        return Ok(letter);
+    }
+    Err(err(&format!(
+        "无法定位任务记录的卷（卷 GUID {}，磁盘 {:?} 分区 {:?}，大小 {}，记录盘符 {:?}）；已尝试：{}",
+        if volume.volume_guid.is_empty() {
+            "<未记录>"
+        } else {
+            &volume.volume_guid
+        },
+        volume.disk_number,
+        volume.partition_number,
+        volume.partition_size,
+        volume.drive_letter,
+        if tried.is_empty() {
+            "无".to_string()
+        } else {
+            tried.join("；")
+        }
+    )))
+}
+
+/// 卷存在但当前没有盘符时，按卷 GUID 用 `mountvol` 分配一个空闲字母并复核身份。
+#[cfg(windows)]
+fn assign_letter_by_volume_guid(
+    volume: &backuprestore_core::VolumeIdentity,
+    listing: &[(String, Vec<char>)],
+    log: &Path,
+) -> Result<char, TaskError> {
+    let bare = crate::text_parsing::bare_volume_guid(&volume.volume_guid)
+        .and_then(|value| crate::text_parsing::require_guid(value, "卷").ok())
+        .ok_or_else(|| err("卷 GUID 形态无效，无法分配盘符"))?;
+    let path = format!(r"\\?\Volume{bare}\");
+    let mounts = MountedVolumes::new();
+    for letter in mount_letter_candidates(volume.drive_letter.unwrap_or('Z'), listing, &mounts) {
+        if !matches!(query_mounted_volume(letter, log)?, VolumeMountQuery::Unmounted) {
+            continue;
+        }
+        let out = log.with_extension(format!("mountvol-{letter}.out"));
+        let _ = fs::remove_file(&out);
+        let outcome = windows_command::run_program(
+            "mountvol.exe",
+            &[format!("{letter}:"), path.clone()],
+            Some(&out),
+            30_000,
+        );
+        let text = fs::read(&out)
+            .map(|bytes| crate::text_parsing::decode_windows_bytes(&bytes))
+            .unwrap_or_default();
+        let _ = fs::remove_file(&out);
+        if !outcome.is_success() {
+            append_log(
+                log,
+                &format!("按 GUID 给 {letter}: 分配盘符失败（{outcome}）：{text}"),
+            )?;
+            continue;
+        }
+        let live = crate::windows_prepare::volume_identity(letter)?;
+        if volume_identity_matches(volume, &live) {
+            append_log(
+                log,
+                &format!("卷原本没有盘符，已按 GUID 分配到 {letter}: 并复核身份通过"),
+            )?;
+            return Ok(letter);
+        }
+        append_log(
+            log,
+            &format!("{letter}: 分配后身份不符（现场 {}），继续尝试下一个字母", live.volume_guid),
+        )?;
+    }
+    Err(err("卷存在但无法分配盘符"))
+}
+
+/// 按磁盘号 + 分区号找该分区**当前**的盘符（没有盘符返回 `None`）。
+///
+/// 用途：WinRE 落在独立恢复分区时，BCD 恢复对象可能用盘符写法，而那个盘符是
+/// 注册当时的临时字母。这里用磁盘/分区编号（稳定）反查现场字母，供
+/// `winre_registration` 核对恢复对象到底指向哪个分区。
+#[cfg(windows)]
+pub(crate) fn letter_for_partition(
+    disk: u32,
+    partition: u32,
+    log: &Path,
+) -> Result<Option<char>, TaskError> {
+    for letter in ('C'..='Z').filter(|letter| !matches!(letter, 'X')) {
+        let Ok(live) = crate::windows_prepare::volume_identity(letter) else {
+            continue;
+        };
+        if live.disk_number == Some(disk) && live.partition_number == Some(partition) {
+            append_log(
+                log,
+                &format!("disk{disk}/partition{partition} 在现场对应盘符 {letter}:"),
+            )?;
+            return Ok(Some(letter));
+        }
+    }
+    append_log(
+        log,
+        &format!("disk{disk}/partition{partition} 在现场没有盘符（按设备路径核对）"),
+    )?;
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn resolve_volume_root(
+    volume: &backuprestore_core::VolumeIdentity,
+    log: &Path,
+) -> Result<PathBuf, TaskError> {
+    Ok(PathBuf::from(format!(
+        "{}:\\",
+        resolve_volume_letter(volume, log)?
+    )))
+}
+
+/// 直接恢复（`recover` 命令）的 EFI 根解析。
+///
+/// 【2026-10-19 D3】系统还原必须写 BCD，而 PE 里 ESP 默认没有盘符。旧代码把
+/// `find_efi_root` 放在 STEP 3（镜像灌完之后），于是"不传 `--efi-root` 就白灌
+/// 一遍镜像"。现在在 STEP 1 之前解析：优先用任务 env 里记录的 EFI 卷身份，
+/// 其次免盘符探测 ESP，两条路都失败就在**任何写盘动作之前**硬失败。
+///
+/// 数据卷还原（目标不是 Windows 系统卷）不需要 BCD，返回 `None` 即可，不得
+/// 因为"找不到 ESP"而阻断一个本来不需要引导的还原。
+#[cfg(windows)]
+fn resolve_efi_root_for_recovery(
+    task: &Task,
+    log: &Path,
+    values: Option<&BTreeMap<String, String>>,
+) -> Result<Option<PathBuf>, TaskError> {
+    if !matches!(
+        task.operation,
+        Operation::RestoreExisting | Operation::CreateSecondary
+    ) {
+        return Ok(None);
+    }
+    let target = task.target.as_ref().ok_or_else(|| err("missing target"))?;
+    let target_root = resolve_volume_root(&target.volume, log)?;
+    // 判据与收尾路由一致：目标当前是 Windows 系统卷，或本次要把完整系统装进
+    // 一个空卷（NewWindows）。数据卷还原两个条件都不满足 → 不需要 EFI。
+    let target_is_windows = pe_safety::target_is_windows_volume(&target_root).unwrap_or(false);
+    if !target_is_windows && task.target.as_ref().map(|t| t.role.clone()) != Some(backuprestore_core::TargetRole::NewWindows)
+    {
+        append_log(
+            log,
+            "目标卷不是 Windows 系统卷且不是新增系统，判定为数据卷还原：不需要 EFI 根，跳过提前挂载",
+        )?;
+        return Ok(None);
+    }
+    if let Some(values) = values
+        && values.contains_key("EFI_VOLUME_GUID")
+    {
+        let mut mounts = MountedVolumes::new();
+        match mount_env_volume(&mut mounts, values, "EFI", 'Z', log, false) {
+            Ok(letter) => {
+                append_log(
+                    log,
+                    &format!("STEP 1 前已按任务记录挂载 ESP 到 {letter}:（提前解析 EFI 根）"),
+                )?;
+                return Ok(Some(PathBuf::from(format!("{letter}:\\"))));
+            }
+            Err(error) => {
+                append_log(
+                    log,
+                    &format!("按任务记录挂载 ESP 失败（{error}）；改走免盘符探测"),
+                )?;
+            }
+        }
+    }
+    let identity = crate::windows_prepare::esp_identity_without_drive_letter()?;
+    let letter = resolve_volume_letter(&identity, log)?;
+    append_log(
+        log,
+        &format!("STEP 1 前免盘符探测到 ESP 并解析到 {letter}:（提前解析 EFI 根）"),
+    )?;
+    Ok(Some(PathBuf::from(format!("{letter}:\\"))))
 }
 
 #[cfg(windows)]
@@ -3852,8 +4156,10 @@ fn format_target_partition(
 fn resolve_volume_path(
     volume: &backuprestore_core::VolumeIdentity,
     relative: &str,
+    log: &Path,
 ) -> Result<PathBuf, TaskError> {
-    Ok(resolve_volume_root(volume)?.join(relative.replace('\\', std::path::MAIN_SEPARATOR_STR)))
+    Ok(resolve_volume_root(volume, log)?
+        .join(relative.replace('\\', std::path::MAIN_SEPARATOR_STR)))
 }
 #[cfg(windows)]
 fn find_efi_root(override_root: Option<&Path>) -> Result<PathBuf, TaskError> {

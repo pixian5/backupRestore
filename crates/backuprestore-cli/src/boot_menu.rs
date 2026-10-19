@@ -574,6 +574,45 @@ pub(crate) fn loader_identifier_for_partition(
     Ok(found.pop())
 }
 
+/// 校验 `bcdedit /enum {id} /v` 回读的菜单名是否与写入的一致。
+///
+/// 【2026-10-19 PE 实机缺陷修复】控制台代码页是**非 CJK**（如 WinPE 的 437/1252）
+/// 时，`bcdedit` 把非 ASCII 名字回读成每个汉字一个 `?`。BCD 里存的仍是正确的
+/// UTF-16（写入走宽字符命令行，没有丢），只是回读文本有损——旧实现拿
+/// `????? Windows` 和 `本次还原的 Windows` 做严格字面比对，必然不等，于是把
+/// 一次成功的还原判成「引导菜单名称回读不一致」并让任务 failed。
+///
+/// 现行策略：
+/// - `shown == expected`（含在线中文主机 CP936 的正常路径）：直接通过。
+/// - 纯 ASCII 名字严格字面比对，不一致仍判失败（真实校验不被削弱）。
+/// - 非 ASCII 名字且严格比对失败时，退化到「ASCII 骨架」比对：两边都剔除
+///   占位 `?` 与非 ASCII 字符后，剩余 ASCII 相同即认定一致。此时代码页本就
+///   无法逐字校验汉字，只能确认 ASCII 骨架没被写错（例如误写成别的系统名）。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn menu_name_matches(shown: Option<&str>, expected: &str) -> bool {
+    let Some(shown) = shown else {
+        return false;
+    };
+    let shown = shown.trim();
+    let expected = expected.trim();
+    if shown == expected {
+        return true;
+    }
+    if expected.is_ascii() {
+        return false;
+    }
+    ascii_skeleton(shown) == ascii_skeleton(expected)
+}
+
+/// 只保留 ASCII 且剔除代码页占位符 `?`。用于非 CJK 代码页下比对有损回读。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn ascii_skeleton(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii() && *c != '?')
+        .collect()
+}
+
 pub(crate) fn render_entries(plan: &BootMenuPlan, cursor: usize) -> String {
     plan.entries
         .iter()
@@ -1158,7 +1197,7 @@ pub(crate) fn apply(
                 .filter_map(|line| line.trim().split_once(char::is_whitespace))
                 .find(|(key, _)| matches!(*key, "description" | "说明"))
                 .map(|(_, value)| value.trim());
-            if shown != Some(entry.display_name.as_str()) {
+            if !menu_name_matches(shown, &entry.display_name) {
                 return Err(crate::err("引导菜单名称回读不一致"));
             }
         }
@@ -1230,6 +1269,54 @@ mod tests {
             ],
             timeout_seconds: TIMEOUT_DEFAULT,
         }
+    }
+
+    /// 【2026-10-19 PE 实机缺陷修复】非 CJK 代码页下 bcdedit 回读把每个汉字
+    /// 换成 `?`；BCD 里本身是对的，不能因此判失败。这条就是实机日志的原文形态。
+    #[test]
+    fn menu_name_matches_tolerates_non_cjk_readback_of_cjk_name() {
+        // 实机：写入「本次还原的 Windows」，PE 回读「????? Windows」。
+        assert!(menu_name_matches(
+            Some("????? Windows"),
+            "本次还原的 Windows"
+        ));
+        // 汉字逐字节变成 `?`（2 个/字）也要能过——骨架比对不关心 `?` 的个数。
+        assert!(menu_name_matches(
+            Some("?????????? Windows"),
+            "本次还原的 Windows"
+        ));
+        // 在线中文主机（CP936）回读正常，字面相等。
+        assert!(menu_name_matches(
+            Some("本次还原的 Windows"),
+            "本次还原的 Windows"
+        ));
+        // 前导/尾随空白不影响。
+        assert!(menu_name_matches(
+            Some("  ????? Windows  "),
+            "本次还原的 Windows"
+        ));
+    }
+
+    /// 纯 ASCII 名字必须保持严格字面比对——容忍不能削弱真实校验。
+    #[test]
+    fn menu_name_matches_stays_strict_for_ascii_names() {
+        assert!(menu_name_matches(Some("Windows 11"), "Windows 11"));
+        assert!(!menu_name_matches(Some("Windows 12"), "Windows 11"));
+        // ASCII 名字回读成 `?` 说明是真的写坏了，必须失败。
+        assert!(!menu_name_matches(Some("??????? 11"), "Windows 11"));
+    }
+
+    /// 骨架不同（误写成别的系统）仍要判失败，且读不到名字也不能放过。
+    #[test]
+    fn menu_name_matches_rejects_genuinely_different_names() {
+        assert!(!menu_name_matches(Some("Ubuntu"), "本次还原的 Windows"));
+        assert!(!menu_name_matches(Some("????? Linux"), "本次还原的 Windows"));
+        assert!(!menu_name_matches(None, "本次还原的 Windows"));
+        assert!(!menu_name_matches(None, "Windows 11"));
+        // 全是汉字的期望名 + 回读全是 `?`：骨架都为空，属代码页极限，
+        // 只能放行（无 ASCII 可校验）；但换成另一个纯 ASCII 系统名就不同。
+        assert!(menu_name_matches(Some("?????"), "我的工作系统"));
+        assert!(!menu_name_matches(Some("Linux"), "我的工作系统"));
     }
 
     #[test]

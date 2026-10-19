@@ -1086,6 +1086,28 @@ pub(crate) fn volume_path_to_device_path(path: &str) -> Option<String> {
     Some(device)
 }
 
+/// 从卷设备路径里取出卷设备名（`HarddiskVolumeN`），**大小写无关**。
+///
+/// 【2026-10-19 实机缺陷修复】`winre_registration::field` 会把 BCD 字段值统一
+/// 小写化，而 bcdedit/bcdboot 写进 BCD 的是 `\Device\HarddiskVolumeN` 大写形态。
+/// 旧实现（`windows_prepare::partition_of_device_path`）只认大写前缀，于是 PE 内
+/// recover 走到 WinRE 重接时，合法设备路径 `\device\harddiskvolume6` 被误判成
+/// 「设备路径形态无法识别」→ 任务 failed。卷设备名对 NT 命名空间本就大小写
+/// 无关，两种写法都必须放行。放这里是因为它必须能在非 Windows 构建下也跑单测。
+pub(crate) fn device_path_volume_name(device: &str) -> Option<&str> {
+    let trimmed = device.trim().trim_end_matches('\\');
+    let lowered = trimmed.to_ascii_lowercase();
+    // 前缀全是 ASCII，按字节切片的落点必然是字符边界。
+    let offset = if lowered.starts_with(r"\device\") {
+        r"\device\".len()
+    } else if lowered.starts_with(r"\\.\") {
+        r"\\.\".len()
+    } else {
+        return None;
+    };
+    Some(&trimmed[offset..])
+}
+
 /// verbatim 卷路径的前缀 `\\?\Volume`，用 ASCII 码拼出来。
 ///
 /// 单独一个函数是为了让「路径里到底有几个反斜杠」这件事只有一个地方说了算。
@@ -1928,6 +1950,49 @@ Hotfix(s):                 1 Hotfix(s) Installed.
             volume_path_to_device_path(r"\\.\PhysicalDrive0").as_deref(),
             Some(r"\\.\PhysicalDrive0")
         );
+    }
+
+    /// 【2026-10-19 实机缺陷修复】BCD 字段值在本 crate 内统一小写化，而
+    /// bcdedit/bcdboot 写出的是大写 `\Device\HarddiskVolumeN`——两种写法必须
+    /// 解析出卷设备名。旧实现只认大写前缀，PE 内 recover 的 WinRE 重接因此
+    /// 把合法设备路径误判成「形态无法识别」，任务 failed。
+    #[test]
+    fn device_path_volume_name_accepts_both_cases() {
+        assert_eq!(
+            device_path_volume_name(r"\Device\HarddiskVolume6"),
+            Some("HarddiskVolume6")
+        );
+        assert_eq!(
+            device_path_volume_name(r"\device\harddiskvolume6"),
+            Some("harddiskvolume6")
+        );
+        assert_eq!(
+            device_path_volume_name(r"\DEVICE\HARDDISKVOLUME6"),
+            Some("HARDDISKVOLUME6")
+        );
+        assert_eq!(
+            device_path_volume_name(r"\\.\HarddiskVolume6"),
+            Some("HarddiskVolume6")
+        );
+        assert_eq!(
+            device_path_volume_name(r"\\.\harddiskvolume6"),
+            Some("harddiskvolume6")
+        );
+        // 空白与尾部反斜杠都要容得下（BCD 文本里的常见形态）。
+        assert_eq!(
+            device_path_volume_name("  \\Device\\HarddiskVolume6\\  "),
+            Some("HarddiskVolume6")
+        );
+        for rejected in [
+            "",
+            "C:",
+            "partition=C:",
+            r"\Device",
+            r"\DeviceHarddiskVolume6",
+            r"\\?\GLOBALROOT\device\harddisk0\partition6\recovery\windowsre",
+        ] {
+            assert_eq!(device_path_volume_name(rejected), None, "{rejected}");
+        }
     }
     /// 方案 A 的第一层筛选：**只保留未挂载的卷**。
     ///
