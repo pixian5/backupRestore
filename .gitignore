@@ -158,6 +158,8 @@ htmlcov/
 
 # 编译产物与本机测试残留
 target/
+# PE/WinRE 排障时的临时日志与任务 JSON（内容已归档进 docs，不入库）
+_pe-logs/
 # Parallels 同步用的临时源码副本
 Documents/br-src/
 Documents/br-s238/

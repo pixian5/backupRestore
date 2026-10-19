@@ -1501,11 +1501,28 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
 /// - 用户想手动查 BCD / 看盘符 / 跑 `wpeutil`，**没有任何入口**；
 /// - 一旦我们的窗口起不来（建窗失败、panic），这台机器就成了黑屏。
 ///
-/// 这里在后台开一个**最大化**的 cmd 当常驻退路；本程序的窗口继续用
-/// `MB_SETFOREGROUND` 保持在前台，不会被它抢走。
+/// 这里在后台开一个**最大化**的 cmd 当常驻退路；本程序的窗口保持在前台，
+/// 不会被它抢走。
 ///
 /// 刻意用 `CreateProcessW` 而不是 `Command`：`Command` 设不了窗口显示状态，
 /// 而「最大化」是这个需求的一半（另一半是「在后台」）。
+///
+/// ## 2026-10-20 修复：「在后台」不能只靠创建标志（实机三次复现）
+///
+/// 旧实现用 `STARTF_USESHOWWINDOW` + `SW_SHOWMAXIMIZED` 创建。根据 Win32
+/// 文档，`SW_SHOWMAXIMIZED` **会激活窗口**——cmd 一起手就抢走前台，并且压在
+/// 随后才创建的进度窗之上：2026-10-19/20 三次实机（任务 2355190e /
+/// 6bf2ff22 / 7924c644）恢复全程 cmd 盖住「BackupRestore 恢复进度」窗，
+/// 键盘（B/L/M/K/P）全部打在控制台上。`MB_SETFOREGROUND` 只保得住模态框，
+/// 普通主窗抢不过被激活的 cmd。
+///
+/// 现在的顺序：
+/// ① 创建时用 `SW_SHOWMINNOACTIVE`（最小化且**不激活**，不抢前台）；
+/// ② 轮询等 cmd 的顶层窗口真正建出来（进程起来 ≠ 窗口就绪，按 PID 匹配）；
+/// ③ `ShowWindow(SW_SHOWMAXIMIZED)` 放大；
+/// ④ `SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)` 压到 z 序最底层。
+/// 前台则由进度窗创建后显式 `SetForegroundWindow` 抢回（见
+/// `recovery_progress::run_window`）——那里才是用户按 B 键的地方。
 #[cfg(windows)]
 pub(crate) fn launch_background_console() -> Result<(), TaskError> {
     #[repr(C)]
@@ -1552,8 +1569,30 @@ pub(crate) fn launch_background_console() -> Result<(), TaskError> {
         ) -> i32;
         fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
     }
+    // 「最大化 + 后台」这一半在 user32：ShowWindow 放大、SetWindowPos 压底；
+    // 窗口就绪等待（按 PID 找 cmd 顶层窗口）见 wait_for_toplevel_window。
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn ShowWindow(hwnd: *mut std::ffi::c_void, command: i32) -> i32;
+        fn SetWindowPos(
+            hwnd: *mut std::ffi::c_void,
+            insert_after: *mut std::ffi::c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
     const STARTF_USESHOWWINDOW: u32 = 0x0000_0001;
-    const SW_SHOWMAXIMIZED: u16 = 3;
+    // ⑦ 最小化且不激活（SW_SHOWMINNOACTIVE）——与 ③ 的 SW_SHOWMAXIMIZED 是
+    // 两个不同的值，别合并：前者管「创建时别抢前台」，后者管「之后放大」。
+    const SW_SHOWMINNOACTIVE: u16 = 7;
+    const SW_SHOWMAXIMIZED: i32 = 3;
+    const HWND_BOTTOM: *mut std::ffi::c_void = 1 as *mut _;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOACTIVATE: u32 = 0x0010;
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
     // `/k` 让窗口留在屏幕上（不是跑完就消失）；标题只作提示，不参与判据。
     let mut command_line: Vec<u16> = r#"cmd.exe /k title BackupRestore recovery console"#
@@ -1563,7 +1602,7 @@ pub(crate) fn launch_background_console() -> Result<(), TaskError> {
     let mut startup: StartupInfoW = unsafe { std::mem::zeroed() };
     startup.cb = std::mem::size_of::<StartupInfoW>() as u32;
     startup.flags = STARTF_USESHOWWINDOW;
-    startup.show_window = SW_SHOWMAXIMIZED;
+    startup.show_window = SW_SHOWMINNOACTIVE;
     let mut info: ProcessInformation = unsafe { std::mem::zeroed() };
     let ok = unsafe {
         CreateProcessW(
@@ -1582,11 +1621,93 @@ pub(crate) fn launch_background_console() -> Result<(), TaskError> {
     if ok == 0 {
         return Err(err("无法启动后台命令提示符（CreateProcessW 失败）"));
     }
+    let console_pid = info.process_id;
     unsafe {
         CloseHandle(info.thread);
         CloseHandle(info.process);
     }
+    // 等 cmd 的顶层窗口就绪后「最大化 + 压底」。窗口没拿到也不失败：控制台
+    // 只是个退路，进程已经活着（最坏情况是它以最小化待在任务栏外）。
+    match wait_for_toplevel_window(console_pid, std::time::Duration::from_secs(3)) {
+        Some(console) => unsafe {
+            // 先放大再压底：ShowWindow(SW_SHOWMAXIMIZED) 自身会激活，压底一步
+            // 把它按回 z 序最底层；SWP_NOACTIVATE 保证这一步不再激活它。
+            ShowWindow(console, SW_SHOWMAXIMIZED);
+            SetWindowPos(
+                console,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        },
+        None => {
+            return Err(err(
+                "后台命令提示符已启动，但 3 秒内没等到它的窗口（保持最小化，未最大化）",
+            ));
+        }
+    }
     Ok(())
+}
+
+/// 轮询等待 `pid` 进程的**可见顶层窗口**出现，超时返回 `None`。
+///
+/// 为什么必须等：`CreateProcessW` 返回时 cmd 的窗口往往还没建出来（conhost
+/// 初始化要几十到几百毫秒），直接 `ShowWindow` 会打在一个空句柄上。窗口就绪
+/// 后才有「最大化」可谈——这是「在后台最大化」需求的第二半。
+#[cfg(windows)]
+fn wait_for_toplevel_window(
+    pid: u32,
+    timeout: std::time::Duration,
+) -> Option<*mut std::ffi::c_void> {
+    // EnumWindows 回调不能捕获环境，用进程级静态传参。本函数只在恢复环境
+    // 启动路径调用一次，静态冲突风险为零；仍然在拿到结果后立即复位。
+    static TARGET_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static FOUND_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    unsafe extern "system" fn enum_callback(hwnd: *mut std::ffi::c_void, _lparam: isize) -> i32 {
+        let target = TARGET_PID.load(std::sync::atomic::Ordering::SeqCst);
+        if target == 0 {
+            return 0;
+        }
+        let mut window_pid: u32 = 0;
+        let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut window_pid) };
+        if visible && window_pid == target {
+            FOUND_HWND.store(hwnd as usize, std::sync::atomic::Ordering::SeqCst);
+            return 0; // 命中即停：继续枚举只会拿到同进程的其它零碎窗口
+        }
+        1
+    }
+    // 签名必须与 native_gui.rs 里那份同 crate 声明逐字一致（回调也要包
+    // Option），否则触发 clashing_extern_declarations 警告。
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumWindows(
+            callback: Option<unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32>,
+            lparam: isize,
+        ) -> i32;
+        fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, process_id: *mut u32) -> u32;
+        fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+    TARGET_PID.store(pid, std::sync::atomic::Ordering::SeqCst);
+    FOUND_HWND.store(0, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + timeout;
+    let found = loop {
+        unsafe { EnumWindows(Some(enum_callback), 0) };
+        let found = FOUND_HWND.load(std::sync::atomic::Ordering::SeqCst);
+        if found != 0 {
+            break Some(found as *mut std::ffi::c_void);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    TARGET_PID.store(0, std::sync::atomic::Ordering::SeqCst);
+    FOUND_HWND.store(0, std::sync::atomic::Ordering::SeqCst);
+    found
 }
 
 /// 从 `RecoveryTask.env` 读界面语言：`UI_LANGUAGE=en*` 用英文，其余一律中文

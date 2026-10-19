@@ -150,6 +150,7 @@ struct RecoveryPayload {
 
 impl RecoveryPayload {
     /// 同分区场景（WinRE 就在目标系统卷上）：盘符即目标盘符。
+    #[cfg(test)]
     fn at_location(location: &str, letter: char) -> Self {
         let (disk, partition) = parse_recovery_location(location).unwrap_or((0, 0));
         Self {
@@ -183,6 +184,11 @@ fn parse_recovery_location(value: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// 生产入口：位置从 `info.location` 拿，盘符即目标盘符。
+///
+/// 只被单测直接用（生产走 `verify_with_payload` + 显式载荷），所以留
+/// `#[cfg(test)]`；release 构建里它是死代码。
+#[cfg(test)]
 fn verify(
     info: &Info,
     text: &str,

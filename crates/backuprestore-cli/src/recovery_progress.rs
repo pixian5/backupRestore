@@ -352,6 +352,41 @@ struct WndClassExW {
     icon_sm: Hwnd,
 }
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetCurrentThreadId() -> u32;
+}
+
+/// 把本窗口放到前台并拿到键盘焦点。
+///
+/// 【2026-10-20 修复，对应用户 10-17「cmd 在后台、本程序保持前台」要求】
+/// 恢复环境先起了一个「最大化后台命令控制台」（`launch_background_console`，
+/// 创建标志 SW_SHOWMINNOACTIVE + 最大化 + 压到 z 序最底层）。它不激活、
+/// 不抢前台，但 Win32 的前台锁仍然可能让本窗口「可见却收不到键」：
+/// `SetForegroundWindow` 只认「调用方就是前台进程」。这里用标准的
+/// AttachThreadInput 手法——把当前前台线程的输入队列临时挂到本线程，
+/// SetForegroundWindow 才放行。抢不回来也不至于崩：界面照常显示，
+/// 只是快捷键可能不灵（最坏退回鼠标点击）。
+unsafe fn claim_foreground(hwnd: Hwnd) {
+    unsafe {
+        let our_thread = GetCurrentThreadId();
+        let foreground = GetForegroundWindow();
+        let foreground_thread = if foreground.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(foreground, std::ptr::null_mut())
+        };
+        if foreground_thread != 0 && foreground_thread != our_thread {
+            AttachThreadInput(foreground_thread, our_thread, 1);
+            SetForegroundWindow(hwnd);
+            AttachThreadInput(foreground_thread, our_thread, 0);
+        } else {
+            SetForegroundWindow(hwnd);
+        }
+        SetFocus(hwnd);
+    }
+}
+
 #[link(name = "user32")]
 unsafe extern "system" {
     fn RegisterClassExW(class: *const WndClassExW) -> u16;
@@ -396,6 +431,9 @@ unsafe extern "system" {
     fn MoveWindow(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
     fn DestroyWindow(hwnd: Hwnd) -> i32;
     fn SetForegroundWindow(hwnd: Hwnd) -> i32;
+    fn GetForegroundWindow() -> Hwnd;
+    fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
+    fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
     fn SetFocus(hwnd: Hwnd) -> Hwnd;
     fn FindWindowW(class_name: *const u16, window_name: *const u16) -> Hwnd;
     fn IsWindowVisible(hwnd: Hwnd) -> i32;
@@ -1819,6 +1857,9 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
         } else {
             ShowWindow(hwnd, 1);
             UpdateWindow(hwnd);
+            // 【2026-10-20】把前台从后台命令控制台手里抢回来：进度窗在最前，
+            // B/L/M/K/P 才落得到它身上（用户 10-17「cmd 后台、本程序前台」）。
+            claim_foreground(hwnd);
         }
     }
 
