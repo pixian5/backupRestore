@@ -76,3 +76,11 @@
 ## 8. 绝对禁止清单（踩错机器起不来）
 
 - 对真实 ESP 跑 `bcdboot … /s S:`；复用/改写 ReAgent **已登记**的 BCD 对象（无 /boottore 时 8 秒内被 bootmgr 丢弃）；`ramdisk=` 值拼错（`]` 位置）；载荷注入完成**前**武装 bootsequence（`--no-reboot` 也会改 bootmgr）；先删 BCD 对象再清 bootsequence；`bcdedit /delete` 后立即重启；夺走不属于本任务的 bootsequence；在 WinRE **入口**立即翻干注册位（与断电续跑冲突）—— 20261011-2350 汇编 [⚠️ 单一汇编来源，逐条有多源]
+
+## 9. 10-18~10-20 新增（B 键回退 / 盘符重排 / default 终态判据）
+
+- **B 键回退的完整因果链**（用户主动回退是设计内功能）：`VK_B → trigger_bcd_rollback` → 按字节恢复准备期 BCD 快照（ESP `\EFI\Microsoft\Boot\BCD` raw 路径）→ 模态框「BCD 回退已完成」→ **STEP 4 引导修复重跑时 `rearm()` 校验认已被删的 loader 条目 → 「续跑启动链字段不符: device」失败框** → 取消 → auto-escape（disarm + 标终态 + 重启）闭环。**这不是缺陷**，是「用户把 BCD 还原回准备期」的必然后续；回退后 loader 条目与 bootsequence 双双消失、default 回原系统 —— 20261020-0230 [✅]
+- **v2.6.18 的 `/import` 毒化教训**：raw 拷贝被 BFSVC 持锁（`list-boot-entries` 无 `/store` 枚举触发，≥6min 且时长可变）时，旧代码兜底 `bcdedit /import` 替换存储 → 会话被毒化 → 后续 bcdboot 全挂 `BcdOpenStore failed c0000043`。修法 = 删兜底、锁定时明确失败 + 模态框反馈。**所有 bcdedit/bcdboot 走 BFSVC 持锁照常，仅 raw 文件访问会失败** —— 20261018-2252 [✅]
+- **盘符重排是 Windows 正常行为，别去「修」**：新系统成 default 后启动卷拿 C:、旧系统卷被挤到后续字母，**BCD `device`/`osdevice` 同步成运行字母**。判断「当前是哪个系统」的权威方法 = `bcdedit /enum {current}` + `vol` 对序列号，不靠盘符猜 —— 20261019-1918 [✅]
+- **V2 终态判据（10-19 实证）**：default 指向新系统条目 `{c46f6056}`（"Windows Backup E"）、displayorder 新+旧都在、原系统卷序列号未变、WinRE Enabled+recoverysequence 匹配、bootsequence 已清 —— 20261019-1918 [✅]
+- **B 键在 cmd 持焦点时打不进去**：进度窗 `main_family` 焦点门（`msg_hwnd == hwnd || GetParent == hwnd`）——RE 内 cmd 未压底时按 B 全部落在控制台。这是 cmd 后台化修复成为 B 键验收硬前置的原因（Win32 细节见 `04` §5）—— 20261019-1918/20261020-0230 [✅]

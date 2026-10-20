@@ -46,3 +46,13 @@
 - RE/启动卡住**绝不反复强停重启**（触发系统还原挂起等次生灾害），正确动作=菜单「关机」后从宿主侧救援 —— 20261014-2107/1900 [✅ 多来源]
 - 失败的 RE 运行会重新武装一次性启动项形成 RE 循环——**快照回滚是唯一干净脱身法**（BCD 三行回滚覆盖不了循环状态）—— 20261014-2105 [✅]
 - VM 引导变量损坏（Boot Manager 只剩 UEFI Shell）最快修法：新建 VM 挂旧盘（`--device-add hdd --image <旧.pvm/harddisk.hdd>`），干净固件扫 ESP 直接引导；PD27 时代删 NVRAM 重建无效、26.4.2 下有效（与固件版本绑定）—— 20260913-0158/20260925-0424 [✅]
+
+## 5. RE 内 cmd「后台最大化」Win32 铁律与日志镜像（2026-10-20 实机确立）
+
+- **★ `SW_SHOWMAXIMIZED`(3) 会激活窗口**。`CreateProcessW` + `STARTF_USESHOWWINDOW/SW_SHOWMAXIMIZED` 创建 cmd → 新窗口一起手就抢前台并压在**随后**创建的进度窗之上；进度窗侧 `MB_SETFOREGROUND` 只保得住模态框，普通主窗抢不过被激活的 cmd（用户 2026-10-17 需求三次实机失败的根因）—— 20261020-0230 [✅]
+- **「创建时不抢、就绪后最大化且留后台」三步走**：①创建用 `SW_SHOWMINNOACTIVE`(7)；②按 PID 轮询 `EnumWindows` 等**顶层窗口就绪**（进程起来 ≠ 窗口就绪，conhost 初始化几十~几百 ms，直接 ShowWindow 会打空句柄）；③`ShowWindow(SW_SHOWMAXIMIZED)` + 立即 `SetWindowPos(HWND_BOTTOM, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)` 压底 —— 20261020-0230 [✅]
+- **非前台进程 `SetForegroundWindow` 会被系统静默拒绝**；进度窗显式抢前台必须 `AttachThreadInput(前台线程, 本线程, 1)` → `SetForegroundWindow` → `AttachThreadInput(..., 0)` → `SetFocus`（`recovery_progress::claim_foreground`）—— 20261020-0230 [✅]
+- **同 crate 多个 `unsafe extern` 块声明同一符号，签名必须逐字一致**（含 `Option<fn>` 包装），否则 `clashing_extern_declarations`；本 crate 权威签名在 `native_gui.rs` 的 user32 块。另：只被 `#[cfg(test)]` 用的函数要挂 `#[cfg(test)]`（release 构建算死代码）—— 20261020-0230 [✅]
+- **RE 内主日志在内存盘 X: 重启即失**：`session_log.rs` 双写镜像到第一个可写持久卷（选根「卷 GUID → 同卷子目录 → X:」三级），会话目录名 = `pid-纳秒时间戳`。WinRE 取证 = 找持久卷上的镜像副本，别在 X: 里找 —— 20261020-0230/20261017-0125 [✅]
+- **B 键触发链**：`recovery_progress.rs` 消息循环 `WM_KEYDOWN → VK_B → trigger_bcd_rollback(hwnd, shared, true)`，受 `main_family` 焦点门（`msg_hwnd == hwnd || GetParent(msg_hwnd) == hwnd`）限制——**cmd 持焦点时按 B 无效**，这就是 cmd 后台化是 B 键验收硬前置的原因。`vmkey.sh b` 发一次 press+release 即触发（WM_KEYDOWN 单次即触发，不要按住）—— 20261019-1918/20261020-0230 [✅]
+- **`--test-fault power-loss-window`** = prepare 的武装不重启故障点：跑完「武装 + BootRequested 落盘」后返回、不调 shutdown.exe——控制重启时机的正确入口（`prepare` 不带 `--no-reboot` 会在 arm 后立即 `shutdown /r /t 0`）—— 20261020 [✅]
