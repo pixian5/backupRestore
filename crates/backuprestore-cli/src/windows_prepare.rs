@@ -1771,14 +1771,25 @@ fn physical_volume_identity_at(
 ///
 /// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件。
 ///
-/// `log` 必须传入任务自己的 `prepare.log`：三处 DISM 调用的 stdout/stderr 全部落盘，
-/// 失败时错误消息里带输出尾部。此前的实现只取 `status`，挂载失败（本机有附加 VHD
-/// 时 `/Mount-Wim` 恒定报 87）在日志里只剩 "mount failed" 三个字，事后无法定位。
+/// `log` 必须传入任务自己的 `prepare.log`：DISM 调用的 stdout/stderr 全部落盘，
+/// 失败时错误消息里带输出尾部。此前的实现只取 `status`，挂载失败在日志里只剩
+/// "mount failed" 三个字，事后无法定位（该 87 的真因是参数名，见 `wim_mount_args`）。
+///
+/// 【v2.6.23 性能分级】32GB WIM 的只读挂载实测 6–7 分钟，每次 prepare 都付这笔账
+/// 太贵（用户点完「创建任务」要干等 8 分钟）。因此先花约 2 秒取镜像显示名：
+/// 名字明确是完整 Windows 系统镜像时**快速放行**，只有名字可疑或取不到时才做
+/// 权威挂载探测。安全判据并未回退——可疑的一律挂挂载判真，恢复阶段的离线注册
+/// 前置检查是所有路径的硬兜底。
 pub(crate) fn wim_full_windows_probe(
     image_path: &str,
     index: u32,
     log: &Path,
 ) -> Result<ProbeOutcome, TaskError> {
+    // 先取名字（/Get-WimInfo，约 2 秒）。取不到时按空名处理 → 落回权威挂载。
+    let name = wim_image_display_name(image_path, index, log).unwrap_or_default();
+    if name_looks_like_full_windows(&name) {
+        return Ok(ProbeOutcome::QuickPass(name));
+    }
     match wim_mount_markers(image_path, index, log) {
         // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝（此刻尚未格式化任何卷）。
         Ok(false) => Err(err(
@@ -1796,7 +1807,6 @@ pub(crate) fn wim_full_windows_probe(
         // 仍保留降级分支：环境因素（镜像被别的进程占用、权限、挂载点磁盘满）确实会让
         // 挂载失败，此时硬拦会误杀合法还原；恢复阶段的离线注册前置检查仍是硬兜底。
         Err(_) => {
-            let name = wim_image_display_name(image_path, index, log)?;
             let lower = name.to_ascii_lowercase();
             if lower.contains("windows pe") || lower.contains("winpe") {
                 return Err(err(&format!(
@@ -1809,11 +1819,33 @@ pub(crate) fn wim_full_windows_probe(
     }
 }
 
-/// 探测结果：FullWindows=挂载后权威确认；HeuristicPass=挂载不可用、按镜像名
-/// 启发式放行（调用方应记录这一降级，便于事后核查）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 镜像显示名是否**明确**是完整 Windows 系统镜像——用来决定能不能跳过耗时的挂载探测。
+///
+/// 判据（故意偏保守，宁可多挂一次也不放过可疑镜像）：
+/// - 必须含 "windows"；
+/// - 不得含 PE 特征（"pe" / "preinstallation" / "recovery"）；
+/// - 名字不能太短（< 8 字符视为可疑）。
+///
+/// 本程序自己生成的备份索引名形如「Windows 11 26200.9550 20261015」，恒命中 →
+/// 常规路径零额外耗时；改过名的第三方/PE 镜像落回挂载权威判定。
+fn name_looks_like_full_windows(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.len() < 8 {
+        return false;
+    }
+    if lower.contains("pe") || lower.contains("preinstallation") || lower.contains("recovery") {
+        return false;
+    }
+    lower.contains("windows")
+}
+
+/// 探测结果：FullWindows=挂载后权威确认；QuickPass=镜像名明确是完整 Windows、
+/// 走快速通道放行；HeuristicPass=挂载不可用、按镜像名启发式放行
+/// （调用方应记录每一次降级，便于事后核查）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProbeOutcome {
     FullWindows,
+    QuickPass(String),
     HeuristicPass,
 }
 
@@ -2535,6 +2567,13 @@ fn validate_operation_inputs(
                     ProbeOutcome::FullWindows => append_log(
                         log,
                         "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
+                    )?,
+                    ProbeOutcome::QuickPass(name) => append_log(
+                        log,
+                        &format!(
+                            "镜像完整性预检：镜像名「{name}」符合完整 Windows 特征，\
+                             走快速通道放行（跳过挂载，省一次大镜像挂载）"
+                        ),
                     )?,
                     ProbeOutcome::HeuristicPass => append_log(
                         log,
@@ -3971,5 +4010,39 @@ mod tests {
             args.iter().any(|a| a == r"/MountDir:C:\temp\mount"),
             "{args:?}"
         );
+    }
+
+    /// 快速通道判据（v2.6.23）：常规备份名必须放行，任何 PE/短名/空名必须**落回挂载**。
+    /// 这条判据宁可多挂一次（慢）也不能放行可疑镜像，所以负例比正例重要。
+    #[test]
+    fn name_looks_like_full_windows_gate() {
+        // 正例：本程序默认索引名 + 常见系统镜像名
+        for ok in [
+            "Windows 11 26200.9550 20261015",
+            "Windows Backup",
+            "Windows 10 Enterprise",
+            "Windows Server 2022",
+            "Windows 11 Pro",
+        ] {
+            assert!(
+                name_looks_like_full_windows(ok),
+                "应当走快速通道：{ok}"
+            );
+        }
+        // 负例：PE 特征、恢复环境、太短、空、不含 windows
+        for bad in [
+            "Microsoft Windows PE (x64)",
+            "WinPE",
+            "Windows Recovery Environment",
+            "Windows Preinstallation Environment",
+            "Backup",
+            "",
+            "MyData",
+        ] {
+            assert!(
+                !name_looks_like_full_windows(bad),
+                "应当落回挂载探测：{bad:?}"
+            );
+        }
     }
 }

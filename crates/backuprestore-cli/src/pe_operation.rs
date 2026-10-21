@@ -467,6 +467,10 @@ impl Engine {
                 wp::ProbeOutcome::FullWindows => self.log(
                     "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
                 )?,
+                wp::ProbeOutcome::QuickPass(name) => self.log(&format!(
+                    "镜像完整性预检：镜像名「{name}」符合完整 Windows 特征，\
+                     走快速通道放行（跳过挂载，省一次大镜像挂载）"
+                ))?,
                 wp::ProbeOutcome::HeuristicPass => self.log(
                     "镜像完整性预检：只读挂载不可用，已按镜像名启发式放行；\
                      恢复阶段的离线注册前置检查兜底",

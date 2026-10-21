@@ -519,6 +519,15 @@ fn restore_to_windows_volume(
         crate::windows_prepare::ProbeOutcome::FullWindows => {
             log(log_path, "镜像完整性预检：只读挂载确认完整 Windows")?;
         }
+        crate::windows_prepare::ProbeOutcome::QuickPass(name) => {
+            log(
+                log_path,
+                &format!(
+                    "镜像完整性预检：镜像名「{name}」符合完整 Windows 特征，\
+                     走快速通道放行（跳过挂载，省一次大镜像挂载）"
+                ),
+            )?;
+        }
         crate::windows_prepare::ProbeOutcome::HeuristicPass => {
             log(
                 log_path,
