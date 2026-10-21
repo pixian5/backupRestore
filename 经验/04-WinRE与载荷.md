@@ -56,3 +56,11 @@
 - **RE 内主日志在内存盘 X: 重启即失**：`session_log.rs` 双写镜像到第一个可写持久卷（选根「卷 GUID → 同卷子目录 → X:」三级），会话目录名 = `pid-纳秒时间戳`。WinRE 取证 = 找持久卷上的镜像副本，别在 X: 里找 —— 20261020-0230/20261017-0125 [✅]
 - **B 键触发链**：`recovery_progress.rs` 消息循环 `WM_KEYDOWN → VK_B → trigger_bcd_rollback(hwnd, shared, true)`，受 `main_family` 焦点门（`msg_hwnd == hwnd || GetParent(msg_hwnd) == hwnd`）限制——**cmd 持焦点时按 B 无效**，这就是 cmd 后台化是 B 键验收硬前置的原因。`vmkey.sh b` 发一次 press+release 即触发（WM_KEYDOWN 单次即触发，不要按住）—— 20261019-1918/20261020-0230 [✅]
 - **`--test-fault power-loss-window`** = prepare 的武装不重启故障点：跑完「武装 + BootRequested 落盘」后返回、不调 shutdown.exe——控制重启时机的正确入口（`prepare` 不带 `--no-reboot` 会在 arm 后立即 `shutdown /r /t 0`）—— 20261020 [✅]
+
+## 6. 载荷生命周期与 CLI 续跑参数（2026-10-22 实机确立）
+
+- **★ 载荷在任务存活期不会被自动删**（对照实验反证）：`remove_staging` 全仓只有 `boot_entry.rs:799` 一处调用（**终态清理**）。实测 prepare 06:28:04 完成 → 06:28:04.09 即记录 `PAYLOAD_OK size=714,894,729` → 后台监控每 3.1 s 采样持续 `PAYLOAD_PRESENT` → 06:33:59 任务 success 后才 `PAYLOAD_GONE`。**上一轮「prepare 后 3 分钟载荷离奇消失」不是代码行为**，更可能是外部因素（手动清理/其它进程），不必再在代码里找死循环 —— 20261022-0655 [✅]
+- **★ CLI 显式续跑的正确姿势**：`prepare … --no-reboot` 后**立刻**（秒级）`resume <工作区根> <task_id>`；`resume` 内部做的事 = `BootRequested` 落盘 → `rearm`（含载荷 SHA256 校验，文件没了就 `os error 3`）→ `shutdown /r /t 0`。全程 1.8 秒，比重跑 prepare 稳 —— 20261022-0655 [✅]
+- **★ `abandon-task` / `resume` / `recover` 的 root 参数都是「工作区根」**，不是 `…\tasks`：`TaskStore::task_dir` = `root.join("tasks").join(id)`，传 `H:\brwork\tasks` 会拼成 `H:\brwork\tasks\tasks\<id>` 而报错。正确：`abandon-task H:\brwork <id>` —— 20261022-0655 [✅]
+- **一次性启动项不武装也能进自定义 WinRE**，走 `resume` 即可；`--no-reboot` 只是「不自动重启」，它**同时不武装 bootsequence**（日志明示 `Task prepared with --no-reboot; registered WinRE unchanged`），所以必须再 `resume` 或手工 `bcdedit /bootsequence` —— 20261022-0655 [✅]
+- **WinRE 里的盘符映射与 Windows 侧完全不同**：本轮 PE 内 `WORKSPACE=E:` / `IMAGE=C:` / `TARGET=F:` / `EFI=Z:`，日志里出现的 `E:\brwork\tasks\…` 就是 Windows 侧的 `H:\brwork\tasks\…`，**别当成两个任务**。恢复环境主日志也因此落在「镜像同目录」（PE 的 `C:\BRImages` = Windows 的 `H:\BRImages`）—— 20261022-0655 [✅]
