@@ -458,11 +458,20 @@ impl Engine {
         // 失败点落在**格式化之后**——与 2026-10-11 记录的 create-secondary 老坑同形。
         // DataOverlay 不写引导、不做注册，不需要完整 Windows，故排除在外。
         if self.intent() != RestoreIntent::DataOverlay {
-            wp::wim_full_windows_probe(
+            // 降级放行必须留痕（2026-10-22 教训：参数错导致权威探测静默失效、日志无痕）。
+            match wp::wim_full_windows_probe(
                 &self.image.to_string_lossy(),
                 self.request.index,
                 &self.dir.join("operation.log"),
-            )?;
+            )? {
+                wp::ProbeOutcome::FullWindows => self.log(
+                    "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
+                )?,
+                wp::ProbeOutcome::HeuristicPass => self.log(
+                    "镜像完整性预检：只读挂载不可用，已按镜像名启发式放行；\
+                     恢复阶段的离线注册前置检查兜底",
+                )?,
+            }
         }
         // 文件句柄拒绝共享写入/删除，持续持有至本次任务结束，避免预检后被替换。
         self.image_handle = Some(

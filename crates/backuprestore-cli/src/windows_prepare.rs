@@ -1788,11 +1788,13 @@ pub(crate) fn wim_full_windows_probe(
              未格式化任何卷、未写入引导。",
         )),
         Ok(true) => Ok(ProbeOutcome::FullWindows),
-        // 挂载本身失败：不硬拦。2026-10-13 实测本机在**有 VHD 附加**时
-        // DISM /Mount-Wim 一律报 87（参数无效），挂载探测在该环境不可用；
-        // 若把这种情况判失败，合法还原会被误杀。降级为镜像名启发式：
-        // 标准纯 PE 镜像的名称特征（"Microsoft Windows PE"/"WindowsPE"）
-        // 命中即拒绝，未命中放行——恢复阶段的离线注册前置检查仍是硬兜底。
+        // 挂载本身失败：不硬拦，但调用方必须把这次降级写进日志。
+        // 【2026-10-22 更正归因】此前这里记的是「有 VHD 附加时 /Mount-Wim 一律报 87」，
+        // 属误判：真因是本函数把 `/Mount-Wim` 的参数写成了 `/ImageFile`（那是
+        // `/Apply-Image` 的选项），DISM 恒报 87 → 权威探测自 2.4.2 引入起**从未成功过**，
+        // 一直静默走下面的镜像名启发式。v2.6.22 起改用 `/WimFile:`（见 `wim_mount_args`）。
+        // 仍保留降级分支：环境因素（镜像被别的进程占用、权限、挂载点磁盘满）确实会让
+        // 挂载失败，此时硬拦会误杀合法还原；恢复阶段的离线注册前置检查仍是硬兜底。
         Err(_) => {
             let name = wim_image_display_name(image_path, index, log)?;
             let lower = name.to_ascii_lowercase();
@@ -1815,6 +1817,22 @@ pub(crate) enum ProbeOutcome {
     HeuristicPass,
 }
 
+/// `/Mount-Wim` 的完整参数。
+///
+/// 单独抽出来是为了让单测能锁死参数名：**`/Mount-Wim` 只认 `/WimFile`**，
+/// 写成 `/ImageFile`（那是 `/Apply-Image` 的选项）DISM 恒报 87。
+/// 历史事故：自 2.4.2 引入至 v2.6.21，本参数一直是错的，导致「完整 Windows
+/// 门禁」的权威探测从未生效、每次都静默降级为镜像名启发式（详见 docs/20261020-1025）。
+fn wim_mount_args(image_path: &str, index: u32, mount_dir: &Path) -> Vec<String> {
+    vec![
+        "/Mount-Wim".to_string(),
+        format!("/WimFile:{image_path}"),
+        format!("/Index:{index}"),
+        "/ReadOnly".to_string(),
+        format!("/MountDir:{}", mount_dir.display()),
+    ]
+}
+
 /// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
 /// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
 ///
@@ -1827,13 +1845,9 @@ fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, T
         crate::run_output_logged("dism.exe", args, log)
             .map_err(|error| err(&format!("dism 调用失败（无法启动/读取输出）：{error}")))
     };
-    let mounted = run(&[
-        "/Mount-Wim",
-        &format!("/ImageFile:{image_path}"),
-        &format!("/Index:{index}"),
-        "/ReadOnly",
-        &format!("/MountDir:{}", mount_dir.display()),
-    ])?;
+    let mount_args = wim_mount_args(image_path, index, &mount_dir);
+    let mount_refs: Vec<&str> = mount_args.iter().map(String::as_str).collect();
+    let mounted = run(&mount_refs)?;
     if !mounted.status.success() {
         let _ = std::fs::remove_dir_all(&mount_dir);
         let tail = crate::output_tail_summary(&mounted, 6);
@@ -2515,7 +2529,19 @@ fn validate_operation_inputs(
                 return Err(err(message));
             }
             if options.operation == Operation::CreateSecondary || target_is_windows {
-                wim_full_windows_probe(path, options.wim_index, log)?;
+                // 降级放行必须留痕：否则事后无法判断「门禁到底跑没跑过」。
+                // 2026-10-22 教训——参数错导致权威探测从未生效，而日志里一个字都没有。
+                match wim_full_windows_probe(path, options.wim_index, log)? {
+                    ProbeOutcome::FullWindows => append_log(
+                        log,
+                        "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
+                    )?,
+                    ProbeOutcome::HeuristicPass => append_log(
+                        log,
+                        "镜像完整性预检：只读挂载不可用，已按镜像名启发式放行；\
+                         恢复阶段的离线注册前置检查兜底",
+                    )?,
+                }
             }
             // 配套备份 metadata（.index-N.metadata.json）存在时校验 WIM 完整性；
             // 优先比对物理文件大小，避免在提权准备阶段对 58GB 镜像再次耗时 2 分钟重复读盘计算哈希。
@@ -3917,4 +3943,33 @@ fn native_architecture() -> String {
         .or_else(|_| env::var("PROCESSOR_ARCHITECTURE"))
         .unwrap_or_else(|_| "unknown".into())
         .to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `/Mount-Wim` 只认 `/WimFile`；写成 `/ImageFile`（那是 `/Apply-Image` 的选项）
+    /// DISM 恒报 87。这条测试锁死参数名，防止「权威门禁静默失效」复发——
+    /// 该缺陷自 2.4.2 起存在了近两个月，期间每次探测都静默降级成镜像名启发式，
+    /// 直到 2026-10-20 逐字核对 DISM 参数才被发现（docs/20261020-1025）。
+    #[test]
+    fn wim_mount_args_use_wimfile_not_imagefile() {
+        let args = wim_mount_args(r"D:\images\win.wim", 2, Path::new(r"C:\temp\mount"));
+        assert_eq!(args.first().map(String::as_str), Some("/Mount-Wim"));
+        assert!(
+            args.iter().any(|a| a == r"/WimFile:D:\images\win.wim"),
+            "缺少 /WimFile 参数：{args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("/ImageFile:")),
+            "/Mount-Wim 不接受 /ImageFile：{args:?}"
+        );
+        assert!(args.iter().any(|a| a == "/Index:2"), "{args:?}");
+        assert!(args.iter().any(|a| a == "/ReadOnly"), "{args:?}");
+        assert!(
+            args.iter().any(|a| a == r"/MountDir:C:\temp\mount"),
+            "{args:?}"
+        );
+    }
 }
