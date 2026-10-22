@@ -14,12 +14,12 @@
 - **牺牲卷**：F:（6A2D-BA03，清理后的空卷）
 - **小型镜像**：`C:\Users\Public\pkg\acl-poc.wim`（36 字节两文件 + 5 目录，wimlib capture 默认带访问控制列表；镜像安全描述符 = 属主 `BUILTIN\Administrators` + DACL `BA(FA)/CO(FA)/SY(FA)/IU/SU/S-1-5-3`，非 protected）
 - **合成限制性目录**：`F:\Program Files\WindowsApps\PocAclPkg`（按镜像内真实路径预置；SDDL 同 E1：属主=TrustedInstaller SID、protected、DACL 仅 TrustedInstaller(FA)+RC(RX)、**无任何 SYSTEM ACE**）
-- **特权禁用**：PowerShell P/Invoke `AdjustTokenPrivileges` 禁用 SeRestorePrivilege + SeTakeOwnershipPrivilege；wimlib 以 `Start-Process` 子进程启动（继承禁用态）；金丝雀 = 同上下文 `icacls /setowner NT AUTHORITY\SYSTEM` 必须 exit≠0
+- **特权禁用**：PowerShell P/Invoke `AdjustTokenPrivileges` 禁用 SeRestorePrivilege + SeTakeOwnershipPrivilege；wimlib 以 `Start-Process` 子进程启动（继承禁用态）；金丝雀 = 同上下文 `icacls /setowner NT AUTHORITY\SYSTEM` 必须退出码≠0
 - **执行通道**：SYSTEM（`prlctl exec` 不加 `--current-user`；UNC 路径读写共享盘）
 
 ## 2. 实验矩阵与结果
 
-| # | 上下文 | wimlib 参数 | exit | 文件落盘 | 目录安全描述符事后 |
+| # | 上下文 | wimlib 参数 | 退出码 | 文件落盘 | 目录安全描述符事后 |
 | --- | --- | --- | --- | --- | --- |
 | **T1** | 特权禁用父进程（金丝雀 icacls **退出码 5** = 被拒） | **不加 `--no-acls`** | **0** | file.txt=19B 内容正确、sub\nested.txt=17B 内容正确 | **完整还原为镜像安全描述符**：属主 `NT SERVICE\TrustedInstaller`→`BUILTIN\Administrators`、protected True→False、SDDL 与镜像**逐字节一致** |
 | **T3** | 同 T1 | 加 `--no-acls` | 0 | 同上（修正取证后证实） | 保持 TrustedInstaller 预设不动（属主=TrustedInstaller、protected=True） |
