@@ -15,7 +15,18 @@ const EXPECTED_WINRE_SHELL: &str = concat!(
 );
 
 const WINRE_GENERATED_PAYLOAD_FILES: &[&str] = &["RecoveryTask.env", "task.json"];
-const OPTIONAL_RUNTIME_FILES: &[&str] = &["VCRUNTIME140.dll", "VCRUNTIME140_1.dll"];
+/// 载荷里的可选运行时文件：程序静态链接 CRT 后本不再需要 VCRUNTIME，保留是为
+/// 旧部署兼容；**wimlib 两文件（2026-10-22 任务 #110）是覆盖式还原通道的
+/// 必需品**——`wimlib-imagex.exe` 与 `libwim-15.dll` 必须成对随程序目录部署，
+/// 由 `stage_static_payload_with_exe` 从 executable_dir 暂存、`inject_winre_payload`
+/// 注入 WinRE 的 `Windows\System32` 并做 sha256 校验（RE 内 current_exe 就在
+/// System32，`wimlib_apply::locate_wimlib` 按 executable_dir 找的就是它）。
+const OPTIONAL_RUNTIME_FILES: &[&str] = &[
+    "VCRUNTIME140.dll",
+    "VCRUNTIME140_1.dll",
+    "wimlib-imagex.exe",
+    "libwim-15.dll",
+];
 const OBSOLETE_WINRE_FILES: &[&str] = &[
     "BackupRestore.exe",
     "RecoveryLauncher.cmd",

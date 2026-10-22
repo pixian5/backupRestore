@@ -1003,7 +1003,7 @@ fn prepare_task(
     if let Some(parent) = bootstrap_log.parent() {
         fs::create_dir_all(parent)?;
     }
-    let image_acceptance = validate_operation_inputs(
+    let validation = validate_operation_inputs(
         &source,
         &target,
         &image_volume,
@@ -1011,6 +1011,7 @@ fn prepare_task(
         &options,
         &bootstrap_log,
     )?;
+    let image_acceptance = validation.acceptance;
     let store = TaskStore::new(executable_dir);
     // S5 新启动项撞名消解（docs/20261015-0725）：拟用的菜单名与现有任一启动项
     // 重名时追加 -YYYYMMDDHHMM。GUI 侧已按用户可见的方式消解过一次（幂等，
@@ -1171,6 +1172,9 @@ fn prepare_task(
                 is_active_system: target.same_partition(&active_system_volume_identity()?),
                 // 格式化选项落盘（GUI 复选框 → prepare 参数 → RE 恢复链读取）
                 format_target: options.format_target,
+                // 「覆盖式应用到已含 Windows 卷」的路由标记（任务 #110）：
+                // 由 validate 判定，RE 恢复链读取后走 wimlib --no-acls。
+                overlay_no_acl: validation.overlay_no_acl,
             });
         }
         Operation::Probe => {}
@@ -2419,6 +2423,22 @@ fn rollback_boot_request(
 /// 返回 `Some(..)` 表示用户在本次准备中显式接受了「与副档不符的当前镜像」，
 /// 调用方必须把这份例外连同**接受时的真实哈希**一起写进任务，否则重启后
 /// 离线侧会拿旧副档值再次拒绝（历史缺陷，见 [`ImageAcceptance`]）。
+/// `validate_operation_inputs` 的产出（2026-10-22 任务 #110 扩展）。
+pub(crate) struct ValidationOutcome {
+    /// 用户显式接受了与副档不符的当前镜像（原返回值）。
+    pub acceptance: Option<ImageAcceptance>,
+    /// 命中「覆盖式应用（取消格式化）打到已含 Windows 的目标卷」组合。
+    ///
+    /// 2026-10-22 起该组合**不再硬拒**（用户裁定「换 wimlib --no-acls」）：
+    /// 准备期在此落盘 `overlay_no_acl=true`，恢复期（WinRE 链）据此走 wimlib
+    /// 通道——DISM 该组合必然 `RestoreDirMetadata 0x80070005`（PE 内对照实验
+    /// 钉死，见 docs/20261016-1413 §2），wimlib `--no-acls` 跳过 SD 还原且
+    /// 自行获取 SeRestore/SeBackup 提权（POC 见 docs/20261022-1427）。
+    /// GUI 侧有显式确认框明示「目录权限不还原」的代价；CLI 直跑视为高级用户
+    /// 显式选择 `--skip-format` 的意图。
+    pub overlay_no_acl: bool,
+}
+
 fn validate_operation_inputs(
     source: &VolumeIdentity,
     target: &VolumeIdentity,
@@ -2426,9 +2446,12 @@ fn validate_operation_inputs(
     image_path: Option<&str>,
     options: &PrepareOptions,
     log: &Path,
-) -> Result<Option<ImageAcceptance>, TaskError> {
+) -> Result<ValidationOutcome, TaskError> {
     match options.operation {
-        Operation::Probe => Ok(None),
+        Operation::Probe => Ok(ValidationOutcome {
+            acceptance: None,
+            overlay_no_acl: false,
+        }),
         Operation::Backup => {
             if image.same_partition(source) {
                 return Err(err("image volume must differ from backup source"));
@@ -2450,9 +2473,16 @@ fn validate_operation_inputs(
             if volume_free_bytes(image.drive_letter.unwrap())? < required {
                 return Err(err("backup destination free space is insufficient"));
             }
-            Ok(None)
+            Ok(ValidationOutcome {
+                acceptance: None,
+                overlay_no_acl: false,
+            })
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
+            // 「覆盖式应用到已含 Windows 卷」的路由标记：命中组合时置 true，
+            // 由调用方写进 `TargetSpec.overlay_no_acl` 落盘（见
+            // [`ValidationOutcome`] 文档）。未命中（含 Backup）恒 false。
+            let mut overlay_no_acl = false;
             if !options.allow_destructive {
                 return Err(err("restore requires --allow-destructive"));
             }
@@ -2533,8 +2563,12 @@ fn validate_operation_inputs(
                     "{}:\\",
                     target.drive_letter.ok_or_else(|| err("目标盘符缺失"))?
                 )))?;
-            // 【准备期硬拒】「系统卷 + 取消格式化（覆盖式应用）」是确定性失败组合，
-            // 必须挡在擦除/重启之前，绝不能等 RE 里 exit 5 再把用户困在重试死循环里。
+            // 【准备期判定 · 2026-10-22 任务 #110：原「硬拒」已改「路由」】
+            // 「系统卷 + 取消格式化（覆盖式应用）」对 DISM 是确定性失败组合
+            // （根因见下）；2026-10-22 起不再挡在准备期，改为在此判定并落盘
+            // `overlay_no_acl`，恢复期走 wimlib --no-acls 通道。判定仍必须在
+            // 准备期完成：RE 内探测不到宿主卷的 Windows 属性（`%SystemDrive%`
+            // 是恢复环境自己的 RAM 盘 X:），与 `is_active_system` 同一理由。
             //
             // 精确根因（2026-10-16 PE 内对照实验钉死，见 docs/20261016-1413 §2 与
             // docs/20261016-1836）：DISM 覆盖式应用要把镜像里
@@ -2553,12 +2587,27 @@ fn validate_operation_inputs(
             //
             // 判据用「目标卷当前是否含 Windows」而非「是否活动系统卷」：任何既有
             // Windows 卷都带 TrustedInstaller 保护的目录，都会命中同一根因。
-            if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+            //
+            // 【2026-10-22 任务 #110：硬拒改路由】用户裁定「换 wimlib --no-acls」
+            // 后，本组合不再 `return Err`：置 `overlay_no_acl=true` 落进任务，
+            // 恢复期走 wimlib 通道（跳过 SD 还原，结构性免疫 0x80070005；
+            // 且 wimlib 自行获取 SeRestore/SeBackup 提权，RE 内可用）。
+            // 代价（镜像目录权限不还原、MSIX 应用权限可能异常）由 GUI 确认框
+            // 明示；CLI 直跑 --skip-format 视为高级用户显式意图。
+            if crate::pe_safety::overlay_restore_on_windows_volume_error(
                 target_is_windows,
                 options.format_target,
                 crate::pe_safety::MessageLanguage::Chinese,
-            ) {
-                return Err(err(message));
+            )
+            .is_some()
+            {
+                overlay_no_acl = true;
+                append_log(
+                    log,
+                    "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，\
+                     已标记 overlay_no_acl，恢复期将走 wimlib --no-acls 通道\
+                     （镜像目录权限不还原；DISM 该组合必然 RestoreDirMetadata 0x80070005）",
+                )?;
             }
             if options.operation == Operation::CreateSecondary || target_is_windows {
                 // 降级放行必须留痕：否则事后无法判断「门禁到底跑没跑过」。
@@ -2640,7 +2689,10 @@ fn validate_operation_inputs(
             if target.partition_size < minimum {
                 return Err(err("restore target is too small"));
             }
-            Ok(acceptance)
+            Ok(ValidationOutcome {
+                acceptance,
+                overlay_no_acl,
+            })
         }
     }
 }

@@ -512,6 +512,22 @@ pub struct TargetSpec {
     /// （不格式化，卷上镜像没有的文件保留）。旧任务缺此字段按 `true` 走原路径。
     #[serde(default = "default_format_target")]
     pub format_target: bool,
+    /// 「覆盖式应用（取消格式化）打到已含 Windows 的目标卷」时，恢复期走
+    /// **wimlib --no-acls** 通道而非 DISM（2026-10-22 用户裁定「换 wimlib
+    /// --no-acls」，任务 #110）。
+    ///
+    /// 背景：DISM 覆盖式应用要还原 `Program Files\WindowsApps\...`（MSIX 包目录，
+    /// owner=TrustedInstaller、带 MSIX 专用 ACL）的目录 SD/owner，被系统拒绝 →
+    /// `RestoreDirMetadata 0x80070005` → exit 5。wimlib `--no-acls` 整个跳过 SD
+    /// 还原，结构性免疫该失败模式；且 wimlib 自行获取 SeRestore/SeBackup 提权
+    /// （POC E5 实证），RE/PE 上下文同样可用。代价：镜像里的目录权限不还原，
+    /// MSIX 应用权限可能异常——因此 GUI 侧有显式确认框明示此后果。
+    ///
+    /// 由准备期判定并落盘（RE 内重新探测不到宿主卷的 Windows 属性，同
+    /// `is_active_system` 的理由）。`#[serde(default)]` 兜底 false：旧任务与
+    /// 未命中该组合的任务恒走 DISM 原路径，零行为变化。
+    #[serde(default)]
+    pub overlay_no_acl: bool,
 }
 
 /// 旧任务（2.5.2 及以前）没有 format_target 字段，反序列化按 true 兜底——
@@ -1945,6 +1961,7 @@ mod tests {
             minimum_size_bytes: 100,
             is_active_system: true,
             format_target: true,
+            overlay_no_acl: false,
         });
         assert!(task.validate().is_err());
     }
@@ -1977,6 +1994,7 @@ mod tests {
             minimum_size_bytes: 100,
             is_active_system: true,
             format_target: true,
+            overlay_no_acl: false,
         });
         task.verify_hash = Some(true);
         task
@@ -2143,6 +2161,7 @@ mod tests {
             minimum_size_bytes: 100,
             is_active_system: true,
             format_target: true,
+            overlay_no_acl: false,
         });
         assert!(task.validate().is_err());
     }
@@ -2197,6 +2216,7 @@ mod tests {
             minimum_size_bytes: 100,
             is_active_system: false,
             format_target: true,
+            overlay_no_acl: false,
         });
         task.source = Some(identity("source", 200));
         task.workspace_volume = Some(identity("workspace", 200));
@@ -2233,6 +2253,7 @@ mod tests {
             minimum_size_bytes: 100,
             is_active_system: true,
             format_target: true,
+            overlay_no_acl: false,
         });
         assert!(task.validate().is_ok());
         task.source = None;

@@ -106,6 +106,10 @@ pe-debug.cmd
 !/teamai.yaml
 !/build-win.sh
 !/VERSION
+# wimlib 官方 Windows ARM64 预编译二进制（任务 #110 覆盖式还原通道，随包部署）：
+# 上方 *.exe / *.dll 宽通配之后反否定，否则这两个交付必需的二进制会被静默忽略。
+!/windows/wimlib-aarch64/wimlib-imagex.exe
+!/windows/wimlib-aarch64/libwim-15.dll
 
 # 归档的一次性根目录产物（2026-09-24 清理，内容保留在本机，不入库）
 .archive/

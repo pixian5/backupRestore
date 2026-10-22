@@ -489,28 +489,39 @@ fn restore_to_windows_volume(
     let dir = log_path
         .parent()
         .ok_or_else(|| crate::err("日志目录缺失"))?;
-    // 【准备期硬拒】本函数只在目标卷**已含 Windows** 时进入（execute_inner 按
-    // `target_is_windows_volume` 分流）。此时「取消格式化（覆盖式应用）」是确定性
-    // 失败组合：DISM 要把镜像里 `Program Files\WindowsApps\...`（MSIX 包目录，
-    // owner=TrustedInstaller、带 MSIX 专用 ACL）的目录元数据还原到卷上，而该目录
-    // 受 TrustedInstaller 保护、拒绝改写 owner/ACL → `RestoreDirMetadata` 被拒
-    // `0x80070005` → exit 5。精确根因与离线侧同源：见
-    // docs/20261016-1413 §2（PE 内 F: 成功 / C: 秒退对照实验）与 docs/20261016-1836。
+    // 【准备期判定 · 2026-10-22 任务 #110：原「硬拒」已改「路由」】
+    // 本函数只在目标卷**已含 Windows** 时进入（execute_inner 按
+    // `target_is_windows_volume` 分流）。此时「取消格式化（覆盖式应用）」对 DISM
+    // 是确定性失败组合：DISM 要把镜像里 `Program Files\WindowsApps\...`（MSIX
+    // 包目录，owner=TrustedInstaller、带 MSIX 专用 ACL）的目录元数据还原到卷上，
+    // 而该目录受 TrustedInstaller 保护、拒绝改写 owner/ACL →
+    // `RestoreDirMetadata` 被拒 `0x80070005` → exit 5。精确根因与离线侧同源：
+    // 见 docs/20261016-1413 §2（PE 内 F: 成功 / C: 秒退对照实验）与
+    // docs/20261016-1836。原实现在此处 `return Err`（在线态硬拒）；2026-10-22
+    // 起改为路由到 wimlib --no-acls，判定逻辑见下方 #110 注释。
+    // 判据与离线侧共用同一纯函数（`pe_safety`），避免两处文案分叉；
+    // 第一个参数传**真实探测结果**（2026-10-18 设计观察 7：C 入口目标常态是
+    // 空分区，硬编码 true 会用事实错误的文案拒绝合法组合）。
     //
-    // 必须在**格式化/应用之前**拦住，绝不能等 DISM exit 5 才失败——那时目标卷已
-    // 进入破坏性阶段，且用户会陷入「重试 → 同样失败」的循环。
-    // 与离线侧共用同一判据纯函数，避免两处文案分叉（单测在 windows_prepare.rs）。
-    // 【2026-10-18 缺陷修复：设计观察 7】第一个参数传**真实探测结果**，不再硬编码
-    // `true`。C 入口（新增非 C 盘第二系统）的目标常态是**空分区**，用户取消格式化
-    // （覆盖式应用）时，硬编码 true 会以「目标已含 Windows」这一**事实错误**的
-    // 文案拒绝一个本来合法的组合。判据与 `execute_inner` 的分流完全同源。
+    // 【2026-10-22 任务 #110：硬拒改路由】命中「已含 Windows + 取消格式化」时
+    // 不再 `return Err`：改走 wimlib --no-acls 通道（DISM 该组合必然
+    // RestoreDirMetadata 0x80070005，PE 内对照实验钉死，docs/20261016-1413 §2；
+    // wimlib 跳过 SD 还原且自行获取 SeRestore/SeBackup 提权，POC 见
+    // docs/20261022-1427）。代价（镜像目录权限不还原、MSIX 应用权限可能异常）
+    // 由 GUI 确认框明示；CLI 直跑 --skip-format 视为高级用户显式意图。
     let target_contains_windows = crate::pe_safety::target_is_windows_volume(root)?;
-    if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+    let overlay_no_acl = crate::pe_safety::overlay_restore_on_windows_volume_error(
         target_contains_windows,
         params.format_target,
         crate::pe_safety::MessageLanguage::Chinese,
-    ) {
-        return Err(crate::err(message));
+    )
+    .is_some();
+    if overlay_no_acl {
+        log(
+            log_path,
+            "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，\
+             本次将走 wimlib --no-acls 通道（镜像目录权限不还原）",
+        )?;
     }
     // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会
     // "格式化之后才失败"（STEP 3.5 盘符绑定需要完整 Windows 注册表）。
@@ -685,20 +696,44 @@ fn restore_to_windows_volume(
 
     log(
         log_path,
-        "STEP 3/4 应用镜像（DISM /Apply-Image）并校验系统文件",
+        if overlay_no_acl {
+            "STEP 3/4 应用镜像（wimlib --no-acls 覆盖式通道）并校验系统文件"
+        } else {
+            "STEP 3/4 应用镜像（DISM /Apply-Image）并校验系统文件"
+        },
     )?;
-    dism(
-        &[
-            "/English".into(),
-            "/Apply-Image".into(),
-            format!("/ImageFile:{}", image.display()),
-            format!("/Index:{index}"),
-            format!("/ApplyDir:{}", target_root.display()),
-            "/CheckIntegrity".into(),
-            "/Verify".into(),
-        ],
-        log_path,
-    )?;
+    if overlay_no_acl {
+        // 任务 #110：在线态命中「已含 Windows + 取消格式化」→ wimlib --no-acls。
+        // 在线态 current_exe 在程序同目录（包目录 / H:\brwork），wimlib 二进制
+        // 由 build-win.sh --deploy 随包部署到那里。
+        let executable_dir = std::env::current_exe()
+            .map_err(|error| {
+                crate::err(&format!("无法定位程序目录（wimlib 通道）：{error}"))
+            })?
+            .parent()
+            .ok_or_else(|| crate::err("程序目录解析失败（wimlib 通道）"))?
+            .to_path_buf();
+        crate::wimlib_apply::apply_no_acl(
+            &executable_dir,
+            image,
+            index,
+            &target_root,
+            log_path,
+        )?;
+    } else {
+        dism(
+            &[
+                "/English".into(),
+                "/Apply-Image".into(),
+                format!("/ImageFile:{}", image.display()),
+                format!("/Index:{index}"),
+                format!("/ApplyDir:{}", target_root.display()),
+                "/CheckIntegrity".into(),
+                "/Verify".into(),
+            ],
+            log_path,
+        )?;
+    }
     for components in [
         vec!["Windows", "System32", "config", "SYSTEM"],
         vec!["Windows", "System32", "winload.efi"],

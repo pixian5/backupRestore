@@ -90,6 +90,15 @@ pub(crate) struct Request {
     pub index: u32,
     pub main: Option<VolumeIdentity>,
     pub name: String,
+    /// 「覆盖式应用（取消格式化）打到已含 Windows 的目标卷」时走 wimlib
+    /// --no-acls 通道（2026-10-22 任务 #110，用户裁定「换 wimlib --no-acls」）。
+    /// DISM 该组合必然 `RestoreDirMetadata 0x80070005`（docs/20261016-1413 §2）；
+    /// wimlib 跳过 SD 还原且自行获取 SeRestore/SeBackup 提权（POC E5）。
+    /// `#[serde(default)]` 兜底 false：旧请求与未命中组合恒走 DISM 原路径。
+    /// PE 三入口（backup/restore/secondary）恒格式化，默认 false；仅 data
+    /// 覆盖语义且目标含 Windows 时才由调用方显式置 true。
+    #[serde(default)]
+    pub overlay_no_acl: bool,
 }
 
 pub(crate) fn new_request(
@@ -99,6 +108,7 @@ pub(crate) fn new_request(
     index: u32,
     main: Option<char>,
     name: &str,
+    overlay_no_acl: bool,
 ) -> Result<Request, TaskError> {
     let letter = drive_letter(drive)?;
     let image = image.replace('/', "\\");
@@ -131,6 +141,7 @@ pub(crate) fn new_request(
         index,
         main: main.map(wp::volume_identity).transpose()?,
         name: name.into(),
+        overlay_no_acl,
     })
 }
 
@@ -671,6 +682,30 @@ impl RestoreBackend for Engine {
     }
     fn apply(&mut self) -> Result<(), TaskError> {
         let actual = self.recheck(self.intent() != RestoreIntent::DataOverlay)?;
+        // 【2026-10-22 任务 #110】覆盖式应用（DataOverlay 跳过格式化）打到已含
+        // Windows 的目标卷时按请求里的 overlay_no_acl 路由：DISM 必然
+        // RestoreDirMetadata 0x80070005（TrustedInstaller 保护目录的 SD/owner
+        // 改写被拒），wimlib --no-acls 跳过 SD 还原且自行获取 SeRestore/SeBackup
+        // 提权（POC E5：禁用提权的父进程下仍 exit 0）。PE 内 wimlib 二进制由
+        // 载荷注入链放在 System32（= current_exe 所在目录）。
+        if self.request.overlay_no_acl {
+            let log = self.dir.join("operation.log");
+            let executable_dir = std::env::current_exe()
+                .map_err(|error| {
+                    crate::err(&format!("无法定位程序目录（wimlib 通道）：{error}"))
+                })?
+                .parent()
+                .ok_or_else(|| crate::err("程序目录解析失败（wimlib 通道）"))?
+                .to_path_buf();
+            crate::wimlib_apply::apply_no_acl(
+                &executable_dir,
+                &self.image,
+                self.request.index,
+                &root(&actual)?,
+                &log,
+            )?;
+            return Ok(());
+        }
         self.command(
             "dism.exe",
             &[
@@ -999,7 +1034,7 @@ mod tests {
             .is_success()
         );
         let before = wp::volume_identity('V').unwrap();
-        let request = new_request("data", "V", image.to_str().unwrap(), 2, None, "").unwrap();
+        let request = new_request("data", "V", image.to_str().unwrap(), 2, None, "", false).unwrap();
         execute(&request).unwrap();
         assert_eq!(fs::read_to_string("V:\\payload.txt").unwrap(), "second");
         assert!(Path::new("V:\\sentinel.txt").is_file());
@@ -1013,7 +1048,7 @@ mod tests {
             ("two-index.wim", "restore", 1),
         ] {
             let request =
-                new_request(mode, "V", dir.join(name).to_str().unwrap(), index, None, "").unwrap();
+                new_request(mode, "V", dir.join(name).to_str().unwrap(), index, None, "", false).unwrap();
             assert!(execute(&request).is_err());
             assert!(Path::new("V:\\sentinel.txt").is_file());
             assert_eq!(
@@ -1022,7 +1057,7 @@ mod tests {
             );
         }
         fs::copy(&image, "V:\\on-target.wim").unwrap();
-        let conflict = new_request("restore", "V", "V:\\on-target.wim", 1, None, "").unwrap();
+        let conflict = new_request("restore", "V", "V:\\on-target.wim", 1, None, "", false).unwrap();
         assert!(execute(&conflict).is_err());
         assert!(Path::new("V:\\sentinel.txt").is_file());
         let backup = new_request(
@@ -1032,6 +1067,7 @@ mod tests {
             1,
             None,
             "",
+            false,
         )
         .unwrap();
         execute(&backup).unwrap();
@@ -1062,7 +1098,7 @@ mod tests {
             .is_success()
         );
         let request =
-            new_request("restore", "V", system_image.to_str().unwrap(), 1, None, "").unwrap();
+            new_request("restore", "V", system_image.to_str().unwrap(), 1, None, "", false).unwrap();
         let state_dir = dir.join("format-apply-failure");
         fs::create_dir(&state_dir).unwrap();
         let progress = ProgressGuard(crate::recovery_progress::spawn(

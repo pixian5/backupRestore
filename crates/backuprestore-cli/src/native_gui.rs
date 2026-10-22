@@ -6790,26 +6790,52 @@ unsafe fn create_task(state: &mut State) {
         } else {
             crate::pe_safety::MessageLanguage::Chinese
         };
-        if let Some(message) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+        if let Some(_hit) = crate::pe_safety::overlay_restore_on_windows_volume_error(
             target_has_windows,
             format_target_checked,
             message_language,
         ) {
+            // 【2026-10-22 任务 #110：硬拒改确认】命中「已含 Windows + 取消
+            // 格式化」不再直接拦截：DISM 该组合必然 RestoreDirMetadata
+            // 0x80070005（docs/20261016-1413 §2），用户裁定「换 wimlib
+            // --no-acls」后改走 wimlib 通道（跳过 SD 还原、自行获取
+            // SeRestore/SeBackup 提权，POC 见 docs/20261022-1427）。
+            // 代价必须显式告知：镜像目录权限不还原、MSIX 应用权限可能异常。
+            // 确认后放行进入正常任务流——prepare/在线链内部按同一判据路由，
+            // 已无硬拒点；取消则维持原拦截行为（什么都不做）。
+            // 注意：不复用 `overlay_restore_on_windows_volume_error` 返回的
+            // 旧文案——它的结尾是硬拒时代的操作引导（「请勾选格式化目标
+            // 分区」），与确认框语义冲突；本条文案只此一处，无分叉。
             append_gui_log(
                 state,
-                "GUI action blocked: overlay restore (skip-format) onto a volume containing Windows",
+                "GUI overlay restore onto a volume containing Windows: asking the user to confirm the wimlib --no-acls route",
             );
-            show_message(
+            let notice = if language == Language::English {
+                "The target volume already contains Windows. Overlay apply without formatting will use the wimlib --no-acls channel: directory permissions (ACL/owner) from the image are NOT restored, and MSIX app permissions may be abnormal.\n\nContinue?"
+            } else {
+                "目标分区已含 Windows。取消格式化的覆盖式应用将改用 wimlib --no-acls 通道：镜像中的目录权限（ACL/owner）不会还原，MSIX 应用的权限可能异常。\n\n是否继续？"
+            };
+            let answer = show_message(
                 state.root,
-                message,
+                notice,
                 if language == Language::English {
-                    "Restore blocked"
+                    "Confirm overlay restore (wimlib --no-acls)"
                 } else {
-                    "还原已停止"
+                    "确认覆盖式还原（wimlib --no-acls）"
                 },
-                MB_OK | MB_ICONERROR,
+                MB_YESNO | MB_ICONWARNING,
             );
-            return;
+            if answer != IDYES {
+                append_gui_log(
+                    state,
+                    "GUI action blocked: overlay restore (wimlib --no-acls route) declined by the user",
+                );
+                return;
+            }
+            append_gui_log(
+                state,
+                "GUI overlay restore: the user confirmed the wimlib --no-acls route",
+            );
         }
     }
     // C（还原系统到非 C 盘）走 create-secondary 语义，离线 prepare 要求启动菜单名必填；
@@ -7630,7 +7656,9 @@ unsafe fn schedule_pe_task(
         let index = _index
             .parse::<u32>()
             .map_err(|_| crate::err("镜像索引无效"))?;
-        let request = crate::pe_operation::new_request(mode, drive, image_path, index, None, "")?;
+        // overlay_no_acl=false：PE 三入口（backup/restore/secondary）恒格式化，
+        // 不存在「覆盖式应用到已含 Windows 卷」组合（任务 #110）。
+        let request = crate::pe_operation::new_request(mode, drive, image_path, index, None, "", false)?;
         crate::pe_operation::enqueue(&request)
     })();
     let write_ok = request.is_ok();
@@ -9618,7 +9646,8 @@ unsafe fn pe_run_interactive(hwnd: Hwnd, operation: &str) {
     let request = index
         .map_err(|_| crate::err("镜像索引必须是正整数"))
         .and_then(|index| {
-            crate::pe_operation::new_request(operation, drive, image.trim(), index, main, &name)
+            // overlay_no_acl=false：PE 桌面三入口恒格式化，无覆盖式组合（任务 #110）。
+            crate::pe_operation::new_request(operation, drive, image.trim(), index, main, &name, false)
         });
     let request = match request {
         Ok(request) => request,

@@ -94,6 +94,11 @@ mod text_parsing;
 mod windows_command;
 #[cfg(windows)]
 mod windows_prepare;
+/// wimlib `--no-acls` 覆盖式应用通道（任务 #110，2026-10-22 用户裁定）。
+/// 纯逻辑（参数构造 / 二进制定位）跨平台可测；实际执行走 `windows_command`，
+/// 因此执行函数单独 `#[cfg(windows)]`，与 `windows_command` 同门控。
+#[cfg(any(windows, test))]
+mod wimlib_apply;
 #[cfg(any(windows, test))]
 mod winre_payload;
 #[cfg(any(windows, test))]
@@ -3674,17 +3679,49 @@ fn recover_windows(
                     p.wait_if_paused(log, "STEP 2/4 还原镜像")?;
                 }
                 recovery_fault::checkpoint("apply", log)?;
-                run_logged(
-                    "dism.exe",
-                    &[
-                        "/English",
-                        "/Apply-Image",
-                        &format!("/ImageFile:{}", image_path.display()),
-                        &format!("/Index:{}", image_index),
-                        &format!("/ApplyDir:{}", target_root.display()),
-                    ],
-                    log,
-                )?;
+                // 【2026-10-22 任务 #110】「覆盖式应用（取消格式化）打到已含
+                // Windows 的卷」按准备期落盘的 `overlay_no_acl` 路由执行通道：
+                // DISM 会在还原 `Program Files\WindowsApps` 等 TrustedInstaller
+                // 保护目录的 SD/owner 时被拒（RestoreDirMetadata 0x80070005 →
+                // exit 5，PE 内对照实验钉死，见 docs/20261016-1413 §2）；
+                // wimlib `--no-acls` 整个跳过 SD 还原、且自行获取
+                // SeRestore/SeBackup 提权（POC E5：禁用提权的父进程下仍
+                // exit 0），RE 上下文同样可用。判据、用户确认与二进制定位
+                // 均在准备期/GUI/载荷注入完成，此处只读标记决定走哪条路。
+                let overlay_no_acl = task
+                    .target
+                    .as_ref()
+                    .is_some_and(|spec| spec.overlay_no_acl);
+                if overlay_no_acl {
+                    // RE 内 current_exe（Recovery.exe）就在注入后的 System32，
+                    // wimlib 二进制由载荷注入链放在同一目录（winre_payload）。
+                    let executable_dir = std::env::current_exe()
+                        .map_err(|error| {
+                            err(&format!("无法定位程序目录（wimlib 通道）：{error}"))
+                        })?
+                        .parent()
+                        .ok_or_else(|| err("程序目录解析失败（wimlib 通道）"))?
+                        .to_path_buf();
+                    crate::wimlib_apply::apply_no_acl(
+                        &executable_dir,
+                        &image_path,
+                        image_index,
+                        &target_root,
+                        log,
+                    )?;
+                } else {
+                    run_logged(
+                        "dism.exe",
+                        &[
+                            "/English",
+                            "/Apply-Image",
+                            &format!("/ImageFile:{}", image_path.display()),
+                            &format!("/Index:{}", image_index),
+                            &format!("/ApplyDir:{}", target_root.display()),
+                        ],
+                        log,
+                    )?;
+                }
                 if task.status == Stage::TargetErased {
                     store.write_transition(task, Stage::ImageApplied)?;
                 }

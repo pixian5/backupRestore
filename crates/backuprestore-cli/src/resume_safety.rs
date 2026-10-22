@@ -133,6 +133,7 @@ mod tests {
             minimum_size_bytes: 1,
             is_active_system: true,
             format_target: true,
+            overlay_no_acl: false,
         });
         let mut values = BTreeMap::from([
             ("SOURCE_DISK_GUID".into(), "disk".into()),
