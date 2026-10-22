@@ -397,6 +397,99 @@ pub(crate) fn first_braced_guid(text: &str) -> Option<String> {
     Some(text[start + 1..end].to_string())
 }
 
+/// wimlib `apply` 的三个阶段（顺序固定，每个阶段自己从 0% 报到 100%）。
+///
+/// wimlib 不是 DISM，没有「整条命令一个 0–100」的进度条，而是分三段各报各的：
+/// `Creating files`（建空文件）→ `Extracting file data`（写数据，最耗时）→
+/// `Applying metadata to files`（写元数据/安全描述符）。所以阶段名必须一起
+/// 解析出来，否则进度条会在中途倒退两次。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WimlibPhase {
+    Creating,
+    Extracting,
+    Metadata,
+}
+
+impl WimlibPhase {
+    /// 中文阶段名（用于日志尾部的可读进度行）。
+    fn label(self) -> &'static str {
+        match self {
+            Self::Creating => "正在创建文件",
+            Self::Extracting => "正在展开系统文件",
+            Self::Metadata => "正在应用文件元数据",
+        }
+    }
+}
+
+/// 从一行 wimlib 进度输出里取 `(阶段, 阶段内百分比)`。
+///
+/// 真实形态（`\r` 原地刷新，重定向到日志后由调用方按 `\r`/`\n` 拆行）：
+/// - `Creating files: 500 of 633699 (1%) done`
+/// - `Extracting file data: 15 GiB of 68 GiB (22%) done`
+/// - `Applying metadata to files: 500 of 633699 (1%) done`
+///
+/// **为什么不能用 `parse_percent`**：那个函数是给 DISM 的
+/// `[=  45.6% =]` 写的——它把「最近的 `[`（没有就从行首）到 `%`」之间的
+/// 数字全拼起来再解析。wimlib 的行首是计数（`500 of 633699`、`15 GiB of 68 GiB`），
+/// 拼出来是 `5006336991`、`156822` 这种六位以上数字，必然落在 0–100 之外
+/// → 永远 `None` → 进度条恒为 0。这是 v2.6.27 实机里「进度条一直是空」的根因。
+pub(crate) fn parse_wimlib_progress(line: &str) -> Option<(WimlibPhase, u32)> {
+    let phase = if line.contains("Creating files:") {
+        WimlibPhase::Creating
+    } else if line.contains("Extracting file data:") {
+        WimlibPhase::Extracting
+    } else if line.contains("Applying metadata to files:") {
+        WimlibPhase::Metadata
+    } else {
+        return None;
+    };
+    // 百分比在行尾的最后一对括号里：取最后一个 '(' 之后到 '%' 之间的数字。
+    let open = line.rfind('(')?;
+    let close = open + line[open..].find('%')?;
+    let digits: String = line[open + 1..close]
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let value = digits.parse::<f32>().ok()?;
+    if !(0.0..=100.0).contains(&value) {
+        return None;
+    }
+    Some((phase, value as u32))
+}
+
+/// 把 wimlib 的「阶段内百分比」折算成整个 apply 的 0–100。
+///
+/// 进度条只显示当前阶段的进度，而第 2 步「还原镜像」对用户来说是一件事，
+/// 所以三个阶段要拼成一条单调的 0–100。权重按 2026-10-23 实测（68 GiB /
+/// 633,699 条目，整条 apply 11 分 43 秒）：创建文件约 1 分钟、展开数据约
+/// 9 分半、应用元数据约 1 分 15 秒 → 10% / 80% / 10%。
+/// 三阶段顺序固定，映射天然单调（实测 2,639 条真实进度片段零回退）。
+pub(crate) fn wimlib_overall_percent(phase: WimlibPhase, phase_percent: u32) -> u32 {
+    let percent = phase_percent.min(100);
+    let (base, span) = match phase {
+        WimlibPhase::Creating => (0u32, 10u32),
+        WimlibPhase::Extracting => (10, 80),
+        WimlibPhase::Metadata => (90, 10),
+    };
+    (base + span * percent / 100).min(100)
+}
+
+/// 把 wimlib 的英文进度片段改写成一句可读的中文进度行。
+///
+/// 原样塞进日志尾部会每秒刷掉一条真实消息（一条 `Extracting file data: …`
+/// 每秒来一次），而且 `Creating files: 500 of 633699 (1%) done` 这种英文计数
+/// 对用户没有意义。保留数字、换掉标签。
+pub(crate) fn wimlib_detail_line(phase: WimlibPhase, line: &str) -> String {
+    let body = line
+        .split_once(':')
+        .map(|(_, rest)| rest)
+        .unwrap_or(line)
+        .trim()
+        .trim_end_matches("done")
+        .trim();
+    format!("{}：{body}", phase.label())
+}
+
 /// Parse the percentage out of a DISM progress line, e.g.
 /// `[stdout] [=  45.6% =]` → `Some(45)`. Find a `%`, walk back to the nearest
 /// `[`, and keep only digits and the decimal point in between.
@@ -633,9 +726,17 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         // 进度窗口据此显示「n/N <名称>」，让用户看清当前处在第几步。
         stage = Some(format!("{index}/{total} {name}"));
     }
-    let percent = parse_percent(line);
+    let wimlib = parse_wimlib_progress(line);
+    // wimlib 的阶段内百分比要先折成整条 apply 的 0–100；DISM 的进度行照旧。
+    let percent = wimlib
+        .map(|(phase, phase_percent)| wimlib_overall_percent(phase, phase_percent))
+        .or_else(|| parse_percent(line));
     let trimmed = line.trim();
-    let detail = if trimmed.is_empty()
+    let detail = if let Some((phase, _)) = wimlib {
+        // wimlib 的进度片段是 `\r` 原地刷新的英文计数行，原样进日志尾部会
+        // 每秒刷掉一条真实消息，改写成一句中文进度。
+        Some(wimlib_detail_line(phase, line))
+    } else if trimmed.is_empty()
         || ((line.starts_with("[stdout] [") || line.starts_with('[')) && line.contains('%'))
         || line.starts_with("STEP ")
         || trimmed == "[stdout]"
@@ -1645,6 +1746,76 @@ Possible values for VolumeName along with current mount points are:
     }
 
     #[test]
+    fn wimlib_progress_lines_yield_phase_and_percent() {
+        assert_eq!(
+            parse_wimlib_progress("Creating files: 500 of 633699 (1%) done"),
+            Some((WimlibPhase::Creating, 1))
+        );
+        assert_eq!(
+            parse_wimlib_progress("Extracting file data: 15 GiB of 68 GiB (22%) done"),
+            Some((WimlibPhase::Extracting, 22))
+        );
+        assert_eq!(
+            parse_wimlib_progress("Applying metadata to files: 633699 of 633699 (100%) done"),
+            Some((WimlibPhase::Metadata, 100))
+        );
+        // 不是 wimlib 的行，不能误判。
+        assert_eq!(parse_wimlib_progress("[stdout] [=  45.6% =]"), None);
+        assert_eq!(parse_wimlib_progress("STEP 2/4 还原镜像（时间长）"), None);
+        assert_eq!(parse_wimlib_progress("Creating files: 500 of 633699"), None);
+    }
+
+    #[test]
+    fn wimlib_phases_fold_into_one_monotonic_zero_to_hundred() {
+        // 三段各报各的 0–100，折成整条 apply 的一条 0–100，且不倒退。
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Creating, 0), 0);
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Creating, 100), 10);
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Extracting, 0), 10);
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Extracting, 50), 50);
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Extracting, 100), 90);
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Metadata, 0), 90);
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Metadata, 100), 100);
+        // 越界夹紧，绝不把进度条推出 100。
+        assert_eq!(wimlib_overall_percent(WimlibPhase::Metadata, 250), 100);
+        let curve: Vec<u32> = [
+            (WimlibPhase::Creating, 0),
+            (WimlibPhase::Creating, 100),
+            (WimlibPhase::Extracting, 0),
+            (WimlibPhase::Extracting, 100),
+            (WimlibPhase::Metadata, 0),
+            (WimlibPhase::Metadata, 100),
+        ]
+        .into_iter()
+        .map(|(phase, percent)| wimlib_overall_percent(phase, percent))
+        .collect();
+        assert!(
+            curve.windows(2).all(|pair| pair[0] <= pair[1]),
+            "阶段切换不能让进度条倒退：{curve:?}"
+        );
+    }
+
+    #[test]
+    fn wimlib_progress_drives_the_progress_bar_and_gets_a_readable_detail() {
+        // 这是 v2.6.27 实机「进度条一直是空」的回归护栏：
+        // wimlib 的行首是计数，parse_percent 拼出来必然越界 → 曾经恒为 0。
+        let (_, percent, detail) = classify_log_line("Extracting file data: 15 GiB of 68 GiB (22%) done");
+        assert_eq!(percent, Some(27), "22% 的展开阶段应折成整条 apply 的 27%");
+        assert_eq!(
+            detail.as_deref(),
+            Some("正在展开系统文件：15 GiB of 68 GiB (22%)")
+        );
+        // 英文标签换掉、数字保留。
+        let (_, percent, detail) = classify_log_line("Creating files: 500 of 633699 (1%) done");
+        assert_eq!(percent, Some(0));
+        assert_eq!(
+            detail.as_deref(),
+            Some("正在创建文件：500 of 633699 (1%)")
+        );
+        // DISM 的老格式不受影响。
+        assert_eq!(classify_log_line("[stdout] [=  45.6% =]").1, Some(45));
+    }
+
+    #[test]
     fn dism_success_does_not_finish_the_whole_transaction() {
         assert_ne!(
             classify_log_line("The operation completed successfully.")
@@ -2294,6 +2465,75 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert!(
             require_guid("{bootmgr}", "enum").is_err(),
             "旧入口仍然只认 GUID"
+        );
+    }
+}
+
+#[cfg(test)]
+mod replay_probe {
+    use super::*;
+
+    /// 真实日志回放取证（本地专用，默认不跑）：
+    /// `cargo test -p backuprestore-cli replay_real_wimlib_log -- --ignored --nocapture`
+    ///
+    /// 把 2026-10-23 端到端恢复日志里 wimlib 的每一条进度片段喂进
+    /// `classify_log_line`，按 apply 分段检查：全部解析出百分比、段内单调、
+    /// 每段都走到 100%。日志不在（`.test-artifacts` 不入库）时自动跳过。
+    #[test]
+    #[ignore = "依赖本机 .test-artifacts 里的真实恢复日志，按需手动跑"]
+    fn replay_real_wimlib_log() {
+        let path = std::path::Path::new("../../.test-artifacts/e2e-brimglog-227.log");
+        let Ok(raw) = std::fs::read(path) else {
+            eprintln!("skip: no log");
+            return;
+        };
+        let text = String::from_utf8_lossy(&raw);
+        // 日志跨多次 apply（v2.6.25 与 v2.6.27 两轮），每次 apply 从 0 开始，
+        // 所以单调性要按 apply 分段检查。
+        let mut segments: Vec<Vec<u32>> = vec![Vec::new()];
+        let mut fragments = 0usize;
+        for line in text.split(['\n', '\r']) {
+            if line.contains("Applying image") {
+                segments.push(Vec::new());
+                continue;
+            }
+            if parse_wimlib_progress(line).is_none() {
+                continue;
+            }
+            fragments += 1;
+            if let Some(percent) = classify_log_line(line).1 {
+                segments.last_mut().unwrap().push(percent);
+            }
+        }
+        let segments: Vec<Vec<u32>> = segments.into_iter().filter(|s| !s.is_empty()).collect();
+        let parsed: usize = segments.iter().map(Vec::len).sum();
+        let mut regress = 0usize;
+        for segment in &segments {
+            let mut high = 0u32;
+            for value in segment {
+                if *value < high {
+                    regress += 1;
+                }
+                high = high.max(*value);
+            }
+        }
+        eprintln!(
+            "apply 段数={} fragments={fragments} parsed={parsed} regress={regress}",
+            segments.len()
+        );
+        for (index, segment) in segments.iter().enumerate() {
+            eprintln!(
+                "  apply#{index}: {} 条，{}% → {}%",
+                segment.len(),
+                segment.first().unwrap(),
+                segment.last().unwrap()
+            );
+        }
+        assert_eq!(parsed, fragments, "每条 wimlib 进度片段都必须解析出百分比");
+        assert_eq!(regress, 0, "同一次 apply 内进度条不允许倒退");
+        assert!(
+            segments.iter().all(|s| *s.last().unwrap() == 100),
+            "每次 apply 都必须走到 100%"
         );
     }
 }
