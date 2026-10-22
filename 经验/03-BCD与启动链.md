@@ -71,7 +71,7 @@
 
 - **通用语义**：`bcdedit /delete`、`/deletevalue`、`Remove-Item` 的"让它不存在"类操作失败要反过来看——目标已不存在 = 目的达成 —— 20261014-2315 [✅]
 - `--skip-format` 解析分支曾漏接（GUI/usage/PrepareOptions 全接了，唯独参数解析 match 缺一支，兜底是硬报错 `unknown prepare option`；`unused_mut` 警告就是指纹）—— v2.5.5 补 —— 20261014-2030 [✅]
-- `resume` 复用旧载荷陷阱：resume 只 rearm 一次性启动项 + shutdown，**复用 prepare 时暂存的 WIM（内含旧 Recovery.exe）** → 改 RE 侧代码后必须**全新 prepare** 才能验证；`build-win.sh --deploy` 只刷运行目录不动已暂存载荷 —— 20261014-2105/2107 [✅]
+- `resume` 复用旧载荷陷阱：resume 只 rearm 一次性启动项 + shutdown，**复用 prepare 时暂存的 WIM（内含旧 Recovery.exe）** → 改 RE 侧代码后必须**全新 prepare** 才能验证；任何 deploy（VM 内 `build-windows.ps1 -Deploy` 或 macOS 侧 `build-win.sh --deploy`）都只刷运行目录/包目录、不动已暂存载荷 —— 20261014-2105/2107 [✅]（口径勘误：`build-win.sh --deploy` 确实存在且已含 wimlib 八联校验，但它部署的是 macOS 交叉编译产物；按 2026-10-15 拍板实机部署走 VM 内路径 —— 20261022-2030）
 
 ## 8. 绝对禁止清单（踩错机器起不来）
 

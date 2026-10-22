@@ -176,8 +176,10 @@ function Publish-Build {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
     }
 
-    # 四个目标文件：两个目录 × 两个名字（BackupRestore.exe / Recovery.exe）。
+    # 四个 exe 目标文件：两个目录 × 两个名字（BackupRestore.exe / Recovery.exe）。
     # 少更新任何一个都会让 WinRE 载荷烘进旧代码。
+    # 另有四个 wimlib 目标文件（见下方 wimlib 块）：两个目录 × 两个名字，
+    # 合计八个文件逐个核对 SHA-256。
     $targets = @(
         @{ Path = (Join-Path $PackageDir 'BackupRestore.exe'); Label = '包目录 BackupRestore.exe' },
         @{ Path = (Join-Path $PackageDir 'Recovery.exe'); Label = '包目录 Recovery.exe' },
@@ -192,6 +194,29 @@ function Publish-Build {
     }
     # WinPE 的 winpeshl.ini 是仓库里的审计夹具，随包目录一起放，便于人工比对。
     Copy-Item (Join-Path $PSScriptRoot 'winpe-winpeshl.ini') (Join-Path $PackageDir 'winpe-winpeshl.ini') -Force
+
+    # wimlib 覆盖式还原通道（任务 #110，v2.6.25 引入）：独立进程调用的官方预编译
+    # 二进制，必须随包部署到两个目录——在线态 locate_wimlib 在程序同目录找它；
+    # RE 态由 OPTIONAL_RUNTIME_FILES 从 executable_dir 暂存后注入 WinRE System32。
+    # 仓库里缺失属打包事故，直接抛错（用到时 locate_wimlib 也会明确报错，
+    # 绝不静默回退 DISM，所以这里不做容错跳过）。
+    $wimlibDir = Join-Path $repoRoot 'windows\wimlib-aarch64'
+    foreach ($name in @('wimlib-imagex.exe', 'libwim-15.dll')) {
+        $source = Join-Path $wimlibDir $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "wimlib 运行时缺失：$source（任务 #110 覆盖式还原通道的必备件，仓库 windows\wimlib-aarch64\ 下应有）"
+        }
+        $wimlibHash = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
+        foreach ($dir in @($PackageDir, $WorkDir)) {
+            $dest = Join-Path $dir $name
+            Copy-Item $source $dest -Force
+            $deployedWimlib = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($deployedWimlib -ne $wimlibHash) {
+                throw "部署失败：$dest 的 SHA-256 与仓库基线不一致（客体=$deployedWimlib 基线=$wimlibHash）"
+            }
+            Write-Host ("  OK wimlib {0} => {1}" -f $dest, $deployedWimlib)
+        }
+    }
 
     foreach ($target in $targets) {
         $deployed = (Get-FileHash $target.Path -Algorithm SHA256).Hash.ToLowerInvariant()
