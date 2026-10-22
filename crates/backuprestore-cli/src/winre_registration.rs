@@ -1040,6 +1040,13 @@ mod tests {
     /// 检查里就被判「无法识别」。本 crate 的 field() 把 BCD 字段值统一小写化，
     /// 而 bcdedit/bcdboot 写大写 `\Device\`——旧实现两处判据各只认一种写法，
     /// 实机 PE 内 recover 的 WinRE 重接因此失败。
+    ///
+    /// **只在非 Windows 上跑**（2026-10-22 补门控）：本测试的 assert 是
+    /// 「报错文案含『仅在 Windows 上可用』」，而 Windows 上 `verify_partition_token`
+    /// 会真的去核对设备号，`\Device\HarddiskVolume6` 这类输入可能直接返回 Ok →
+    /// `unwrap_err()` panic。也就是说它从加入起在 Windows 上恒失败一条，
+    /// 会让「单测全绿」这个验收口径失真（2026-10-22 在 VM 内跑 cli 全量测试时首次暴露）。
+    #[cfg(not(windows))]
     #[test]
     fn partition_token_routing_is_case_insensitive() {
         let payload = RecoveryPayload {
