@@ -6794,41 +6794,43 @@ unsafe fn create_task(state: &mut State) {
         ) {
             // 【2026-10-22 任务 #110：硬拒改确认】命中「已含 Windows + 取消
             // 格式化」不再直接拦截：DISM 该组合必然 RestoreDirMetadata
-            // 0x80070005（docs/20261016-1413 §2），用户裁定「换 wimlib
-            // --no-acls」后改走 wimlib 通道（跳过 SD 还原、自行获取
-            // SeRestore/SeBackup 提权，POC 见 docs/20261022-1427）。
-            // 代价必须显式告知：镜像目录权限不还原、MSIX 应用权限可能异常。
-            // 确认后放行进入正常任务流——prepare/在线链内部按同一判据路由，
-            // 已无硬拒点；取消则维持原拦截行为（什么都不做）。
+            // 0x80070005（docs/20261016-1413 §2），用户裁定「换 wimlib」
+            // 后改走 wimlib 通道（自行获取 SeRestore/SeBackup 提权，POC 见
+            // docs/20261022-1427）。【2026-10-23 产品化】概念验证
+            // （docs/20261022-2308）证明该提权同时覆盖安全描述符还原 →
+            // 镜像目录权限（ACL/owner）完整还原，个别受保护目录可能保留卷上
+            // 现有权限。确认框明示该语义；确认后放行进入正常任务流——
+            // prepare/在线链内部按同一判据路由，已无硬拒点；取消则维持原
+            // 拦截行为（什么都不做）。
             append_gui_log(
                 state,
-                "GUI overlay restore onto a volume containing Windows: asking the user to confirm the wimlib --no-acls route",
+                "GUI overlay restore onto a volume containing Windows: asking the user to confirm the wimlib route",
             );
             let notice = if language == Language::English {
-                "The target volume already contains Windows. Overlay apply without formatting will use the wimlib --no-acls channel: directory permissions (ACL/owner) from the image are NOT restored, and MSIX app permissions may be abnormal.\n\nContinue?"
+                "The target volume already contains Windows. Overlay apply without formatting will use the wimlib channel: directory permissions (ACL/owner) from the image are restored in full; a few protected directories may keep their existing permissions.\n\nContinue?"
             } else {
-                "目标分区已含 Windows。取消格式化的覆盖式应用将改用 wimlib --no-acls 通道：镜像中的目录权限（ACL/owner）不会还原，MSIX 应用的权限可能异常。\n\n是否继续？"
+                "目标分区已含 Windows。取消格式化的覆盖式应用将走 wimlib 通道：镜像中的目录权限（属主与访问控制列表）将完整还原，个别受保护目录可能保留卷上现有权限。\n\n是否继续？"
             };
             let answer = show_message(
                 state.root,
                 notice,
                 if language == Language::English {
-                    "Confirm overlay restore (wimlib --no-acls)"
+                    "Confirm overlay restore (wimlib channel)"
                 } else {
-                    "确认覆盖式还原（wimlib --no-acls）"
+                    "确认覆盖式还原（wimlib 通道）"
                 },
                 MB_YESNO | MB_ICONWARNING,
             );
             if answer != IDYES {
                 append_gui_log(
                     state,
-                    "GUI action blocked: overlay restore (wimlib --no-acls route) declined by the user",
+                    "GUI action blocked: overlay restore (wimlib route) declined by the user",
                 );
                 return;
             }
             append_gui_log(
                 state,
-                "GUI overlay restore: the user confirmed the wimlib --no-acls route",
+                "GUI overlay restore: the user confirmed the wimlib route",
             );
         }
     }

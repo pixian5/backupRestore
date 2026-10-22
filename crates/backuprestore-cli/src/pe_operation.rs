@@ -91,12 +91,17 @@ pub(crate) struct Request {
     pub main: Option<VolumeIdentity>,
     pub name: String,
     /// 「覆盖式应用（取消格式化）打到已含 Windows 的目标卷」时走 wimlib
-    /// --no-acls 通道（2026-10-22 任务 #110，用户裁定「换 wimlib --no-acls」）。
+    /// 通道（2026-10-22 任务 #110，用户裁定「换 wimlib」；2026-10-23 产品化
+    /// 「保留安全描述符还原」，去掉 `--no-acls`）。
     /// DISM 该组合必然 `RestoreDirMetadata 0x80070005`（docs/20261016-1413 §2）；
-    /// wimlib 跳过 SD 还原且自行获取 SeRestore/SeBackup 提权（POC E5）。
+    /// wimlib 自行获取 SeRestore/SeBackup 提权且该提权覆盖 SD 还原
+    /// （POC E5 + docs/20261022-2308 概念验证）。
     /// `#[serde(default)]` 兜底 false：旧请求与未命中组合恒走 DISM 原路径。
     /// PE 三入口（backup/restore/secondary）恒格式化，默认 false；仅 data
     /// 覆盖语义且目标含 Windows 时才由调用方显式置 true。
+    /// **名字沿袭历史**：字段名里的 `no_acl` 是 v2.6.25–v2.6.26「跳过 SD 还原」
+    /// 时代的残留，当前语义 = 覆盖式应用（安全描述符随镜像还原）；不改名是
+    /// 为了 task.json 序列化兼容。
     #[serde(default)]
     pub overlay_no_acl: bool,
 }
@@ -685,8 +690,8 @@ impl RestoreBackend for Engine {
         // 【2026-10-22 任务 #110】覆盖式应用（DataOverlay 跳过格式化）打到已含
         // Windows 的目标卷时按请求里的 overlay_no_acl 路由：DISM 必然
         // RestoreDirMetadata 0x80070005（TrustedInstaller 保护目录的 SD/owner
-        // 改写被拒），wimlib --no-acls 跳过 SD 还原且自行获取 SeRestore/SeBackup
-        // 提权（POC E5：禁用提权的父进程下仍 exit 0）。PE 内 wimlib 二进制由
+        // 改写被拒），wimlib 自行获取 SeRestore/SeBackup 提权且覆盖 SD 还原
+        // （POC E5 + docs/20261022-2308）。PE 内 wimlib 二进制由
         // 载荷注入链放在 System32（= current_exe 所在目录）。
         if self.request.overlay_no_acl {
             let log = self.dir.join("operation.log");
@@ -697,7 +702,7 @@ impl RestoreBackend for Engine {
                 .parent()
                 .ok_or_else(|| crate::err("程序目录解析失败（wimlib 通道）"))?
                 .to_path_buf();
-            crate::wimlib_apply::apply_no_acl(
+            crate::wimlib_apply::apply_overlay(
                 &executable_dir,
                 &self.image,
                 self.request.index,

@@ -1,5 +1,5 @@
-//! wimlib `--no-acls` 覆盖式应用通道（2026-10-22 用户裁定「换 wimlib
-//! --no-acls」，任务 #110）。
+//! wimlib 覆盖式应用通道（任务 #110；2026-10-22 用户裁定「换 wimlib」，
+//! 2026-10-23 用户裁定产品化「保留安全描述符还原」，去掉 `--no-acls`）。
 //!
 //! **为什么存在**：DISM `/Apply-Image` 做「覆盖式应用」（取消格式化，不删卷上
 //! 既有文件）打到已含 Windows 的目标卷时，要还原镜像里
@@ -10,15 +10,22 @@
 //! 清空，DISM 只需「新建」而非「改写」。
 //!
 //! **wimlib 的两个决定性性质**（POC 实证，见
-//! `docs/20261022-1427-wimlib-no-acls覆盖式还原POC与DISM对照-Step-5-Preview.md`）：
-//! 1. `--no-acls` 整个跳过 SD 还原 → 对 RestoreDirMetadata 失败**结构性免疫**
-//!    （该失败模式在代码路径上不可能发生）；
-//! 2. wimlib 自行获取 SeRestore/SeBackup 提权（E5：禁用提权的父进程下
+//! `docs/20261022-1427-wimlib-no-acls覆盖式还原概念验证与DISM对照-Step-5-Preview.md`
+//! 与 `docs/20261022-2308-wimlib保留访问控制列表覆盖式还原概念验证-Step-5-Preview.md`）：
+//! 1. wimlib 自行获取 SeRestore/SeBackup 提权（E5：禁用提权的父进程下
 //!    wimlib 仍 exit 0，同父进程的 icacls 子进程被拒 exit 5）→ **RE/PE 上下文
-//!    同样可用**，而这正是 DISM 会败的环境。
+//!    同样可用**，而这正是 DISM 会败的环境；
+//! 2. 该提权**同时覆盖文件写入与安全描述符还原**（2026-10-23 概念验证：
+//!    特权禁用上下文 + TrustedInstaller 属主保护目录，wimlib 把 owner/DACL/
+//!    protected 完整还原为镜像 SD，SDDL 逐字节一致；全量 71GiB / 634,091
+//!    条目 exit 0 零警告，判据样本目录/文件 SD 与镜像参考逐字节一致，
+//!    含 `WIN://SYSAPPID` 条件 ACE + app package SID + TrustedInstaller FA
+//!    的原生 MSIX ACL）。因此镜像里的目录权限（ACL/owner）**完整还原**，
+//!    个别受保护目录可能保留卷上现有权限。
 //!
-//! **代价**（GUI 确认框明示）：镜像里的目录权限（ACL/owner）不还原，MSIX
-//! 应用的权限可能异常。
+//! **历史**：v2.6.25–v2.6.26 曾带 `--no-acls`（跳过 SD 还原，对
+//! RestoreDirMetadata 失败结构性免疫）作为双保险；2026-10-23 概念验证证明
+//! 提权覆盖 SD 还原后，用户裁定产品化「保留访问控制列表」，参数去掉。
 //!
 //! **定位规则**：在线态 = 程序同目录（`executable_dir`，随包部署）；RE 态 =
 //! `winre_payload` 注入到 WinRE 的 `Windows\System32`（RE 内 `executable_dir`
@@ -40,9 +47,10 @@ pub(crate) const WIMLIB_DLL: &str = "libwim-15.dll";
 
 /// 构造 `wimlib-imagex apply` 的参数（纯函数，单测锁死形态与顺序）。
 ///
-/// 参数顺序即官方 CLI 契约：`apply <wim> <image_num_or_name> <dest_dir>`，
-/// `--no-acls` 是跳过安全描述符还原的开关（等价于 wimgapi 的
-/// `WIM_FLAG_NO_DIRACL | WIM_FLAG_NO_FILEACL`，DISM.exe 未暴露）。
+/// 参数顺序即官方 CLI 契约：`apply <wim> <image_num_or_name> <dest_dir>`。
+/// 不带 `--no-acls`：安全描述符（ACL/owner）随镜像完整还原——wimlib 自行
+/// 获取 SeRestore/SeBackup 提权，还原受保护目录的 SD 不被拒（2026-10-23
+/// 概念验证，tiny + 全量两级）。
 /// 引号转义由 `windows_command::run_program` 的 `quote` 统一处理
 /// （已正确处理尾部反斜杠，见其单测 `quoted_arguments_keep_trailing_slash`）。
 pub(crate) fn wimlib_args(image: &Path, index: u32, apply_root: &Path) -> Vec<String> {
@@ -51,7 +59,6 @@ pub(crate) fn wimlib_args(image: &Path, index: u32, apply_root: &Path) -> Vec<St
         image.display().to_string(),
         index.to_string(),
         apply_root.display().to_string(),
-        "--no-acls".to_string(),
     ]
 }
 
@@ -61,7 +68,7 @@ pub(crate) fn locate_wimlib(executable_dir: &Path) -> Result<PathBuf, TaskError>
     let exe = executable_dir.join(WIMLIB_EXE);
     if !exe.is_file() {
         return Err(crate::err(&format!(
-            "覆盖式应用（--no-acls）需要 wimlib 二进制：未找到 {}（{WIMLIB_DLL} 须与其同目录）。\
+            "覆盖式应用需要 wimlib 二进制：未找到 {}（{WIMLIB_DLL} 须与其同目录）。\
              请把 wimlib 官方 Windows ARM64 预编译包的两个文件放进程序目录后重试；\
              不会回退 DISM（该组合下 DISM 必然失败）。",
             exe.display()
@@ -70,16 +77,16 @@ pub(crate) fn locate_wimlib(executable_dir: &Path) -> Result<PathBuf, TaskError>
     Ok(exe)
 }
 
-/// 经统一进程通道执行 `wimlib-imagex apply <wim> <index> <dir> --no-acls`。
+/// 经统一进程通道执行 `wimlib-imagex apply <wim> <index> <dir>`（还原安全描述符）。
 ///
 /// - 执行通道复用 `windows_command::run_program`（引号转义、Job 对象进程树
 ///   隔离、超时、日志落盘），与 DISM 同等待遇；
-/// - 超时用 `dism_timeout::wait_ms()`：wimlib apply 71GiB 实测约 22 分钟，
+/// - 超时用 `dism_timeout::wait_ms()`：wimlib apply 71GiB 实测约 8–22 分钟，
 ///   与 DISM 同属「长任务」，共用同一个可配置上限（默认仍是不限制）；
 /// - `executable_dir` 传调用方解析好的程序目录（在线态=程序同目录；
 ///   RE 态=current_exe 所在目录，即注入后的 System32）。
 #[cfg(windows)]
-pub(crate) fn apply_no_acl(
+pub(crate) fn apply_overlay(
     executable_dir: &Path,
     image: &Path,
     index: u32,
@@ -92,7 +99,7 @@ pub(crate) fn apply_no_acl(
     crate::append_log(
         log,
         &format!(
-            "wimlib 开始（--no-acls 覆盖式应用）：{} {}",
+            "wimlib 开始（覆盖式应用，还原安全描述符）：{} {}",
             exe.display(),
             args.join(" ")
         ),
@@ -116,7 +123,8 @@ mod tests {
 
     #[test]
     fn wimlib_args_have_exact_shape() {
-        // 锁死参数形态与顺序：apply <wim> <index> <dir> --no-acls。
+        // 锁死参数形态与顺序：apply <wim> <index> <dir>（不带 --no-acls，
+        // 安全描述符随镜像还原——2026-10-23 用户裁定产品化保留访问控制列表）。
         // 尾部反斜杠的盘符路径保持原样——quote 会在 run_program 里正确转义。
         let args = wimlib_args(Path::new("H:\\BRImages\\br-38sys.wim"), 3, Path::new("F:\\"));
         assert_eq!(
@@ -126,7 +134,6 @@ mod tests {
                 "H:\\BRImages\\br-38sys.wim".to_string(),
                 "3".to_string(),
                 "F:\\".to_string(),
-                "--no-acls".to_string(),
             ]
         );
     }

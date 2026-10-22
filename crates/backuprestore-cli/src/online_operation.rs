@@ -498,17 +498,19 @@ fn restore_to_windows_volume(
     // `RestoreDirMetadata` 被拒 `0x80070005` → exit 5。精确根因与离线侧同源：
     // 见 docs/20261016-1413 §2（PE 内 F: 成功 / C: 秒退对照实验）与
     // docs/20261016-1836。原实现在此处 `return Err`（在线态硬拒）；2026-10-22
-    // 起改为路由到 wimlib --no-acls，判定逻辑见下方 #110 注释。
+    // 起改为路由到 wimlib，判定逻辑见下方 #110 注释。
     // 判据与离线侧共用同一纯函数（`pe_safety`），避免两处文案分叉；
     // 第一个参数传**真实探测结果**（2026-10-18 设计观察 7：C 入口目标常态是
     // 空分区，硬编码 true 会用事实错误的文案拒绝合法组合）。
     //
     // 【2026-10-22 任务 #110：硬拒改路由】命中「已含 Windows + 取消格式化」时
-    // 不再 `return Err`：改走 wimlib --no-acls 通道（DISM 该组合必然
+    // 不再 `return Err`：改走 wimlib 通道（DISM 该组合必然
     // RestoreDirMetadata 0x80070005，PE 内对照实验钉死，docs/20261016-1413 §2；
-    // wimlib 跳过 SD 还原且自行获取 SeRestore/SeBackup 提权，POC 见
-    // docs/20261022-1427）。代价（镜像目录权限不还原、MSIX 应用权限可能异常）
-    // 由 GUI 确认框明示；CLI 直跑 --skip-format 视为高级用户显式意图。
+    // wimlib 自行获取 SeRestore/SeBackup 提权，POC 见
+    // docs/20261022-1427）。2026-10-23 概念验证（docs/20261022-2308）证明该
+    // 提权同时覆盖 SD 还原 → 镜像目录权限（ACL/owner）完整还原，个别受保护
+    // 目录可能保留卷上现有权限；代价由 GUI 确认框明示；CLI 直跑 --skip-format
+    // 视为高级用户显式意图。
     let target_contains_windows = crate::pe_safety::target_is_windows_volume(root)?;
     let overlay_no_acl = crate::pe_safety::overlay_restore_on_windows_volume(
         target_contains_windows,
@@ -518,7 +520,7 @@ fn restore_to_windows_volume(
         log(
             log_path,
             "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，\
-             本次将走 wimlib --no-acls 通道（镜像目录权限不还原）",
+             本次将走 wimlib 通道（镜像目录权限完整还原）",
         )?;
     }
     // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会
@@ -695,13 +697,13 @@ fn restore_to_windows_volume(
     log(
         log_path,
         if overlay_no_acl {
-            "STEP 3/4 应用镜像（wimlib --no-acls 覆盖式通道）并校验系统文件"
+            "STEP 3/4 应用镜像（wimlib 覆盖式通道）并校验系统文件"
         } else {
             "STEP 3/4 应用镜像（DISM /Apply-Image）并校验系统文件"
         },
     )?;
     if overlay_no_acl {
-        // 任务 #110：在线态命中「已含 Windows + 取消格式化」→ wimlib --no-acls。
+        // 任务 #110：在线态命中「已含 Windows + 取消格式化」→ wimlib。
         // 在线态 current_exe 在程序同目录（包目录 / H:\brwork），wimlib 二进制
         // 由 build-win.sh --deploy 随包部署到那里。
         let executable_dir = std::env::current_exe()
@@ -711,7 +713,7 @@ fn restore_to_windows_volume(
             .parent()
             .ok_or_else(|| crate::err("程序目录解析失败（wimlib 通道）"))?
             .to_path_buf();
-        crate::wimlib_apply::apply_no_acl(
+        crate::wimlib_apply::apply_overlay(
             &executable_dir,
             image,
             index,

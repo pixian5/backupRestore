@@ -94,7 +94,8 @@ mod text_parsing;
 mod windows_command;
 #[cfg(windows)]
 mod windows_prepare;
-/// wimlib `--no-acls` 覆盖式应用通道（任务 #110，2026-10-22 用户裁定）。
+/// wimlib 覆盖式应用通道（任务 #110，2026-10-22 用户裁定「换 wimlib」；
+/// 2026-10-23 产品化「保留安全描述符还原」）。
 /// 纯逻辑（参数构造 / 二进制定位）跨平台可测；实际执行走 `windows_command`，
 /// 因此执行函数单独 `#[cfg(windows)]`，与 `windows_command` 同门控。
 #[cfg(any(windows, test))]
@@ -3684,9 +3685,10 @@ fn recover_windows(
                 // DISM 会在还原 `Program Files\WindowsApps` 等 TrustedInstaller
                 // 保护目录的 SD/owner 时被拒（RestoreDirMetadata 0x80070005 →
                 // exit 5，PE 内对照实验钉死，见 docs/20261016-1413 §2）；
-                // wimlib `--no-acls` 整个跳过 SD 还原、且自行获取
-                // SeRestore/SeBackup 提权（POC E5：禁用提权的父进程下仍
-                // exit 0），RE 上下文同样可用。判据、用户确认与二进制定位
+                // wimlib 自行获取 SeRestore/SeBackup 提权（POC E5：禁用提权的
+                // 父进程下仍 exit 0），且该提权覆盖 SD 还原（2026-10-23 概念
+                // 验证 docs/20261022-2308：tiny + 全量两级，镜像 SD 逐字节
+                // 还原），RE 上下文同样可用。判据、用户确认与二进制定位
                 // 均在准备期/GUI/载荷注入完成，此处只读标记决定走哪条路。
                 let overlay_no_acl = task
                     .target
@@ -3702,7 +3704,7 @@ fn recover_windows(
                         .parent()
                         .ok_or_else(|| err("程序目录解析失败（wimlib 通道）"))?
                         .to_path_buf();
-                    crate::wimlib_apply::apply_no_acl(
+                    crate::wimlib_apply::apply_overlay(
                         &executable_dir,
                         &image_path,
                         image_index,

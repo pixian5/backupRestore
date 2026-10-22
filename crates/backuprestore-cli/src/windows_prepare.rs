@@ -1173,7 +1173,7 @@ fn prepare_task(
                 // 格式化选项落盘（GUI 复选框 → prepare 参数 → RE 恢复链读取）
                 format_target: options.format_target,
                 // 「覆盖式应用到已含 Windows 卷」的路由标记（任务 #110）：
-                // 由 validate 判定，RE 恢复链读取后走 wimlib --no-acls。
+                // 由 validate 判定，RE 恢复链读取后走 wimlib 通道。
                 overlay_no_acl: validation.overlay_no_acl,
             });
         }
@@ -2429,13 +2429,18 @@ pub(crate) struct ValidationOutcome {
     pub acceptance: Option<ImageAcceptance>,
     /// 命中「覆盖式应用（取消格式化）打到已含 Windows 的目标卷」组合。
     ///
-    /// 2026-10-22 起该组合**不再硬拒**（用户裁定「换 wimlib --no-acls」）：
+    /// 2026-10-22 起该组合**不再硬拒**（用户裁定「换 wimlib」）：
     /// 准备期在此落盘 `overlay_no_acl=true`，恢复期（WinRE 链）据此走 wimlib
     /// 通道——DISM 该组合必然 `RestoreDirMetadata 0x80070005`（PE 内对照实验
-    /// 钉死，见 docs/20261016-1413 §2），wimlib `--no-acls` 跳过 SD 还原且
-    /// 自行获取 SeRestore/SeBackup 提权（POC 见 docs/20261022-1427）。
-    /// GUI 侧有显式确认框明示「目录权限不还原」的代价；CLI 直跑视为高级用户
+    /// 钉死，见 docs/20261016-1413 §2），wimlib 自行获取 SeRestore/SeBackup
+    /// 提权且该提权覆盖 SD 还原（2026-10-23 概念验证，docs/20261022-2308：
+    /// tiny + 全量两级，镜像 SD 逐字节还原），故镜像目录权限完整还原、
+    /// 个别受保护目录可能保留卷上现有权限（GUI 确认框明示）。
+    /// GUI 侧有显式确认框明示该语义；CLI 直跑视为高级用户
     /// 显式选择 `--skip-format` 的意图。
+    /// **名字沿袭历史**：`overlay_no_acl` 里的 `no_acl` 是 v2.6.25–v2.6.26
+    /// 「跳过 SD 还原」时代的残留，当前语义 = 覆盖式应用（安全描述符随镜像
+    /// 还原）；不改名是为了 task.json 序列化兼容。
     pub overlay_no_acl: bool,
 }
 
@@ -2566,7 +2571,7 @@ fn validate_operation_inputs(
             // 【准备期判定 · 2026-10-22 任务 #110：原「硬拒」已改「路由」】
             // 「系统卷 + 取消格式化（覆盖式应用）」对 DISM 是确定性失败组合
             // （根因见下）；2026-10-22 起不再挡在准备期，改为在此判定并落盘
-            // `overlay_no_acl`，恢复期走 wimlib --no-acls 通道。判定仍必须在
+            // `overlay_no_acl`，恢复期走 wimlib 通道。判定仍必须在
             // 准备期完成：RE 内探测不到宿主卷的 Windows 属性（`%SystemDrive%`
             // 是恢复环境自己的 RAM 盘 X:），与 `is_active_system` 同一理由。
             //
@@ -2588,12 +2593,13 @@ fn validate_operation_inputs(
             // 判据用「目标卷当前是否含 Windows」而非「是否活动系统卷」：任何既有
             // Windows 卷都带 TrustedInstaller 保护的目录，都会命中同一根因。
             //
-            // 【2026-10-22 任务 #110：硬拒改路由】用户裁定「换 wimlib --no-acls」
+            // 【2026-10-22 任务 #110：硬拒改路由】用户裁定「换 wimlib」
             // 后，本组合不再 `return Err`：置 `overlay_no_acl=true` 落进任务，
-            // 恢复期走 wimlib 通道（跳过 SD 还原，结构性免疫 0x80070005；
-            // 且 wimlib 自行获取 SeRestore/SeBackup 提权，RE 内可用）。
-            // 代价（镜像目录权限不还原、MSIX 应用权限可能异常）由 GUI 确认框
-            // 明示；CLI 直跑 --skip-format 视为高级用户显式意图。
+            // 恢复期走 wimlib 通道（wimlib 自行获取 SeRestore/SeBackup 提权，
+            // RE 内可用；2026-10-23 概念验证 docs/20261022-2308 证明该提权
+            // 同时覆盖 SD 还原——镜像目录权限完整还原，个别受保护目录可能
+            // 保留卷上现有权限，GUI 确认框明示该语义）。
+            // CLI 直跑 --skip-format 视为高级用户显式意图。
             if crate::pe_safety::overlay_restore_on_windows_volume(
                 target_is_windows,
                 options.format_target,
@@ -2602,8 +2608,8 @@ fn validate_operation_inputs(
                 append_log(
                     log,
                     "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，\
-                     已标记 overlay_no_acl，恢复期将走 wimlib --no-acls 通道\
-                     （镜像目录权限不还原；DISM 该组合必然 RestoreDirMetadata 0x80070005）",
+                     已标记 overlay_no_acl，恢复期将走 wimlib 通道\
+                     （镜像目录权限完整还原；DISM 该组合必然 RestoreDirMetadata 0x80070005）",
                 )?;
             }
             if options.operation == Operation::CreateSecondary || target_is_windows {
