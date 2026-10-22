@@ -2594,13 +2594,10 @@ fn validate_operation_inputs(
             // 且 wimlib 自行获取 SeRestore/SeBackup 提权，RE 内可用）。
             // 代价（镜像目录权限不还原、MSIX 应用权限可能异常）由 GUI 确认框
             // 明示；CLI 直跑 --skip-format 视为高级用户显式意图。
-            if crate::pe_safety::overlay_restore_on_windows_volume_error(
+            if crate::pe_safety::overlay_restore_on_windows_volume(
                 target_is_windows,
                 options.format_target,
-                crate::pe_safety::MessageLanguage::Chinese,
-            )
-            .is_some()
-            {
+            ) {
                 overlay_no_acl = true;
                 append_log(
                     log,

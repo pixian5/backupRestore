@@ -151,13 +151,23 @@ pub(crate) fn target_is_windows_volume(root: &Path) -> Result<bool, TaskError> {
     probe_file(root, &["Windows", "System32", "config", "SYSTEM"])
 }
 
-/// 「覆盖式应用（取消格式化）」打到**已含 Windows 的目标卷**时的确定性失败判据
-/// （准备期硬拒，用户 2026-10-16 拍板）。放在这里而不是 `windows_prepare`，是因为
-/// 本模块是 `cfg(any(windows, test))`，纯判据能在 macOS 上跑单测（同
-/// `target_is_windows_volume` 的处理方式）。
+/// GUI 中英双语文案的语言维度（CLI 输出固定中文）。
+/// 定义在本模块是因为这里是 `cfg(any(windows, test))`、macOS 单测可直达；
+/// 使用者：`failure_policy`（设置窗口标签/详情/解析错误）、`dism_timeout`（提示语）。
+/// 注意：覆盖式还原判据（下方 `overlay_restore_on_windows_volume`）#110 起收敛为
+/// 纯谓词，不再需要语言维度——它的旧双语文案是硬拒时代的，已随硬拒一起退役。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageLanguage {
+    Chinese,
+    English,
+}
+
+/// 「覆盖式应用（取消格式化）」打到**已含 Windows 的目标卷**的判据
+/// （准备期命中；用户 2026-10-16 拍板立项，2026-10-22 #110 起改路由）。
 ///
-/// 返回 `Some(错误文案)` 表示该组合必须拒绝。判据抽成纯函数以便单测锁定行为，
-/// 与 `boot_menu::decide_default` 同一取向（行为固化到可测函数，不散落在分支里）。
+/// 返回 `true` = 命中「已含 Windows + 取消格式化」组合。
+/// 判据抽成纯函数以便单测锁定行为，与 `boot_menu::decide_default` 同一取向
+/// （行为固化到可测函数，不散落在分支里）。
 ///
 /// **精确根因**（PE 内对照实验钉死，见 `docs/20261016-1413` §2 与
 /// `docs/20261016-1836`）：DISM 覆盖式应用要把镜像里 `Program Files\WindowsApps\...`
@@ -172,40 +182,23 @@ pub(crate) fn target_is_windows_volume(root: &Path) -> Result<bool, TaskError> {
 ///
 /// 该组合与 RE/在线/PE 环境无关、与 DISM 版本无关（PE 里同镜像同样失败）；
 /// `--skip-format` 只对**数据卷**（无 Windows 的卷，如 2026-10-14 验证的 T:）有效。
-/// 判据文案的语言维度。CLI 输出固定中文；GUI 是中英双语界面，按当前语言取。
+/// 判据用「目标卷当前是否含 Windows」而非「是否活动系统卷」：任何既有 Windows 卷
+/// 都带 TrustedInstaller 保护的目录，都会命中同一根因。
 ///
-/// 存在的意义：本判据此前在 GUI 里被**第二份硬编码文案**复制了一遍
-/// （2026-10-16 接手复核发现，项目有 P3「文案分叉」前科）。把语言做成参数后，
-/// **判据与文案都只有一处来源**，三处接线（离线权威闸门 / 在线系统卷 / GUI 预检）
-/// 不可能再各自漂移。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MessageLanguage {
-    Chinese,
-    English,
-}
-
-pub(crate) fn overlay_restore_on_windows_volume_error(
+/// **#110 行为变迁（2026-10-22）**：用户裁定「换 wimlib --no-acls」后，本判据从
+/// 「硬拒（返回错误文案）」改为「路由（置 `overlay_no_acl=true`，恢复期走 wimlib
+/// `--no-acls` 通道，跳过 SD 还原 → 结构性免疫 0x80070005）」。随之删除的两样东西：
+/// ① `MessageLanguage` 语言维度与中英双语文案——#110 起三个调用点（prepare 离线 /
+///   在线链 / GUI 预检）都只取布尔值，旧文案在发布件里从未输出（被优化器 GC）；
+///   GUI 确认框自带双语文案，语义是「告知代价并请示」而非旧硬拒文案的「指导用户
+///   改参数」，有意不再强行单一来源（R3 文案分叉护栏随硬拒时代一起退役）。
+/// ② 旧硬拒时代「请勾选格式化目标分区」的操作引导。
+/// 根因分析与四象限判据不变，由下方单测继续锁定。
+pub(crate) fn overlay_restore_on_windows_volume(
     target_contains_windows: bool,
     format_target: bool,
-    language: MessageLanguage,
-) -> Option<&'static str> {
-    if !target_contains_windows || format_target {
-        return None;
-    }
-    Some(match language {
-        MessageLanguage::Chinese => {
-            "覆盖式应用（取消格式化）不能用于已含 Windows 的目标卷：DISM 在还原 \
-             Program Files\\WindowsApps 等受 TrustedInstaller 保护的目录元数据时会被拒绝 \
-             (RestoreDirMetadata 0x80070005)。请勾选「格式化目标分区」，或改还原到空的数据卷。"
-        }
-        MessageLanguage::English => {
-            "Overlay restore (format target unchecked) cannot be used on a volume that already \
-             contains Windows: DISM would have to rewrite the metadata of TrustedInstaller-protected \
-             directories such as Program Files\\WindowsApps, which is denied (RestoreDirMetadata \
-             0x80070005) and fails with exit 5 inside recovery. Tick 'Format target partition', or \
-             restore to an empty data volume."
-        }
-    })
+) -> bool {
+    target_contains_windows && !format_target
 }
 
 /// 活动 BCD 可能由系统独占；这里只验证类型和祖先，内容可读性由 bcdedit 回读验证。
@@ -567,75 +560,17 @@ mod tests {
         let _ = fs::remove_dir_all(&empty);
     }
 
-    /// 「覆盖式应用打到含 Windows 的目标卷」硬拒判据（用户 2026-10-16 拍板）。
-    /// 四象限全锁：只有「含 Windows + 取消格式化」拒绝，其余三格必须放行。
+    /// 「覆盖式应用打到含 Windows 的目标卷」判据（用户 2026-10-16 拍板立项，
+    /// 2026-10-22 #110 起由硬拒改路由）。四象限全锁：只有「含 Windows +
+    /// 取消格式化」命中，其余三格必须放行。
     #[test]
-    fn rejects_overlay_restore_onto_windows_volume() {
-        let message = overlay_restore_on_windows_volume_error(
-            true,
-            false,
-            MessageLanguage::Chinese,
-        )
-        .expect("overlay restore onto a Windows volume must be rejected");
-        // 文案里必须带上可归因的关键名词，方便用户与接手 AI 对上根因。
-        assert!(message.contains("WindowsApps"));
-        assert!(message.contains("TrustedInstaller"));
-        assert!(message.contains("格式化目标分区"));
-    }
-
-    #[test]
-    fn allows_format_on_windows_volume() {
+    fn overlay_route_quadrant_is_exact() {
+        // 含 Windows + 取消格式化 = 命中（恢复期路由到 wimlib --no-acls）。
+        assert!(overlay_restore_on_windows_volume(true, false));
         // 勾选格式化 = DISM 只需「新建」受保护目录（允许），必须放行。
-        assert!(
-            overlay_restore_on_windows_volume_error(true, true, MessageLanguage::Chinese)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn allows_overlay_restore_onto_data_volume() {
+        assert!(!overlay_restore_on_windows_volume(true, true));
         // 数据卷没有 WindowsApps，覆盖式应用合法（2026-10-14 已在 T: 验证）。
-        assert!(
-            overlay_restore_on_windows_volume_error(false, false, MessageLanguage::Chinese)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn allows_format_on_data_volume() {
-        assert!(
-            overlay_restore_on_windows_volume_error(false, true, MessageLanguage::Chinese)
-                .is_none()
-        );
-    }
-
-    /// 中英两份文案都必须完整（含根因关键词与可执行的出路），且**由同一判据产出**。
-    /// 这条单测是 R3「文案分叉」的回归护栏：GUI 若再自己硬编码一份，本测不会失败，
-    /// 但 GUI 侧的调用点已改为引用本函数（见 native_gui.rs 的 restore 预检）。
-    #[test]
-    fn both_languages_carry_root_cause_and_way_out() {
-        for language in [MessageLanguage::Chinese, MessageLanguage::English] {
-            let message = overlay_restore_on_windows_volume_error(true, false, language)
-                .expect("must reject regardless of language");
-            assert!(message.contains("WindowsApps"), "{language:?} 缺 WindowsApps");
-            assert!(
-                message.contains("TrustedInstaller"),
-                "{language:?} 缺 TrustedInstaller"
-            );
-            assert!(
-                message.contains("0x80070005"),
-                "{language:?} 缺 0x80070005"
-            );
-            // 必须给出可执行的出路（勾选格式化 / 换空数据卷）。
-            assert!(
-                message.contains("格式化") || message.contains("Format"),
-                "{language:?} 缺可执行出路"
-            );
-        }
-        // 两份文案必须不同（否则等于没做语言维度）。
-        assert_ne!(
-            overlay_restore_on_windows_volume_error(true, false, MessageLanguage::Chinese),
-            overlay_restore_on_windows_volume_error(true, false, MessageLanguage::English)
-        );
+        assert!(!overlay_restore_on_windows_volume(false, false));
+        assert!(!overlay_restore_on_windows_volume(false, true));
     }
 }

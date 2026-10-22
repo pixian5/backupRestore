@@ -510,12 +510,10 @@ fn restore_to_windows_volume(
     // docs/20261022-1427）。代价（镜像目录权限不还原、MSIX 应用权限可能异常）
     // 由 GUI 确认框明示；CLI 直跑 --skip-format 视为高级用户显式意图。
     let target_contains_windows = crate::pe_safety::target_is_windows_volume(root)?;
-    let overlay_no_acl = crate::pe_safety::overlay_restore_on_windows_volume_error(
+    let overlay_no_acl = crate::pe_safety::overlay_restore_on_windows_volume(
         target_contains_windows,
         params.format_target,
-        crate::pe_safety::MessageLanguage::Chinese,
-    )
-    .is_some();
+    );
     if overlay_no_acl {
         log(
             log_path,

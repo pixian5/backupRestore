@@ -6775,9 +6775,12 @@ unsafe fn create_task(state: &mut State) {
     // 详见 docs/20261016-1413 §2、docs/20261016-1836。
     //
     // 【2026-10-16 接手复核修正（R3 文案分叉）】此前本处**自己复制了一份等价条件与
-    // 中英双语硬编码文案**，与 `pe_safety::overlay_restore_on_windows_volume_error`
-    // 并存 —— 判据能对、文案会漂（项目 P3 前科）。现改为**只调用同一个纯函数**，
-    // 判据与文案都单一来源；GUI 仅额外提供「语言」这一维度（CLI 固定中文）。
+    // 中英双语硬编码文案**，与 `pe_safety` 的判据并存 —— 判据能对、文案会漂
+    // （项目 P3 前科）。彼时改为只调用同一个纯函数（判据 + 旧硬拒文案单一来源）。
+    // 【2026-10-22 #110】硬拒改确认框后，旧硬拒文案退役（发布件里从未输出），
+    // `pe_safety::overlay_restore_on_windows_volume` 收敛为纯谓词；本处确认框
+    // 文案语义是「告知 wimlib 通道代价并请示」，与旧硬拒文案的「指导用户改参数」
+    // 不同，有意只此一处（无分叉对象）。
     if is_image_restore_entry(&operation) {
         let format_target_checked = IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
         let target_has_windows = state
@@ -6785,15 +6788,9 @@ unsafe fn create_task(state: &mut State) {
             .iter()
             .find(|drive| drive.letter.eq_ignore_ascii_case(&target_drive))
             .is_some_and(|drive| drive.has_windows_installation);
-        let message_language = if language == Language::English {
-            crate::pe_safety::MessageLanguage::English
-        } else {
-            crate::pe_safety::MessageLanguage::Chinese
-        };
-        if let Some(_hit) = crate::pe_safety::overlay_restore_on_windows_volume_error(
+        if crate::pe_safety::overlay_restore_on_windows_volume(
             target_has_windows,
             format_target_checked,
-            message_language,
         ) {
             // 【2026-10-22 任务 #110：硬拒改确认】命中「已含 Windows + 取消
             // 格式化」不再直接拦截：DISM 该组合必然 RestoreDirMetadata
@@ -6803,9 +6800,6 @@ unsafe fn create_task(state: &mut State) {
             // 代价必须显式告知：镜像目录权限不还原、MSIX 应用权限可能异常。
             // 确认后放行进入正常任务流——prepare/在线链内部按同一判据路由，
             // 已无硬拒点；取消则维持原拦截行为（什么都不做）。
-            // 注意：不复用 `overlay_restore_on_windows_volume_error` 返回的
-            // 旧文案——它的结尾是硬拒时代的操作引导（「请勾选格式化目标
-            // 分区」），与确认框语义冲突；本条文案只此一处，无分叉。
             append_gui_log(
                 state,
                 "GUI overlay restore onto a volume containing Windows: asking the user to confirm the wimlib --no-acls route",
