@@ -64,6 +64,12 @@ pub(crate) fn wimlib_args(image: &Path, index: u32, apply_root: &Path) -> Vec<St
 
 /// 在 `executable_dir` 定位 `wimlib-imagex.exe`；缺失时给出**可操作**的明确报错
 /// （指出需要哪两个文件、应该放哪里），不静默回退 DISM。
+///
+/// **两个文件都校验**：`wimlib-imagex.exe` 与 `libwim-15.dll` 是**两个独立部署件**
+/// （恢复环境载荷注入与部署脚本各自分开拷贝），缺任一个 wimlib 都启动不了。
+/// 只查主程序而不查依赖库是此前的缺口——动态库缺失时 Windows 加载器直接让进程
+/// 退出，报出来的错误既不点名缺哪个文件、也不落在我们的日志里，现场无法归因。
+/// 分开报错就是为了「漏拷了哪一个」一眼可辨。
 pub(crate) fn locate_wimlib(executable_dir: &Path) -> Result<PathBuf, TaskError> {
     let exe = executable_dir.join(WIMLIB_EXE);
     if !exe.is_file() {
@@ -72,6 +78,17 @@ pub(crate) fn locate_wimlib(executable_dir: &Path) -> Result<PathBuf, TaskError>
              请把 wimlib 官方 Windows ARM64 预编译包的两个文件放进程序目录后重试；\
              不会回退 DISM（该组合下 DISM 必然失败）。",
             exe.display()
+        )));
+    }
+    let dll = executable_dir.join(WIMLIB_DLL);
+    if !dll.is_file() {
+        return Err(crate::err(&format!(
+            "覆盖式应用需要 wimlib 依赖库：{} 已就位，但同目录缺少 {}。\
+             wimlib 启动时加载不到该库会被系统直接终止（报错不含这两个文件名，\
+             也无法归因到部署缺口）；请把 wimlib 官方 Windows ARM64 预编译包的\
+             两个文件一起放进程序目录后重试；不会回退 DISM（该组合下 DISM 必然失败）。",
+            exe.display(),
+            dll.display()
         )));
     }
     Ok(exe)
@@ -156,8 +173,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("br-wimlib-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // 主程序与依赖库必须同时就位——部署清单是分开拷这两个文件的。
         std::fs::write(dir.join(WIMLIB_EXE), b"stub").unwrap();
+        std::fs::write(dir.join(WIMLIB_DLL), b"stub").unwrap();
         assert_eq!(locate_wimlib(&dir).unwrap(), dir.join(WIMLIB_EXE));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locate_wimlib_rejects_exe_without_companion_dll() {
+        let dir = std::env::temp_dir().join(format!("br-wimlib-nodll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 只放主程序、不放依赖库——这是部署漏拷一个文件时最常见的形态。
+        // 不校验的话 wimlib 启动即被系统终止，报错里既不会点名缺哪个文件、
+        // 也不会落进我们的日志，现场只能看到「wimlib apply failed」而无法归因。
+        std::fs::write(dir.join(WIMLIB_EXE), b"stub").unwrap();
+        let error = locate_wimlib(&dir).unwrap_err().to_string();
+        assert!(error.contains(WIMLIB_DLL), "{error}");
+        assert!(error.contains("不会回退 DISM"), "{error}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
