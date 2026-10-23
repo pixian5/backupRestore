@@ -140,7 +140,11 @@ if [ "$1" = "--deploy" ]; then
   WORK_WIMLIB_EXE_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\wimlib-imagex.exe').Hash.ToLowerInvariant()" | tr -d '\r')
   WORK_WIMLIB_DLL_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\libwim-15.dll').Hash.ToLowerInvariant()" | tr -d '\r')
   # 每项「名称:期望哈希:实际哈希」——期望值按项取（程序两份同哈希，wimlib 另有基线）。
-  for triple in "分发副本(C:包目录) BackupRestore.exe:$HOST_SHA:$GUEST_SHA" "分发副本(C:包目录) Recovery.exe:$HOST_SHA:$RECOVERY_SHA" "权威运行目录(H:\brwork) BackupRestore.exe:$HOST_SHA:$WORK_SHA" "权威运行目录(H:\brwork) Recovery.exe:$HOST_SHA:$WORK_RECOVERY_SHA" "分发副本(C:包目录) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$PKG_WIMLIB_EXE_SHA" "分发副本(C:包目录) libwim-15.dll:$WIMLIB_DLL_SHA:$PKG_WIMLIB_DLL_SHA" "权威运行目录(H:\brwork) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$WORK_WIMLIB_EXE_SHA" "权威运行目录(H:\brwork) libwim-15.dll:$WIMLIB_DLL_SHA:$WORK_WIMLIB_DLL_SHA"; do
+  # ⚠️ 冒号是切分符（`name=${triple%%:*}` / `expected` / `sha` 三段靠它切），
+  #    所以**标签里绝不能出现冒号**：2026-10-24 把标签写成「分发副本(C:包目录)」，
+  #    被切成 `分发副本(C`，三段错位 → 八联校验全部误报「与基线不一致」。
+  #    标签一律用「C包目录 / H-brwork」这类不含冒号的写法。
+  for triple in "分发副本(C包目录) BackupRestore.exe:$HOST_SHA:$GUEST_SHA" "分发副本(C包目录) Recovery.exe:$HOST_SHA:$RECOVERY_SHA" "权威运行目录(H-brwork) BackupRestore.exe:$HOST_SHA:$WORK_SHA" "权威运行目录(H-brwork) Recovery.exe:$HOST_SHA:$WORK_RECOVERY_SHA" "分发副本(C包目录) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$PKG_WIMLIB_EXE_SHA" "分发副本(C包目录) libwim-15.dll:$WIMLIB_DLL_SHA:$PKG_WIMLIB_DLL_SHA" "权威运行目录(H-brwork) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$WORK_WIMLIB_EXE_SHA" "权威运行目录(H-brwork) libwim-15.dll:$WIMLIB_DLL_SHA:$WORK_WIMLIB_DLL_SHA"; do
     name=${triple%%:*}
     rest=${triple#*:}
     expected=${rest%%:*}
