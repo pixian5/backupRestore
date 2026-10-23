@@ -1315,6 +1315,7 @@ fn cli_operation(gui: &str) -> &'static str {
 }
 
 /// 是否「镜像还原类」入口（A/B/C + 新增第二系统）：
+
 /// 共用 WIM 索引必选、破坏性确认、副档校验、--allow-destructive 等闸门。
 fn is_image_restore_entry(gui: &str) -> bool {
     matches!(
@@ -6937,13 +6938,19 @@ unsafe fn create_task(state: &mut State) {
     } else {
         String::new()
     };
+    let (target_line, warning) =
+        crate::failure_policy::destructive_confirm_parts(
+            &operation,
+            message_language(language),
+            &target_drive,
+        );
     let summary = if language == Language::English {
         format!(
-            "Mode: {operation_label}\nSource volume: {source_drive}\nImage: {image_path}\nRestore target: {target_drive}\nWIM index: {index}{menu_summary}",
+            "Mode: {operation_label}\nSource volume: {source_drive}\nImage: {image_path}{target_line}\nWIM index: {index}{menu_summary}",
         )
     } else {
         format!(
-            "模式：{operation_label}\n源卷：{source_drive}\n镜像绝对路径：{image_path}\n目标卷：{target_drive}\nWIM 索引：{index}{menu_summary}",
+            "模式：{operation_label}\n源卷：{source_drive}\n镜像绝对路径：{image_path}{target_line}\nWIM 索引：{index}{menu_summary}",
         )
     };
     // 测试钩子（--test-hook + auto_install）下自动接受确认框，与 PE 安装确认同策略：
@@ -6954,11 +6961,7 @@ unsafe fn create_task(state: &mut State) {
     } else {
         show_message(
             state.root,
-            &if language == Language::English {
-                format!("{summary}\n\nThe target partition will be overwritten. Continue?")
-            } else {
-                format!("{summary}\n\n目标分区将被覆盖，确认继续？")
-            },
+            &format!("{summary}\n\n{warning}"),
             if language == Language::English {
                 "Destructive confirmation"
             } else {
@@ -8352,7 +8355,7 @@ unsafe extern "system" fn window_proc(
         }
         if let Ok(tab) = std::env::var("BACKUPRESTORE_OPEN_TAB")
             && let Ok(index) = tab.parse::<usize>()
-            && (0..=5).contains(&index)
+            && (0..=4).contains(&index)
         {
             select_operation(&mut *state_ptr, index);
             explicit_tab = true;
@@ -8363,7 +8366,7 @@ unsafe extern "system" fn window_proc(
             if let Some(pos) = args.iter().position(|a| a == "--tab")
                 && let Some(value) = args.get(pos + 1)
                 && let Ok(index) = value.parse::<usize>()
-                && (0..=5).contains(&index)
+                && (0..=4).contains(&index)
             {
                 select_operation(&mut *state_ptr, index);
                 explicit_tab = true;

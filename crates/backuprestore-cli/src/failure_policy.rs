@@ -190,6 +190,38 @@ impl Default for FailurePolicy {
     }
 }
 
+/// 破坏性确认摘要里的「目标卷行」与「警示语」，按 operation 分叉。
+///
+/// **为什么单独抽函数**：2026-10-23 实机发现备份也套用还原的摘要——备份 `T:` 时
+/// 弹窗写着「目标卷：C」+「目标分区将被覆盖」，既是无用信息，又会让用户以为 `C:`
+/// 会被写坏。备份没有「还原目标卷」，它的目标是镜像文件，摘要与警示语都必须按
+/// operation 分叉。抽成纯函数才能被单测锁住（这段文案在界面上，肉眼容易漏）。
+pub(crate) fn destructive_confirm_parts(
+    operation: &str,
+    language: MessageLanguage,
+    target_drive: &str,
+) -> (String, &'static str) {
+    if operation == "backup" {
+        let warning = match language {
+            MessageLanguage::English => {
+                "The source volume will be captured into the image (a new index is appended \
+                 if the image already exists). Continue?"
+            }
+            MessageLanguage::Chinese => "将把源卷捕获进镜像（镜像已存在则追加新索引），确认继续？",
+        };
+        return (String::new(), warning);
+    }
+    let line = match language {
+        MessageLanguage::English => format!("\nRestore target: {target_drive}"),
+        MessageLanguage::Chinese => format!("\n目标卷：{target_drive}"),
+    };
+    let warning = match language {
+        MessageLanguage::English => "The target partition will be overwritten. Continue?",
+        MessageLanguage::Chinese => "目标分区将被覆盖，确认继续？",
+    };
+    (line, warning)
+}
+
 impl FailurePolicy {
     /// 构造并校验阈值范围。`Err` 里是给用户看的中文原因。
     pub(crate) fn new(threshold: u32, action: FailureAction) -> Result<Self, String> {
@@ -885,6 +917,32 @@ mod tests {
         assert!(pause_prompt.contains("「是」"), "{pause_prompt}");
         assert!(pause_prompt.contains("「否」"), "{pause_prompt}");
         assert!(pause_prompt.contains("不会"), "{pause_prompt}");
+    }
+
+    /// 【2026-10-23 实机发现】备份的破坏性确认不能出现「目标卷」与「将被覆盖」：
+    /// 备份没有还原目标卷（目标是镜像文件），否则用户会以为 C: 会被写坏。
+    #[test]
+    fn destructive_confirm_parts_drop_the_target_for_backup() {
+        for language in [MessageLanguage::Chinese, MessageLanguage::English] {
+            let (line, warning) = destructive_confirm_parts("backup", language, "C");
+            assert!(line.is_empty(), "备份不该有目标卷行：{line:?}");
+            let overwritten = match language {
+                MessageLanguage::Chinese => warning.contains("覆盖"),
+                MessageLanguage::English => warning.contains("overwritten"),
+            };
+            assert!(!overwritten, "备份不能说「将被覆盖」：{warning}");
+            // 不该出现「C:」这种盘符写法（英文文案里的 C 是单词首字母，不能一概禁）
+            assert!(!warning.contains("C:"), "备份警示不该带盘符：{warning}");
+        }
+        for language in [MessageLanguage::Chinese, MessageLanguage::English] {
+            let (line, warning) = destructive_confirm_parts("restore-existing", language, "F");
+            assert!(line.contains('F'), "还原必须带目标卷：{line:?}");
+            let overwritten = match language {
+                MessageLanguage::Chinese => warning.contains("覆盖"),
+                MessageLanguage::English => warning.contains("overwritten"),
+            };
+            assert!(overwritten, "还原必须警示覆盖：{warning}");
+        }
     }
 
     /// 【2026-10-23 用户拍板】按 B 回退过 BCD 时，重试对话框要说清
