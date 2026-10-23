@@ -315,15 +315,36 @@ impl FailurePolicy {
     }
 
     /// 未达阈值时的「重试 / 取消」弹框正文（含当前策略的预告）。
+    ///
+    /// `bcd_rolled_back` = 本次运行用户按过 B 回退过 BCD。此时续跑链校验必然失败，
+    /// **重试也几乎必然再失败**——2026-10-23 实机撞见用户连点两次重试、每次都在同一处
+    /// 失败。把这一点写进正文，让用户带着信息选，而不是替用户决定（是否自动收口为终态
+    /// 属于产品取舍，已由用户 2026-10-23 拍板「不自动终态，只把信息说清」）。
     pub(crate) fn retry_prompt(
         &self,
         error: &str,
         consecutive_failures: u32,
         language: MessageLanguage,
+        bcd_rolled_back: bool,
     ) -> String {
+        let rollback_note = if bcd_rolled_back {
+            match language {
+                MessageLanguage::Chinese => {
+                    "\n⚠ 本次运行你按过「B」回退 BCD：引导链已还原为任务准备期快照，\
+                     重试很可能再次失败。若确实想中止，请选「取消」。\n"
+                }
+                MessageLanguage::English => {
+                    "\n⚠ BCD was rolled back with \"B\" in this run: the boot chain is back to \
+                     the prepared snapshot, so a retry will most likely fail again. \
+                     Choose \"Cancel\" if you really want to stop.\n"
+                }
+            }
+        } else {
+            ""
+        };
         match language {
             MessageLanguage::Chinese => format!(
-                "恢复暂未完成：{error}\n\n\
+                "恢复暂未完成：{error}\n{rollback_note}\n\
                  已保存的任务与恢复材料会保留。排除磁盘、镜像或空间问题后选择“重试”，继续同一任务；\
                  选择“取消”将立即清理本次一次性启动项、把任务标记为终态（现场保留）并重启回正常 Windows。\n\
                  恢复已完成的任务只重试清理，不会再次擦除目标。\n\n\
@@ -331,7 +352,7 @@ impl FailurePolicy {
                 self.plan_note(language)
             ),
             MessageLanguage::English => format!(
-                "Recovery did not finish: {error}\n\n\
+                "Recovery did not finish: {error}\n{rollback_note}\n\
                  The task and its recovery materials are kept. Fix the disk, image or space issue and choose \
                  \"Retry\" to continue the same task; \"Cancel\" immediately disarms the one-shot boot entry, \
                  marks the task terminal (evidence kept) and reboots to Windows.\n\
@@ -849,13 +870,13 @@ mod tests {
     #[test]
     fn prompts_mention_the_configured_numbers_and_buttons() {
         let auto = FailurePolicy::new(4, FailureAction::AutoEscape).expect("valid");
-        let text = auto.retry_prompt("boom", 2, MessageLanguage::Chinese);
+        let text = auto.retry_prompt("boom", 2, MessageLanguage::Chinese, false);
         assert!(text.contains("这是第 2 次失败"), "{text}");
         assert!(text.contains("累计 4 次后会自动清理"), "{text}");
         assert!(!text.contains("暂停"), "{text}");
 
         let pause = FailurePolicy::new(4, FailureAction::PauseInRecovery).expect("valid");
-        let text = pause.retry_prompt("boom", 2, MessageLanguage::Chinese);
+        let text = pause.retry_prompt("boom", 2, MessageLanguage::Chinese, false);
         assert!(text.contains("累计 4 次后会暂停"), "{text}");
 
         let pause_prompt = pause.pause_prompt("boom", 4, MessageLanguage::Chinese);
@@ -864,6 +885,34 @@ mod tests {
         assert!(pause_prompt.contains("「是」"), "{pause_prompt}");
         assert!(pause_prompt.contains("「否」"), "{pause_prompt}");
         assert!(pause_prompt.contains("不会"), "{pause_prompt}");
+    }
+
+    /// 【2026-10-23 用户拍板】按 B 回退过 BCD 时，重试对话框要说清
+    /// 「重试很可能再次失败」——**但不自动替用户终态**，选择权留给用户。
+    #[test]
+    fn retry_prompt_warns_after_a_bcd_rollback_but_keeps_the_choice() {
+        let policy = FailurePolicy::new(4, FailureAction::AutoEscape).expect("valid");
+        // 回退过：双语都要带警示，且「取消」按钮的语义仍写明（没有替用户决定）
+        for language in [MessageLanguage::Chinese, MessageLanguage::English] {
+            let text = policy.retry_prompt("boom", 1, language, true);
+            let warned = match language {
+                MessageLanguage::Chinese => {
+                    text.contains("按过「B」回退 BCD") && text.contains("重试很可能再次失败")
+                }
+                MessageLanguage::English => {
+                    text.contains("rolled back") && text.contains("most likely fail again")
+                }
+            };
+            assert!(warned, "回退过必须警示：{text}");
+            assert!(
+                text.contains("取消") || text.contains("Cancel"),
+                "仍要保留取消这条退路：{text}"
+            );
+        }
+        // 没回退过：一个字都不许多
+        let plain = policy.retry_prompt("boom", 1, MessageLanguage::Chinese, false);
+        assert!(!plain.contains("重试很可能再次失败"), "{plain}");
+        assert!(!plain.contains("按过「B」"), "{plain}");
     }
 
     #[test]
@@ -882,7 +931,7 @@ mod tests {
                     action.label(language).to_string(),
                     action.detail(language).to_string(),
                     policy.plan_note(language),
-                    policy.retry_prompt("e", 1, language),
+                    policy.retry_prompt("e", 1, language, false),
                     policy.pause_prompt("e", 3, language),
                 ] {
                     for marker in ["**", "__", "`", "##"] {
@@ -910,7 +959,7 @@ mod tests {
                     pause_max_wait_secs: DEFAULT_PAUSE_MAX_WAIT_SECS,
                 };
                 assert!(!policy.plan_note(language).is_empty());
-                assert!(!policy.retry_prompt("e", 1, language).is_empty());
+                assert!(!policy.retry_prompt("e", 1, language, false).is_empty());
                 assert!(!policy.pause_prompt("e", 3, language).is_empty());
             }
         }

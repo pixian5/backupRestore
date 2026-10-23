@@ -1470,6 +1470,10 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
                     &error.to_string(),
                     consecutive_failures,
                     language,
+                    // 按过 B 回退时，续跑链校验必然失败、重试也大概率再失败——
+                    // 把这点写进对话框，让用户带着信息选（2026-10-23 用户拍板：
+                    // 不自动终态，只把信息说清）。
+                    crate::recovery_progress::bcd_rolled_back(),
                 );
                 text.push('\0');
                 let text: Vec<u16> = text.encode_utf16().collect();
