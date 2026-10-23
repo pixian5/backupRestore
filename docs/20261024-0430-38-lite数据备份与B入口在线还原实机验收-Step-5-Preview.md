@@ -90,13 +90,22 @@ STEP 4/4 完成在线还原（已格式化后写入）；还未执行系统引�
    探针（`editprobe2.ps1`）三方法对照证实：`WM_GETTEXT` 消息读到正确文本、两个 API 返回空。
    **修法**：dump 类脚本统一改用 `SendMessage(WM_GETTEXT)`；本次验证改以截图 + 消息探针为准。
    界面状态实际全部正确（源卷 T:、路径、索引名 `Windows (T:) 20261024`）。
+   **修复落点**（commit `3e7dea7`）：`_dump-now.ps1`、`_dump-tabs.ps1`（文档引用的主力工具，
+   `git add -f` 强制入库）+ `br-gui-state.ps1`、`br-gui-page-dump.ps1`、`dump-controls.ps1`
+   共 5 个脚本，每处留机理注释。
 2. **确认框「是」按钮点击偶发不生效**：第一次 `PostMessage(BM_CLICK)` 后对话框仍在
    （无新日志、无新任务目录、T: 序列号未变可证伪「已执行」）；重点一次即通过。
    疑为对话框刚创建尚未进入消息循环时投递丢失。**对策**：点击后必须用
    「dump 对话框标题 / 查新任务目录 / 查 T: 序列号」三选一复验，不能以点击回执为准。
+   **修复落点**（commit `aabbee3`）：复验已固化进入库脚本 `br-click-dlg-yes.ps1`——
+   点击后等待复查，输出 `VERIFY=DIALOG_GONE / NEW_DIALOG / STILL_THERE` 三态，
+   `STILL_THERE` 自动重试一次，仍不过 exit 4 明示"不得当作已点"；
+   另抽 `Find-BrDialog` 按进程 pid + 可见 #32770 精确定位。
 3. **完成框「确定」按钮 ID 是 2 不是 1**：本程序的 `show_message` 完成框按钮为 `IDCANCEL(2)`，
-   `GetDlgItem(dlg, 1)` 返回空。新增 `_click-dlgbtn.ps1 -BtnId N` 按 ID 点击 + 只认
-   「可见且有标题」的 #32770 窗口，避免枚举到隐藏 IME 类窗口误点。
+   `GetDlgItem(dlg, 1)` 返回空。**对策**：按 ID 点击 + 只认「可见且有标题」的 #32770 窗口，
+   避免枚举到隐藏 IME 类窗口误点。该能力已合并进入库脚本 `br-click-dlg-yes.ps1 -ButtonId 2`
+   （commit `aabbee3`，比一次性脚本 `_click-dlgbtn.ps1` 多进程精确匹配与点击后复验），
+   一次性脚本留在 gitignore 的证据目录备查。
 
 另记两笔历史信息（接手时从 gui.log 考古所得，避免重复踩）：
 10-23 22:49 / 23:26 两次 `create task; operation=backup` 后日志全无后续——
@@ -121,8 +130,11 @@ STEP 4/4 完成在线还原（已格式化后写入）；还未执行系统引�
 - 还原链：`bentry-pre-20261024.txt`（还原前 T: 全量状态）/ `bentry-post-20261024.txt`
   （还原后 + 完整任务日志）/ `bentry-final.txt`（BCD + 崩溃判据）/
   `vm-bentry…vm-final-20261024.png`（B 入口页→目标卷 T:→确认框→进行→终态）
-- 工具探针：`editprobe2.ps1`（文本读取三方法对照）、`_yes-check.ps1`、`_click-dlgbtn.ps1`、
-  `_dump-dlgch.ps1`（均已随 `tools/win-clicker/` 提交）
+- 工具探针：`editprobe2.ps1`（文本读取三方法对照）、`_yes-check.ps1`、`_dump-dlgch.ps1`
+  （一次性核查脚本，留在 gitignore 的证据目录备查，未入库）
+- 已入库修复（commit `3e7dea7`）：5 个 dump 类脚本改 `WM_GETTEXT`；
+  （commit `aabbee3`）：`br-click-dlg-yes.ps1` 点击后复验三态+自动重试，
+  `-ButtonId N` 可按 ID 点任意按钮（完成框 ID=2）
 - 脚本：`bentry-pre/post/final.ps1`、`format-t.txt`、`prev-log*.ps1`
 
 ## 7. 待办状态（接手文档 §5 对账）
