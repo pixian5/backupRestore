@@ -5,6 +5,16 @@
 #             包目录/自启点 C:\Users\Public\backupRestore-package
 #             工作目录     H:\brwork
 #
+# ⚠️ 权威运行目录 = H:\brwork（2026-10-24 用户裁定「TaskStore 搬离 C:」）。
+#    TaskStore 的根 = 可执行文件所在目录（GUI `TaskStore::new(&state.executable_dir)`、
+#    CLI `current_exe().parent()`），任务目录随之落在 `<运行目录>\tasks`。
+#    所以「任务存哪」由「从哪启动」决定：从 H:\brwork 起 → 任务在 H:\brwork\tasks；
+#    从 C: 包目录起 → 任务落回 C:（会被 A 入口还原 C: 一起回滚，还会让镜像把旧任务
+#    状态带回来）。因此所有启动入口一律走 H:\brwork（tools/win-clicker 里的
+#    restart-gui-h.ps1 与各 br-*-launch.ps1 均已如此）。
+#    C: 包目录退为**分发副本**（Recovery.exe / winpeshl.ini / wimlib 二进制），
+#    不再承载任务存储；其 \tasks 已于 2026-10-24 清空并把 4 个终态任务迁到 H:\brwork\tasks。
+
 # ⚠️ 部署目标唯一约定（2026-10-13 用户裁定）：工作目录只有 H:\brwork。
 #    旧工作区 F:\BR 已于 2026-10-13 退役并删除——F: 是镜像卷（标签 BRIMG），只放镜像。
 #    不要再往 F:\BR（或 F: 上任何目录）部署程序：两套工作区会争抢机器上唯一那份
@@ -130,7 +140,7 @@ if [ "$1" = "--deploy" ]; then
   WORK_WIMLIB_EXE_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\wimlib-imagex.exe').Hash.ToLowerInvariant()" | tr -d '\r')
   WORK_WIMLIB_DLL_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\libwim-15.dll').Hash.ToLowerInvariant()" | tr -d '\r')
   # 每项「名称:期望哈希:实际哈希」——期望值按项取（程序两份同哈希，wimlib 另有基线）。
-  for triple in "包目录 BackupRestore.exe:$HOST_SHA:$GUEST_SHA" "包目录 Recovery.exe:$HOST_SHA:$RECOVERY_SHA" "运行目录 BackupRestore.exe:$HOST_SHA:$WORK_SHA" "运行目录 Recovery.exe:$HOST_SHA:$WORK_RECOVERY_SHA" "包目录 wimlib-imagex.exe:$WIMLIB_EXE_SHA:$PKG_WIMLIB_EXE_SHA" "包目录 libwim-15.dll:$WIMLIB_DLL_SHA:$PKG_WIMLIB_DLL_SHA" "运行目录 wimlib-imagex.exe:$WIMLIB_EXE_SHA:$WORK_WIMLIB_EXE_SHA" "运行目录 libwim-15.dll:$WIMLIB_DLL_SHA:$WORK_WIMLIB_DLL_SHA"; do
+  for triple in "分发副本(C:包目录) BackupRestore.exe:$HOST_SHA:$GUEST_SHA" "分发副本(C:包目录) Recovery.exe:$HOST_SHA:$RECOVERY_SHA" "权威运行目录(H:\brwork) BackupRestore.exe:$HOST_SHA:$WORK_SHA" "权威运行目录(H:\brwork) Recovery.exe:$HOST_SHA:$WORK_RECOVERY_SHA" "分发副本(C:包目录) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$PKG_WIMLIB_EXE_SHA" "分发副本(C:包目录) libwim-15.dll:$WIMLIB_DLL_SHA:$PKG_WIMLIB_DLL_SHA" "权威运行目录(H:\brwork) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$WORK_WIMLIB_EXE_SHA" "权威运行目录(H:\brwork) libwim-15.dll:$WIMLIB_DLL_SHA:$WORK_WIMLIB_DLL_SHA"; do
     name=${triple%%:*}
     rest=${triple#*:}
     expected=${rest%%:*}
