@@ -159,6 +159,24 @@ type BcdRollbackAction = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 /// 【2026-10-18 缺陷修复 M5】BCD 回退是否正在执行（连点/连按的去重闸门）。
 static BCD_ROLLBACK_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// 【2026-10-23 实机发现】本次运行里「用户按过 B 回退且**回退成功**」。
+///
+/// 为什么需要这个标记：B 回退会把 ESP 上的 BCD **整份换回任务准备期的快照**，
+/// 于是任务自建的引导项（loader / device options）在后续「续跑启动链字段校验」
+/// 里必然对不上——恢复流程会在 `BootRepaired` 阶段失败。这个失败是**用户主动
+/// 回退的预期后果**，但此前只会打一条 `invalid task: 续跑启动链字段不符：device`，
+/// 用户与接手者都看不出「是因为自己按了 B」。
+///
+/// 用进程级静态量而不是 `ProgressShared` 的字段：回退动作跑在**工作线程**里、
+/// 手上只有窗口句柄没有 `Arc<ProgressShared>`；而恢复环境内一个进程只处理一个
+/// 任务，进程生命周期天然等于「本次运行」。
+static BCD_ROLLED_BACK: AtomicBool = AtomicBool::new(false);
+
+/// 本次运行是否发生过成功的 BCD 回退（供恢复链在失败收尾时补充说明）。
+pub fn bcd_rolled_back() -> bool {
+    BCD_ROLLED_BACK.load(Ordering::SeqCst)
+}
+
 pub struct ProgressShared {
     pub log_path: Mutex<PathBuf>,
     pub log_offset: Mutex<u64>,
@@ -1312,6 +1330,9 @@ unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: boo
     std::thread::spawn(move || {
         let message = match action() {
             Ok(()) => {
+                // 【2026-10-23】记下「本次运行回退成功」：后续续跑链校验必然失败，
+                // 失败收尾要据此说明原因，否则用户只看到一句「字段不符」。
+                BCD_ROLLED_BACK.store(true, Ordering::SeqCst);
                 let _ = crate::append_log(
                     &log_path,
                     &format!("{actor} BCD 回退：已按字节恢复准备期 BCD 快照"),

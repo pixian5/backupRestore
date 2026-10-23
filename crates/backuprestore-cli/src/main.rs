@@ -2162,6 +2162,26 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         )
     })();
     if let Err(error) = result {
+        // 【2026-10-23 实机发现】用户按过 B 回退时，续跑链校验必然失败（BCD 被整份
+        // 换回准备期快照，任务自建的 loader/device options 随之消失），但此前现场
+        // 只剩一句 `invalid task: 续跑启动链字段不符：device`，看不出是用户自己按了 B。
+        // 这里把因果补进日志与错误文案——**只改说明，不改行为**：失败仍按原路径
+        // 收口（保留现场、可重试），避免掩盖真正的缺陷。
+        let error = if crate::recovery_progress::bcd_rolled_back()
+            && error.to_string().contains("续跑启动链")
+        {
+            let _ = append_log(
+                &log,
+                "本次运行中用户按 B 回退了 BCD：ESP 上的 BCD 已还原为任务准备期快照，\
+                 任务自建的引导项随之消失，续跑链校验失败属预期（不是新增缺陷）",
+            );
+            match annotate_chain_failure(&error.to_string(), true) {
+                Some(text) => crate::err(&text),
+                None => error,
+            }
+        } else {
+            error
+        };
         // C: 可能已经被擦除；回滚旧 BCD 不会还原系统文件，并可能移除续跑对象。
         // 保留当前阶段与外部载荷，停止本次执行，故障解除后从同一阶段重试。
         let persisted = store.write_recovery_error(&task, error.to_string());
@@ -2184,6 +2204,28 @@ fn recover_env(path: String) -> Result<(), TaskError> {
     complete_recovery_cleanup(&store, &mut task, &log)?;
     meta_log("FINAL: success, wpeutil reboot");
     run_logged("wpeutil.exe", &["reboot"], &log)
+}
+
+/// 续跑链校验失败时，若本次运行回退过 BCD，就把因果补进错误文案。
+///
+/// 抽成纯函数便于单测：真实的回退标记是进程级静态量（`bcd_rolled_back`），
+/// 单测里造不出来，也不该为了让测试能过就把标记做成可变全局。
+///
+/// 只有**同时**满足「本次回退过」与「错误是续跑链校验」才改写——其它失败
+/// （镜像损坏、载荷缺失等）必须保持原文，不能被这句说明糊住。
+fn annotate_chain_failure(error: &str, rolled_back: bool) -> Option<String> {
+    if rolled_back && error.contains("续跑启动链") {
+        // `TaskError` 的 Display 自带 `invalid task: ` 前缀，而调用方还要再包一层
+        // `crate::err`。不剥掉就会在对话框里出现
+        // 「invalid task: invalid task: 续跑启动链…」（2026-10-23 实机撞见）。
+        let body = error.strip_prefix("invalid task: ").unwrap_or(error);
+        Some(format!(
+            "{body}（本次运行中用户按 B 回退过 BCD：BCD 已还原为任务准备期快照，\
+             续跑链校验失败属预期）"
+        ))
+    } else {
+        None
+    }
 }
 
 /// 该阶段证明磁盘、引导、恢复注册均已完成；重复执行不会重做磁盘操作。
@@ -5476,5 +5518,28 @@ mod tests {
             "carriage-return+newline doubled a line: {content}"
         );
         let _ = std::fs::remove_file(&log_path);
+    }
+
+    /// 【2026-10-23 实机发现】按 B 回退后续跑链校验失败，文案要说明因果。
+    #[test]
+    fn chain_failure_note_only_for_bcd_rollback_sessions() {
+        let chain = "invalid task: 续跑启动链字段不符：device";
+        // 回退过 + 续跑链错 → 补说明，且原文不丢
+        let note = crate::annotate_chain_failure(chain, true).expect("应补说明");
+        assert!(note.contains("续跑启动链字段不符：device"), "原文不能丢：{note}");
+        assert!(note.contains("按 B 回退过 BCD"), "要点明是用户按了 B：{note}");
+        // 不能把 `invalid task: ` 前缀带进来——调用方还会再包一层，否则对话框
+        // 会出现「invalid task: invalid task: …」（2026-10-23 实机撞见）。
+        assert!(
+            !note.starts_with("invalid task: "),
+            "前缀必须剥掉：{note}"
+        );
+        // 没回退过 → 不改写
+        assert_eq!(crate::annotate_chain_failure(chain, false), None);
+        // 回退过但错误不是续跑链 → 保持原文，不能被说明糊住
+        assert_eq!(
+            crate::annotate_chain_failure("payload WIM is missing", true),
+            None
+        );
     }
 }
