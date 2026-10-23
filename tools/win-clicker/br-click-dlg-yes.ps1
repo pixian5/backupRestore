@@ -1,6 +1,18 @@
-# br-click-dlg-yes.ps1 - click the "是(&Y)" (id=6) button of the BackupRestore native
-# destructive-confirm dialog (class #32770). Elevated, Session 1.
-param([int]$ButtonId = 6, [string]$Title = "")
+# br-click-dlg-yes.ps1 - click a button (default "是(&Y)" id=6) of the BackupRestore
+# native modal dialog (class #32770, owned by the BackupRestore process). Elevated,
+# Session 1. Also used for completion dialogs' 确定 (id=2).
+#
+# 2026-10-24 增补「点击后复验」：实测 PostMessage(BM_CLICK) 后对话框可能仍在
+# （首投丢失，疑为对话框刚创建尚未进入消息循环；当时无任何执行痕迹：无新日志、
+# 无新任务目录、目标卷序列号未变可证伪"已执行"）。点击回执不能当验收依据——
+# 本脚本点击后等待并复查：对话框消失 / 换成新对话框（如确认框→执行完成框）/
+# 原对话框仍在（此时报 STILL_THERE，调用方应重试或改走键盘）。
+param(
+  [int]$ButtonId = 6,
+  [string]$Title = "",
+  [int]$VerifyMs = 2500,
+  [int]$Retry = 1
+)
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -20,23 +32,46 @@ public class BrCY {
   public static string Text(IntPtr h) { StringBuilder sb = new StringBuilder(2048); GetWindowTextW(h, sb, 2048); return sb.ToString(); }
 }
 "@
-$p = Get-Process -Name BackupRestore -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $p) { Write-Output "NO_PROC"; exit 1 }
-$script:dlg = [IntPtr]::Zero
-$cb = [BrCY+EnumCb]{ param($h,$l)
-  $pid2 = [uint32]0
-  [void][BrCY]::GetWindowThreadProcessId($h, [ref]$pid2)
-  if ($pid2 -eq $p.Id -and [BrCY]::Cls($h) -eq "#32770" -and [BrCY]::IsWindowVisible($h)) {
-    $script:dlg = $h; return $false
+function Find-BrDialog {
+  $p = Get-Process -Name BackupRestore -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $p) { return $null }
+  $found = [IntPtr]::Zero
+  $cb = [BrCY+EnumCb]{ param($h,$l)
+    $pid2 = [uint32]0
+    [void][BrCY]::GetWindowThreadProcessId($h, [ref]$pid2)
+    if ($pid2 -eq $p.Id -and [BrCY]::Cls($h) -eq "#32770" -and [BrCY]::IsWindowVisible($h)) {
+      $script:found = $h; return $false
+    }
+    return $true
   }
-  return $true
+  [void][BrCY]::EnumWindows($cb, [IntPtr]::Zero)
+  return $found
 }
-[void][BrCY]::EnumWindows($cb, [IntPtr]::Zero)
-if ($script:dlg -eq [IntPtr]::Zero) { Write-Output "NO_DIALOG"; exit 2 }
-[void][BrCY]::SetForegroundWindow($script:dlg)
+$dlg = Find-BrDialog
+if ($dlg -eq [IntPtr]::Zero -or $dlg -eq $null) { Write-Output "NO_DIALOG"; exit 2 }
+[void][BrCY]::SetForegroundWindow($dlg)
 Start-Sleep -Milliseconds 300
-$b = [BrCY]::GetDlgItem($script:dlg, $ButtonId)
+$b = [BrCY]::GetDlgItem($dlg, $ButtonId)
 if ($b -eq [IntPtr]::Zero) { Write-Output ("NO_BUTTON id=" + $ButtonId); exit 3 }
-Write-Output ("DIALOG=" + $script:dlg.ToInt64() + " body=[" + ([BrCY]::Text($script:dlg) -replace "`r`n"," / ") + "]")
-[void][BrCY]::SendMessageW($b, [BrCY]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-Write-Output ("CLICKED_YES id=" + $ButtonId + " btn=" + $b.ToInt64())
+Write-Output ("DIALOG=" + $dlg.ToInt64() + " body=[" + ([BrCY]::Text($dlg) -replace "`r`n"," / ") + "]")
+$attempt = 0
+while ($true) {
+  $attempt++
+  [void][BrCY]::SendMessageW($b, [BrCY]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+  Write-Output ("CLICKED id=" + $ButtonId + " btn=" + $b.ToInt64() + " attempt=" + $attempt)
+  Start-Sleep -Milliseconds $VerifyMs
+  $now = Find-BrDialog
+  if ($now -eq [IntPtr]::Zero -or $now -eq $null) {
+    Write-Output "VERIFY=DIALOG_GONE"
+    exit 0
+  }
+  if ($now.ToInt64() -ne $dlg.ToInt64()) {
+    Write-Output ("VERIFY=NEW_DIALOG hwnd=" + $now.ToInt64() + " title=[" + [BrCY]::Text($now) + "]")
+    exit 0
+  }
+  if ($attempt -gt $Retry) {
+    Write-Output "VERIFY=STILL_THERE (click did not take effect; do NOT treat as done)"
+    exit 4
+  }
+  Write-Output "VERIFY=STILL_THERE retrying once"
+}
