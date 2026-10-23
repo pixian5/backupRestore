@@ -84,3 +84,13 @@
 - **盘符重排是 Windows 正常行为，别去「修」**：新系统成 default 后启动卷拿 C:、旧系统卷被挤到后续字母，**启动配置数据 `device`/`osdevice` 同步成运行字母**。判断「当前是哪个系统」的权威方法 = `bcdedit /enum {current}` + `vol` 对序列号，不靠盘符猜 —— 20261019-1918 [✅]
 - **V2 终态判据（10-19 实证）**：default 指向新系统条目 `{c46f6056}`（"Windows Backup E"）、displayorder 新+旧都在、原系统卷序列号未变、恢复环境 Enabled+recoverysequence 匹配、bootsequence 已清 —— 20261019-1918 [✅]
 - **B 键在 cmd 持焦点时打不进去**：进度窗 `main_family` 焦点门（`msg_hwnd == hwnd || GetParent == hwnd`）——恢复环境内 cmd 未压底时按 B 全部落在控制台。这是 cmd 后台化修复成为 B 键验收硬前置的原因（Win32 细节见 `04` §5）—— 20261019-1918/20261020-0230 [✅]
+- **★ B 键（BCD 回退）在恢复环境内可用，且回退后续跑链校验必然失败（2026-10-23 实机，v2.6.30）**：
+  · 恢复环境里 ESP **没有盘符**，回退走 `plan A: verbatim BCD store path = \\?\Volume{GUID}\EFI\Microsoft\Boot\BCD`，
+    实测 `Restored byte-for-byte EFI BCD snapshot`（字节级，不是 `bcdedit /import` 的字段级重建）；
+  · 回退**跑在工作线程**，apply 继续推进（实测 39%→54%），进度窗不卡（M5 修复的二次印证）；
+  · **回退把 BCD 换回准备期快照后，任务自建的 loader/device options 消失 → `BootRepaired` 阶段的
+    「续跑启动链字段校验」必然失败**。这是预期后果，不是缺陷；v2.6.30 起失败收尾会补一句
+    「本次运行中用户按 B 回退过 BCD」的因果说明（`recovery_progress::bcd_rolled_back()` +
+    `main.rs::annotate_chain_failure`），只改说明不改行为，失败仍保留现场可重试；
+  · `TaskError` 的 Display 自带 `invalid task: ` 前缀，再包一层 `crate::err` 会出现**双前缀**，
+    改写错误文案前先 `strip_prefix("invalid task: ")` —— 20261023-1025 [✅ 实机 + 单测]
