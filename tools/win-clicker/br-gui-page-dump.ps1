@@ -28,7 +28,19 @@ public class BrPage {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }
   public const uint CB_GETCOUNT=0x0146, CB_GETCURSEL=0x0147, CB_GETLBTEXT=0x0148, CB_GETLBTEXTLEN=0x0149, CB_SETCURSEL=0x014E;
   public const uint WM_COMMAND=0x0111, BM_GETCHECK=0x00F0;
-  public static string Text(IntPtr h) { StringBuilder sb = new StringBuilder(512); GetWindowTextW(h, sb, 512); return sb.ToString(); }
+  public const uint WM_GETTEXT=0x000D, WM_GETTEXTLENGTH=0x000E;
+  // 2026-10-24 修复：读别的进程的控件文本必须用 WM_GETTEXT 消息。GetWindowTextW
+  // API 跨进程只返回「创建时缓存」的窗口名：编辑框创建时为空就恒返回空、之后被
+  // 程序改过（apply_language 换中文等）就返回陈旧默认值。实测对照见
+  // .test-artifacts/recon-38-lite-20261024/editprobe2.ps1（apiText=[] vs
+  // msgText=[Windows (T:) 20261024]）。顶层窗口标题虽不受影响，统一走消息更稳。
+  public static string Text(IntPtr h) {
+    int n = (int)SendMessageW(h, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
+    if (n <= 0) return "";
+    StringBuilder sb = new StringBuilder(n + 1);
+    SendMessageStr(h, WM_GETTEXT, (IntPtr)sb.Capacity, sb);
+    return sb.ToString();
+  }
   public static string Cls(IntPtr h) { StringBuilder sb = new StringBuilder(128); GetClassNameW(h, sb, 128); return sb.ToString(); }
   public static IntPtr FindByTitle(string needle) {
     IntPtr found = IntPtr.Zero;
