@@ -194,10 +194,13 @@ pub(crate) fn repair(
     // 卸载成功才算落盘完成；本机系统注册表和原系统文件均不修改。
     crate::append_log(
         log,
-        &format!(
-            "第二系统离线盘符已绑定并核验：{source_letter}: -> {}；原配置备份 {}",
-            expected.partition_guid,
-            backup.display()
+        &crate::i18n::msg_tpl(
+            "secondary_letter_bound",
+            &[
+                &source_letter.to_string(),
+                &expected.partition_guid,
+                &backup.display().to_string(),
+            ],
         ),
     )
 }

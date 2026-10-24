@@ -5489,7 +5489,7 @@ unsafe fn install_pe_ramdisk(state: &State) {
                 if detail.is_empty() {
                     String::new()
                 } else {
-                    format!(" | 输出：{detail}")
+                    crate::i18n::msg_tpl("pe_output_suffix", &[&detail])
                 }
             ),
         );
@@ -5768,7 +5768,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         std::fs::write(&script_file, &script)?;
         crate::append_log(
             &format_log,
-            &format!("PE 格式化前身份：{before:?}；脚本：{script}"),
+            &crate::i18n::msg_tpl("pe_fmt_before", &[&format!("{before:?}"), script.as_str()]),
         )?;
         let result = crate::windows_command::run_program(
             "diskpart.exe",
@@ -5776,12 +5776,12 @@ unsafe fn install_pe_harddisk(state: &State) {
             Some(&format_log),
             300000,
         );
-        crate::append_log(&format_log, &format!("diskpart 执行结果：{result}"))?;
+        crate::append_log(&format_log, &crate::i18n::msg_tpl("pe_diskpart_result", &[&format!("{result}")]))?;
         if !result.is_success() {
             return Err(crate::err(&format!("diskpart failed: {result}")));
         }
         let after = crate::windows_prepare::volume_identity(drive_char)?;
-        crate::append_log(&format_log, &format!("PE 格式化后身份：{after:?}"))?;
+        crate::append_log(&format_log, &crate::i18n::msg_tpl("pe_fmt_after", &[&format!("{after:?}")]))?;
         backuprestore_core::operation_safety::verify_formatted_volume(&before, &after)?;
         if !Path::new(&format!("{drive_char}:\\")).is_dir() {
             return Err(crate::err("formatted volume root inaccessible"));
@@ -5789,7 +5789,7 @@ unsafe fn install_pe_harddisk(state: &State) {
         std::fs::remove_file(script_file)?;
         crate::append_log(
             &format_log,
-            "格式化身份与新卷序列号已回读验证（文件系统跟随目标卷）",
+            crate::i18n::msg("pe_fmt_verified"),
         )
     })();
     if let Err(error) = format_result {
@@ -5961,7 +5961,7 @@ unsafe fn install_pe_harddisk(state: &State) {
                 if detail.is_empty() {
                     String::new()
                 } else {
-                    format!(" | 输出：{detail}")
+                    crate::i18n::msg_tpl("pe_output_suffix", &[&detail])
                 }
             ),
         );
@@ -6224,7 +6224,7 @@ unsafe fn log_fs<T>(state: &State, what: &str, result: std::io::Result<T>) -> Op
     match result {
         Ok(value) => Some(value),
         Err(error) => {
-            append_gui_log(state, &format!("{what} 失败：{error}"));
+            append_gui_log(state, &crate::i18n::msg_tpl("op_failed", &[what, &error.to_string()]));
             None
         }
     }

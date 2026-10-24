@@ -97,7 +97,7 @@ fn settings_language() -> Option<MessageLanguage> {
     let path = std::env::current_exe()
         .ok()?
         .parent()?
-        .join(crate::failure_policy::SETTINGS_FILE_NAME);
+        .join(crate::settings_file::SETTINGS_FILE_NAME);
     let text = std::fs::read_to_string(path).ok()?;
     parse_settings_language(&text)
 }
@@ -129,6 +129,377 @@ const MISSING: &str = "<i18n:missing>";
 
 /// 关键文案表：`(key, 中文, 英文)`。新增文案请按字母序插入并补单测。
 const MESSAGES: &[(&str, &str, &str)] = &[
+    // 在线通道（备份 / 还原数据卷 / 第二系统）主链：STEP 行、门禁对账、副档发布。
+    // ★ 这批用的是模块自己的 `log()` 而不是 `append_log`，2026-10-25 第一遍统计
+    //   漏了它们（按 `append_log(` 数的），实测日志里还剩中文才补上。
+    (
+        "ol_boot_written",
+        "引导与启动菜单已写入；系统实际可启动性需另行启动验收",
+        "Boot entries and the boot menu are written; actual bootability still needs a separate \
+boot test",
+    ),
+    (
+        "ol_candidate_dir",
+        "候选目录：{0}；失败时保留，原文件不覆盖",
+        "Candidate directory: {0}; kept on failure, the original files are not overwritten",
+    ),
+    (
+        "ol_format_verified",
+        "格式化校验通过：序列号 {0} -> {1}，分区身份不变",
+        "Format verified: serial {0} -> {1}, partition identity unchanged",
+    ),
+    (
+        "ol_gate_enum_failed",
+        "门禁对象 {0} 枚举失败（按被取代处理）",
+        "Gate object {0} could not be enumerated (treated as superseded)",
+    ),
+    (
+        "ol_gate_lost",
+        "门禁对象 {0} 仍存在 device={1} 判定丢失={2}",
+        "Gate object {0} still present device={1} lost={2}",
+    ),
+    (
+        "ol_gate_reconcile",
+        "门禁对账：快照菜单 {0}；现菜单 {1}；缺失 {2}",
+        "Gate reconciliation: snapshot menu {0}; current menu {1}; missing {2}",
+    ),
+    (
+        "ol_gate_superseded",
+        "门禁对象 {0} 已被删（枚举无标识符，被取代），不算丢失",
+        "Gate object {0} was deleted (no identifier when enumerated; superseded) and is not \
+counted as lost",
+    ),
+    (
+        "ol_legacy_sidecar",
+        "[WARN] 旧版目录级副档无法读取，不作为本次依据：{0}",
+        "[WARN] The legacy directory-level sidecar could not be read and is not used as evidence: {0}",
+    ),
+    (
+        "ol_menu_dup",
+        "启动菜单名与现有启动项重名，已消解：{0} -> {1}",
+        "Boot menu name collided with an existing entry and was resolved: {0} -> {1}",
+    ),
+    (
+        "ol_menu_version_name",
+        "引导菜单将使用镜像版本名：{0}",
+        "The boot menu will use the image version name: {0}",
+    ),
+    (
+        "ol_overlay_marked",
+        "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，本次将走 wimlib 通道（镜像目录权限完整还原）",
+        "Overlay apply (format unchecked) hit a target volume that already contains Windows: it is \
+no longer rejected and this run uses the wimlib channel (image directory permissions restored \
+in full)",
+    ),
+    (
+        "ol_publish_failed",
+        "[ERROR] 发布失败：{0}；开始恢复原镜像和副档",
+        "[ERROR] Publish failed: {0}; restoring the original image and sidecar",
+    ),
+    (
+        "ol_published",
+        "镜像及副档已发布并回读；候选目录已清理",
+        "Image and sidecar published and read back; the candidate directory was cleaned up",
+    ),
+    (
+        "ol_sidecar_missing",
+        "[WARN] 旧索引 {0} 无副档，保留未知来源状态，不伪造源卷信息",
+        "[WARN] Legacy index {0} has no sidecar; its provenance stays unknown and no source \
+information is fabricated",
+    ),
+    (
+        "ol_step_apply_data_fmt",
+        "STEP 2.5/4 应用镜像（数据卷已按选项格式化后写入）",
+        "STEP 2.5/4 Apply the image (the data volume was formatted per options before writing)",
+    ),
+    (
+        "ol_step_apply_data_overlay",
+        "STEP 2/4 还原镜像（数据卷在线覆盖，不格式化、不修复引导）",
+        "STEP 2/4 Restore the image (online overlay on a data volume; no format, no boot repair)",
+    ),
+    (
+        "ol_step_apply_dism",
+        "STEP 3/4 应用镜像（DISM /Apply-Image）并校验系统文件",
+        "STEP 3/4 Apply the image (DISM /Apply-Image) and verify system files",
+    ),
+    (
+        "ol_step_apply_wimlib",
+        "STEP 3/4 应用镜像（wimlib 覆盖式通道）并校验系统文件",
+        "STEP 3/4 Apply the image (wimlib overlay channel) and verify system files",
+    ),
+    (
+        "ol_step_boot",
+        "STEP 4/4 修复引导（菜单命名/顺序/默认项，默认启动项=本次还原的系统）",
+        "STEP 4/4 Repair boot (menu name/order/default; the default entry is the system restored \
+in this run)",
+    ),
+    (
+        "ol_step_capture",
+        "STEP 2/4 捕获镜像（候选副本，无固定超时）",
+        "STEP 2/4 Capture the image (candidate copy, no fixed timeout)",
+    ),
+    (
+        "ol_step_done_fmt",
+        "STEP 4/4 完成在线还原（已格式化后写入）；未执行系统引导修复",
+        "STEP 4/4 Online restore complete (written after formatting); no system boot repair was \
+performed",
+    ),
+    (
+        "ol_step_done_overlay",
+        "STEP 4/4 完成在线还原；未执行格式化或系统引导修复",
+        "STEP 4/4 Online restore complete; neither formatting nor system boot repair was performed",
+    ),
+    (
+        "ol_step_format",
+        "STEP 2/4 格式化目标卷（diskpart quick）并校验格式化成功",
+        "STEP 2/4 Format the target volume (diskpart quick) and verify it succeeded",
+    ),
+    (
+        "ol_step_keep_verify",
+        "STEP 3/4 保留策略、索引回读和最终哈希校验",
+        "STEP 3/4 Keep policy, index read-back and final hash verification",
+    ),
+    (
+        "ol_step_letter",
+        "STEP 3.5/4 绑定第二系统盘符（离线 SYSTEM/SOFTWARE，主系统不受影响）",
+        "STEP 3.5/4 Bind the secondary system's drive letter (offline SYSTEM/SOFTWARE; the primary \
+system is unaffected)",
+    ),
+    (
+        "ol_step_preboot",
+        "STEP 3.6/4 预建还原系统启动项（等待期间即可在启动菜单看到并选择）",
+        "STEP 3.6/4 Pre-create the restored system's boot entry (visible and selectable in the boot \
+menu while waiting)",
+    ),
+    (
+        "ol_step_publish",
+        "STEP 4/4 发布镜像并回读副档；旧文件在事务成功前保留",
+        "STEP 4/4 Publish the image and read back the sidecar; the old files are kept until the \
+transaction succeeds",
+    ),
+    (
+        "ol_step_secondary",
+        "STEP 2/4 在线部署第二系统（格式化 → 应用 → 修复引导，不重启）",
+        "STEP 2/4 Deploy the secondary system online (format → apply → repair boot; no reboot)",
+    ),
+    (
+        "ol_step_snapshot_fmt",
+        "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷",
+        "STEP 2/4 Snapshot the boot state and format the target volume before restoring",
+    ),
+    (
+        "ol_step_snapshot_overlay",
+        "STEP 2/4 还原镜像前先快照引导状态（按选项跳过格式化，覆盖式应用）",
+        "STEP 2/4 Snapshot the boot state before restoring (format skipped per options; overlay apply)",
+    ),
+    (
+        "ol_step_verify",
+        "STEP 3/4 回读目标卷身份；DISM 已执行完整性和应用校验",
+        "STEP 3/4 Read back the target volume identity; DISM already ran integrity and apply \
+verification",
+    ),
+    (
+        "ol_verify_done",
+        "校验完成：sha256={0} bytes={1} 保留={2} 删除={3}",
+        "Verification complete: sha256={0} bytes={1} keep={2} remove={3}",
+    ),
+    (
+        "ol_volume_identity",
+        "卷身份：{0}",
+        "Volume identity: {0}",
+    ),
+    (
+        "pe_boot_verified",
+        "引导与恢复环境关联已回读；系统实际可启动性需另行启动验收",
+        "Boot entries and the recovery-environment link were read back; actual bootability still \
+needs a separate boot test",
+    ),
+    (
+        "pe_cmd_exit",
+        "命令退出：{0}；原始输出：{1}",
+        "Command exit: {0}; raw output: {1}",
+    ),
+    (
+        "pe_cmd_start",
+        "命令开始：{0} {1}",
+        "Command start: {0} {1}",
+    ),
+    (
+        "pe_precheck_passed",
+        "预检通过：目标={0}；镜像摘要={1}；索引={2}；意图={3}",
+        "Pre-check passed: target={0}; image digest={1}; index={2}; intent={3}",
+    ),
+    (
+        "pe_status",
+        "状态：{0}",
+        "Status: {0}",
+    ),
+    // 恢复环境主链：续跑 / 恢复失败 / 盘符解析 / ESP 提前挂载 / default 归属。
+    // 这些是排障时最先翻的行——2026-10-25 之前全是中文硬编码，英文用户只能猜。
+    (
+        "assign_letter_failed",
+        "按 GUID 给 {0}: 分配盘符失败（{1}）：{2}",
+        "Failed to assign a drive letter to {0}: by GUID ({1}): {2}",
+    ),
+    (
+        "assign_letter_mismatch",
+        "{0}: 分配后身份不符（现场 {1}），继续尝试下一个字母",
+        "{0}: identity mismatch after assignment (live {1}); trying the next letter",
+    ),
+    (
+        "assign_letter_ok",
+        "卷原本没有盘符，已按 GUID 分配到 {0}: 并复核身份通过",
+        "The volume had no drive letter; assigned {0}: by GUID and re-verified the identity",
+    ),
+    (
+        "default_switched",
+        "默认启动项已指向本次还原的系统（{0}）",
+        "The default boot entry now points to the system restored in this run ({0})",
+    ),
+    (
+        "default_switching",
+        "默认启动项未指向本次还原的系统（{0}），立即改为 {1}；否则还原完成后开机进的还是旧系统",
+        "The default boot entry did not point to the system restored in this run ({0}); changed it \
+to {1} immediately, otherwise the next boot would still enter the old system",
+    ),
+    (
+        "device_has_letter",
+        "disk{0}/partition{1} 在现场对应盘符 {2}:",
+        "disk{0}/partition{1} maps to drive {2}: on this machine",
+    ),
+    (
+        "device_no_letter",
+        "disk{0}/partition{1} 在现场没有盘符（按设备路径核对）",
+        "disk{0}/partition{1} has no drive letter on this machine (checked by device path)",
+    ),
+    (
+        "esp_mount_failed",
+        "按任务记录挂载 ESP 失败（{0}）；改走免盘符探测",
+        "Failed to mount the ESP as recorded in the task ({0}); falling back to letter-free probing",
+    ),
+    (
+        "esp_mounted_early",
+        "STEP 1 前已按任务记录挂载 ESP 到 {0}:（提前解析 EFI 根）",
+        "ESP mounted to {0}: before STEP 1 as recorded in the task (EFI root resolved early)",
+    ),
+    (
+        "esp_probed_early",
+        "STEP 1 前免盘符探测到 ESP 并解析到 {0}:（提前解析 EFI 根）",
+        "Probed the ESP without a drive letter before STEP 1 and resolved it to {0}: \
+(EFI root resolved early)",
+    ),
+    (
+        "mount_identity_verified",
+        "挂载稳定身份已核验：准备期 {0}/{1}，现场 {2}/{3}",
+        "Mount identity verified: planned {0}/{1}, live {2}/{3}",
+    ),
+    (
+        "mountvol_output",
+        "mountvol 输出：{0}",
+        "mountvol output: {0}",
+    ),
+    (
+        "mountvol_table_unavailable",
+        "mountvol 挂载表不可用（{0}）；退回逐字母探测",
+        "The mountvol table is unavailable ({0}); falling back to probing one letter at a time",
+    ),
+    (
+        "panic_backtrace",
+        "panic in thread [{0}] at {1}: {2}\nbacktrace (RUST_BACKTRACE=1 可展开): {3}",
+        "panic in thread [{0}] at {1}: {2}\nbacktrace (set RUST_BACKTRACE=1 to expand): {3}",
+    ),
+    (
+        "re_registration_degraded",
+        "恢复环境注册已按裁定降级跳过：{0}",
+        "Recovery-environment registration skipped by the agreed degradation: {0}",
+    ),
+    (
+        "recovery_done_log_write",
+        "Recovery completed; cleanup pending: {0}; 且无法写入日志：{1}",
+        "Recovery completed; cleanup pending: {0}; and the log could not be written: {1}",
+    ),
+    (
+        "recovery_done_status_write",
+        "Recovery completed; cleanup pending: {0}; 且无法写入 status 错误字段：{1}",
+        "Recovery completed; cleanup pending: {0}; and the status error field could not be \
+written: {1}",
+    ),
+    (
+        "recovery_failed",
+        "Recovery failed: {0}（原始错误已落 Recovery.log）",
+        "Recovery failed: {0} (the original error is in Recovery.log)",
+    ),
+    (
+        "recovery_failed_log_write",
+        "Recovery failed: {0}; 且无法写入日志：{1}",
+        "Recovery failed: {0}; and the log could not be written: {1}",
+    ),
+    (
+        "recovery_failed_status_write",
+        "Recovery failed: {0}; 且无法写入 status 错误字段：{1}",
+        "Recovery failed: {0}; and the status error field could not be written: {1}",
+    ),
+    (
+        "restore_identity_rebound",
+        "恢复目标稳定身份已核验，现场地址重绑定：{0} -> {1}",
+        "Restore target identity verified; live address rebound: {0} -> {1}",
+    ),
+    (
+        "resume_abandoned",
+        "用户放弃待续跑任务（task={0} stage={1}）：按终态收口",
+        "The user abandoned the pending-resume task (task={0} stage={1}): closed as a terminal state",
+    ),
+    (
+        "resume_declined",
+        "用户选择本次不自动重启续跑（task={0} stage={1}）；任务、启动对象与载荷全部保留，可用 resume 命令或主窗口「取消待重启任务」继续处理",
+        "The user declined the automatic resume restart this time (task={0} stage={1}); the task, \
+boot objects and payload are all preserved — continue with the resume command or the main \
+window's \"Cancel pending reboot task\"",
+    ),
+    (
+        "resume_detected",
+        "Detected durable interrupted task after normal Windows startup; resuming task {0} operation={1} stage={2}（计划中的跨阶段第 {3}/{4} 次）",
+        "Detected a durable interrupted task after a normal Windows start; resuming task {0} \
+operation={1} stage={2} (planned cross-stage attempt {3}/{4})",
+    ),
+    (
+        "resume_limit_reached",
+        "自动续跑已达跨阶段总上限 {0} 次（已重启 {1} 次）：不再自动重启，交由用户决定（任务与载荷全部保留）",
+        "Auto-resume reached the cross-stage cap of {0} ({1} restarts already): no more automatic \
+restarts, it is now up to the user (task and payload are fully preserved)",
+    ),
+    (
+        "resume_restart_requested",
+        "Restart requested to resume pending task in Windows RE（跨阶段第 {0}/{1} 次）",
+        "Restart requested to resume the pending task in Windows RE (cross-stage attempt {0}/{1})",
+    ),
+    (
+        "route_secondary",
+        "收尾路由=第二系统：bcdboot 不带 /d（带 /addlast），default 指向新还原的系统（随后 assert 回读确认）",
+        "Finish routing = secondary system: bcdboot without /d (with /addlast); default points to \
+the newly restored system (asserted by read-back afterwards)",
+    ),
+    (
+        "route_unique",
+        "收尾路由=重建唯一系统：bcdboot 不带 /d，default 指向新 loader（apply 策略=指向还原目标）",
+        "Finish routing = rebuild the single system: bcdboot without /d; default points to the new \
+loader (apply policy = point at the restore target)",
+    ),
+    (
+        "volume_resolved_by_guid",
+        "卷已按卷 GUID 解析到现场盘符 {0}:（任务记录 {1}）",
+        "Volume resolved by volume GUID to live drive {0}: (task recorded {1})",
+    ),
+    (
+        "volume_resolved_by_probe",
+        "卷已按身份逐字母探测解析到 {0}:（任务记录 {1}）",
+        "Volume resolved by identity probing over letters to {0}: (task recorded {1})",
+    ),
+    (
+        "volume_resolved_same_letter",
+        "卷已解析：记录盘符 {0}: 仍指向同一卷（身份复核通过）",
+        "Volume resolved: the recorded drive {0}: still points at the same volume (identity re-verified)",
+    ),
     // DISM apply 失败的六类因果（`failure_policy::ApplyFailureKind::cause`）。
     // ★ 措辞纪律：这些文案会被拼进 Err 文本、可能再次进入 `classify_apply_failure`
     //   的输入，所以英文里**不能出现分类模式的整串**（`access is denied` /
@@ -338,6 +709,209 @@ after which the recovery chain is aborted and treated as a failure",
         "re_window_closed_err",
         "进度窗口已关闭，恢复已中断",
         "The progress window was closed; recovery aborted",
+    ),
+    // PE 安装 / 镜像完整性预检 / 恢复环境注册 / 第二系统绑定。
+    (
+        "boot_comp_delete_failed",
+        "补偿删除 {0} 失败（可能留下孤儿 BCD 对象）：{1}",
+        "Compensating delete of {0} failed (an orphan BCD object may remain): {1}",
+    ),
+    (
+        "boot_comp_delete_ok",
+        "补偿删除 {0}：成功{1}",
+        "Compensating delete of {0}: succeeded{1}",
+    ),
+    (
+        "op_failed",
+        "{0} 失败：{1}",
+        "{0} failed: {1}",
+    ),
+    (
+        "pe_diskpart_result",
+        "diskpart 执行结果：{0}",
+        "diskpart result: {0}",
+    ),
+    (
+        "pe_fmt_after",
+        "PE 格式化后身份：{0}",
+        "PE post-format identity: {0}",
+    ),
+    (
+        "pe_fmt_before",
+        "PE 格式化前身份：{0}；脚本：{1}",
+        "PE pre-format identity: {0}; script: {1}",
+    ),
+    (
+        "pe_fmt_verified",
+        "格式化身份与新卷序列号已回读验证（文件系统跟随目标卷）",
+        "Post-format identity and the new volume serial were read back and verified \
+(the filesystem follows the target volume)",
+    ),
+    (
+        "pe_output_suffix",
+        " | 输出：{0}",
+        " | output: {0}",
+    ),
+    (
+        "secondary_letter_bound",
+        "第二系统离线盘符已绑定并核验：{0}: -> {1}；原配置备份 {2}",
+        "Secondary-system offline drive letter bound and verified: {0}: -> {1}; \
+original config backed up to {2}",
+    ),
+    (
+        "winre_independent_partition",
+        "已启用 WinRE 位于独立恢复分区 {0}（现场盘符 {1}），恢复原件齐备，按独立分区重接",
+        "WinRE is enabled on a dedicated recovery partition {0} (live letter {1}); \
+the original files are intact, so it is reconnected on that partition",
+    ),
+    (
+        "winre_secondary_reset",
+        "第二系统克隆注册配置已在目标卷内备份并重置；原系统恢复对象未禁用",
+        "The secondary-system clone registry config was backed up and reset inside the target \
+volume; the original system's recovery object was not disabled",
+    ),
+    (
+        "wp_boot_menu_dup",
+        "启动菜单名与现有启动项重名，已自动消解：{0} -> {1}",
+        "Boot menu name collided with an existing entry and was resolved automatically: {0} -> {1}",
+    ),
+    (
+        "wp_overlay_marked",
+        "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，已标记 overlay_no_acl，恢复期将走 wimlib 通道（镜像目录权限完整还原；DISM 该组合必然 RestoreDirMetadata 0x80070005）",
+        "Overlay apply (format unchecked) hit a target volume that already contains Windows: \
+it is no longer rejected; overlay_no_acl is marked and the recovery stage will use the wimlib \
+channel (image directory permissions restored in full; DISM always fails this combination with \
+RestoreDirMetadata 0x80070005)",
+    ),
+    (
+        "wp_precheck_fast_path",
+        "镜像完整性预检：镜像名「{0}」符合完整 Windows 特征，走快速通道放行（跳过挂载，省一次大镜像挂载）",
+        "Image integrity pre-check: the image name \"{0}\" matches a full Windows image, so it is \
+fast-pathed (mounting is skipped, saving one large-image mount)",
+    ),
+    (
+        "wp_precheck_heuristic",
+        "镜像完整性预检：只读挂载不可用，已按镜像名启发式放行；恢复阶段的离线注册前置检查兜底",
+        "Image integrity pre-check: read-only mounting was unavailable, so it was passed by the \
+image-name heuristic; the offline registration pre-check during recovery is the backstop",
+    ),
+    (
+        "wp_precheck_mounted_ok",
+        "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
+        "Image integrity pre-check: read-only mounting confirmed a full Windows image \
+(reagentc.exe and SYSTEM present)",
+    ),
+    (
+        "wp_volume_cache_flushed",
+        "卷缓存已强制落盘：{0}:（{1}）",
+        "Volume cache flushed: {0}: ({1})",
+    ),
+    // 恢复环境里的「引导修复方案」（选哪些系统进菜单、菜单名、超时）。
+    (
+        "boot_candidate_missing_components",
+        "卷缺少常规 Windows 恢复组件，保留现有入口：{0}",
+        "Volume lacks the usual Windows recovery components; keeping the existing entry: {0}",
+    ),
+    (
+        "boot_candidate_probe_failed",
+        "引导候选卷探测失败，跳过：{0}；{1}",
+        "Boot candidate volume probe failed, skipped: {0}; {1}",
+    ),
+    (
+        "boot_candidate_unreadable",
+        "引导候选卷身份不可读，跳过：{0}；{1}",
+        "Boot candidate volume identity unreadable, skipped: {0}; {1}",
+    ),
+    (
+        "boot_menu_dup_display",
+        "引导菜单默认名重复，已加盘符区分：{0} -> {1}",
+        "Duplicate default boot menu name; disambiguated by drive letter: {0} -> {1}",
+    ),
+    (
+        "boot_menu_dup_resolved",
+        "启动菜单目标名与其它菜单项重名，已消解：{0} -> {1}",
+        "Boot menu target name collided with another entry and was resolved: {0} -> {1}",
+    ),
+    (
+        "boot_menu_name_kept",
+        "引导菜单名称保持不变：{0}",
+        "Boot menu name unchanged: {0}",
+    ),
+    (
+        "boot_menu_name_written",
+        "引导菜单名称写入：{0} -> {1}",
+        "Boot menu name written: {0} -> {1}",
+    ),
+    (
+        "boot_menu_plan_ready",
+        "引导修复方案已准备：{0} 个系统；本次目标必选；无倒计时",
+        "Boot-repair plan ready: {0} systems; this run's target is mandatory; no countdown",
+    ),
+    (
+        "boot_menu_save_failed",
+        "引导修复方案保存失败：{0}",
+        "Failed to save the boot-repair plan: {0}",
+    ),
+    (
+        "boot_menu_saved",
+        "引导修复选择已保存，恢复继续运行",
+        "Boot-repair selection saved; recovery continues",
+    ),
+    (
+        "boot_repair_done",
+        "引导修复完成：菜单 {0} 项，显示 {1} 秒；现有 PE 入口保留",
+        "Boot repair finished: {0} menu entries, {1}s timeout; existing PE entries kept",
+    ),
+    (
+        "default_decision",
+        "默认启动项决策：{0}；{1}",
+        "Default boot entry decision: {0}; {1}",
+    ),
+    (
+        "label_new_entry",
+        "（新建）",
+        "(new)",
+    ),
+    // 恢复环境主链 / 引导决策的结论性文案。
+    (
+        "boot_candidates_ready",
+        "引导修复候选已准备：第二阶段显示编辑按钮",
+        "Boot-repair candidates prepared: the edit button appears in the second stage",
+    ),
+    (
+        "data_volume_skip_efi",
+        "目标卷不是 Windows 系统卷且不是新增系统，判定为数据卷还原：不需要 EFI 根，跳过提前挂载",
+        "The target is neither a Windows system volume nor a new secondary system, so this is a \
+data-volume restore: no EFI root is needed and the early mount is skipped",
+    ),
+    (
+        "default_already_switched",
+        "默认启动项已指向本次还原的系统",
+        "The default boot entry already points to the system restored in this run",
+    ),
+    (
+        "overlay_skip_format",
+        "按任务选项跳过格式化（覆盖式应用）：目标卷上镜像没有的文件将保留",
+        "Skipping the format per task options (overlay apply): files on the target that are not in \
+the image will be kept",
+    ),
+    (
+        "resume_paused",
+        "自动续跑已暂停；任务阶段、启动对象和恢复载荷全部保留，可使用 resume 命令重试",
+        "Auto-resume paused; the task stage, boot objects and recovery payload are all preserved — \
+retry with the resume command",
+    ),
+    (
+        "rollback_bcd_noted",
+        "本次运行中用户按 B 回退了 BCD：ESP 上的 BCD 已还原为任务准备期快照，任务自建的引导项随之消失，续跑链校验失败属预期（不是新增缺陷）",
+        "The user rolled back BCD with the B key during this run: the ESP's BCD was restored to the \
+pre-task snapshot and the task's own boot entry disappeared with it, so a resume-chain \
+verification failure is expected (not a new defect)",
+    ),
+    (
+        "skip_boot_candidates_not_windows",
+        "目标卷不是 Windows 系统卷，跳过引导修复候选探测",
+        "The target volume is not a Windows system volume; skipping boot-repair candidate probing",
     ),
     // 编号步骤行。解析器只认 `STEP ` 前缀与 `n/m` 数字（`text_parsing`
     // 用 `line.find("STEP ")`），后缀是给人看的阶段名——翻译不影响进度跟踪。

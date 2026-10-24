@@ -57,7 +57,8 @@ pub(crate) const MAX_THRESHOLD: u32 = 20;
 pub(crate) const DEFAULT_PAUSE_MAX_WAIT_SECS: u32 = 0;
 pub(crate) const MAX_PAUSE_MAX_WAIT_SECS: u32 = 24 * 60 * 60;
 /// 设置文件名（与程序同目录；程序已在该目录写 `logs/`，无需提权即可写）。
-pub(crate) const SETTINGS_FILE_NAME: &str = "BackupRestore.settings.ini";
+// 单一来源在 `settings_file`（无条件编译），这里重导出保持既有路径不变。
+pub(crate) use crate::settings_file::SETTINGS_FILE_NAME;
 /// 落进 `RecoveryTask.env` 的键名。
 pub(crate) const ENV_THRESHOLD: &str = "FAILURE_THRESHOLD";
 pub(crate) const ENV_ACTION: &str = "FAILURE_ACTION";

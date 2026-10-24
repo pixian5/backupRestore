@@ -722,7 +722,7 @@ impl BootMenuSession {
                 if resolved != target_name {
                     crate::append_log(
                         log,
-                        &format!("启动菜单目标名与其它菜单项重名，已消解：{target_name} -> {resolved}"),
+                        &crate::i18n::msg_tpl("boot_menu_dup_resolved", &[target_name.as_str(), resolved.as_str()]),
                     )?;
                     fresh.entries[position].display_name = resolved;
                 }
@@ -749,9 +749,9 @@ impl BootMenuSession {
         )?;
         crate::append_log(
             log,
-            &format!(
-                "引导修复方案已准备：{} 个系统；本次目标必选；无倒计时",
-                plan.entries.len()
+            &crate::i18n::msg_tpl(
+                "boot_menu_plan_ready",
+                &[&plan.entries.len().to_string()],
             ),
         )?;
         Ok(std::sync::Arc::new(Self {
@@ -788,11 +788,11 @@ impl BootMenuSession {
         match result {
             Ok(()) => {
                 state.plan = next;
-                let _ = crate::append_log(&self.log, "引导修复选择已保存，恢复继续运行");
+                let _ = crate::append_log(&self.log, crate::i18n::msg("boot_menu_saved"));
             }
             Err(error) => {
                 state.error = Some(error.to_string());
-                let _ = crate::append_log(&self.log, &format!("引导修复方案保存失败：{error}"));
+                let _ = crate::append_log(&self.log, &crate::i18n::msg_tpl("boot_menu_save_failed", &[&error.to_string()]));
             }
         }
     }
@@ -826,7 +826,7 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
         let identity = match crate::windows_prepare::volume_identity_at_path(&path, path.clone()) {
             Ok(identity) => identity,
             Err(error) => {
-                crate::append_log(log, &format!("引导候选卷身份不可读，跳过：{path}；{error}"))?;
+                crate::append_log(log, &crate::i18n::msg_tpl("boot_candidate_unreadable", &[path.as_str(), &error.to_string()]))?;
                 continue;
             }
         };
@@ -847,7 +847,7 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
         let is_windows = match crate::pe_safety::target_is_windows_volume(root) {
             Ok(is_windows) => is_windows,
             Err(error) => {
-                crate::append_log(log, &format!("引导候选卷探测失败，跳过：{path}；{error}"))?;
+                crate::append_log(log, &crate::i18n::msg_tpl("boot_candidate_probe_failed", &[path.as_str(), &error.to_string()]))?;
                 continue;
             }
         };
@@ -855,7 +855,7 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             match crate::pe_safety::probe_file(root, &["Windows", "System32", "winload.efi"]) {
                 Ok(has_loader) => has_loader,
                 Err(error) => {
-                    crate::append_log(log, &format!("引导候选卷探测失败，跳过：{path}；{error}"))?;
+                    crate::append_log(log, &crate::i18n::msg_tpl("boot_candidate_probe_failed", &[path.as_str(), &error.to_string()]))?;
                     continue;
                 }
             };
@@ -867,14 +867,14 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             match crate::pe_safety::probe_file(root, &["Windows", "System32", "reagentc.exe"]) {
                 Ok(has_reagentc) => has_reagentc,
                 Err(error) => {
-                    crate::append_log(log, &format!("引导候选卷探测失败，跳过：{path}；{error}"))?;
+                    crate::append_log(log, &crate::i18n::msg_tpl("boot_candidate_probe_failed", &[path.as_str(), &error.to_string()]))?;
                     continue;
                 }
             };
         if !has_reagentc {
             crate::append_log(
                 log,
-                &format!("卷缺少常规 Windows 恢复组件，保留现有入口：{path}"),
+                &crate::i18n::msg_tpl("boot_candidate_missing_components", &[path.as_str()]),
             )?;
             continue;
         }
@@ -946,9 +946,9 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             entries[index].display_name = disambiguated.chars().take(NAME_MAX_CHARS).collect();
             crate::append_log(
                 log,
-                &format!(
-                    "引导菜单默认名重复，已加盘符区分：{name} -> {}",
-                    entries[index].display_name
+                &crate::i18n::msg_tpl(
+                    "boot_menu_dup_display",
+                    &[name.as_str(), &entries[index].display_name],
                 ),
             )?;
         }
@@ -1092,16 +1092,21 @@ pub(crate) fn apply(
             )?;
             crate::append_log(
                 log,
-                &format!(
-                    "引导菜单名称写入：{} -> {}",
-                    entry.existing_name.as_deref().unwrap_or("（新建）"),
-                    entry.display_name
+                &crate::i18n::msg_tpl(
+                    "boot_menu_name_written",
+                    &[
+                        entry
+                            .existing_name
+                            .as_deref()
+                            .unwrap_or(crate::i18n::msg("label_new_entry")),
+                        &entry.display_name,
+                    ],
                 ),
             )?;
         } else {
             crate::append_log(
                 log,
-                &format!("引导菜单名称保持不变：{}", entry.display_name),
+                &crate::i18n::msg_tpl("boot_menu_name_kept", &[&entry.display_name]),
             )?;
         }
         if entry.is_restore_target {
@@ -1121,7 +1126,7 @@ pub(crate) fn apply(
     // 避免事后只能从 BCD 现状反推当时的意图。
     let decision = decide_default(target_id.as_deref())?;
     let default = decision.default_id;
-    crate::append_log(log, &format!("默认启动项决策：{default}；{}", decision.note))?;
+    crate::append_log(log, &crate::i18n::msg_tpl("default_decision", &[default.as_str(), decision.note.as_str()]))?;
     crate::run_logged(
         "bcdedit.exe",
         &["/store", &store, "/default", &default],
@@ -1204,10 +1209,12 @@ pub(crate) fn apply(
     }
     crate::append_log(
         log,
-        &format!(
-            "引导修复完成：菜单 {} 项，显示 {} 秒；现有 PE 入口保留",
-            selected.len(),
-            plan.timeout_seconds
+        &crate::i18n::msg_tpl(
+            "boot_repair_done",
+            &[
+                &selected.len().to_string(),
+                &plan.timeout_seconds.to_string(),
+            ],
         ),
     )
 }

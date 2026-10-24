@@ -564,12 +564,12 @@ fn delete_best_effort(loader: &str, devopts: &str, log: &Path) {
                 } else {
                     format!(" ({detail})")
                 };
-                let _ = crate::append_log(log, &format!("补偿删除 {guid}：成功{suffix}"));
+                let _ = crate::append_log(log, &crate::i18n::msg_tpl("boot_comp_delete_ok", &[guid, suffix.as_str()]));
             }
             Err(error) => {
                 let _ = crate::append_log(
                     log,
-                    &format!("补偿删除 {guid} 失败（可能留下孤儿 BCD 对象）：{error}"),
+                    &crate::i18n::msg_tpl("boot_comp_delete_failed", &[guid, &error.to_string()]),
                 );
             }
         }

@@ -380,7 +380,7 @@ fn execute_inner(
         ));
     }
     let root = PathBuf::from(format!("{affected}:\\"));
-    log(log_path, &format!("卷身份：{identity:?}"))?;
+    log(log_path, &crate::i18n::msg_tpl("ol_volume_identity", &[&format!("{identity:?}")]))?;
     match params.operation.as_str() {
         "backup" => {
             let (total, free) = crate::windows_prepare::disk_free_space(affected)?;
@@ -419,7 +419,7 @@ fn execute_inner(
                     .ok_or_else(|| crate::err("日志目录缺失"))?;
                 log(
                     log_path,
-                    "STEP 2/4 格式化目标卷（diskpart quick）并校验格式化成功",
+                    crate::i18n::msg("ol_step_format"),
                 )?;
                 let script = crate::diskpart_format_script(
                     identity.disk_number,
@@ -441,9 +441,9 @@ fn execute_inner(
                 // 盘符在格式化后可能被重排到别的卷，用它做检查等于没检查。
                 log(
                     log_path,
-                    &format!(
-                        "格式化校验通过：序列号 {} -> {}，分区身份不变",
-                        identity.volume_serial, formatted.volume_serial
+                    &crate::i18n::msg_tpl(
+                        "ol_format_verified",
+                        &[&identity.volume_serial, &formatted.volume_serial],
                     ),
                 )?;
                 formatted
@@ -466,16 +466,16 @@ fn execute_inner(
             log(
                 log_path,
                 if params.format_target {
-                    "STEP 2.5/4 应用镜像（数据卷已按选项格式化后写入）"
+                    crate::i18n::msg("ol_step_apply_data_fmt")
                 } else {
-                    "STEP 2/4 还原镜像（数据卷在线覆盖，不格式化、不修复引导）"
+                    crate::i18n::msg("ol_step_apply_data_overlay")
                 },
             )?;
             // M6：按卷 GUID 路径应用，不按盘符（盘符可能在格式化后被重排）。
             apply_image_with_fallback(image, index, &apply_root, log_path)?;
             log(
                 log_path,
-                "STEP 3/4 回读目标卷身份；DISM 已执行完整性和应用校验",
+                crate::i18n::msg("ol_step_verify"),
             )?;
             let after = crate::windows_prepare::volume_identity(affected)?;
             if !baseline.same_partition(&after)
@@ -489,9 +489,9 @@ fn execute_inner(
             log(
                 log_path,
                 if params.format_target {
-                    "STEP 4/4 完成在线还原（已格式化后写入）；未执行系统引导修复"
+                    crate::i18n::msg("ol_step_done_fmt")
                 } else {
-                    "STEP 4/4 完成在线还原；未执行格式化或系统引导修复"
+                    crate::i18n::msg("ol_step_done_overlay")
                 },
             )
         }
@@ -511,7 +511,7 @@ fn execute_inner(
             }
             log(
                 log_path,
-                "STEP 2/4 在线部署第二系统（格式化 → 应用 → 修复引导，不重启）",
+                crate::i18n::msg("ol_step_secondary"),
             )?;
             restore_to_windows_volume(
                 params, &root, identity, index, log_path, progress, &wim_info,
@@ -567,8 +567,7 @@ fn restore_to_windows_volume(
     if overlay_no_acl {
         log(
             log_path,
-            "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，\
-             本次将走 wimlib 通道（镜像目录权限完整还原）",
+            crate::i18n::msg("ol_overlay_marked"),
         )?;
     }
     // 擦除前预检（2.4.2）：在线 create-secondary/restore 拿纯 PE WIM 一样会
@@ -576,21 +575,18 @@ fn restore_to_windows_volume(
     // 与 prepare 链共用同一判据：缺 reagentc.exe 或 SYSTEM hive 直接拒绝。
     match crate::windows_prepare::wim_full_windows_probe(&params.image_path, index, log_path)? {
         crate::windows_prepare::ProbeOutcome::FullWindows => {
-            log(log_path, "镜像完整性预检：只读挂载确认完整 Windows")?;
+            log(log_path, crate::i18n::msg("wp_precheck_mounted_ok"))?;
         }
         crate::windows_prepare::ProbeOutcome::QuickPass(name) => {
             log(
                 log_path,
-                &format!(
-                    "镜像完整性预检：镜像名「{name}」符合完整 Windows 特征，\
-                     走快速通道放行（跳过挂载，省一次大镜像挂载）"
-                ),
+                &crate::i18n::msg_tpl("wp_precheck_fast_path", &[name.as_str()]),
             )?;
         }
         crate::windows_prepare::ProbeOutcome::HeuristicPass => {
             log(
                 log_path,
-                "镜像完整性预检：挂载探测不可用（如本机有附加 VHD），按镜像名启发式放行；恢复期注册检查兜底",
+                crate::i18n::msg("wp_precheck_heuristic"),
             )?;
         }
     }
@@ -607,7 +603,7 @@ fn restore_to_windows_volume(
     // 这比读盘符/日期信息量大得多，且此刻目标卷还没格式化，读不到 ntoskrnl。
     let versioned_name = read_image_version_name(image, index, wim_info);
     if let Some(name) = &versioned_name {
-        log(log_path, &format!("引导菜单将使用镜像版本名：{name}"))?;
+        log(log_path, &crate::i18n::msg_tpl("ol_menu_version_name", &[name]))?;
     }
     // 引导修复方案必须在格式化前准备好：格式化后目标卷是空卷，探测不到任何系统。
     // 这里只落盘候选、不写 BCD；实际写入延后到 STEP 4 映像应用完成之后。
@@ -644,9 +640,9 @@ fn restore_to_windows_volume(
         if pre_resolved != params.image_name.trim() {
             log(
                 log_path,
-                &format!(
-                    "启动菜单名与现有启动项重名，已消解：{} -> {}",
-                    params.image_name, pre_resolved
+                &crate::i18n::msg_tpl(
+                    "ol_menu_dup",
+                    &[&params.image_name, &pre_resolved],
                 ),
             )?;
         }
@@ -672,9 +668,9 @@ fn restore_to_windows_volume(
     log(
         log_path,
         if params.format_target {
-            "STEP 2/4 还原镜像前先快照引导状态并格式化目标卷"
+            crate::i18n::msg("ol_step_snapshot_fmt")
         } else {
-            "STEP 2/4 还原镜像前先快照引导状态（按选项跳过格式化，覆盖式应用）"
+            crate::i18n::msg("ol_step_snapshot_overlay")
         },
     )?;
     let before = run_bcd_edit(
@@ -745,9 +741,9 @@ fn restore_to_windows_volume(
     log(
         log_path,
         if overlay_no_acl {
-            "STEP 3/4 应用镜像（wimlib 覆盖式通道）并校验系统文件"
+            crate::i18n::msg("ol_step_apply_wimlib")
         } else {
-            "STEP 3/4 应用镜像（DISM /Apply-Image）并校验系统文件"
+            crate::i18n::msg("ol_step_apply_dism")
         },
     )?;
     if overlay_no_acl {
@@ -784,7 +780,7 @@ fn restore_to_windows_volume(
 
     log(
         log_path,
-        "STEP 3.5/4 绑定第二系统盘符（离线 SYSTEM/SOFTWARE，主系统不受影响）",
+        crate::i18n::msg("ol_step_letter"),
     )?;
     let target_letter = crate::windows_prepare::ensure_volume_mounted(&after, 'T', log_path)?;
     crate::pe_safety::verify_binding(
@@ -813,7 +809,7 @@ fn restore_to_windows_volume(
     // 这一步在 DISM 应用完成之后才跑，目标卷此刻已是完整 Windows。
     log(
         log_path,
-        "STEP 3.6/4 预建还原系统启动项（等待期间即可在启动菜单看到并选择）",
+        crate::i18n::msg("ol_step_preboot"),
     )?;
     run_capture(
         "bcdboot.exe",
@@ -864,7 +860,7 @@ fn restore_to_windows_volume(
 
     log(
         log_path,
-        "STEP 4/4 修复引导（菜单命名/顺序/默认项，默认启动项=本次还原的系统）",
+        crate::i18n::msg("ol_step_boot"),
     )?;
     let live = run_bcd_edit(
         &[
@@ -1049,9 +1045,13 @@ fn restore_to_windows_volume(
     // 每个对象的枚举结果、device 指向与最终判定值都必须可事后核对。
     log(
         log_path,
-        &format!(
-            "门禁对账：快照菜单 {:?}；现菜单 {:?}；缺失 {:?}",
-            expected, actual, missing
+        &crate::i18n::msg_tpl(
+            "ol_gate_reconcile",
+            &[
+                &format!("{expected:?}"),
+                &format!("{actual:?}"),
+                &format!("{missing:?}"),
+            ],
         ),
     )?;
     let lost_foreign = missing.iter().any(|id| {
@@ -1069,7 +1069,7 @@ fn restore_to_windows_volume(
             // 进程失败（bcdedit 未跑起来）：与对象被删同样按被取代处理，
             // 不让探测通道的偶发故障拦下一次成功的还原。
             Err(_) => {
-                let _ = log(log_path, &format!("门禁对象 {id} 枚举失败（按被取代处理）"));
+                let _ = log(log_path, &crate::i18n::msg_tpl("ol_gate_enum_failed", &[&id.to_string()]));
                 false
             }
             Ok(text) => {
@@ -1086,13 +1086,16 @@ fn restore_to_windows_volume(
                         .unwrap_or_default();
                     let _ = log(
                         log_path,
-                        &format!("门禁对象 {id} 仍存在 device={device:?} 判定丢失={verdict}"),
+                        &crate::i18n::msg_tpl(
+                            "ol_gate_lost",
+                            &[&id.to_string(), &format!("{device:?}"), &format!("{verdict}")],
+                        ),
                     );
                 } else {
                     // 退出码 0 + 空文案（"没有匹配的对象"）= 对象已被删。
                     let _ = log(
                         log_path,
-                        &format!("门禁对象 {id} 已被删（枚举无标识符，被取代），不算丢失"),
+                        &crate::i18n::msg_tpl("ol_gate_superseded", &[&id.to_string()]),
                     );
                 }
                 verdict
@@ -1123,7 +1126,7 @@ fn restore_to_windows_volume(
     // 目标系统的 WinRE 注册应在其自身首次启动后用 reagentc 完成（W09 收敛项）。
     log(
         log_path,
-        "引导与启动菜单已写入；系统实际可启动性需另行启动验收",
+        crate::i18n::msg("ol_boot_written"),
     )
 }
 
@@ -1252,10 +1255,7 @@ pub(crate) fn capture(
     fs::create_dir(&workspace)?;
     log(
         log_path,
-        &format!(
-            "候选目录：{}；失败时保留，原文件不覆盖",
-            workspace.display()
-        ),
+        &crate::i18n::msg_tpl("ol_candidate_dir", &[&workspace.display().to_string()]),
     )?;
     let candidate = workspace.join("candidate.wim");
     let existing = match fs::metadata(destination) {
@@ -1283,7 +1283,7 @@ pub(crate) fn capture(
         Err(error) => {
             log(
                 log_path,
-                &format!("[WARN] 旧版目录级副档无法读取，不作为本次依据：{error}"),
+                &crate::i18n::msg_tpl("ol_legacy_sidecar", &[&error.to_string()]),
             )?;
             None
         }
@@ -1304,7 +1304,7 @@ pub(crate) fn capture(
         if !metadata.contains_key(&index) {
             log(
                 log_path,
-                &format!("[WARN] 旧索引 {index} 无副档，保留未知来源状态，不伪造源卷信息"),
+                &crate::i18n::msg_tpl("ol_sidecar_missing", &[&index.to_string()]),
             )?;
         }
     }
@@ -1359,7 +1359,7 @@ pub(crate) fn capture(
             backuprestore_core::canonical_compression(&params.compress)?
         ));
     }
-    log(log_path, "STEP 2/4 捕获镜像（候选副本，无固定超时）")?;
+    log(log_path, crate::i18n::msg("ol_step_capture"))?;
     dism(&args, log_path)?;
     let after = indexes(&candidate, log_path)?;
     let new_index = im::verify_appended_index(&before, &after)?;
@@ -1394,7 +1394,7 @@ pub(crate) fn capture(
             image_name: Some(name.to_string()),
         },
     );
-    log(log_path, "STEP 3/4 保留策略、索引回读和最终哈希校验")?;
+    log(log_path, crate::i18n::msg("ol_step_keep_verify"))?;
     let keep = params
         .keep_indexes
         .unwrap_or(new_index)
@@ -1424,7 +1424,15 @@ pub(crate) fn capture(
     im::write_sidecars(&candidate, &metadata, &hash, final_size, 0)?;
     log(
         log_path,
-        &format!("校验完成：sha256={hash} bytes={final_size} 保留={keep} 删除={removed}"),
+        &crate::i18n::msg_tpl(
+        "ol_verify_done",
+        &[
+            hash.as_str(),
+            &final_size.to_string(),
+            &format!("{keep}"),
+            &format!("{removed}"),
+        ],
+    ),
     )?;
     // 防止另一入口在候选构建期间修改了原镜像；发布前必须重验。
     if let Some(expected) = original_hash {
@@ -1440,7 +1448,7 @@ pub(crate) fn capture(
     }
     log(
         log_path,
-        "STEP 4/4 发布镜像并回读副档；旧文件在事务成功前保留",
+        crate::i18n::msg("ol_step_publish"),
     )?;
     let previous = workspace.join("previous.wim");
     if existing {
@@ -1471,7 +1479,7 @@ pub(crate) fn capture(
         // 即使日志盘已满，也必须尝试恢复；不能让记录错误短路回滚。
         let rollback_log_error = log(
             log_path,
-            &format!("[ERROR] 发布失败：{error}；开始恢复原镜像和副档"),
+            &crate::i18n::msg_tpl("ol_publish_failed", &[&error.to_string()]),
         )
         .err();
         let rollback = (|| -> Result<(), TaskError> {
@@ -1504,7 +1512,7 @@ pub(crate) fn capture(
     }
     // 只清理本事务创建的目录；不触及用户的其他文件、旧镜像或工具链。
     fs::remove_dir_all(&workspace)?;
-    log(log_path, "镜像及副档已发布并回读；候选目录已清理")
+    log(log_path, crate::i18n::msg("ol_published"))
 }
 
 #[cfg(test)]

@@ -1036,9 +1036,9 @@ fn prepare_task(
             if resolved != options.boot_menu_name.trim() {
                 append_log(
                     &bootstrap_log,
-                    &format!(
-                        "启动菜单名与现有启动项重名，已自动消解：{} -> {}",
-                        options.boot_menu_name, resolved
+                    &crate::i18n::msg_tpl(
+                        "wp_boot_menu_dup",
+                        &[&options.boot_menu_name, &resolved],
                     ),
                 )?;
             }
@@ -2018,7 +2018,7 @@ fn flush_volume(letter: char, label: &str, log: &Path) -> Result<(), TaskError> 
     if ok == 0 {
         return Err(err(&format!("卷刷盘失败：FlushFileBuffers({letter}:) 返回 0（{label}）")));
     }
-    append_log(log, &format!("卷缓存已强制落盘：{letter}:（{label}）"))?;
+    append_log(log, &crate::i18n::msg_tpl("wp_volume_cache_flushed", &[&format!("{letter}"), label]))?;
     Ok(())
 }
 
@@ -2623,9 +2623,7 @@ fn validate_operation_inputs(
                 overlay_no_acl = true;
                 append_log(
                     log,
-                    "覆盖式应用（取消格式化）命中已含 Windows 的目标卷：不再硬拒，\
-                     已标记 overlay_no_acl，恢复期将走 wimlib 通道\
-                     （镜像目录权限完整还原；DISM 该组合必然 RestoreDirMetadata 0x80070005）",
+                    crate::i18n::msg("wp_overlay_marked"),
                 )?;
             }
             if options.operation == Operation::CreateSecondary || target_is_windows {
@@ -2634,19 +2632,15 @@ fn validate_operation_inputs(
                 match wim_full_windows_probe(path, options.wim_index, log)? {
                     ProbeOutcome::FullWindows => append_log(
                         log,
-                        "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
+                        crate::i18n::msg("wp_precheck_mounted_ok"),
                     )?,
                     ProbeOutcome::QuickPass(name) => append_log(
                         log,
-                        &format!(
-                            "镜像完整性预检：镜像名「{name}」符合完整 Windows 特征，\
-                             走快速通道放行（跳过挂载，省一次大镜像挂载）"
-                        ),
+                        &crate::i18n::msg_tpl("wp_precheck_fast_path", &[name.as_str()]),
                     )?,
                     ProbeOutcome::HeuristicPass => append_log(
                         log,
-                        "镜像完整性预检：只读挂载不可用，已按镜像名启发式放行；\
-                         恢复阶段的离线注册前置检查兜底",
+                        crate::i18n::msg("wp_precheck_heuristic"),
                     )?,
                 }
             }

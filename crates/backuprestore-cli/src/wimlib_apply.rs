@@ -187,7 +187,7 @@ pub(crate) fn fallback_after_dism_failure(
     if !crate::failure_policy::decide_fallback(kind, located.is_ok()) {
         // 两种不降级：ImageCorrupt（换引擎必然同样失败）/ wimlib 缺件（无法降级）。
         let reason = match &located {
-            Err(missing) => crate::i18n::msg_tpl("fallback_skip_missing", &[missing]),
+            Err(missing) => crate::i18n::msg_tpl("fallback_skip_missing", &[&missing.to_string()]),
             Ok(_) => crate::i18n::msg("fallback_skip_corrupt").to_string(),
         };
         crate::append_log(log, &format!("[WARN] {reason}"))?;

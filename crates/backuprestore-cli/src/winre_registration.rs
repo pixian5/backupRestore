@@ -520,9 +520,9 @@ fn repair_with_mode(
             }
             append_log(
                 self.log,
-                &format!(
-                    "已启用 WinRE 位于独立恢复分区 {location}（现场盘符 {:?}），恢复原件齐备，按独立分区重接",
-                    letter
+                &crate::i18n::msg_tpl(
+                    "winre_independent_partition",
+                    &[location.as_str(), &format!("{letter:?}")],
                 ),
             )?;
             Ok(RecoveryPayload {
@@ -702,7 +702,7 @@ fn repair_with_mode(
             }
             append_log(
                 self.log,
-                "第二系统克隆注册配置已在目标卷内备份并重置；原系统恢复对象未禁用",
+                crate::i18n::msg("winre_secondary_reset"),
             )?;
             Ok(true)
         }

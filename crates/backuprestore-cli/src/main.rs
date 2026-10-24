@@ -100,6 +100,9 @@ mod session_log;
 /// 日志根目录的统一解析（用户 2026-10-18：不放 PE、不放目标分区）。
 /// 无条件编译：`append_log` / panic hook / launcher 都走它，本机构建也要能过。
 mod log_root;
+/// 设置文件名的单一来源。无条件编译：无条件模块 `i18n` 也要读该文件，
+/// 常量若留在 `cfg(any(windows, test))` 的 `failure_policy` 里会 E0433。
+mod settings_file;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
 #[cfg(windows)]
@@ -526,10 +529,14 @@ fn install_panic_logging() {
         // 卷的时候——日志不能跟着陪葬。
         let _ = append_log(
             &crate::log_root::logs_dir().join("panic.log"),
-            &format!(
-                "panic in thread [{thread}] at {location}: {payload}\n\
-                 backtrace (RUST_BACKTRACE=1 可展开): {:?}",
-                std::backtrace::Backtrace::capture()
+            &crate::i18n::msg_tpl(
+                "panic_backtrace",
+                &[
+                    thread.as_str(),
+                    location.as_str(),
+                    payload.as_str(),
+                    &format!("{:?}", std::backtrace::Backtrace::capture()),
+                ],
             ),
         );
     }));
@@ -890,9 +897,12 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
     if !allow_total_attempt(attempts, MAX_TOTAL_RESUME_ATTEMPTS) {
         append_log(
             &log,
-            &format!(
-                "自动续跑已达跨阶段总上限 {MAX_TOTAL_RESUME_ATTEMPTS} 次（已重启 {attempts} 次）：\
-                 不再自动重启，交由用户决定（任务与载荷全部保留）"
+            &crate::i18n::msg_tpl(
+                "resume_limit_reached",
+                &[
+                    &MAX_TOTAL_RESUME_ATTEMPTS.to_string(),
+                    &attempts.to_string(),
+                ],
             ),
         )?;
         return Ok(false);
@@ -908,7 +918,7 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
         // 自动重试次数限制只停止自动重启，绝不删除唯一的恢复入口。
         append_log(
             &log,
-            "自动续跑已暂停；任务阶段、启动对象和恢复载荷全部保留，可使用 resume 命令重试",
+            crate::i18n::msg("resume_paused"),
         )?;
         return Ok(false);
     }
@@ -941,9 +951,15 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
     let planned = total_attempt_count(&pending.task_dir).saturating_add(1);
     append_log(
         &log,
-        &format!(
-            "Detected durable interrupted task after normal Windows startup; resuming task {} operation={:?} stage={:?}（计划中的跨阶段第 {planned}/{MAX_TOTAL_RESUME_ATTEMPTS} 次）",
-            pending.task_id, pending.operation, pending.stage
+        &crate::i18n::msg_tpl(
+            "resume_detected",
+            &[
+                &pending.task_id,
+                &format!("{:?}", pending.operation),
+                &format!("{:?}", pending.stage),
+                &planned.to_string(),
+                &MAX_TOTAL_RESUME_ATTEMPTS.to_string(),
+            ],
         ),
     )?;
     // Invariant A before re-arming: the registered WinRE must still be this
@@ -996,8 +1012,9 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
     let count = bump_total_attempt(&pending.task_dir)?;
     append_log(
         &log,
-        &format!(
-            "Restart requested to resume pending task in Windows RE（跨阶段第 {count}/{MAX_TOTAL_RESUME_ATTEMPTS} 次）"
+        &crate::i18n::msg_tpl(
+            "resume_restart_requested",
+            &[&count.to_string(), &MAX_TOTAL_RESUME_ATTEMPTS.to_string()],
         ),
     )?;
     Ok(true)
@@ -1008,10 +1025,9 @@ pub(crate) fn resume_pending_now(pending: &PendingResume) -> Result<bool, TaskEr
 pub(crate) fn defer_pending_task(pending: &PendingResume) -> Result<(), TaskError> {
     append_log(
         &pending.task_dir.join("prepare.log"),
-        &format!(
-            "用户选择本次不自动重启续跑（task={} stage={:?}）；任务、启动对象与载荷全部保留，\
-             可用 resume 命令或主窗口「取消待重启任务」继续处理",
-            pending.task_id, pending.stage
+        &crate::i18n::msg_tpl(
+            "resume_declined",
+            &[&pending.task_id, &format!("{:?}", pending.stage)],
         ),
     )
 }
@@ -1022,9 +1038,9 @@ pub(crate) fn defer_pending_task(pending: &PendingResume) -> Result<(), TaskErro
 pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<(), TaskError> {
     append_log(
         &pending.task_dir.join("prepare.log"),
-        &format!(
-            "用户放弃待续跑任务（task={} stage={:?}）：按终态收口",
-            pending.task_id, pending.stage
+        &crate::i18n::msg_tpl(
+            "resume_abandoned",
+            &[&pending.task_id, &format!("{:?}", pending.stage)],
         ),
     )?;
     windows_prepare::abandon_task(
@@ -1261,18 +1277,19 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
         // ③ 两个失败都各自记一行，事后能看出"恢复失败"与"连错误都没记上"的区别。
         if let Err(log_error) = append_log(
             &log,
-            &format!("Recovery failed: {error}（原始错误已落 Recovery.log）"),
+            &crate::i18n::msg_tpl("recovery_failed", &[&error.to_string()]),
         ) {
             let _ = append_log(
                 &log,
-                &format!("Recovery failed: {error}; 且无法写入日志：{log_error}"),
+                &crate::i18n::msg_tpl("recovery_failed_log_write", &[&error.to_string(), &log_error.to_string()]),
             );
         }
         if let Err(write_error) = store.write_recovery_error(&task, error.to_string()) {
             let _ = append_log(
                 &log,
-                &format!(
-                    "Recovery failed: {error}; 且无法写入 status 错误字段：{write_error}"
+                &crate::i18n::msg_tpl(
+                    "recovery_failed_status_write",
+                    &[&error.to_string(), &write_error.to_string()],
                 ),
             );
         }
@@ -2252,8 +2269,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         {
             let _ = append_log(
                 &log,
-                "本次运行中用户按 B 回退了 BCD：ESP 上的 BCD 已还原为任务准备期快照，\
-                 任务自建的引导项随之消失，续跑链校验失败属预期（不是新增缺陷）",
+                crate::i18n::msg("rollback_bcd_noted"),
             );
             match annotate_chain_failure(&error.to_string(), true) {
                 Some(text) => crate::err(&text),
@@ -2346,9 +2362,9 @@ fn complete_recovery_cleanup(
             {
                 let _ = append_log(
                     log,
-                    &format!(
-                        "Recovery completed; cleanup pending: {error}; \
-                         且无法写入 status 错误字段：{state_error}"
+                    &crate::i18n::msg_tpl(
+                        "recovery_done_status_write",
+                        &[&error.to_string(), &state_error.to_string()],
                     ),
                 );
             }
@@ -2358,7 +2374,7 @@ fn complete_recovery_cleanup(
         {
             let _ = append_log(
                 log,
-                &format!("Recovery completed; cleanup pending: {error}; 且无法写入日志：{log_error}"),
+                &crate::i18n::msg_tpl("recovery_done_log_write", &[&error.to_string(), &log_error.to_string()]),
             );
         }
     }
@@ -2828,7 +2844,7 @@ fn assign_volume_letter(
         .map(|bytes| crate::text_parsing::decode_windows_bytes(&bytes))
         .unwrap_or_default();
     if !direct_text.trim().is_empty() {
-        append_log(log, &format!("mountvol 输出：{direct_text}"))?;
+        append_log(log, &crate::i18n::msg_tpl("mountvol_output", &[direct_text.as_str()]))?;
     }
     append_log(
         log,
@@ -2859,9 +2875,14 @@ fn assign_volume_letter(
     verify_env_volume_identity(&live, values, prefix, allow_reformatted_serial)?;
     append_log(
         log,
-        &format!(
-            "挂载稳定身份已核验：准备期 {disk}/{partition}，现场 {:?}/{:?}",
-            live.disk_number, live.partition_number,
+        &crate::i18n::msg_tpl(
+            "mount_identity_verified",
+            &[
+                &format!("{disk}"),
+                &format!("{partition}"),
+                &format!("{:?}", live.disk_number),
+                &format!("{:?}", live.partition_number),
+            ],
         ),
     )?;
     let disk = live.disk_number.ok_or_else(|| err("现场磁盘编号缺失"))?;
@@ -3662,9 +3683,15 @@ fn recover_windows(
             )?;
             append_log(
                 log,
-                &format!(
-                    "恢复目标稳定身份已核验，现场地址重绑定：{previous:?} -> {:?}",
-                    (target.volume.disk_number, target.volume.partition_number),
+                &crate::i18n::msg_tpl(
+                    "restore_identity_rebound",
+                    &[
+                        &format!("{previous:?}"),
+                        &format!(
+                            "{:?}",
+                            (target.volume.disk_number, target.volume.partition_number)
+                        ),
+                    ],
                 ),
             )?;
             // 收尾按「目标性质」路由，不按「操作类型」：目标是另一套 Windows 时，
@@ -3721,10 +3748,10 @@ fn recover_windows(
                         .map_err(|error| error.to_string())
                     }));
                 }
-                append_log(log, "引导修复候选已准备：第二阶段显示编辑按钮")?;
+                append_log(log, crate::i18n::msg("boot_candidates_ready"))?;
                 Some(session)
             } else {
-                append_log(log, "目标卷不是 Windows 系统卷，跳过引导修复候选探测")?;
+                append_log(log, crate::i18n::msg("skip_boot_candidates_not_windows"))?;
                 None
             };
             append_log(log, crate::i18n::msg("step_mount"))?;
@@ -3776,7 +3803,7 @@ fn recover_windows(
                 } else {
                     append_log(
                         log,
-                        "按任务选项跳过格式化（覆盖式应用）：目标卷上镜像没有的文件将保留",
+                        crate::i18n::msg("overlay_skip_format"),
                     )?;
                     if !target_root.is_dir() {
                         return Err(err(
@@ -3971,9 +3998,9 @@ fn recover_windows(
                 append_log(
                     log,
                     if target_is_secondary {
-                        "收尾路由=第二系统：bcdboot 不带 /d（带 /addlast），default 指向新还原的系统（随后 assert 回读确认）"
+                        crate::i18n::msg("route_secondary")
                     } else {
-                        "收尾路由=重建唯一系统：bcdboot 不带 /d，default 指向新 loader（apply 策略=指向还原目标）"
+                        crate::i18n::msg("route_unique")
                     },
                 )?;
                 // bcdboot 不带 /d 时本就会把 default 指向新 loader，但 /s 自定义
@@ -3997,7 +4024,7 @@ fn recover_windows(
                 // 降级（用户 2026-10-16 裁定，原 P5）：跳过原因已由 preflight 写入
                 // 任务日志，结尾复述一次——最终结果必须明确告知，不静默跳过。
                 if let winre_registration::RegistrationOutcome::Skipped(reason) = registration {
-                    append_log(log, &format!("恢复环境注册已按裁定降级跳过：{reason}"))?;
+                    append_log(log, &crate::i18n::msg_tpl("re_registration_degraded", &[reason.as_str()]))?;
                 }
                 if target_is_secondary {
                     // 菜单名只有「新增第二系统」才由用户指定；把完整 Windows 镜像还原到
@@ -4153,7 +4180,7 @@ fn resolve_volume_letter(
             Ok(live) if volume_identity_matches(volume, &live) => {
                 append_log(
                     log,
-                    &format!("卷已解析：记录盘符 {letter}: 仍指向同一卷（身份复核通过）"),
+                    &crate::i18n::msg_tpl("volume_resolved_same_letter", &[&format!("{letter}")]),
                 )?;
                 return Ok(letter);
             }
@@ -4169,7 +4196,7 @@ fn resolve_volume_letter(
         Err(error) => {
             append_log(
                 log,
-                &format!("mountvol 挂载表不可用（{error}）；退回逐字母探测"),
+                &crate::i18n::msg_tpl("mountvol_table_unavailable", &[&error.to_string()]),
             )?;
             Vec::new()
         }
@@ -4185,9 +4212,9 @@ fn resolve_volume_letter(
                 {
                     append_log(
                         log,
-                        &format!(
-                            "卷已按卷 GUID 解析到现场盘符 {letter}:（任务记录 {:?}）",
-                            volume.drive_letter
+                        &crate::i18n::msg_tpl(
+                            "volume_resolved_by_guid",
+                            &[&format!("{letter}"), &format!("{:?}", volume.drive_letter)],
                         ),
                     )?;
                     return Ok(letter);
@@ -4201,7 +4228,10 @@ fn resolve_volume_letter(
             Ok(live) if volume_identity_matches(volume, &live) => {
                 append_log(
                     log,
-                    &format!("卷已按身份逐字母探测解析到 {letter}:（任务记录 {:?}）", volume.drive_letter),
+                    &crate::i18n::msg_tpl(
+                        "volume_resolved_by_probe",
+                        &[&format!("{letter}"), &format!("{:?}", volume.drive_letter)],
+                    ),
                 )?;
                 return Ok(letter);
             }
@@ -4265,7 +4295,10 @@ fn assign_letter_by_volume_guid(
         if !outcome.is_success() {
             append_log(
                 log,
-                &format!("按 GUID 给 {letter}: 分配盘符失败（{outcome}）：{text}"),
+                &crate::i18n::msg_tpl(
+                    "assign_letter_failed",
+                    &[&format!("{letter}").as_str(), &format!("{outcome}").as_str(), text.as_str()],
+                ),
             )?;
             continue;
         }
@@ -4273,13 +4306,16 @@ fn assign_letter_by_volume_guid(
         if volume_identity_matches(volume, &live) {
             append_log(
                 log,
-                &format!("卷原本没有盘符，已按 GUID 分配到 {letter}: 并复核身份通过"),
+                &crate::i18n::msg_tpl("assign_letter_ok", &[&format!("{letter}")]),
             )?;
             return Ok(letter);
         }
         append_log(
             log,
-            &format!("{letter}: 分配后身份不符（现场 {}），继续尝试下一个字母", live.volume_guid),
+            &crate::i18n::msg_tpl(
+            "assign_letter_mismatch",
+            &[&format!("{letter}"), &live.volume_guid],
+        ),
         )?;
     }
     Err(err("卷存在但无法分配盘符"))
@@ -4303,14 +4339,20 @@ pub(crate) fn letter_for_partition(
         if live.disk_number == Some(disk) && live.partition_number == Some(partition) {
             append_log(
                 log,
-                &format!("disk{disk}/partition{partition} 在现场对应盘符 {letter}:"),
+                &crate::i18n::msg_tpl(
+                    "device_has_letter",
+                    &[&format!("{disk}"), &format!("{partition}"), &format!("{letter}")],
+                ),
             )?;
             return Ok(Some(letter));
         }
     }
     append_log(
         log,
-        &format!("disk{disk}/partition{partition} 在现场没有盘符（按设备路径核对）"),
+        &crate::i18n::msg_tpl(
+            "device_no_letter",
+            &[&format!("{disk}"), &format!("{partition}")],
+        ),
     )?;
     Ok(None)
 }
@@ -4356,7 +4398,7 @@ fn resolve_efi_root_for_recovery(
     {
         append_log(
             log,
-            "目标卷不是 Windows 系统卷且不是新增系统，判定为数据卷还原：不需要 EFI 根，跳过提前挂载",
+            crate::i18n::msg("data_volume_skip_efi"),
         )?;
         return Ok(None);
     }
@@ -4368,14 +4410,14 @@ fn resolve_efi_root_for_recovery(
             Ok(letter) => {
                 append_log(
                     log,
-                    &format!("STEP 1 前已按任务记录挂载 ESP 到 {letter}:（提前解析 EFI 根）"),
+                    &crate::i18n::msg_tpl("esp_mounted_early", &[&format!("{letter}")]),
                 )?;
                 return Ok(Some(PathBuf::from(format!("{letter}:\\"))));
             }
             Err(error) => {
                 append_log(
                     log,
-                    &format!("按任务记录挂载 ESP 失败（{error}）；改走免盘符探测"),
+                    &crate::i18n::msg_tpl("esp_mount_failed", &[&error.to_string()]),
                 )?;
             }
         }
@@ -4384,7 +4426,7 @@ fn resolve_efi_root_for_recovery(
     let letter = resolve_volume_letter(&identity, log)?;
     append_log(
         log,
-        &format!("STEP 1 前免盘符探测到 ESP 并解析到 {letter}:（提前解析 EFI 根）"),
+        &crate::i18n::msg_tpl("esp_probed_early", &[&format!("{letter}")]),
     )?;
     Ok(Some(PathBuf::from(format!("{letter}:\\"))))
 }
@@ -4846,14 +4888,14 @@ fn assert_boot_default_points_at_target(
     };
     let current = read_default(log)?;
     if current.eq_ignore_ascii_case(&loader) {
-        append_log(log, &format!("默认启动项已指向本次还原的系统（{loader}）"))?;
+        append_log(log, &crate::i18n::msg_tpl("default_switched", &[loader.as_str()]))?;
         return Ok(());
     }
     append_log(
         log,
-        &format!(
-            "默认启动项未指向本次还原的系统（{current}），立即改为 {loader}；\
-             否则还原完成后开机进的还是旧系统"
+        &crate::i18n::msg_tpl(
+            "default_switching",
+            &[&format!("{current}").as_str(), loader.as_str()],
         ),
     )?;
     run_logged(
@@ -4867,7 +4909,7 @@ fn assert_boot_default_points_at_target(
             "无法把默认启动项指向本次还原的系统，拒绝继续后续破坏性步骤",
         ));
     }
-    append_log(log, "默认启动项已指向本次还原的系统")?;
+    append_log(log, crate::i18n::msg("default_already_switched"))?;
     Ok(())
 }
 

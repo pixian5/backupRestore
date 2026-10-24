@@ -351,7 +351,10 @@ impl Engine {
             PathBuf::from(std::env::var("SystemRoot").map_err(|_| crate::err("SystemRoot 未知"))?)
                 .join("System32")
                 .join(program);
-        self.log(&format!("命令开始：{} {args:?}", tool.display()))?;
+        self.log(&crate::i18n::msg_tpl(
+            "pe_cmd_start",
+            &[&tool.display().to_string(), &format!("{args:?}")],
+        ))?;
         self.progress.switch_log_path(out.clone(), 0);
         let outcome = windows_command::run_program(
             &tool.to_string_lossy(),
@@ -363,7 +366,10 @@ impl Engine {
                 60_000
             },
         );
-        self.log(&format!("命令退出：{outcome}；原始输出：{}", out.display()))?;
+        self.log(&crate::i18n::msg_tpl(
+            "pe_cmd_exit",
+            &[&format!("{outcome}"), &out.display().to_string()],
+        ))?;
         let text = decode_output(&fs::read(&out)?)?;
         self.log(&text)?;
         self.progress
@@ -481,15 +487,11 @@ impl Engine {
                 &self.dir.join("operation.log"),
             )? {
                 wp::ProbeOutcome::FullWindows => self.log(
-                    "镜像完整性预检：只读挂载已确认完整 Windows（reagentc.exe + SYSTEM 齐全）",
+                    crate::i18n::msg("wp_precheck_mounted_ok"),
                 )?,
-                wp::ProbeOutcome::QuickPass(name) => self.log(&format!(
-                    "镜像完整性预检：镜像名「{name}」符合完整 Windows 特征，\
-                     走快速通道放行（跳过挂载，省一次大镜像挂载）"
-                ))?,
+                wp::ProbeOutcome::QuickPass(name) => self.log(&crate::i18n::msg_tpl("wp_precheck_fast_path", &[name.as_str()]))?,
                 wp::ProbeOutcome::HeuristicPass => self.log(
-                    "镜像完整性预检：只读挂载不可用，已按镜像名启发式放行；\
-                     恢复阶段的离线注册前置检查兜底",
+                    crate::i18n::msg("wp_precheck_heuristic"),
                 )?,
             }
         }
@@ -592,12 +594,14 @@ impl Engine {
                 }
             }
         }
-        self.log(&format!(
-            "预检通过：目标={:?}；镜像摘要={}；索引={}；意图={:?}",
-            self.target,
-            self.image_hash,
-            self.request.index,
-            self.intent()
+        self.log(&crate::i18n::msg_tpl(
+            "pe_precheck_passed",
+            &[
+                &format!("{:?}", self.target),
+                &self.image_hash,
+                &format!("{}", self.request.index),
+                &format!("{:?}", self.intent()),
+            ],
         ))
     }
 }
@@ -667,7 +671,7 @@ impl RestoreBackend for Engine {
             self.dir.join("runtime.json"),
             &serde_json::json!({"version":1,"request":self.request.id,"stage":stage,"target":self.target,"imageHash":self.image_hash}),
         )?;
-        self.log(&format!("状态：{stage}"))
+        self.log(&crate::i18n::msg_tpl("pe_status", &[stage]))
     }
     fn format(&mut self) -> Result<(), TaskError> {
         let actual = self.recheck(false)?;
@@ -897,12 +901,12 @@ impl RestoreBackend for Engine {
             &log,
         )? {
             crate::winre_registration::RegistrationOutcome::Registered => {
-                self.log("引导与恢复环境关联已回读；系统实际可启动性需另行启动验收")
+                self.log(crate::i18n::msg("pe_boot_verified"))
             }
             // 降级（用户 2026-10-16 裁定，原 P5）：跳过原因已由 preflight 写入
             // 任务日志，结尾再复述一次——最终结果必须明确告知，不静默跳过。
             crate::winre_registration::RegistrationOutcome::Skipped(reason) => self
-                .log(&format!("恢复环境注册已按裁定降级跳过：{reason}")),
+                .log(&crate::i18n::msg_tpl("re_registration_degraded", &[reason.as_str()])),
         }
     }
 }
