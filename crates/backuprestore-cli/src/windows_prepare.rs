@@ -660,6 +660,11 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             }
             "--force-restore-hash" => force_restore_hash = true,
             "--verify-hash" => verify_hash = true,
+            // `--json` 由 main 统一处理（收尾输出那行结构化结论），这里只须
+            // **接受**它——下面兜底是 `unknown prepare option` 硬报错，
+            // 漏了这一行就会让 prepare --json 直接失败（2026-10-24 实测踩到：
+            // online 用 `_ => {}` 忽略未知选项所以没事，prepare 是严格解析）。
+            "--json" => {}
             // 取消「格式化目标分区」= 覆盖式应用（卷上镜像没有的文件保留）。
             // GUI 取消勾选时就是推这个参数（native_gui.rs 的 prepare args）。
             // 2026-10-14 漏接过一次：PrepareOptions/TargetSpec 两头都接好了，唯独少了
@@ -1256,23 +1261,13 @@ fn prepare_task(
     // `--json` 下用单行 JSON 取代两行 `KEY=VALUE`：判据只认字段，不再解析
     // 自然语言，也不必再区分「哪些命令有 TASK_ID 哪些没有」。
     // 非 json 模式保持旧的两行输出（既有脚本依赖它，不动）。
-    if crate::cli_json::enabled() {
-        // `Operation` 是枚举、无 `as_str`；走 serde 的 kebab-case 序列化，
-        // 保证与 `online --operation <值>` 的字符串口径完全一致
-        // （probe / backup / restore-existing / create-secondary）。
-        let operation = serde_json::to_value(&task.operation)
-            .ok()
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| format!("{:?}", task.operation));
-        crate::cli_json::emit(&crate::cli_json::command_result(
-            "prepare",
-            &operation,
-            true,
-            Some(&task.task_id),
-            Some(&prepare_log.display().to_string()),
-            None,
-        ));
-    } else {
+    // 详情上报给 `main` 统一输出（operation 由 main 从 `--operation` 参数推断，
+    // 口径与 online 一致）。非 json 模式保持旧的两行输出。
+    crate::cli_json::set_detail(
+        Some(task.task_id.clone()),
+        Some(prepare_log.display().to_string()),
+    );
+    if !crate::cli_json::enabled() {
         println!("TASK_ID={}", task.task_id);
         println!("TASK_ROOT={}", task_dir.display());
     }

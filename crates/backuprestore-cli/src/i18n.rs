@@ -106,6 +106,11 @@ const MESSAGES: &[(&str, &str, &str)] = &[
         "; do not treat partial output as a valid backup",
     ),
     (
+        "stage_done",
+        "操作完成",
+        "Operation complete",
+    ),
+    (
         "step1_backup",
         "STEP 1/4 校验参数和卷身份；备份只读取源卷并写入镜像，不格式化任何卷、不改写启动引导",
         "STEP 1/4 Validating parameters and volume identity; backup only reads the \

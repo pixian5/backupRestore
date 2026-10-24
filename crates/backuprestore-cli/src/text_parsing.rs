@@ -747,9 +747,20 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         // DISM 的一条命令成功，不代表哈希、副档和清理已完成。
         stage = Some("当前命令完成，等待后续校验".to_string());
     } else if line.contains("Boot entry cleaned; task marked successful")
-        || line.contains("操作完成：命令、回读和副档簿记均已通过")
+        // ★ 双语都要认：日志用什么语言写取决于**运行时**的语言设置
+        //   （v2.6.39 起的 i18n / `BACKUPRESTORE_LANG`）。只认中文的话，
+        //   英文模式下这一条永远不命中 → 终态识别不到，进度窗停在上一阶段。
+        //   文案从 i18n 表取（单一来源），避免两处硬编码不同步。
+        || line.contains(&crate::i18n::msg_in(
+            crate::pe_safety::MessageLanguage::Chinese,
+            "online_done",
+        ))
+        || line.contains(&crate::i18n::msg_in(
+            crate::pe_safety::MessageLanguage::English,
+            "online_done",
+        ))
     {
-        stage = Some("操作完成".to_string());
+        stage = Some(crate::i18n::msg("stage_done").to_string());
     } else if line.contains("Recovery completed") {
         stage = Some("恢复已完成，正在清理".to_string());
     } else if line.contains("Recovery.exe started") || line.contains("started from env") {

@@ -20,6 +20,7 @@
 //!   · 路径含反斜杠，交给 `serde_json` 转义，绝不手写拼接。
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 static JSON_MODE: AtomicBool = AtomicBool::new(false);
 
@@ -61,6 +62,30 @@ pub(crate) fn emit(value: &serde_json::Value) {
     if enabled() {
         println!("{}", value);
     }
+}
+
+/// 命令**上报**自己的结构化详情（task_id / log_path），供 `main` 收尾时
+/// 统一输出那一行结论。
+///
+/// 为什么不各自 `emit`：那会让 `prepare` / `online` 输出两行 JSON
+/// （一行自己的、一行 main 的），消费方被迫猜该读哪行。改为"上报 + 单一出口"，
+/// 每个命令在 json 模式下**只可能有一行**结论。
+static DETAIL: Mutex<Option<Detail>> = Mutex::new(None);
+
+pub(crate) struct Detail {
+    pub task_id: Option<String>,
+    pub log_path: Option<String>,
+}
+
+pub(crate) fn set_detail(task_id: Option<String>, log_path: Option<String>) {
+    if let Ok(mut guard) = DETAIL.lock() {
+        *guard = Some(Detail { task_id, log_path });
+    }
+}
+
+/// 取走上报的详情（取走即清空，保证不被后续命令读到）。
+pub(crate) fn take_detail() -> Option<Detail> {
+    DETAIL.lock().ok().and_then(|mut guard| guard.take())
 }
 
 #[cfg(test)]

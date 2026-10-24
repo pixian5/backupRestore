@@ -248,6 +248,16 @@ fn main() {
         }
         return;
     }
+    // 命令名与 operation 先留一份：--json 的结论行要用。
+    // 必须在 `into_iter()` 之前取——那会 move 掉 `arguments`，之后再借用会
+    // 编译失败（E0382，交叉编译时才暴露，本机 check 因 cfg 看不到这段）。
+    let command_name = arguments.first().cloned().unwrap_or_default();
+    let operation_arg = arguments
+        .iter()
+        .position(|a| a == "--operation")
+        .and_then(|i| arguments.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
     let mut args = arguments.into_iter();
     let result = match args.next().as_deref() {
         Some("validate-task") => args
@@ -321,6 +331,34 @@ fn main() {
         }
         _ => usage(),
     };
+    // `--json`：**所有**命令统一在最后输出一行结构化结论。此前只有 online /
+    // prepare 两处各自接了，其余命令（recover / resume / abandon-task / …）
+    // 在 json 模式下没有输出，判据只能回退到解析中文文案。
+    // task_id 留 null：各命令的参数位置不同，统一推断容易错，需要的话由命令
+    // 自己输出（prepare 已输出自己的 task_id）。
+    #[cfg(windows)]
+    {
+        if crate::cli_json::enabled() {
+            let (ok, error_text) = match &result {
+                Ok(()) => (true, None),
+                Err(error) => (false, Some(error.to_string())),
+            };
+            // operation 已在 `into_iter()` 之前从 `--operation <值>` 取好，
+            // 口径与命令自己理解的一致（probe / backup / restore-existing / …）。
+            let (task_id, log_path) = match crate::cli_json::take_detail() {
+                Some(detail) => (detail.task_id, detail.log_path),
+                None => (None, None),
+            };
+            crate::cli_json::emit(&crate::cli_json::command_result(
+                &command_name,
+                &operation_arg,
+                ok,
+                task_id.as_deref(),
+                log_path.as_deref(),
+                error_text.as_deref(),
+            ));
+        }
+    }
     if let Err(error) = result {
         #[cfg(windows)]
         record_launch_error(&error);
@@ -402,21 +440,9 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
     let result = crate::online_operation::execute(&params);
     // `--json` 下只打印一行结构化结论（判据认字段），中文 detail 不再进 stdout；
     // 否则保持旧行为（人类读中文摘要）。日志内容与 GUI 弹窗两种模式完全一致。
-    if crate::cli_json::enabled() {
-        crate::cli_json::emit(&crate::cli_json::command_result(
-            "online",
-            &params.operation,
-            result.success,
-            // online 不建 TaskStore（日志在 logs/ 下），故无 task_id。
-            None,
-            result.log_path.as_deref(),
-            if result.success {
-                None
-            } else {
-                Some(result.detail.as_str())
-            },
-        ));
-    } else {
+    // 详情上报给 `main` 统一输出那一行结论（避免两行 JSON）。
+    crate::cli_json::set_detail(None, result.log_path.clone());
+    if !crate::cli_json::enabled() {
         println!("{}", result.detail);
     }
     if result.success {

@@ -271,8 +271,17 @@ backup() {
     # 任务目录快照（用于定位本次备份任务）；无 BOM 写入，否则首行任务名带
     # U+FEFF 会让下面的 -notcontains 匹配不上、把旧任务误判成本次任务。
     vm_ps_raw "[IO.File]::WriteAllLines('H:\brwork\smoke-tasks-before.txt', @(Get-ChildItem H:\brwork\tasks -Directory | Select-Object -ExpandProperty Name), (New-Object Text.UTF8Encoding \$false))" > /dev/null 2>&1
-    vm_cmd "H:\\brwork\\BackupRestore.exe prepare --operation backup --source-drive ${DRIVE} --image-path ${IMAGE}" \
+    # 与还原同一口径：--json 让结论以结构化字段输出（判据只认字段）。
+    vm_cmd "H:\\brwork\\BackupRestore.exe prepare --operation backup --source-drive ${DRIVE} --image-path ${IMAGE} --json" \
         > "$ART/backup.out" 2>&1
+    LC_ALL=C grep -a '^{"command"' "$ART/backup.out" | tail -1 > "$ART/backup.json" 2>/dev/null
+    # 快速失败：prepare 若自陈失败（如被 `unknown prepare option` 拒绝），
+    # 后面轮询任务终态只会空转到超时。先认 --json 的 success 字段。
+    if [ -s "$ART/backup.json" ]; then
+        if ! python3 -c 'import json,sys; sys.exit(0 if json.loads(open(sys.argv[1]).read()).get("success") else 1)' "$ART/backup.json" 2>/dev/null; then
+            die "prepare 自陈失败（见 $ART/backup.json）：$(cat "$ART/backup.json" | cut -c1-160)"
+        fi
+    fi
     log "  prepare 已返回（VM 进入重启序列），开始轮询任务终态"
     local deadline=$(( $(date +%s) + 1500 ))
     local task_dir="" stage="" progress=""
