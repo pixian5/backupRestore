@@ -63,26 +63,42 @@ verdict() { # verdict <名称> <PASS|FAIL> <证据摘要>
 }
 
 # ---------- VM 通道（编码策略只在这里定，调用处不再各自打补丁） ----------
-# 2026-10-24 重构，全部实测（mac 宿主 / Windows 11 / prlctl exec）：
-#   ① prlctl stdout 是字节透传、没有长度上限：30KB ASCII 与 6KB UTF-8 中文
-#      文件回读逐字节完整 → 回读文件只要 `cmd /c type`，不需要 base64 往返。
-#      （上一版之所以觉得"有上限"，是 base64 输出被 CLIXML 包装行切碎所致。）
-#   ② PowerShell 输出中文必须显式 [Console]::OutputEncoding=UTF8；否则按
-#      进程 ANSI 936(GBK) 落字节，宿主看到乱码。chcp 65001 单独不够——它只改
-#      控制台 CP，不改进程 ANSI CP。
-#   ③ 命令行参数里不能带中文：prlctl 传 UTF-8 字节、VM 侧 cmd 按 936 解码。
-#      需要中文一律走 -EncodedCommand（UTF-16LE base64）或从文件读。
-#   ④ CLIXML 是 PS progress 流的序列化，不是编码问题；
-#      $ProgressPreference='SilentlyContinue' 压掉，残留行 grep -av '^<' 兜底。
-#   ⑤ 脚本文件不传输：VM 直读宿主共享目录（\\Mac\Home 或 \\psf\Home），
-#      Get-Content -Raw -Encoding UTF8 + iex —— 顺带绕开命令行 ~3.4KB 上限，
-#      不再需要"部署 helper"。共享被关时才回落到 base64 分块部署。
-PS_PRE='$ProgressPreference="SilentlyContinue"; [Console]::OutputEncoding=[Text.Encoding]::UTF8;'
+# 2026-10-24 重构，全部实测（mac 宿主 / Windows 11 / prlctl exec）。
+#
+# 【PowerShell 侧：四件套，缺一不可】PowerShell 5.1 的默认值全是错的（实测）：
+#   $OutputEncoding            = us-ascii   ← 向外部程序喂管道数据时中文会变 "?"
+#   [Console]::OutputEncoding  = gb2312     ← PS 写 stdout 的编码，乱码根源
+#   [Console]::InputEncoding   = gb2312     ← 读管道输入
+#   再加上 $ProgressPreference，否则 PS 把 progress 流序列化成 CLIXML 混混输出。
+# 所以 PS_PRE 一次设全，所有 PowerShell 调用统一带这个前缀。
+#
+# 【CMD 侧：无法统一，只能不依赖】实测三条，别再试了：
+#   · `chcp 65001` 本身生效（`chcp` 回显 "Active code page: 65001"），
+#     但 `dir /b T:\`（目录名含中文）的输出字节与 936 下**逐字节相同**（GBK）
+#     → prlctl 的 stdout 是管道，cmd 内建命令对管道按系统 ANSI(936) 落字节，
+#       chcp 只改控制台代码页、管不到这条路。
+#   · `cmd /u`（Unicode 重定向）经该通道**输出直接丢失**，不可用。
+#   · `cmd /c type <file>` 是字节透传，不受上述任何影响 —— 这是回读文件的正确通道。
+# 结论：cmd 只用来「搬字节」和「做 ASCII 判定」；要读数据一律用 PowerShell 的
+# .NET 等价命令（Get-ChildItem / Get-Volume / Get-Content …）。
+#
+# 【其它两条实测】
+#   · prlctl stdout 字节透传、无长度上限：30KB ASCII / 6KB UTF-8 中文逐字节完整
+#     → 回读文件不需要 base64 往返（旧版"~2.5KB 上限"是 base64 被 CLIXML 切碎的假象）。
+#   · 命令行参数里不能带中文：prlctl 传 UTF-8 字节、VM 侧 cmd 按 936 解码。
+#     需要中文一律走 -EncodedCommand（UTF-16LE base64）或从文件读。
+#   · VM 可直读宿主共享目录（\\Mac\Home 或 \\psf\Home），脚本零传输，
+#     顺带绕开命令行 ~3.4KB 上限；共享被关才回落到 base64 分块部署。
+#   · 文件落盘显式无 BOM：WriteAllText(..., UTF8Encoding($false))。
+#     PS 5.1 的 `Out-File -Encoding UTF8` 会写 BOM，宿主侧表现为行首 U+FEFF，
+#     字段/行比较直接失配。
+PS_PRE='$ProgressPreference="SilentlyContinue"; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::InputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8;'
 
 ps_b64() { python3 -c "import base64,sys; print(base64.b64encode(sys.stdin.read().encode('utf-16-le')).decode())"; }
 
-vm_cmd() { # cmd 内建命令（单写反斜杠纪律）。cmd 自身的中文输出仍是 GBK，
-    # 判据不要依赖它——要中文请用 vm_ps_raw。
+vm_cmd() { # cmd 内建命令（单写反斜杠纪律）。★ 中文输出恒为 GBK 且 chcp 救不了
+    # （见上方实测），所以这里拿到的中文不可解析；只用于搬字节与 ASCII 判定，
+    # 需要读数据一律改用 vm_ps_raw。
     prlctl exec "$VM" cmd /d /c "$1" 2>&1 | LC_ALL=C tr -d '\r' || true
 }
 
