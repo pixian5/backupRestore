@@ -436,15 +436,20 @@ dism_ok = 'The operation completed successfully' in log
 #   （程序自己声明成没成），再用日志的 STEP 4/4 交叉验证一遍，两条都对才算过。
 #   旧版是「STEP 4/4 + 中文『操作完成』文案」——文案随版本变，且是编码地雷。
 j_ok = (j_success is True)
+# E4 判据扩容：失败时把程序自陈的 error_code 和日志里最后一条 [BR-*] 码
+# 一并带进判据详情——门禁红了要能一眼看出是哪个码，不用回翻日志。
+j_code = restore_json.get('error_code')
+log_codes = re.findall(r'\[BR-[A-Z]+-\d+\]', log)
 c3_final = j_ok and c3_ok
 v('C3 任务 success/100', c3_final,
   ('--json success=true' if j_ok else '--json success=' + repr(j_success))
   + '，任务日志 STEP ' + '/'.join(steps)
   + ('，DISM 英文成功行在' if dism_ok else '，无 DISM 成功行（wimlib 降级路径或日志截尾）')
   if c3_final else
-  (('--json success=' + repr(j_success))
+  (('--json success=' + repr(j_success) + ('' if not j_code else ' error_code=' + str(j_code)))
    + '，任务日志仅到 STEP ' + ('/'.join(steps) or '<无>') + '，末行：'
-   + (log.strip().splitlines()[-1][:50] if log.strip() else '<空>')))
+   + (log.strip().splitlines()[-1][:50] if log.strip() else '<空>')
+   + ('' if not log_codes else '，日志末码 ' + log_codes[-1])))
 v('C4 100MB 载荷字节级一致', post_d['bigsha'] == pre_d['bigsha'] and post_d['biglen'] == pre_d['biglen'],
   f"sha {'一致' if post_d['bigsha'] == pre_d['bigsha'] else '不一致'}，{post_d['biglen']}/{pre_d['biglen']} B")
 v('C5 BR38Data 完整', bool(post_d['br38complete']),
