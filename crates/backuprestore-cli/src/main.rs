@@ -3868,7 +3868,7 @@ fn recover_windows(
                         log,
                         crate::dism_timeout::wait_ms(),
                     )?;
-                } else if let Err(error) = run_logged(
+                } else if let Err(error) = run_logged_timeout(
                     "dism.exe",
                     &[
                         "/English",
@@ -3878,6 +3878,9 @@ fn recover_windows(
                         &format!("/ApplyDir:{}", target_root.display()),
                     ],
                     log,
+                    // 设置里的 DISM 等待上限（默认 u32::MAX = 不限制，零回归）。
+                    // 以前这里写死无限等待，配置项形同虚设。
+                    crate::dism_timeout::wait_ms(),
                 ) {
                     // 【D1 2026-10-24】DISM apply 失败 → 按判据自动降级 wimlib
                     // 重试一次（设计 docs/20261024-1636；判据/分类/文案单一来源
@@ -4565,6 +4568,51 @@ fn wim_indexes(path: &Path, log: &Path) -> Result<Vec<u32>, TaskError> {
 
 #[cfg(windows)]
 fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError> {
+    run_logged_timeout(program, args, log, u32::MAX)
+}
+
+/// 等子进程结束；`wait_ms == u32::MAX` 时**等到底**（旧行为，任何调用点都不受影响）。
+///
+/// 超时返回 `Ok(None)`：进程已被 kill 并回收，调用方随后 join 读取线程，
+/// 再把「超时」如实报错——这样输出尾部照样进日志，失败仍可归因。
+#[cfg(windows)]
+fn wait_child(
+    child: &mut std::process::Child,
+    wait_ms: u32,
+) -> Result<Option<std::process::ExitStatus>, TaskError> {
+    if wait_ms == u32::MAX {
+        return Ok(Some(child.wait()?));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms as u64);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// 带等待上限的 `run_logged`。
+///
+/// 【2026-10-25 真缺陷修复】此前 apply 走的是无条件 `child.wait()`——于是
+/// `--dism-timeout-secs` 在恢复环境里**只记了一行**「DISM wait limit: N sec」，
+/// 实际等待仍是无限的：
+///   ① 用户以为配了逃生阀，卡死时照样卡死；
+///   ② 超时类失败永远走不到 `classify_apply_failure`，D1 的 wimlib 降级
+///      在恢复环境主链上**永不触发**（实机：`--dism-timeout-secs 1` 跑 38GB
+///      镜像，6 分钟正常完成、日志里没有降级行，才把这条挖出来）。
+#[cfg(windows)]
+fn run_logged_timeout(
+    program: &str,
+    args: &[&str],
+    log: &Path,
+    wait_ms: u32,
+) -> Result<(), TaskError> {
     append_log(log, &format!("running {program} {}", args.join(" ")))?;
     let mut child = Command::new(program)
         .args(args)
@@ -4592,13 +4640,18 @@ fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError>
     let stdout_thread = thread::spawn(move || stream_to_log("stdout", stdout, stdout_sink));
     let stderr_sink = Arc::clone(&sink);
     let stderr_thread = thread::spawn(move || stream_to_log("stderr", stderr, stderr_sink));
-    let status = child.wait()?;
+    let status = wait_child(&mut child, wait_ms)?;
     stdout_thread
         .join()
         .map_err(|_| err(&format!("{program} stdout reader panicked")))??;
     stderr_thread
         .join()
         .map_err(|_| err(&format!("{program} stderr reader panicked")))??;
+    let Some(status) = status else {
+        return Err(err(&format!(
+            "{program} 超时（上限 {wait_ms} ms），进程已终止"
+        )));
+    };
     if !status.success() {
         // 【D2 2026-10-24】失败回执带上输出尾部：外部命令的真实原因写在
         // stdout/stderr 里（已由上面的 reader 线程落进日志文件），只回退出码
