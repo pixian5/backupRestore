@@ -1,5 +1,10 @@
 # GUI 审计扩展到全部入口 + i18n 扩到 apply 关键路径
 
+> **⚠️ 文末「#121 未跑通」的结论已于 2026-10-25 00:50 订正**，见
+> [`20261025-0050-GUI切英文点击端到端打通-UIPI才是真正根因`](20261025-0050-GUI切英文点击端到端打通-UIPI才是真正根因-DeepSeek-V4.1-Flash.md)。
+> 真实拦路虎是 **UIPI**（GUI 提权 vs 测试通道标准用户），**不是**本文写的「会话隔离 + ExecutionPolicy」——
+> `prlctl exec --current-user` 实测直接就在 session 1，`ExecutionPolicy` 也只挡 `-File`。任务 #121 已端到端通过。
+
 - 撰写：2026-10-24 23:55
 - 模型：DeepSeek-V4.1-Flash
 - 版本：**v2.6.40**
