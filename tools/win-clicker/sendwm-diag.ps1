@@ -39,4 +39,4 @@ if (-not ($out -join '').Contains('post')) {
     $out += "NO-MATCH; visible titles sample:"
     $out += ($script:winList | Select-Object -First 40)
 }
-Set-Content -Path "C:\Users\Public\backupRestore-package\sendwm-diag.txt" -Value $out
+Set-Content -Path "H:\brwork\sendwm-diag.txt" -Value $out

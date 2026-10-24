@@ -39,5 +39,5 @@ public class Cb {
 }
 "@
 $result = [Cb]::Run($ButtonId)
-$result | Out-File C:\Users\Public\backupRestore-package\clickbtn.txt -Encoding utf8
+$result | Out-File H:\brwork\clickbtn.txt -Encoding utf8
 Write-Output $result

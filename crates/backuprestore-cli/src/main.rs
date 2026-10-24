@@ -3348,8 +3348,15 @@ fn recover_windows(
             // 各用户浏览器缓存），WinRE 的 TEMP 位于 X: RAM 盘，配置文件不会落在
             // 捕获卷内。排除项会显著缩小 WIM 体积，且全部为 DISM 规范内的根路径写法。
             // 与 GUI 在线备份、PE 备份共用 core 的实现，避免某条路径漏接 /ConfigFile。
-            let exclude_config_path =
-                backuprestore_core::write_capture_exclusion_config(&source_path)?;
+            // self_exe_dir 用 store.root（= Windows 侧运行目录，RE 内由
+            // `resume <task-root>` 参数带进来）而不是 current_exe()：RE 内
+            // current_exe 是恢复环境里的暂存路径，与捕获卷不同卷，动态排除项
+            // 会永远不生成（2026-10-24 实测：五个部署件全被打进 T: 镜像）。
+            // 同卷时排除自身部署件；tasks\logs\ 证据仍全留。
+            let exclude_config_path = backuprestore_core::write_capture_exclusion_config(
+                &source_path,
+                Some(store.root.as_path()),
+            )?;
             let exclude_arg = format!("/ConfigFile:{}", exclude_config_path.display());
 
             // A power loss can leave a partial WIM behind.  For the first

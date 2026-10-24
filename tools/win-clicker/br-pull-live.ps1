@@ -1,16 +1,16 @@
-# br-pull-live.ps1 - pull the LIVE launcher log (C:\Users\Public\backupRestore-package\logs)
+# br-pull-live.ps1 - pull the LIVE launcher log (H:\brwork\logs)
 # and DISM dir metadata (creation time, ACL)
 $ErrorActionPreference = 'Continue'
 $dst = "\\Mac\backupRestore\tools\win-clicker\_s1"
 
-$live = "C:\Users\Public\backupRestore-package\logs\launcher-errors.log"
+$live = "H:\brwork\logs\launcher-errors.log"
 if (Test-Path -LiteralPath $live) {
     Copy-Item -LiteralPath $live -Destination (Join-Path $dst "launcher-errors-LIVE.log") -Force
     Write-Output ("pulled " + $live + " size=" + (Get-Item $live).Length)
 } else { Write-Output ("MISSING " + $live) }
 
 # also the package logs dir listing
-Get-ChildItem "C:\Users\Public\backupRestore-package\logs" -ErrorAction SilentlyContinue |
+Get-ChildItem "H:\brwork\logs" -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Output ("pkglog " + $_.Name + " " + $_.Length + " " + $_.LastWriteTime) }
 
 # DISM dir metadata

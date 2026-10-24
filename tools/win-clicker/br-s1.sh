@@ -24,7 +24,7 @@ PRL="/Applications/Parallels Desktop.app/Contents/MacOS/prlctl"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 STAGE="$HERE/_s1"
 REPO_SHARE='\\Mac\backupRestore\tools\win-clicker\_s1'
-PKG='C:\Users\Public\backupRestore-package'
+PKG='H:\brwork'
 PUB='C:\Users\Public\pkg'
 mkdir -p "$STAGE"
 

@@ -12,7 +12,7 @@ public class PP {
 }
 "@
 $h = [PP]::FindWindowW([NullString]::Value, "BackupRestore - Rust GUI v1.5.10")
-if ($h -eq [IntPtr]::Zero) { Set-Content "C:\Users\Public\backupRestore-package\post-probe.txt" "NO-WINDOW"; exit }
+if ($h -eq [IntPtr]::Zero) { Set-Content "H:\brwork\post-probe.txt" "NO-WINDOW"; exit }
 $pid2 = 0
 [PP]::GetWindowThreadProcessId($h, [ref]$pid2) | Out-Null
 $ok = [PP]::PostMessageW($h, 273, [IntPtr]1003, [IntPtr]::Zero)
@@ -25,4 +25,4 @@ $proc = Get-Process -Id $pid2
 $lines += ("guiStartTime=" + $proc.StartTime.ToString("HH:mm:ss"))
 # args via CIM
 try { $lines += ("guiCmd=" + (Get-CimInstance Win32_Process -Filter "ProcessId=$pid2").CommandLine) } catch { $lines += "cim-err" }
-Set-Content "C:\Users\Public\backupRestore-package\post-probe.txt" -Value $lines
+Set-Content "H:\brwork\post-probe.txt" -Value $lines

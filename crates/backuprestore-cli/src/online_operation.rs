@@ -1289,7 +1289,13 @@ pub(crate) fn capture(
     if existing {
         fs::copy(destination, &candidate)?;
     }
-    let config = backuprestore_core::write_capture_exclusion_config(source)?;
+    // 在线捕获：current_exe 就是运行目录（H:\brwork），与源卷同卷时排除
+    // 自身部署件。注意 RE 内的捕获走 recover_windows，那里必须用 store.root
+    // 而不是 current_exe（RE 暂存路径与捕获卷不同卷，动态项永不生成）。
+    let config = backuprestore_core::write_capture_exclusion_config(
+        source,
+        std::env::current_exe().ok().as_deref().and_then(|p| p.parent()),
+    )?;
     let started = Utc::now();
     let name = if params.image_name.is_empty() {
         "Windows Backup"

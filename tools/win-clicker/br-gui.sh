@@ -27,7 +27,7 @@ set -u
 VM="Windows 11"
 PRL="/Applications/Parallels Desktop.app/Contents/MacOS/prlctl"
 DIR="$(cd "$(dirname "$0")" && pwd)"
-PKGLOG='C:\Users\Public\backupRestore-package\clicker-log.txt'
+PKGLOG='H:\brwork\clicker-log.txt'
 
 # 通过共享盘 X:（映射整个项目根目录）在 VM 内执行脚本
 run_ps() { # $1=脚本相对 tools/win-clicker 的路径, 其余=参数

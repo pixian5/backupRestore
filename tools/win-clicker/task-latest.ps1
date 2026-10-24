@@ -1,5 +1,5 @@
 # task-latest.ps1 - 列出最近任务并输出其状态/日志
-$root = 'C:\Users\Public\backupRestore-package\tasks'
+$root = 'H:\brwork\tasks'
 $latest = @((Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 2))
 foreach ($t in $latest) {
     Write-Output ("== TASK {0}  {1} ==" -f $t.Name, $t.LastWriteTime.ToString('MM-dd HH:mm:ss'))

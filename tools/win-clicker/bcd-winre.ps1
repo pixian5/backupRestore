@@ -10,7 +10,7 @@ function RunBcd($argsList) { $o = & bcdedit.exe @argsList 2>&1; return ($o -join
 $createOut = RunBcd @('/create','/d','BR-WinRE','/application','OSLOADER')
 $out += "CREATE: $createOut"
 $m = [regex]::Match($createOut, '\{([0-9a-fA-F-]+)\}')
-if (-not $m.Success) { $out += 'NO-GUID'; Set-Content 'C:\Users\Public\backupRestore-package\bcd-winre.txt' -Value $out; exit 1 }
+if (-not $m.Success) { $out += 'NO-GUID'; Set-Content 'H:\brwork\bcd-winre.txt' -Value $out; exit 1 }
 $g = $m.Groups[1].Value
 $out += "GUID=$g"
 
@@ -25,5 +25,5 @@ $out += "maxmem: " + (RunBcd @('/set', ('{'+$g+'}'), 'ems', 'off'))
 $out += "displayorder: " + (RunBcd @('/displayorder', ('{'+$g+'}'), '/addlast'))
 $out += "bootsequence: " + (RunBcd @('/set', '{bootmgr}', 'bootsequence', ('{'+$g+'}')))
 
-Set-Content 'C:\Users\Public\backupRestore-package\bcd-winre.txt' -Value $out
+Set-Content 'H:\brwork\bcd-winre.txt' -Value $out
 Write-Output $out

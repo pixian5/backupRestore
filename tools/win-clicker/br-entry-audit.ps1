@@ -46,7 +46,7 @@ try {
 } catch { Write-Output ("SECTION_A_ERR " + $_.Exception.Message) }
 
 Sec "B. KNOWN PACKAGE DIRS"
-foreach ($d in @('C:\Users\Public\backupRestore-package', 'C:\Users\Public\backupRestore-package-v12', 'C:\Users\Public\pkg')) {
+foreach ($d in @('H:\brwork', 'H:\brwork-v12', 'C:\Users\Public\pkg')) {
   if (-not (Test-Path -LiteralPath $d)) { Write-Output ("DIR_ABSENT " + $d); continue }
   Write-Output ("DIR_PRESENT " + $d)
   try {
@@ -94,7 +94,7 @@ try {
 } catch { Write-Output ("D3_ERR " + $_.Exception.Message) }
 
 Sec "E. TASK ROOTS"
-$taskRoots = @('C:\Users\Public\backupRestore-package\tasks', 'C:\Users\Public\pkg\tasks', 'T:\tasks', 'C:\tasks', 'C:\Users\Public\br-test')
+$taskRoots = @('H:\brwork\tasks', 'C:\Users\Public\pkg\tasks', 'T:\tasks', 'C:\tasks', 'C:\Users\Public\br-test')
 foreach ($tr in $taskRoots) {
   if (Test-Path -LiteralPath $tr) {
     Write-Output ("TASKROOT_PRESENT " + $tr)
@@ -105,7 +105,7 @@ foreach ($tr in $taskRoots) {
 }
 
 Sec "F. WORKSPACE/TASK ARTIFACT SEARCH (task.json / task.env)"
-foreach ($r in @('C:\Users\Public\backupRestore-package', 'C:\Users\Public\pkg', 'C:\BackupRestoreBuild', 'T:\')) {
+foreach ($r in @('H:\brwork', 'C:\Users\Public\pkg', 'C:\BackupRestoreBuild', 'T:\')) {
   try {
     Get-ChildItem -LiteralPath $r -Recurse -Force -File -Include 'task.json', '*.env', 'status.json' -Depth 4 -ErrorAction SilentlyContinue |
       Select-Object -First 25 | ForEach-Object { Write-Output ($_.FullName + " | " + $_.Length + " | " + $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")) }
@@ -133,7 +133,7 @@ foreach ($p in @('C:\Windows\System32\Recovery\Winre.wim', 'C:\Recovery\WindowsR
 }
 
 Sec "I. TASKS DIR CONTENT"
-$tr = 'C:\Users\Public\backupRestore-package\tasks'
+$tr = 'H:\brwork\tasks'
 if (Test-Path -LiteralPath $tr) {
   $kids = Get-ChildItem -LiteralPath $tr -Force -Recurse -Depth 2 -ErrorAction SilentlyContinue
   if (-not $kids) { Write-Output "TASKS_EMPTY" }

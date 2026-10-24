@@ -11,8 +11,8 @@ Get-ChildItem 'H:\brwork\tasks' -Directory -ErrorAction SilentlyContinue | ForEa
         } catch { ("{0}  BAD_JSON" -f $_.Name) | Out-File $out -Append -Encoding UTF8 }
     } else { ("{0}  NO_STATUS" -f $_.Name) | Out-File $out -Append -Encoding UTF8 }
 }
-"=== C:\Users\Public\backupRestore-package\tasks ===" | Out-File $out -Append -Encoding UTF8
-Get-ChildItem 'C:\Users\Public\backupRestore-package\tasks' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+"=== H:\brwork\tasks ===" | Out-File $out -Append -Encoding UTF8
+Get-ChildItem 'H:\brwork\tasks' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
     $p = Join-Path $_.FullName 'status.json'
     if (Test-Path $p) {
         try {

@@ -1,7 +1,7 @@
 # set-image-path.ps1 —— 在 Session 1 把 BackupRestore 的"镜像绝对路径"(ID 1203) 设为给定值
 param(
     [string]$Path = "E:\br-cdrive-v1.wim",
-    [string]$Log = "C:\Users\Public\backupRestore-package\set-image-path.log"
+    [string]$Log = "H:\brwork\set-image-path.log"
 )
 Add-Type -TypeDefinition @"
 using System;
@@ -18,7 +18,7 @@ public class SIP2 {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
 }
 "@
-$f = "C:\Users\Public\backupRestore-package\set-image-path.log"
+$f = "H:\brwork\set-image-path.log"
 function Log($m) { Add-Content -Path $f -Value (Get-Date -Format "HH:mm:ss") + " " + $m }
 $found = [IntPtr]::Zero
 $cb = [SIP2+EnumProc]{ param($h,$l)

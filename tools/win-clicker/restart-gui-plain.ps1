@@ -5,14 +5,14 @@ $ErrorActionPreference = 'Continue'
 taskkill /F /IM BackupRestore.exe 2>$null | Out-Null
 Start-Sleep -Seconds 2
 # 2. Relaunch elevated via scheduled task (user x, interactive, highest), NO --test-hook
-$action = New-ScheduledTaskAction -Execute 'C:\Users\Public\backupRestore-package\BackupRestore.exe'
+$action = New-ScheduledTaskAction -Execute 'H:\brwork\BackupRestore.exe'
 $principal = New-ScheduledTaskPrincipal -UserId 'x' -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 60) -AllowStartIfOnBatteries
 Register-ScheduledTask -TaskName 'BRGUIPlain' -Action $action -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName 'BRGUIPlain'
 Start-Sleep -Seconds 6
 $info = Get-ScheduledTaskInfo -TaskName 'BRGUIPlain'
-Add-Content -Path 'C:\Users\Public\backupRestore-package\restart-gui-plain.txt' -Value ("plain started at " + (Get-Date -Format 'HH:mm:ss') + " lastResult=" + $info.LastTaskResult)
+Add-Content -Path 'H:\brwork\restart-gui-plain.txt' -Value ("plain started at " + (Get-Date -Format 'HH:mm:ss') + " lastResult=" + $info.LastTaskResult)
 Unregister-ScheduledTask -TaskName 'BRGUIPlain' -Confirm:$false
 # 3. Report resulting process
 $p = Get-Process -Name BackupRestore -ErrorAction SilentlyContinue

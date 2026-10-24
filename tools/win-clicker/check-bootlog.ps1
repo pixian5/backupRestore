@@ -5,4 +5,4 @@ foreach ($e in $events) {
     $out += $line
 }
 if ($out.Count -eq 0) { $out = "no matching events in last 2h" }
-Set-Content -Path 'C:\Users\Public\backupRestore-package\boot-log.txt' -Value $out
+Set-Content -Path 'H:\brwork\boot-log.txt' -Value $out

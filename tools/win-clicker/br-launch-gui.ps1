@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $exe = 'H:\brwork\BackupRestore.exe'
 if (-not (Test-Path $exe)) {
-  $exe = 'C:\Users\Public\backupRestore-package\BackupRestore.exe'
+  $exe = 'H:\brwork\BackupRestore.exe'
 }
 $lines = New-Object System.Collections.ArrayList
 function W($s) { [void]$lines.Add($s) }

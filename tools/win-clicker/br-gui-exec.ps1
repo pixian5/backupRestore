@@ -26,7 +26,7 @@ if ($B64 -ne "") {
 }
 
 $p = "C:\Users\Public\pkg"
-$pkg = "C:\Users\Public\backupRestore-package"
+$pkg = "H:\brwork"
 # 源路径优先用 UNC：Parallels 共享盘 X: 只在特定登录会话里挂载，
 # 由 run-in-session 拉起的新登录会话里 X: 可能不存在（实测 dir X:\ 报路径不存在）。
 $src = "\\Mac\backupRestore\tools\win-clicker\$Script"

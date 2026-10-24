@@ -18,7 +18,7 @@ Get-Process | Where-Object { $_.Name -match "BackupRestore|br-" } | ForEach-Obje
 }
 
 SEC "GUI LOG TAIL (last 20)"
-$gui = "C:\Users\Public\backupRestore-package\logs\gui.log"
+$gui = "H:\brwork\logs\gui.log"
 if (Test-Path -LiteralPath $gui) { Get-Content -LiteralPath $gui -Tail 20 | ForEach-Object { Write-Output ("  G| " + $_) } }
 
 SEC "TASK DIR LIST"

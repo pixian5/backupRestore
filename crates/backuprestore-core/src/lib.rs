@@ -1614,6 +1614,64 @@ pub fn ensure_bitlocker_accessible(states: &[BitLockerState]) -> Result<(), Task
     Ok(())
 }
 
+/// 程序自身安装目录（exe 所在目录）里可再生的部署件。
+///
+/// 只排这几个**文件**，不排整个目录：同目录下的 `tasks\`（任务证据）与
+/// `logs\`（日志）必须留在镜像里——2026-10-24 用户拍板「证据全留」，
+/// 而二进制是可再生过程产物，且会被 A 入口还原系统盘时随镜像回滚成旧版
+/// （实测过：镜像元数据 programVersion 偏低、自启 GUI 标题 v2.6.31）。
+const SELF_DEPLOY_FILES: &[&str] = &[
+    "BackupRestore.exe",
+    "Recovery.exe",
+    "wimlib-imagex.exe",
+    "libwim-15.dll",
+    "winpe-winpeshl.ini",
+];
+
+/// 程序的历史分发目录（2026-10-24 起已不再部署，deploy 会 rmdir 清残留）。
+/// 固定排除：旧镜像还原后会把它带回来，排除可让"还原后不复发"，
+/// 与 deploy 的 rmdir 形成双保险。
+const LEGACY_PACKAGE_DIR: &str = "\\Users\\Public\\backupRestore-package";
+
+/// 取路径的卷键（盘符，大写，形如 `H:`）；非 `X:\...` 形式（UNC、Unix 路径等）
+/// 返回 None。
+///
+/// 手写前两字符解析而不用 `Component::Prefix`：后者只在 Windows target 上
+/// 产生，而单元测试常在 macOS 宿主上跑（本项目交叉编译），必须行为一致。
+fn volume_key(p: &Path) -> Option<String> {
+    let s = p.as_os_str().to_string_lossy();
+    let mut chars = s.chars();
+    let first = chars.next()?;
+    let second = chars.next()?;
+    if first.is_ascii_alphabetic() && second == ':' {
+        Some(s[..2].to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
+/// 把绝对路径转成「卷内相对路径」（反斜杠连接）；exe 就在卷根、或路径含
+/// 非规范段（空段/`.`/`..`）时返回 None。
+fn relative_to_volume_root(p: &Path) -> Option<String> {
+    let s = p.as_os_str().to_string_lossy().replace('/', "\\");
+    let (drive, rest) = (s.get(..2)?, s.get(2..)?);
+    if !drive.chars().next()?.is_ascii_alphabetic() || !drive.ends_with(':') {
+        return None;
+    }
+    let rest = rest.strip_prefix('\\')?;
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in rest.split('\\') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return None;
+        }
+        parts.push(seg);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\\"))
+}
+
 /// 生成 DISM `/ConfigFile` 配置文件内容（WimScript.ini 语法）。
 ///
 /// 用途：备份捕获时可排除 \$Recycle.Bin、临时目录、更新缓存、浏览器缓存等
@@ -1628,7 +1686,11 @@ pub fn ensure_bitlocker_accessible(states: &[BitLockerState]) -> Result<(), Task
 /// 该卷可写）。返回的文本写入后传给：
 /// `dism /Capture-Image ... /ConfigFile:<path>` 或
 /// `dism /Append-Image ... /ConfigFile:<path>`。
-pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError> {
+///
+/// `self_exe_dir` 是程序自身 exe 所在目录（调用方传
+/// `current_exe().parent()`）：与 `source_root` 同卷时，把该目录下的
+/// 部署件（[`SELF_DEPLOY_FILES`]）逐个排除。跨卷时无对应路径，不加项。
+pub fn build_capture_exclusions(source_root: &Path, self_exe_dir: Option<&Path>) -> Result<String, TaskError> {
     // 固定的根级可排除项（全部为 DISM 规范内的根路径锚定写法，无通配符）。
     // 注意：hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information
     // 由 DISM 默认排除，无需在此重复。
@@ -1652,6 +1714,8 @@ pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError>
         "\\Windows\\Logs".to_string(),
         "\\Windows\\Panther".to_string(),
         "\\ProgramData\\Microsoft\\Windows\\WER".to_string(),
+        // 程序自身的历史分发目录（2026-10-24 起不再部署；旧镜像还原会带回）
+        LEGACY_PACKAGE_DIR.to_string(),
     ];
 
     // 枚举真实用户配置文件，补上按用户字面路径的排除项。
@@ -1736,6 +1800,20 @@ pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError>
         lines.extend(user_entries);
     }
 
+    // 程序自身部署件（exe 同目录的五个可再生文件）。只排文件、不排目录：
+    // 同目录的 tasks\（任务证据）与 logs\ 必须留在镜像里（证据全留，2026-10-24 拍板）。
+    // 二进制被 A 入口还原系统盘时随镜像回滚成旧版是实测过的痛点
+    // （镜像元数据 programVersion 偏低、自启 GUI 标题 v2.6.31）。
+    if let Some(exe_dir) = self_exe_dir
+        && let (Some(src_vol), Some(exe_vol)) = (volume_key(source_root), volume_key(exe_dir))
+        && src_vol == exe_vol
+        && let Some(rel) = relative_to_volume_root(exe_dir)
+    {
+        for file in SELF_DEPLOY_FILES {
+            lines.push(format!("\\{rel}\\{file}"));
+        }
+    }
+
     let mut text = String::from("[ExclusionList]\r\n");
     for line in lines {
         text.push_str(&line);
@@ -1751,9 +1829,11 @@ pub fn build_capture_exclusions(source_root: &Path) -> Result<String, TaskError>
 /// 于是"看起来有排除功能、实际一条都没生效"——v1.7.4 的 T: 备份因此把
 /// Parallels 的 `\Mac disk` 装进镜像，还原时撞 0x80070020。
 ///
-/// `source_root` 是待捕获卷的根（如 `T:\`）。
-pub fn write_capture_exclusion_config(source_root: &Path) -> Result<PathBuf, TaskError> {
-    let text = build_capture_exclusions(source_root)?;
+/// `source_root` 是待捕获卷的根（如 `T:\`）。`self_exe_dir` 传
+/// `current_exe().parent()`，同卷时排除程序自身部署件（见
+/// [`build_capture_exclusions`]）；三个入口都在调用处统一传，避免漏接。
+pub fn write_capture_exclusion_config(source_root: &Path, self_exe_dir: Option<&Path>) -> Result<PathBuf, TaskError> {
+    let text = build_capture_exclusions(source_root, self_exe_dir)?;
     let path = env::temp_dir().join("BackupRestore-exclusions.ini");
     fs::write(&path, text)?;
     Ok(path)
@@ -2632,7 +2712,7 @@ mod tests {
         )
         .unwrap();
 
-        let ini = build_capture_exclusions(&root).unwrap();
+        let ini = build_capture_exclusions(&root, None).unwrap();
         let lines: Vec<&str> = ini.lines().collect();
         let list = lines
             .iter()
@@ -2653,6 +2733,7 @@ mod tests {
             "\\Temp",
             "\\Windows\\Temp",
             "\\Windows\\SoftwareDistribution\\Download",
+            "\\Users\\Public\\backupRestore-package",
         ] {
             assert!(all.contains(&fixed), "缺少固定排除项 {fixed}: {ini}");
         }
@@ -2696,11 +2777,13 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("backuprestore-excl2-{suffix}"));
-        let ini = build_capture_exclusions(&root).unwrap();
+        let ini = build_capture_exclusions(&root, None).unwrap();
         assert!(ini.starts_with("[ExclusionList]\r\n"));
         assert!(ini.contains("\r\n\\Mac disk\r\n"));
         assert!(ini.contains("\r\n\\$Recycle.Bin\r\n"));
-        assert!(!ini.contains("\\Users\\"));
+        // 用户枚举条目不存在（注意：固定项里的程序分发目录含 \Users\，
+        // 所以判据用浏览器缓存的特征段 AppData，而不是 \Users\）
+        assert!(!ini.contains("AppData\\"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2716,7 +2799,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let path = write_capture_exclusion_config(&root).unwrap();
+        let path = write_capture_exclusion_config(&root, None).unwrap();
         assert_eq!(path.file_name().unwrap(), "BackupRestore-exclusions.ini");
         let text = fs::read_to_string(&path).unwrap();
         assert!(
@@ -2725,6 +2808,50 @@ mod tests {
         );
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// 自身部署件排除（2026-10-24 用户拍板「不再往 C: 部署 exe」的配套）：
+    /// exe 与源卷同卷 → 逐个排除五个可再生文件；跨卷 → 不加项；
+    /// exe 就在卷根 → 不加项（排整个卷没有意义）。tasks\logs\ 证据不受影响。
+    #[test]
+    fn capture_exclusions_skip_self_deploy_files_same_volume() {
+        // 用 Windows 风格的假路径（本测试在 macOS 上也跑）：卷键/相对路径
+        // 都是纯字符串处理，不触盘。
+        let root = Path::new("H:\\");
+        let exe_dir = Path::new("H:\\brwork");
+
+        let ini = build_capture_exclusions(root, Some(exe_dir)).unwrap();
+        for file in [
+            "BackupRestore.exe",
+            "Recovery.exe",
+            "wimlib-imagex.exe",
+            "libwim-15.dll",
+            "winpe-winpeshl.ini",
+        ] {
+            assert!(
+                ini.contains(&format!("\\brwork\\{file}\r\n")),
+                "应排除同卷自身部署件 {file}: {ini}"
+            );
+        }
+        // 只排文件、不排目录：tasks\logs\ 证据必须能进镜像
+        assert!(
+            !ini.contains("\r\n\\brwork\r\n"),
+            "不得整目录排除自身安装目录（tasks/logs 证据要留）: {ini}"
+        );
+
+        // 跨卷：不加任何自身部署件条目
+        let ini2 = build_capture_exclusions(root, Some(Path::new("C:\\brwork"))).unwrap();
+        assert!(
+            !ini2.contains("\\brwork\\BackupRestore.exe"),
+            "跨卷不应生成自身部署件排除项: {ini2}"
+        );
+
+        // exe 就在卷根：不加项
+        let ini3 = build_capture_exclusions(root, Some(Path::new("H:\\"))).unwrap();
+        assert!(
+            !ini3.contains("\r\n\\BackupRestore.exe\r\n"),
+            "exe 在卷根时不应生成排除项: {ini3}"
+        );
     }
 
     #[test]

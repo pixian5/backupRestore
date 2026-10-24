@@ -32,4 +32,4 @@ if ($gi.hwndFocus -ne [IntPtr]::Zero) {
     [FW2]::GetWindowText($gi.hwndFocus, $txt, 128) | Out-Null
     $lines += "focusid=$([FW2]::GetDlgCtrlID($gi.hwndFocus)) class='$($cls.ToString())' text='$($txt.ToString())'"
 }
-$lines | Out-File C:\Users\Public\backupRestore-package\diag2.txt -Encoding utf8
+$lines | Out-File H:\brwork\diag2.txt -Encoding utf8

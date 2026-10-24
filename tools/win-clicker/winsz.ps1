@@ -22,4 +22,4 @@ Add-Type -AssemblyName System.Windows.Forms
 $out += "screen=$([System.Windows.Forms.Screen]::PrimaryScreen.Bounds)"
 $out += "virt=$([System.Windows.Forms.SystemInformation]::VirtualScreen)"
 $out += "dpi_scale=$([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width / 100.0)"
-$out | Out-File C:\Users\Public\backupRestore-package\winsz.txt -Encoding utf8
+$out | Out-File H:\brwork\winsz.txt -Encoding utf8

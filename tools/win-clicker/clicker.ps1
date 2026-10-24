@@ -114,7 +114,7 @@ public class BrInject {
 }
 "@
 $ErrorActionPreference = 'Stop'
-$LogPath = 'C:\Users\Public\backupRestore-package\clicker-log.txt'
+$LogPath = 'H:\brwork\clicker-log.txt'
 function Write-Log($msg) {
     try { Add-Content -Path $LogPath -Value ("{0} {1}" -f (Get-Date -Format 'HH:mm:ss.fff'), $msg) -ErrorAction SilentlyContinue } catch {}
 }

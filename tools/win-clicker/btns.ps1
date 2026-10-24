@@ -23,4 +23,4 @@ $out += [Btns]::Rect($fg, 1003)   # create_task
 $out += [Btns]::Rect($fg, 1001)   # refresh env
 $out += [Btns]::Rect($fg, 1002)   # read image
 $out += [Btns]::Rect($fg, 1004)   # refresh task
-$out | Out-File C:\Users\Public\backupRestore-package\btns.txt -Encoding utf8
+$out | Out-File H:\brwork\btns.txt -Encoding utf8

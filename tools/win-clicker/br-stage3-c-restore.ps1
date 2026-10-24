@@ -24,10 +24,10 @@ $json = @'
 W "br-test.json written"
 
 # 3) 带 --test-hook 重启
-Start-Process -FilePath 'C:\Users\Public\backupRestore-package\BackupRestore.exe' -ArgumentList '--test-hook'
+Start-Process -FilePath 'H:\brwork\BackupRestore.exe' -ArgumentList '--test-hook'
 Start-Sleep -Milliseconds 3000
 $p = Get-Process -Name BackupRestore -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($p) { W ("new pid=" + $p.Id) } else { W "NO_PROCESS" }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText("C:\Users\Public\backupRestore-package\stage3c-relaunch.txt", ($lines -join "`r`n"), $utf8)
+[System.IO.File]::WriteAllText("H:\brwork\stage3c-relaunch.txt", ($lines -join "`r`n"), $utf8)
 Write-Output "RELAUNCH_DONE"

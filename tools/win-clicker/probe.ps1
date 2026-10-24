@@ -7,6 +7,6 @@ if ($p) {
 }
 $cfg = Get-Content C:\br-test.json -Raw -ErrorAction SilentlyContinue
 Write-Output ("CFG=" + $cfg)
-$log = Get-Content C:\Users\Public\backupRestore-package\logs\gui.log -Tail 20 -ErrorAction SilentlyContinue
+$log = Get-Content H:\brwork\logs\gui.log -Tail 20 -ErrorAction SilentlyContinue
 Write-Output "=== LOG TAIL ==="
 $log | ForEach-Object { Write-Output $_ }

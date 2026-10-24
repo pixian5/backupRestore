@@ -1,5 +1,5 @@
 # tasks-status.ps1 - 列出所有任务目录的 stage 状态
-$root = 'C:\Users\Public\backupRestore-package\tasks'
+$root = 'H:\brwork\tasks'
 $dirs = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue
 Write-Output ("TOTAL=" + @($dirs).Count)
 foreach ($d in $dirs) {

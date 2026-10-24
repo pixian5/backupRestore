@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Continue'
 $log = New-Object System.Collections.ArrayList
 function W($s) { [void]$log.Add($s) }
 
-$pkg = "C:\Users\Public\backupRestore-package"
+$pkg = "H:\brwork"
 # 源文件优先读客体本地副本（宿主侧 br-agent-tcp.sh start 经 prlctl/SYSTEM 通道刷入
 # C:\Users\Public\pkg\br-agent-tcp.in.ps1，二进制 UTF-8 原样）——2026-10-14 实测提权
 # (High IL) 上下文读 \\Mac\... UNC 会间歇性「系统找不到指定的文件」，而 SYSTEM 通道
