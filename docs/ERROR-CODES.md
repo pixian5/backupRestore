@@ -1,6 +1,6 @@
 # 错误码清单（`BR-<域>-<序号>`）
 
-> 自动生成：条目源在 `crates/backuprestore-cli/src/error_code.rs` 的 `error_codes!` 宏体。
+> **自动生成，别手改**：`python3 tools/gen-error-codes.py`（真相源是 `crates/backuprestore-cli/src/error_code.rs` 的 `error_codes!` 宏体）。
 > **码是契约**——发布后不得重排、不复用退役号；用户报障直接报码即可定位到唯一一行。
 
 ## 怎么用
@@ -28,7 +28,7 @@
 ## core 层（`BR-CORE-NNN`）
 
 core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
-文案是英文技术诊断（core 没有语言层）。**77 个语义码**，请直接 grep 码定位：
+文案是英文技术诊断（core 没有语言层）。**77 个语义码**，直接 grep 码定位：
 
 ```
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
@@ -291,7 +291,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ## 刻意无码的一类（不会出现在上表）
 
 命令行**用法**错误（`task id is required`、`--target-drive is required`、
-`unsupported operation: xxx`，共 304 处）**故意不发码**：
+`unsupported operation: xxx`，共 300+ 处）**故意不发码**：
 
 1. 本来就是英文技术提示，不需要翻译；
 2. 文案本身唯一且稳定，贴文案即可定位；
