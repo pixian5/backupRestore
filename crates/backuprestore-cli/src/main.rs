@@ -56,6 +56,14 @@ mod boot_entry;
 /// 搬到本模块（`pe_safety` 重导出，旧路径不变）。
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 mod i18n;
+/// 错误码与错误文案的单一来源（`BR-<域>-<序号>`）。
+/// 无条件编译：`pe_safety` / `boot_entry` 等被无条件引用，它们都要用 `errc`。
+/// 非 Windows 构建下没人调 `errc`，允许 dead_code。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+mod error_code;
+// 非 Windows 构建下这批调用点全在 cfg 里，re-export 会报未使用。
+#[allow(unused_imports)]
+pub(crate) use error_code::{ErrCode, errc, errc_with};
 /// CLI 结构化输出（`--json`）：让自动化判据不再解析中文文案，只认字段。
 /// 纯逻辑 + 本机单测，故与 `pe_safety` 同门控。
 #[cfg(any(windows, test))]
@@ -143,14 +151,20 @@ fn main() {
     // 同样门控，否则本机 `cargo build` 会报找不到模块（DISM 也只存在于 Windows）。
     #[cfg(windows)]
     crate::dism_timeout::init_process_env_from_settings();
-    let arguments: Vec<String> = env::args().skip(1).collect();
+    let mut arguments: Vec<String> = env::args().skip(1).collect();
     // `--json`：命令把结论以单行 JSON 打印（command/operation/success/
     // log_path/error），让自动化判据只认字段、不再解析中文文案。
-    // 子命令的解析循环遇到未知 `--json` 走 `_ => {}`，故无需从 arguments 摘除。
+    // ★ 2026-10-25 订正：**必须真的从 arguments 摘除**。旧注释说「子命令解析
+    // 循环遇到未知 `--json` 走 `_ => {}`，无需摘除」——那只对 `online` 成立；
+    // `prepare` 是严格解析（曾因此直接拒绝 `--json`），而 `recover` /
+    // `abandon-task` 这些按**位置**取参数的命令会把 `--json` 当成第一个业务
+    // 参数（实机撞出：`recover C:\x --json` 报「任务标识无效：--json」）。
+    // 在分发前统一摘掉，所有命令一劳永逸。
     #[cfg(windows)]
     {
         if arguments.iter().any(|a| a == "--json") {
             crate::cli_json::enable();
+            arguments.retain(|a| a != "--json");
         }
         // 语言：`BACKUPRESTORE_LANG=en*` 让日志与 CLI 结论文案走英文。
         // 放在最前，后面 RE 侧读到 UI_LANGUAGE、GUI 切语言时会再覆盖一次。
@@ -1160,13 +1174,12 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
     // 检查，把完整路径和正确用法一起写进错误。
     let task_path = store
         .task_path(&id)
-        .map_err(|error| err(&format!("任务标识无效：{id}（{error}）")))?;
+        .map_err(|error| errc_with(ErrCode::TaskIdInvalid, &[&id, &error.to_string()]))?;
     if !task_path.is_file() {
-        return Err(err(&format!(
-            "任务文件不存在：{}；recover 的第一个参数必须是**工作区根目录**\
-             （包含 tasks 子目录的那一层，例如 H:\\brwork），不是 tasks 目录本身",
-            task_path.display()
-        )));
+        return Err(errc_with(
+            ErrCode::TaskFileMissing,
+            &[&task_path.display().to_string()],
+        ));
     }
     let mut task = store.load(&id)?;
     let log = store.log_path(&id)?;
@@ -1722,7 +1735,7 @@ pub(crate) fn launch_background_console() -> Result<(), TaskError> {
         )
     };
     if ok == 0 {
-        return Err(err("无法启动后台命令提示符（CreateProcessW 失败）"));
+        return Err(errc(ErrCode::SpawnConsoleFailed));
     }
     let console_pid = info.process_id;
     unsafe {
@@ -1747,9 +1760,7 @@ pub(crate) fn launch_background_console() -> Result<(), TaskError> {
             );
         },
         None => {
-            return Err(err(
-                "后台命令提示符已启动，但 3 秒内没等到它的窗口（保持最小化，未最大化）",
-            ));
+            return Err(errc(ErrCode::ConsoleWindowTimeout));
         }
     }
     Ok(())
@@ -2332,7 +2343,7 @@ fn complete_recovery_cleanup(
     log: &Path,
 ) -> Result<(), TaskError> {
     if task.status != Stage::RecoveryComplete {
-        return Err(err("任务尚未完成恢复，拒绝清理"));
+        return Err(errc(ErrCode::TaskNotRecovered));
     }
     append_log(log, crate::i18n::msg("step_cleanup"))?;
     let env = store
@@ -2393,7 +2404,7 @@ fn resume_task(root: String, id: String) -> Result<(), TaskError> {
     }
     let explicitly_prepared = task.status == Stage::Prepared;
     if !explicitly_prepared && !stage_resumable_after_interruption(task.status) {
-        return Err(err("该任务不处于可续跑阶段"));
+        return Err(errc(ErrCode::TaskNotResumable));
     }
     if explicitly_prepared {
         // `prepare --no-reboot` leaves a complete task/payload and BCD template
@@ -2401,7 +2412,7 @@ fn resume_task(root: String, id: String) -> Result<(), TaskError> {
         // turn that prepared task into a one-shot recovery boot.
         store.write_transition(&mut task, Stage::BootRequested)?;
     }
-    let entry = boot_entry::ReBootEntry::read(&dir)?.ok_or_else(|| err("任务缺少启动记录"))?;
+    let entry = boot_entry::ReBootEntry::read(&dir)?.ok_or_else(|| errc(ErrCode::TaskMissingLaunchRecord))?;
     boot_entry::rearm(&entry, &log)?;
     append_log(
         &log,
@@ -2869,7 +2880,7 @@ fn assign_volume_letter(
     }
     let bare = crate::text_parsing::bare_volume_guid(expected)
         .and_then(|value| crate::text_parsing::require_guid(value, "恢复卷").ok())
-        .ok_or_else(|| err("挂载后备路径缺少有效卷标识符"))?;
+        .ok_or_else(|| errc(ErrCode::MountFallbackNoVolumeId))?;
     let path = format!(r"\\?\Volume{bare}\");
     let live = windows_prepare::volume_identity_at_path(&path, expected.to_string())?;
     verify_env_volume_identity(&live, values, prefix, allow_reformatted_serial)?;
@@ -2885,10 +2896,10 @@ fn assign_volume_letter(
             ],
         ),
     )?;
-    let disk = live.disk_number.ok_or_else(|| err("现场磁盘编号缺失"))?;
+    let disk = live.disk_number.ok_or_else(|| errc(ErrCode::LiveDiskNumberMissing))?;
     let partition = live
         .partition_number
-        .ok_or_else(|| err("现场分区编号缺失"))?;
+        .ok_or_else(|| errc(ErrCode::LivePartitionNumberMissing))?;
     let body =
         format!("select disk {disk}\r\nselect partition {partition}\r\nassign letter={letter}\r\n");
     fs::write(&script, body)?;
@@ -3762,16 +3773,16 @@ fn recover_windows(
             // 使真正断电后的下一次开机仍能从外部分区进入同一任务。
             let resume_entry = if metadata_context.is_some() {
                 let entry = boot_entry::ReBootEntry::read(&store.task_dir(&task.task_id)?)?
-                    .ok_or_else(|| err("系统还原缺少续跑启动记录，拒绝擦除"))?;
+                    .ok_or_else(|| errc(ErrCode::RestoreMissingResumeBoot))?;
                 if entry.wim_volume.same_partition(&target.volume) {
-                    return Err(err("续跑载荷位于擦除目标，拒绝执行"));
+                    return Err(errc(ErrCode::ResumePayloadOnEraseTarget));
                 }
                 if !task
                     .image
                     .as_ref()
                     .is_some_and(|image| image.volume.same_partition(&entry.wim_volume))
                 {
-                    return Err(err("续跑载荷卷与本任务镜像卷不符"));
+                    return Err(errc(ErrCode::ResumePayloadVolumeMismatch));
                 }
                 boot_entry::rearm(&entry, log)?;
                 Some(entry)
@@ -3855,10 +3866,10 @@ fn recover_windows(
                     // wimlib 二进制由载荷注入链放在同一目录（winre_payload）。
                     let executable_dir = std::env::current_exe()
                         .map_err(|error| {
-                            err(&format!("无法定位程序目录（wimlib 通道）：{error}"))
+                            errc_with(ErrCode::ProgramDirUnresolvable, &[&error.to_string()])
                         })?
                         .parent()
-                        .ok_or_else(|| err("程序目录解析失败（wimlib 通道）"))?
+                        .ok_or_else(|| errc(ErrCode::ProgramDirResolveFailed))?
                         .to_path_buf();
                     crate::wimlib_apply::apply_overlay(
                         &executable_dir,
@@ -4057,7 +4068,7 @@ fn recover_windows(
                 // 目标系统是必选项；其它系统按勾选处理，既有 PE 入口由 apply 保留。
                 let boot_menu_plan = boot_menu_session
                     .as_ref()
-                    .ok_or_else(|| err("Windows 系统卷缺少引导修复方案"))?
+                    .ok_or_else(|| errc(ErrCode::WindowsVolumeMissingPlan))?
                     .freeze()?;
                 crate::boot_menu::apply(&boot_menu_plan, &efi, log, resume_entry.as_ref())?;
                 if finalize_success {
@@ -4248,23 +4259,25 @@ fn resolve_volume_letter(
     {
         return Ok(letter);
     }
-    Err(err(&format!(
-        "无法定位任务记录的卷（卷 GUID {}，磁盘 {:?} 分区 {:?}，大小 {}，记录盘符 {:?}）；已尝试：{}",
-        if volume.volume_guid.is_empty() {
-            "<未记录>"
-        } else {
-            &volume.volume_guid
-        },
-        volume.disk_number,
-        volume.partition_number,
-        volume.partition_size,
-        volume.drive_letter,
-        if tried.is_empty() {
-            "无".to_string()
-        } else {
-            tried.join("；")
-        }
-    )))
+    Err(errc_with(
+        ErrCode::VolumeRecordUnresolvable,
+        &[
+            if volume.volume_guid.is_empty() {
+                "<未记录>"
+            } else {
+                volume.volume_guid.as_str()
+            },
+            &format!("{:?}", volume.disk_number),
+            &format!("{:?}", volume.partition_number),
+            &volume.partition_size.to_string(),
+            &format!("{:?}", volume.drive_letter),
+            &if tried.is_empty() {
+                "无".to_string()
+            } else {
+                tried.join("；")
+            },
+        ],
+    ))
 }
 
 /// 卷存在但当前没有盘符时，按卷 GUID 用 `mountvol` 分配一个空闲字母并复核身份。
@@ -4276,7 +4289,7 @@ fn assign_letter_by_volume_guid(
 ) -> Result<char, TaskError> {
     let bare = crate::text_parsing::bare_volume_guid(&volume.volume_guid)
         .and_then(|value| crate::text_parsing::require_guid(value, "卷").ok())
-        .ok_or_else(|| err("卷 GUID 形态无效，无法分配盘符"))?;
+        .ok_or_else(|| errc(ErrCode::VolumeGuidMalformed))?;
     let path = format!(r"\\?\Volume{bare}\");
     let mounts = MountedVolumes::new();
     for letter in mount_letter_candidates(volume.drive_letter.unwrap_or('Z'), listing, &mounts) {
@@ -4321,7 +4334,7 @@ fn assign_letter_by_volume_guid(
         ),
         )?;
     }
-    Err(err("卷存在但无法分配盘符"))
+    Err(errc(ErrCode::VolumeExistsNoLetter))
 }
 
 /// 按磁盘号 + 分区号找该分区**当前**的盘符（没有盘符返回 `None`）。
@@ -4508,7 +4521,7 @@ fn format_target_partition(
 ) -> Result<(), TaskError> {
     let letter = target
         .drive_letter
-        .ok_or_else(|| err("格式化目标盘符缺失"))?;
+        .ok_or_else(|| errc(ErrCode::FormatTargetLetterMissing))?;
     // 在生成写盘命令前再次严格比较此次绑定，拒绝核验后发生的编号变化。
     pe_safety::verify_binding(target, &windows_prepare::volume_identity(letter)?, false)?;
     let task_dir = store.task_dir(&task.task_id)?;
@@ -4648,9 +4661,10 @@ fn run_logged_timeout(
         .join()
         .map_err(|_| err(&format!("{program} stderr reader panicked")))??;
     let Some(status) = status else {
-        return Err(err(&format!(
-            "{program} 超时（上限 {wait_ms} ms），进程已终止"
-        )));
+        return Err(errc_with(
+            ErrCode::ProgramTimeout,
+            &[program, &wait_ms.to_string()],
+        ));
     };
     if !status.success() {
         // 【D2 2026-10-24】失败回执带上输出尾部：外部命令的真实原因写在
@@ -4658,10 +4672,15 @@ fn run_logged_timeout(
         // 等于现场无法归因——分类判据（classify_apply_failure）也需要这段文本
         // 作为输入。tail_text 是跨平台纯文件读，截断宽容忍解码。
         let tail = crate::text_parsing::tail_text(log, crate::text_parsing::LOG_TAIL_MAX_BYTES);
-        return Err(err(&format!(
-            "{program} failed with {status}\n--- 输出尾部（至多 {} 字节）---\n{tail}",
-            crate::text_parsing::LOG_TAIL_MAX_BYTES
-        )));
+        return Err(errc_with(
+            ErrCode::ProgramFailedNamed,
+            &[
+                program,
+                &format!("{status}"),
+                &crate::text_parsing::LOG_TAIL_MAX_BYTES.to_string(),
+                &tail,
+            ],
+        ));
     }
     Ok(())
 }
@@ -4926,7 +4945,7 @@ fn assert_boot_default_points_at_target(
         log,
     )?;
     let loader = crate::boot_menu::loader_identifier_for_partition(&all, target_letter)?
-        .ok_or_else(|| err("bcdboot 后找不到本次还原系统的启动加载器"))?;
+        .ok_or_else(|| errc(ErrCode::BcdbootLoaderMissing))?;
     // `/enum {bootmgr} /v`：/v 才输出 GUID 而非 {bootmgr}/{default} 别名，
     // 解析器与别名比对都依赖这一点（2026-10-13 实测确认）。
     let read_default = |log: &Path| -> Result<String, TaskError> {
@@ -4937,7 +4956,7 @@ fn assert_boot_default_points_at_target(
         )?;
         parse_boot_manager_state(&text)
             .map(|state| state.default)
-            .ok_or_else(|| err("BCDBoot 后启动管理器状态无法解析"))
+            .ok_or_else(|| errc(ErrCode::PostBcdbootBootMgrUnparsable))
     };
     let current = read_default(log)?;
     if current.eq_ignore_ascii_case(&loader) {
@@ -4958,9 +4977,7 @@ fn assert_boot_default_points_at_target(
     )?;
     let after = read_default(log)?;
     if !after.eq_ignore_ascii_case(&loader) {
-        return Err(err(
-            "无法把默认启动项指向本次还原的系统，拒绝继续后续破坏性步骤",
-        ));
+        return Err(errc(ErrCode::DefaultSwitchFailed));
     }
     append_log(log, crate::i18n::msg("default_already_switched"))?;
     Ok(())
@@ -5142,7 +5159,7 @@ fn secondary_boot_order(
     if !objects.contains(&previous.default.to_ascii_lowercase())
         || !objects.contains(&secondary.to_ascii_lowercase())
     {
-        return Err(err("主系统或新第二系统加载器缺失，拒绝改写启动菜单"));
+        return Err(errc(ErrCode::LoaderMissingRefuseMenu));
     }
     let mut order: Vec<_> = previous
         .display_order

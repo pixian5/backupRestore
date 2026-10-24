@@ -25,6 +25,7 @@ use std::ptr::null_mut;
 use std::thread;
 use std::time::Duration;
 
+use crate::error_code::ErrCode;
 use crate::{append_log, capture_logged, err, run_logged, winre_payload};
 
 #[link(name = "kernel32")]
@@ -833,7 +834,7 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
         || status.stage != task.status
         || status.operation != task.operation
     {
-        return Err(err("任务状态记录不一致，拒绝放弃或清理"));
+        return Err(crate::errc(ErrCode::TaskStateInconsistent));
     }
     // 【终态收口，2026-10-16 用户拍板】已终结（Failed）的任务允许收口：
     // 只清本任务的引导对象与载荷、删掉大工作目录，**保留** task.json / status.json /
@@ -872,10 +873,10 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
         return Ok(());
     }
     if !task.status.can_abandon_before_target_write() {
-        return Err(err(&format!(
-            "任务已进入 {:?} 阶段，可能已修改目标卷；不能从新任务对话框清理。请先继续原任务或人工恢复。",
-            task.status
-        )));
+        return Err(crate::errc_with(
+            ErrCode::TaskAlreadyAdvanced,
+            &[&format!("{:?}", task.status)],
+        ));
     }
     append_log(
         &log,
@@ -915,7 +916,7 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
             || actual.partition_offset != volume.partition_offset
             || actual.partition_size != volume.partition_size
         {
-            return Err(err("放弃任务时载荷卷身份不匹配，拒绝删除"));
+            return Err(crate::errc(ErrCode::AbandonPayloadVolumeMismatch));
         }
         crate::boot_cleanup::remove_staging(&root_path, &task.task_id)?;
     }
@@ -1087,9 +1088,7 @@ fn prepare_task(
             &bootstrap_log,
             &format!("new preparation blocked by incomplete tasks: {details}"),
         )?;
-        return Err(err(&format!(
-            "检测到尚未终结的任务，未创建新任务或修改启动配置。请先继续原任务，或明确放弃并清理旧任务：{details}"
-        )));
+        return Err(crate::errc_with(ErrCode::UnterminatedTaskExists, &[&details]));
     }
     ensure_workspace_capacity(workspace, &recovery)?;
 
@@ -1812,12 +1811,7 @@ pub(crate) fn wim_full_windows_probe(
     }
     match wim_mount_markers(image_path, index, log) {
         // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝（此刻尚未格式化任何卷）。
-        Ok(false) => Err(err(
-            "镜像不是完整 Windows（缺少 reagentc.exe 或 SYSTEM 注册表），\
-             还原/新增第二系统需要完整 Windows 镜像。要安装 PE，请改用\
-             「安装 PE」功能（内存版或硬盘版），它才是为 PE 设计的路径。本次\
-             未格式化任何卷、未写入引导。",
-        )),
+        Ok(false) => Err(crate::errc(ErrCode::ImageNotCompleteWindows)),
         Ok(true) => Ok(ProbeOutcome::FullWindows),
         // 挂载本身失败：不硬拦，但调用方必须把这次降级写进日志。
         // 【2026-10-22 更正归因】此前这里记的是「有 VHD 附加时 /Mount-Wim 一律报 87」，
@@ -1829,10 +1823,7 @@ pub(crate) fn wim_full_windows_probe(
         Err(_) => {
             let lower = name.to_ascii_lowercase();
             if lower.contains("windows pe") || lower.contains("winpe") {
-                return Err(err(&format!(
-                    "镜像\"{name}\"是 Windows PE，不是完整 Windows；\
-                     要安装 PE 请改用「安装 PE」功能。本次未格式化任何卷、未写入引导。"
-                )));
+                return Err(crate::errc_with(ErrCode::ImageIsWindowsPe, &[&name]));
             }
             Ok(ProbeOutcome::HeuristicPass)
         }
@@ -1895,7 +1886,7 @@ fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, T
     std::fs::create_dir_all(&mount_dir)?;
     let run = |args: &[&str]| -> Result<Output, TaskError> {
         crate::run_output_logged("dism.exe", args, log)
-            .map_err(|error| err(&format!("dism 调用失败（无法启动/读取输出）：{error}")))
+            .map_err(|error| crate::errc_with(ErrCode::DismSpawnFailed, &[&error.to_string()]))
     };
     let mount_args = wim_mount_args(image_path, index, &mount_dir);
     let mount_refs: Vec<&str> = mount_args.iter().map(String::as_str).collect();
@@ -1908,10 +1899,10 @@ fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, T
         } else {
             format!("：{tail}")
         };
-        return Err(err(&format!(
-            "镜像挂载探测失败（dism /Mount-Wim 退出码 {}{}）。完整输出已写入准备日志。",
-            mounted.status, detail
-        )));
+        return Err(crate::errc_with(
+            ErrCode::ImageMountProbeFailed,
+            &[&format!("{}", mounted.status), &detail],
+        ));
     }
     let has_reagentc = mount_dir.join(r"Windows\System32\reagentc.exe").is_file();
     let has_system_hive = mount_dir
@@ -1931,11 +1922,10 @@ fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, T
         } else {
             format!("：{tail}")
         };
-        return Err(err(&format!(
-            "镜像挂载探测的卸载失败（dism /Unmount-Wim 退出码 {}{}）。\
-             镜像可能仍处于挂载状态并被锁定，请手动用 dism /Unmount-Wim /Discard 清理后再试。",
-            unmounted.status, detail
-        )));
+        return Err(crate::errc_with(
+            ErrCode::ImageUnmountFailed,
+            &[&format!("{}", unmounted.status), &detail],
+        ));
     }
     Ok(has_reagentc && has_system_hive)
 }
@@ -1963,10 +1953,10 @@ fn wim_image_display_name(image_path: &str, index: u32, log: &Path) -> Result<St
         } else {
             format!("：{tail}")
         };
-        return Err(err(&format!(
-            "读取镜像名失败（dism /Get-WimInfo 退出码 {}{}）。请确认镜像文件可访问且未被占用。",
-            output.status, detail
-        )));
+        return Err(crate::errc_with(
+            ErrCode::ImageNameReadFailed,
+            &[&format!("{}", output.status), &detail],
+        ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     for line in text.lines() {
@@ -2008,15 +1998,15 @@ fn flush_volume(letter: char, label: &str, log: &Path) -> Result<(), TaskError> 
         )
     };
     if handle as isize == -1 {
-        return Err(err(&format!(
-            "卷刷盘失败：无法打开 {letter}:（{label}），GetLastError={}",
-            unsafe { GetLastError() }
-        )));
+        return Err(crate::errc_with(
+            ErrCode::VolumeFlushOpenFailed,
+            &[&letter.to_string(), label, &unsafe { GetLastError() }.to_string()],
+        ));
     }
     let ok = unsafe { FlushFileBuffers(handle) };
     unsafe { CloseHandle(handle) };
     if ok == 0 {
-        return Err(err(&format!("卷刷盘失败：FlushFileBuffers({letter}:) 返回 0（{label}）")));
+        return Err(crate::errc_with(ErrCode::VolumeFlushFailed, &[&letter.to_string(), label]));
     }
     append_log(log, &crate::i18n::msg_tpl("wp_volume_cache_flushed", &[&format!("{letter}"), label]))?;
     Ok(())
@@ -2052,7 +2042,7 @@ pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, Task
         }
     }
     match matches.len() {
-        0 => Err(last_error.unwrap_or_else(|| err("未发现具有可读取 BCD 的 GPT EFI 分区"))),
+        0 => Err(last_error.unwrap_or_else(|| crate::errc(ErrCode::NoBcdEfiPartition))),
         1 => Ok(matches.remove(0)),
         _ => {
             // 多 ESP 自动识别（2.4.2）：不再一律拒绝。判据是**活动 BCD 指纹**——
@@ -2075,11 +2065,7 @@ pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, Task
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(err(&format!(
-                "检测到多个含 BCD 的 EFI 系统分区（{list}），且无法唯一确定本次引导\
-                 使用的是哪一个（BCD 指纹比对无唯一匹配）。请避免多 ESP 布局，\
-                 或仅保留引导磁盘上的 ESP 后重试"
-            )))
+            Err(crate::errc_with(ErrCode::MultipleEspAmbiguous, &[&list]))
         }
     }
 }
@@ -2197,7 +2183,7 @@ pub(crate) fn native_volume_paths() -> Result<Vec<String>, TaskError> {
 pub(crate) fn refresh_identity(expected: &VolumeIdentity) -> Result<VolumeIdentity, TaskError> {
     let root = expected
         .volume_path()
-        .ok_or_else(|| err("缺少稳定卷 GUID"))?;
+        .ok_or_else(|| crate::errc(ErrCode::StableGuidMissing))?;
     let mut actual = volume_identity_at_path(&root, expected.volume_guid.clone())?;
     actual.drive_letter = expected.drive_letter;
     Ok(actual)
@@ -2582,7 +2568,7 @@ fn validate_operation_inputs(
             let target_is_windows = target_is_active
                 || crate::pe_safety::target_is_windows_volume(&PathBuf::from(format!(
                     "{}:\\",
-                    target.drive_letter.ok_or_else(|| err("目标盘符缺失"))?
+                    target.drive_letter.ok_or_else(|| crate::errc(ErrCode::TargetLetterMissing))?
                 )))?;
             // 【准备期判定 · 2026-10-22 任务 #110：原「硬拒」已改「路由」】
             // 「系统卷 + 取消格式化（覆盖式应用）」对 DISM 是确定性失败组合
@@ -3152,12 +3138,12 @@ pub(crate) fn volume_identity(letter: char) -> Result<VolumeIdentity, TaskError>
 /// 按**卷身份**（disk/partition GUID）比对，不要用盘符字面量：盘符不是分区的物理
 /// 属性，重启和 RE 内都会重排，系统盘也不一定是 `C:`。
 pub(crate) fn active_system_volume_identity() -> Result<VolumeIdentity, TaskError> {
-    let value = env::var("SystemDrive").map_err(|_| err("当前系统盘未知"))?;
+    let value = env::var("SystemDrive").map_err(|_| crate::errc(ErrCode::CurrentSystemVolumeUnknown))?;
     let letter = value
         .trim()
         .chars()
         .next()
-        .ok_or_else(|| err("当前系统盘未知"))?
+        .ok_or_else(|| crate::errc(ErrCode::CurrentSystemVolumeUnknown))?
         .to_ascii_uppercase();
     volume_identity(letter)
 }
@@ -3263,7 +3249,7 @@ fn storage_device_number(letter: char) -> Result<u32, TaskError> {
 /// 不能靠字符串比盘符（没有盘符可比）。
 pub(crate) fn partition_of_device_path(device: &str) -> Result<(u32, u32), TaskError> {
     let name = crate::text_parsing::device_path_volume_name(device)
-        .ok_or_else(|| err(&format!("设备路径形态无法识别：{device}")))?;
+        .ok_or_else(|| crate::errc_with(ErrCode::DevicePathUnrecognized, &[device]))?;
     let path = format!(r"\\.\{name}");
     let disk = storage_device_number_at(&path)?;
     let physical = physical_volume_identity_at(&path, disk)?;
@@ -3381,10 +3367,10 @@ fn recovery_identity() -> Result<VolumeIdentity, TaskError> {
         Err(info_error) => {
             return recovery_identity_from_bcd()
                 .map_err(|bcd_error| {
-                    err(&format!(
-                        "WinRE 身份获取失败：reagentc /info 报错（{info_error}），\
-                         退回读 BCD 也失败（{bcd_error}）"
-                    ))
+                    crate::errc_with(
+                        ErrCode::WinreIdentityProbeFailed,
+                        &[&info_error.to_string(), &bcd_error.to_string()],
+                    )
                 });
         }
     };
@@ -3426,27 +3412,27 @@ fn recovery_identity_from_bcd() -> Result<VolumeIdentity, TaskError> {
         .and_then(|value| value.lines().next())
         .and_then(|line| line.split_whitespace().next())
         .map(str::to_owned)
-        .ok_or_else(|| err("BCD 未报告默认启动加载器"))?;
+        .ok_or_else(|| crate::errc(ErrCode::BcdNoDefaultLoader))?;
     // 该加载器的 recoverysequence（WinRE 恢复对象的 GUID）。
     let os_block = capture("bcdedit.exe", &["/enum", &default_loader, "/v"])?;
     let recovery_guid = extract_after(&os_block.to_ascii_lowercase(), "recoverysequence")
         .and_then(|value| value.lines().next())
         .and_then(|line| line.split_whitespace().next())
         .map(str::to_owned)
-        .ok_or_else(|| err("BCD 未报告系统恢复关联（recoverysequence）"))?;
+        .ok_or_else(|| crate::errc(ErrCode::BcdNoRecoverySequence))?;
     // 恢复对象的 device：`ramdisk=[X:]\Recovery\...\Winre.wim,{…}`。
     let recovery_block = capture("bcdedit.exe", &["/enum", &recovery_guid, "/v"])?;
     let device = extract_after(&recovery_block, "device")
         .and_then(|value| value.lines().next())
         .map(|line| line.trim().to_ascii_lowercase())
-        .ok_or_else(|| err("BCD 恢复对象未报告 device"))?;
+        .ok_or_else(|| crate::errc(ErrCode::BcdRecoveryNoDevice))?;
     // 从 `ramdisk=[x:]...` 里取卷标识（单字母盘符）。
     let letter = device
         .split_once("ramdisk=[")
         .and_then(|(_, rest)| rest.split_once(':'))
         .and_then(|(letter, _)| letter.chars().next())
         .filter(|c| c.is_ascii_alphanumeric())
-        .ok_or_else(|| err("BCD 恢复对象的 ramdisk 卷形态无法识别"))?;
+        .ok_or_else(|| crate::errc(ErrCode::BcdRecoveryRamdiskUnrecognized))?;
     volume_identity(letter.to_ascii_uppercase())
 }
 

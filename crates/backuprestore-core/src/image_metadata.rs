@@ -7,11 +7,11 @@ use std::path::{Path, PathBuf};
 
 pub fn index_metadata_path(image: &Path, index: u32) -> Result<PathBuf, TaskError> {
     if index == 0 {
-        return Err(TaskError::Invalid("WIM index cannot be zero".into()));
+        return Err(TaskError::coded("BR-CORE-064", "WIM index cannot be zero"));
     }
     let name = image
         .file_name()
-        .ok_or_else(|| TaskError::Invalid("image path has no file name".into()))?
+        .ok_or_else(|| TaskError::coded("BR-CORE-065", "image path has no file name"))?
         .to_string_lossy();
     Ok(image.with_file_name(format!("{name}.index-{index}.metadata.json")))
 }
@@ -19,7 +19,7 @@ pub fn legacy_metadata_path(image: &Path) -> Result<PathBuf, TaskError> {
     image
         .parent()
         .map(|p| p.join("metadata.json"))
-        .ok_or_else(|| TaskError::Invalid("image path has no parent".into()))
+        .ok_or_else(|| TaskError::coded("BR-CORE-066", "image path has no parent"))
 }
 pub fn read_index_metadata(image: &Path, index: u32) -> Result<BackupMetadata, TaskError> {
     let metadata: BackupMetadata = match read_json(index_metadata_path(image, index)?) {
@@ -30,7 +30,7 @@ pub fn read_index_metadata(image: &Path, index: u32) -> Result<BackupMetadata, T
         Err(error) => return Err(error),
     };
     if metadata.wim_index != index {
-        return Err(TaskError::Invalid(format!(
+        return Err(TaskError::coded("BR-CORE-067", format!(
             "backup metadata is for WIM index {}, not selected index {index}",
             metadata.wim_index
         )));
@@ -50,7 +50,7 @@ pub fn load_sidecars(
                 result.insert(index, value);
             }
             Ok(_) => {
-                return Err(TaskError::Invalid(format!(
+                return Err(TaskError::coded("BR-CORE-068", format!(
                     "sidecar index mismatch: {index}"
                 )));
             }
@@ -66,7 +66,7 @@ pub fn verify_appended_index(before: &[u32], after: &[u32]) -> Result<u32, TaskE
     let expected: Vec<u32> = (1..=before.len() as u32).collect();
     let next = before.len() as u32 + 1;
     if before != expected || after != (1..=next).collect::<Vec<_>>() {
-        return Err(TaskError::Invalid(format!(
+        return Err(TaskError::coded("BR-CORE-069", format!(
             "WIM append index read-back mismatch: before={before:?} after={after:?}"
         )));
     }
@@ -105,7 +105,7 @@ pub fn write_sidecars(
         let path = index_metadata_path(image, index)?;
         write_json_atomic(&path, &value)?;
         if read_json::<BackupMetadata>(&path)? != value {
-            return Err(TaskError::Invalid(format!(
+            return Err(TaskError::coded("BR-CORE-070", format!(
                 "sidecar write read-back mismatch: {}",
                 path.display()
             )));
@@ -128,7 +128,7 @@ fn remove_sidecar(path: &Path) -> Result<(), TaskError> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
-        Ok(_) => Err(TaskError::Invalid(format!(
+        Ok(_) => Err(TaskError::coded("BR-CORE-071", format!(
             "sidecar still exists: {}",
             path.display()
         ))),
@@ -147,7 +147,7 @@ pub fn sync_sidecars(
 }
 pub fn renumber_sidecars(image: &Path, total: u32, removed: u32) -> Result<Vec<u32>, TaskError> {
     if removed >= total {
-        return Err(TaskError::Invalid("cannot remove all WIM indexes".into()));
+        return Err(TaskError::coded("BR-CORE-072", "cannot remove all WIM indexes"));
     }
     let values = load_sidecars(image, &(1..=total).collect::<Vec<_>>())?;
     let values = remap_sidecars(&values, removed);

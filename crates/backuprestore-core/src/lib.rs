@@ -78,6 +78,26 @@ pub enum TaskError {
     Invalid(String),
     #[error("invalid state transition: {from:?} -> {to:?}")]
     InvalidTransition { from: Stage, to: Stage },
+    /// 带**稳定错误码**的失败。`code` 是契约：一旦发布不得更改，用户报障
+    /// 直接报码即可定位到唯一一行（core 侧一律 `BR-CORE-NNN`）。
+    /// `rendered` 是构造时的文案；core 没有语言层，这里保持英文技术原文，
+    /// **用户可见的双语文案在 CLI 的 `error_code` 表里**。
+    #[error("[{code}] {rendered}")]
+    Coded {
+        code: &'static str,
+        rendered: String,
+    },
+}
+
+impl TaskError {
+    /// 带稳定错误码的构造。码的分配原则：**一条语义一个码**，同一条文案
+    /// 出现在多处时共用一个码；码一旦发布不得重排（用户报障直接报码）。
+    pub fn coded(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Coded {
+            code,
+            rendered: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -699,21 +719,17 @@ impl Task {
     }
     pub fn validate(&self) -> Result<(), TaskError> {
         if self.version != TASK_VERSION {
-            return Err(TaskError::Invalid(format!(
+            return Err(TaskError::coded("BR-CORE-001", format!(
                 "unsupported task version {} (expected {})",
                 self.version, TASK_VERSION
             )));
         }
         validate_task_id(&self.task_id)?;
         if !self.boot_once {
-            return Err(TaskError::Invalid(
-                "recovery tasks must use one-time boot".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-002", "recovery tasks must use one-time boot"));
         }
         if self.boot_plan.boot_sequence_requested && self.boot_plan.previous_bcd_sha256.is_none() {
-            return Err(TaskError::Invalid(
-                "boot sequence requires a previous BCD hash for rollback".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-003", "boot sequence requires a previous BCD hash for rollback"));
         }
         if let Some(hash) = self.boot_plan.previous_bcd_sha256.as_deref() {
             validate_sha256_text("previous BCD", hash)?;
@@ -723,9 +739,7 @@ impl Task {
         }
         if let Some(payload) = self.payload.as_ref() {
             if payload.task_id != self.task_id {
-                return Err(TaskError::Invalid(
-                    "payload task id does not match task id".into(),
-                ));
+                return Err(TaskError::coded("BR-CORE-004", "payload task id does not match task id"));
             }
             for (name, hash) in [
                 ("recovery entry point", payload.recovery_sha256.as_str()),
@@ -742,25 +756,19 @@ impl Task {
             let image = self
                 .image
                 .as_ref()
-                .ok_or_else(|| TaskError::Invalid("image acceptance has no image".into()))?;
+                .ok_or_else(|| TaskError::coded("BR-CORE-005", "image acceptance has no image"))?;
             if accepted.index != image.index {
-                return Err(TaskError::Invalid(
-                    "image acceptance index does not match the task image index".into(),
-                ));
+                return Err(TaskError::coded("BR-CORE-006", "image acceptance index does not match the task image index"));
             }
             if accepted.accepted_size_bytes != image.size_bytes {
-                return Err(TaskError::Invalid(
-                    "image acceptance size does not match the task image size".into(),
-                ));
+                return Err(TaskError::coded("BR-CORE-007", "image acceptance size does not match the task image size"));
             }
             // 空哈希表示"仅大小"模式下的接受，不覆盖哈希判据；非空则必须与任务
             // 镜像哈希一致，否则离线侧会拿一个无人确认过的值当作已授权内容。
             if !accepted.accepted_sha256.is_empty() {
                 validate_sha256_text("accepted image", &accepted.accepted_sha256)?;
                 if !accepted.accepted_sha256.eq_ignore_ascii_case(&image.sha256) {
-                    return Err(TaskError::Invalid(
-                        "image acceptance hash does not match the task image hash".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-008", "image acceptance hash does not match the task image hash"));
                 }
             }
             if let Some(sidecar) = accepted.superseded_sidecar_sha256.as_deref() {
@@ -772,9 +780,7 @@ impl Task {
                 let source = self.source.as_ref().ok_or_else(|| missing("source"))?;
                 require_complete("probe source", source)?;
                 if self.image.is_some() || self.destination.is_some() || self.target.is_some() {
-                    return Err(TaskError::Invalid(
-                        "probe task cannot contain image, destination or target".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-009", "probe task cannot contain image, destination or target"));
                 }
             }
             Operation::Backup => {
@@ -786,23 +792,17 @@ impl Task {
                 require_complete("source", source)?;
                 require_complete("destination volume", &dest.volume)?;
                 if source.same_partition(&dest.volume) {
-                    return Err(TaskError::Invalid(
-                        "backup destination must differ from source partition".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-010", "backup destination must differ from source partition"));
                 }
                 if dest.volume.is_reserved_partition() {
-                    return Err(TaskError::Invalid(
-                        "EFI/MSR/Recovery partitions cannot store backup images".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-011", "EFI/MSR/Recovery partitions cannot store backup images"));
                 }
                 if let Some(path) = dest.absolute_path.as_deref() {
                     validate_absolute_path(path)?;
                 }
                 validate_relative_path(&dest.relative_path)?;
                 if self.image.is_some() || self.target.is_some() {
-                    return Err(TaskError::Invalid(
-                        "backup task cannot contain image or target".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-012", "backup task cannot contain image or target"));
                 }
             }
             Operation::RestoreExisting | Operation::CreateSecondary => {
@@ -813,79 +813,52 @@ impl Task {
                 require_complete("image volume", &image.volume)?;
                 require_complete("target volume", &target.volume)?;
                 if source.same_partition(&image.volume) {
-                    return Err(TaskError::Invalid(
-                        "image volume must differ from source volume".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-013", "image volume must differ from source volume"));
                 }
                 if image.volume.is_reserved_partition() {
-                    return Err(TaskError::Invalid(
-                        "EFI/MSR/Recovery partitions cannot store restore images".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-014", "EFI/MSR/Recovery partitions cannot store restore images"));
                 }
                 if let Some(path) = image.absolute_path.as_deref() {
                     validate_absolute_path(path)?;
                 }
                 if image.sha256.len() != 64 || !image.sha256.chars().all(|c| c.is_ascii_hexdigit())
                 {
-                    return Err(TaskError::Invalid(
-                        "image sha256 must be 64 hex characters".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-015", "image sha256 must be 64 hex characters"));
                 }
                 if image.index == 0 {
-                    return Err(TaskError::Invalid(
-                        "WIM index must be greater than zero".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-016", "WIM index must be greater than zero"));
                 }
                 if image.size_bytes == 0 {
-                    return Err(TaskError::Invalid(
-                        "restore image size must be greater than zero".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-017", "restore image size must be greater than zero"));
                 }
                 if target.minimum_size_bytes == 0 {
-                    return Err(TaskError::Invalid(
-                        "restore target minimum size must be greater than zero".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-018", "restore target minimum size must be greater than zero"));
                 }
                 validate_relative_path(&image.relative_path)?;
                 if image.volume.same_partition(&target.volume) {
-                    return Err(TaskError::Invalid(
-                        "image volume must differ from restore target".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-019", "image volume must differ from restore target"));
                 }
                 if target.volume.is_reserved_partition() {
-                    return Err(TaskError::Invalid(
-                        "EFI/MSR/Recovery partitions cannot be restore targets".into(),
-                    ));
+                    return Err(TaskError::coded("BR-CORE-020", "EFI/MSR/Recovery partitions cannot be restore targets"));
                 }
                 match self.operation {
                     Operation::RestoreExisting => {
                         if !source.same_partition(&target.volume) {
-                            return Err(TaskError::Invalid(
-                                "restore-existing target must be the existing Windows source volume".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-021", "restore-existing target must be the existing Windows source volume"));
                         }
                         if target.role != TargetRole::ExistingWindows {
-                            return Err(TaskError::Invalid(
-                                "restore-existing target role must be existing-windows".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-022", "restore-existing target role must be existing-windows"));
                         }
                         if !matches!(self.boot_plan.mode, BootMode::ReturnExisting) {
-                            return Err(TaskError::Invalid(
-                                "restore-existing must return to the existing boot entry".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-023", "restore-existing must return to the existing boot entry"));
                         }
                     }
                     Operation::CreateSecondary => {
                         if source.same_partition(&target.volume) {
-                            return Err(TaskError::Invalid(
-                                "secondary target must differ from the existing Windows source"
-                                    .into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-024", "secondary target must differ from the existing Windows source"));
                         }
                         if target.role != TargetRole::NewWindows {
-                            return Err(TaskError::Invalid(
-                                "create-secondary target role must be new-windows".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-025", "create-secondary target role must be new-windows"));
                         }
                         if target
                             .boot_menu_name
@@ -894,19 +867,13 @@ impl Task {
                             .trim()
                             .is_empty()
                         {
-                            return Err(TaskError::Invalid(
-                                "create-secondary requires a boot menu name".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-026", "create-secondary requires a boot menu name"));
                         }
                         if !valid_menu_name(target.boot_menu_name.as_deref().unwrap_or("")) {
-                            return Err(TaskError::Invalid(
-                                "create-secondary boot menu name contains control characters or is too long".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-027", "create-secondary boot menu name contains control characters or is too long"));
                         }
                         if !matches!(self.boot_plan.mode, BootMode::AddSecondary) {
-                            return Err(TaskError::Invalid(
-                                "create-secondary must use add-secondary boot mode".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-028", "create-secondary must use add-secondary boot mode"));
                         }
                         if self
                             .boot_plan
@@ -916,14 +883,10 @@ impl Task {
                             .trim()
                             .is_empty()
                         {
-                            return Err(TaskError::Invalid(
-                                "create-secondary requires a boot plan menu name".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-029", "create-secondary requires a boot plan menu name"));
                         }
                         if !valid_menu_name(self.boot_plan.menu_name.as_deref().unwrap_or("")) {
-                            return Err(TaskError::Invalid(
-                                "create-secondary boot plan menu name contains control characters or is too long".into(),
-                            ));
+                            return Err(TaskError::coded("BR-CORE-030", "create-secondary boot plan menu name contains control characters or is too long"));
                         }
                     }
                     Operation::Probe | Operation::Backup => unreachable!(),
@@ -936,16 +899,12 @@ impl Task {
             .ok_or_else(|| missing("workspace volume"))?;
         require_complete("workspace volume", workspace_volume)?;
         if workspace_volume.is_reserved_partition() {
-            return Err(TaskError::Invalid(
-                "EFI/MSR/Recovery partitions cannot store workspace files".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-031", "EFI/MSR/Recovery partitions cannot store workspace files"));
         }
         if let Some(target) = self.target.as_ref()
             && workspace_volume.same_partition(&target.volume)
         {
-            return Err(TaskError::Invalid(
-                "workspace volume must differ from restore target".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-032", "workspace volume must differ from restore target"));
         }
         Ok(())
     }
@@ -985,7 +944,7 @@ fn default_progress(stage: Stage) -> u8 {
     }
 }
 fn missing(name: &str) -> TaskError {
-    TaskError::Invalid(format!("missing {name}"))
+    TaskError::coded("BR-CORE-033", format!("missing {name}"))
 }
 fn valid_menu_name(value: &str) -> bool {
     value.chars().count() <= 256 && !value.chars().any(char::is_control)
@@ -999,9 +958,7 @@ pub fn canonical_compression(value: &str) -> Result<&'static str, TaskError> {
     match value {
         "fast" => Ok("fast"),
         "none" => Ok("none"),
-        _ => Err(TaskError::Invalid(
-            "compression must be fast or none; max compression is not supported".into(),
-        )),
+        _ => Err(TaskError::coded("BR-CORE-034", "compression must be fast or none; max compression is not supported")),
     }
 }
 pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
@@ -1010,11 +967,11 @@ pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
 fn canonical_task_id(value: &str) -> Result<String, TaskError> {
     Uuid::parse_str(value)
         .map(|id| id.to_string())
-        .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))
+        .map_err(|_| TaskError::coded("BR-CORE-035", "task_id is not a UUID"))
 }
 fn validate_sha256_text(name: &str, value: &str) -> Result<(), TaskError> {
     if value.len() != 64 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(TaskError::Invalid(format!(
+        return Err(TaskError::coded("BR-CORE-036", format!(
             "{name} sha256 must be 64 hex characters"
         )));
     }
@@ -1024,15 +981,13 @@ fn require_complete(name: &str, identity: &VolumeIdentity) -> Result<(), TaskErr
     if identity.is_complete() {
         Ok(())
     } else {
-        Err(TaskError::Invalid(format!("{name} identity is incomplete")))
+        Err(TaskError::coded("BR-CORE-037", format!("{name} identity is incomplete")))
     }
 }
 
 pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
     if value.trim().is_empty() || value.contains('\0') || value.chars().any(char::is_control) {
-        return Err(TaskError::Invalid(
-            "path must be a non-empty relative path".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-038", "path must be a non-empty relative path"));
     }
     // Tasks are exchanged between Unix tooling and Windows. Normalize the
     // Windows separator before checking so `..\\x` cannot bypass this guard
@@ -1040,18 +995,14 @@ pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
     let normalized = value.replace('\\', "/");
     let path = Path::new(&normalized);
     if path.is_absolute() || normalized.as_bytes().get(1) == Some(&b':') {
-        return Err(TaskError::Invalid(
-            "path must be a non-empty relative path".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-038", "path must be a non-empty relative path"));
     }
     for component in path.components() {
         if matches!(
             component,
             Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_)
         ) {
-            return Err(TaskError::Invalid(
-                "path may not escape the volume root".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-039", "path may not escape the volume root"));
         }
     }
     Ok(())
@@ -1065,28 +1016,20 @@ pub fn validate_relative_path(value: &str) -> Result<(), TaskError> {
 /// safely re-mount the same partition even if its drive letter changes.
 pub fn validate_absolute_path(value: &str) -> Result<(), TaskError> {
     if value.trim().is_empty() || value.contains('\0') || value.chars().any(char::is_control) {
-        return Err(TaskError::Invalid(
-            "path must be a non-empty Windows absolute path".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-040", "path must be a non-empty Windows absolute path"));
     }
     let normalized = value.replace('/', "\\");
     let bytes = normalized.as_bytes();
     if bytes.len() < 4 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
-        return Err(TaskError::Invalid(
-            "path must use a drive-root form such as B:\\Backups\\Windows.wim".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-041", "path must use a drive-root form such as B:\\Backups\\Windows.wim"));
     }
     let rest = &normalized[3..];
     if rest.ends_with('\\') {
-        return Err(TaskError::Invalid(
-            "absolute image path must identify a file, not a volume root".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-042", "absolute image path must identify a file, not a volume root"));
     }
     for part in rest.split('\\') {
         if part.is_empty() || part == "." || part == ".." {
-            return Err(TaskError::Invalid(
-                "absolute image path contains an invalid component".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-043", "absolute image path contains an invalid component"));
         }
     }
     Ok(())
@@ -1113,7 +1056,7 @@ pub fn verify_sha256(path: impl AsRef<Path>, expected: &str) -> Result<(), TaskE
     if actual.eq_ignore_ascii_case(expected) {
         Ok(())
     } else {
-        Err(TaskError::Invalid(format!(
+        Err(TaskError::coded("BR-CORE-044", format!(
             "sha256 mismatch: expected {expected}, got {actual}"
         )))
     }
@@ -1123,7 +1066,7 @@ pub fn verify_image_file(path: impl AsRef<Path>, image: &ImageSpec) -> Result<()
     let path = path.as_ref();
     let size = fs::metadata(path)?.len();
     if image.size_bytes != 0 && size != image.size_bytes {
-        return Err(TaskError::Invalid(format!(
+        return Err(TaskError::coded("BR-CORE-045", format!(
             "image size mismatch: expected {}, got {size}",
             image.size_bytes
         )));
@@ -1140,7 +1083,7 @@ pub fn validate_payload_files(
     staged_winre: impl AsRef<Path>,
 ) -> Result<(), TaskError> {
     if manifest.task_id.trim().is_empty() {
-        return Err(TaskError::Invalid("payload task id is empty".into()));
+        return Err(TaskError::coded("BR-CORE-046", "payload task id is empty"));
     }
     for (name, path, expected) in [
         (
@@ -1161,7 +1104,7 @@ pub fn validate_payload_files(
         ),
     ] {
         if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(TaskError::Invalid(format!(
+            return Err(TaskError::coded("BR-CORE-047", format!(
                 "{name} payload hash is not SHA-256"
             )));
         }
@@ -1178,7 +1121,7 @@ pub fn write_json_atomic<T: Serialize>(path: impl AsRef<Path>, value: &T) -> Res
     let path = path.as_ref();
     let parent = path
         .parent()
-        .ok_or_else(|| TaskError::Invalid("JSON path has no parent".into()))?;
+        .ok_or_else(|| TaskError::coded("BR-CORE-048", "JSON path has no parent"))?;
     fs::create_dir_all(parent)?;
     let tmp = path.with_extension(format!(
         "{}.tmp",
@@ -1295,9 +1238,7 @@ impl TaskStore {
         task.validate()?;
         let dir = self.task_dir(&task.task_id)?;
         if dir.exists() {
-            return Err(TaskError::Invalid(
-                "task directory already exists; refusing to overwrite it".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-049", "task directory already exists; refusing to overwrite it"));
         }
         fs::create_dir_all(&dir)?;
         write_json_atomic(self.task_path(&task.task_id)?, task)?;
@@ -1318,13 +1259,11 @@ impl TaskStore {
         self.replay_state_transaction(task_id)?;
         let task: Task = read_json(self.task_path(task_id)?)?;
         let requested_id = Uuid::parse_str(task_id)
-            .map_err(|_| TaskError::Invalid("task_id is not a UUID".into()))?;
+            .map_err(|_| TaskError::coded("BR-CORE-035", "task_id is not a UUID"))?;
         let actual_id = Uuid::parse_str(&task.task_id)
-            .map_err(|_| TaskError::Invalid("task file task_id is not a UUID".into()))?;
+            .map_err(|_| TaskError::coded("BR-CORE-050", "task file task_id is not a UUID"))?;
         if actual_id != requested_id {
-            return Err(TaskError::Invalid(
-                "task file id does not match requested task id".into(),
-            ));
+            return Err(TaskError::coded("BR-CORE-051", "task file id does not match requested task id"));
         }
         task.validate()?;
         Ok(task)
@@ -1349,7 +1288,7 @@ impl TaskStore {
             }
             let path = entry.path();
             let Some(id) = path.file_name().and_then(|name| name.to_str()) else {
-                return Err(TaskError::Invalid(format!(
+                return Err(TaskError::coded("BR-CORE-052", format!(
                     "existing task directory has a non-Unicode name: {}",
                     path.display()
                 )));
@@ -1366,7 +1305,7 @@ impl TaskStore {
             // 非终态任务仍然全程 fail-closed（下面的 validate + 一致性比对）：它的
             // 启动项、载荷或目标可能还等着恢复，读不懂必须报错给用户看，不能静默跳过。
             let status: StatusRecord = read_json(path.join("status.json")).map_err(|error| {
-                TaskError::Invalid(format!(
+                TaskError::coded("BR-CORE-053", format!(
                     "cannot inspect status for existing task {id} at {}: {error}",
                     path.display()
                 ))
@@ -1375,20 +1314,20 @@ impl TaskStore {
                 continue;
             }
             let task: Task = read_json(path.join("task.json")).map_err(|error| {
-                TaskError::Invalid(format!(
+                TaskError::coded("BR-CORE-054", format!(
                     "cannot inspect existing task {id} at {}: {error}",
                     path.display()
                 ))
             })?;
             task.validate().map_err(|error| {
-                TaskError::Invalid(format!("existing task {id} is invalid: {error}"))
+                TaskError::coded("BR-CORE-055", format!("existing task {id} is invalid: {error}"))
             })?;
             if task.task_id != id
                 || status.task_id != task.task_id
                 || status.operation != task.operation
                 || status.stage != task.status
             {
-                return Err(TaskError::Invalid(format!(
+                return Err(TaskError::coded("BR-CORE-056", format!(
                     "existing task {id} has inconsistent task/status records; inspect {} before creating another task",
                     path.display()
                 )));
@@ -1416,7 +1355,7 @@ impl TaskStore {
         error: impl Into<String>,
     ) -> Result<StatusRecord, TaskError> {
         if !task.status.can_transition_to(Stage::Failed) {
-            return Err(TaskError::Invalid(format!(
+            return Err(TaskError::coded("BR-CORE-057", format!(
                 "cannot fail task from {:?}",
                 task.status
             )));
@@ -1442,7 +1381,7 @@ impl TaskStore {
         error: impl Into<String>,
     ) -> Result<StatusRecord, TaskError> {
         if !task.status.is_incomplete() {
-            return Err(TaskError::Invalid("终态任务不能记录可重试错误".into()));
+            return Err(TaskError::coded("BR-CORE-058", "终态任务不能记录可重试错误"));
         }
         let status = StatusRecord {
             task_id: task.task_id.clone(),
@@ -1470,11 +1409,11 @@ impl TaskStore {
             || status.stage != task.status
             || status.task_id != task.task_id
         {
-            return Err(TaskError::Invalid("未完成任务禁止清理恢复材料".into()));
+            return Err(TaskError::coded("BR-CORE-059", "未完成任务禁止清理恢复材料"));
         }
         let mount = path.join("mount");
         if mount.is_dir() && fs::read_dir(&mount)?.next().is_some() {
-            return Err(TaskError::Invalid(format!(
+            return Err(TaskError::coded("BR-CORE-060", format!(
                 "task {task_id} still has a mounted WinRE tree"
             )));
         }
@@ -1567,30 +1506,24 @@ pub fn validate_operation(
     require_complete("image", image)?;
     require_complete("target", target)?;
     if source.same_partition(image) {
-        return Err(TaskError::Invalid(
-            "image volume must differ from source volume".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-013", "image volume must differ from source volume"));
     }
     if matches!(
         operation,
         Operation::RestoreExisting | Operation::CreateSecondary
     ) && image.same_partition(target)
     {
-        return Err(TaskError::Invalid(
-            "image volume must differ from restore target".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-019", "image volume must differ from restore target"));
     }
     if target.is_reserved_partition() {
-        return Err(TaskError::Invalid(
-            "reserved partition cannot be target".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-061", "reserved partition cannot be target"));
     }
     Ok(())
 }
 pub fn ensure_capacity(target_size: u64, metadata: &BackupMetadata) -> Result<(), TaskError> {
     let required = metadata.required_target_size();
     if target_size < required {
-        return Err(TaskError::Invalid(format!(
+        return Err(TaskError::coded("BR-CORE-062", format!(
             "target disk space insufficient: {target_size} < {required}"
         )));
     }
@@ -1609,7 +1542,7 @@ pub fn ensure_bitlocker_accessible(states: &[BitLockerState]) -> Result<(), Task
         .iter()
         .any(|s| matches!(s, BitLockerState::Protected | BitLockerState::Unknown))
     {
-        return Err(TaskError::Invalid("BitLocker is enabled or volume accessibility is unknown; suspend/unlock manually before V1 recovery".into()));
+        return Err(TaskError::coded("BR-CORE-063", "BitLocker is enabled or volume accessibility is unknown; suspend/unlock manually before V1 recovery"));
     }
     Ok(())
 }

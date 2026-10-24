@@ -34,6 +34,7 @@
 //!    簿记（`ReBootEntry::wim_volume`）记卷身份而非字母，「这个卷的 loader 是哪个
 //!    条目」也必须按 GUID 定位——硬编码盘符的代码在盘符重排后必然找错对象。
 
+use crate::error_code::ErrCode;
 use backuprestore_core::{TaskError, VolumeIdentity, read_json, write_json_atomic};
 use std::fs;
 #[cfg(windows)]
@@ -113,7 +114,7 @@ impl ReBootEntry {
 #[cfg(windows)]
 fn bcd(args: &[&str]) -> Result<String, TaskError> {
     // C: 可已被擦除；使用当前恢复环境的系统工具，WinRE 中位于 X:。
-    let root = std::env::var_os("SystemRoot").ok_or_else(|| crate::err("SystemRoot 未知"))?;
+    let root = std::env::var_os("SystemRoot").ok_or_else(|| crate::errc(ErrCode::SystemRootUnknown))?;
     let output = Command::new(PathBuf::from(root).join("System32\\bcdedit.exe"))
         .args(args)
         .stdin(Stdio::null())
@@ -300,9 +301,7 @@ fn dos_device_of(letter: char) -> Result<String, TaskError> {
     // 返回值含结尾 NUL 的字符数；0 = 失败。
     let written = unsafe { QueryDosDeviceW(name.as_ptr(), buffer.as_mut_ptr(), 1024) };
     if written == 0 {
-        return Err(crate::err(&format!(
-            "QueryDosDevice({letter}:) 失败：卷的 NT 设备路径未知，拒绝写盘符形式规格"
-        )));
+        return Err(crate::errc_with(ErrCode::DevicePathQueryFailed, &[&letter.to_string()]));
     }
     // 返回的是 NUL 结尾（可能多条以 NUL 分隔）的 UTF-16；只取第一条，且必须
     // 截到首个 NUL 为止——多带一个 NUL 字节会让命令参数直接被拒
@@ -315,9 +314,7 @@ fn dos_device_of(letter: char) -> Result<String, TaskError> {
     if !text.starts_with("\\\\?\\") && text.starts_with("\\Device\\") {
         return Ok(text);
     }
-    Err(crate::err(&format!(
-        "盘符 {letter}: 的设备路径形态非预期：{text}"
-    )))
+    Err(crate::errc_with(ErrCode::DevicePathUnexpected, &[&letter.to_string(), &text]))
 }
 
 pub fn copy_into_staging(
@@ -669,7 +666,7 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         if !crate::pe_safety::probe_file(&root, &[RE_STAGING_DIR, segment, name])?
             || fs::metadata(staging.join(name))?.len() == 0
         {
-            return Err(crate::err("续跑载荷缺失、为空或路径不可安全访问"));
+            return Err(crate::errc(ErrCode::ResumePayloadUnsafe));
         }
     }
     crate::resume_safety::verify_chain(

@@ -1,4 +1,5 @@
 //! 第二系统必须沿用镜像中的系统盘符，避免克隆系统从 D: 启动却仍访问 C:。
+use crate::error_code::ErrCode;
 use backuprestore_core::TaskError;
 
 fn system_letter(text: &str) -> Result<char, TaskError> {
@@ -14,21 +15,21 @@ fn system_letter(text: &str) -> Result<char, TaskError> {
         })
         .collect();
     let [("REG_SZ", path)] = rows.as_slice() else {
-        return Err(crate::err("无法唯一读取第二系统原系统目录"));
+        return Err(crate::errc(ErrCode::SecondarySystemDirAmbiguous));
     };
     let bytes = path.as_bytes();
     if bytes.len() != 10
         || !bytes[0].is_ascii_alphabetic()
         || !path[1..].eq_ignore_ascii_case(r":\Windows")
     {
-        return Err(crate::err("第二系统的原系统目录不受支持"));
+        return Err(crate::errc(ErrCode::SecondarySystemDirUnsupported));
     }
     Ok((bytes[0] as char).to_ascii_uppercase())
 }
 
 fn gpt_mapping(guid: &str) -> Result<String, TaskError> {
     let id = uuid::Uuid::parse_str(guid.trim_matches(['{', '}']))
-        .map_err(|_| crate::err("第二系统分区 GUID 无效"))?;
+        .map_err(|_| crate::errc(ErrCode::SecondaryPartitionGuidInvalid))?;
     Ok(b"DMIO:ID:"
         .iter()
         .chain(id.to_bytes_le().iter())
@@ -57,7 +58,7 @@ fn drive_mappings(text: &str) -> Result<Vec<(String, String)>, TaskError> {
                 .iter()
                 .any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(name))
         {
-            return Err(crate::err("第二系统盘符映射格式不明确"));
+            return Err(crate::errc(ErrCode::SecondaryLetterMappingAmbiguous));
         }
         rows.push((name.to_string(), parts[2].to_ascii_uppercase()));
     }
@@ -77,7 +78,7 @@ fn with_hive<T>(
     match (result, unload) {
         (Ok(value), Ok(_)) => Ok(value),
         (Err(error), Ok(_)) => Err(error),
-        (_, Err(error)) => Err(crate::err(&format!("第二系统配置卸载失败：{error}"))),
+        (_, Err(error)) => Err(crate::errc_with(ErrCode::SecondaryHiveUnloadFailed, &[&error.to_string()])),
     }
 }
 
@@ -93,13 +94,13 @@ pub(crate) fn repair(
     use crate::{capture_logged, pe_safety, windows_prepare as wp};
     use std::fs;
     pe_safety::verify_binding(expected, &wp::volume_identity(letter)?, false)?;
-    let running = std::env::var("SystemDrive").map_err(|_| crate::err("当前系统盘未知"))?;
+    let running = std::env::var("SystemDrive").map_err(|_| crate::errc(ErrCode::CurrentSystemVolumeUnknown))?;
     if running.eq_ignore_ascii_case(&format!("{letter}:")) {
-        return Err(crate::err("拒绝修改当前系统的离线配置"));
+        return Err(crate::errc(ErrCode::RefuseModifyCurrentSystemHive));
     }
     for hive in ["SYSTEM", "SOFTWARE"] {
         if !pe_safety::probe_file(target, &["Windows", "System32", "config", hive])? {
-            return Err(crate::err("第二系统缺少注册表配置"));
+            return Err(crate::errc(ErrCode::SecondaryMissingHive));
         }
     }
     let config = target.join("Windows\\System32\\config");
@@ -131,7 +132,7 @@ pub(crate) fn repair(
             if !saved.exists() {
                 fs::copy(file.path(), &saved)?;
                 if crate::sha256_file(&saved)? != crate::sha256_file(file.path())? {
-                    return Err(crate::err("第二系统配置备份摘要不符"));
+                    return Err(crate::errc(ErrCode::SecondaryConfigDigestMismatch));
                 }
             }
         }
@@ -187,7 +188,7 @@ pub(crate) fn repair(
                     && !after.contains(&(name.clone(), data.clone()))
             })
         {
-            return Err(crate::err("第二系统盘符映射回读不符"));
+            return Err(crate::errc(ErrCode::SecondaryLetterReadbackMismatch));
         }
         Ok(())
     })?;

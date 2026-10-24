@@ -41,9 +41,7 @@ pub fn verify_formatted_volume(
         || before.partition_offset != after.partition_offset
         || before.partition_size != after.partition_size
     {
-        return Err(TaskError::Invalid(
-            "formatted partition identity/geometry mismatch".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-076", "formatted partition identity/geometry mismatch"));
     }
     // 2026-10-14 用户裁定：不再强制校验文件系统必须是 NTFS（目标可能是
     // exFAT/FAT32 等数据卷文件系统）。保留的强判据：卷序列号非空且已改变
@@ -55,9 +53,7 @@ pub fn verify_formatted_volume(
             .volume_serial
             .eq_ignore_ascii_case(&after.volume_serial)
     {
-        return Err(TaskError::Invalid(
-            "format not verified: expected a new volume serial".into(),
-        ));
+        return Err(TaskError::coded("BR-CORE-077", "format not verified: expected a new volume serial"));
     }
     Ok(())
 }

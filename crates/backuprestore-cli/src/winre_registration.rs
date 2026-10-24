@@ -8,6 +8,7 @@
 //! 身份不符、ESP 与活动 BCD 加载器不一致等**安全闸门仍旧硬失败**，
 //! 缺 `Winre.wim` / `boot.sdi` 恢复原件也维持硬失败（既有故障测试矩阵锁定，
 //! 超出本次裁定范围）。
+use crate::error_code::ErrCode;
 use backuprestore_core::TaskError;
 
 #[cfg(all(test, windows))]
@@ -54,7 +55,7 @@ fn parse_info(text: &str) -> Result<Info, TaskError> {
         })
         .collect();
     if states.len() != 1 {
-        return Err(crate::err("无法唯一确认 WinRE 启用状态"));
+        return Err(crate::errc(ErrCode::WinreStateAmbiguous));
     }
     let locations: Vec<_> = text
         .lines()
@@ -67,7 +68,7 @@ fn parse_info(text: &str) -> Result<Info, TaskError> {
         })
         .collect();
     if locations.len() > 1 {
-        return Err(crate::err("WinRE 注册位置不唯一"));
+        return Err(crate::errc(ErrCode::WinreLocationNotUnique));
     }
     let identifiers: Vec<_> = text
         .lines()
@@ -84,7 +85,7 @@ fn parse_info(text: &str) -> Result<Info, TaskError> {
             Some(format!("{{{}}}", value.to_ascii_lowercase()))
         }
         [] if !states[0] => None,
-        _ => return Err(crate::err("WinRE 注册标识符缺失或不唯一")),
+        _ => return Err(crate::errc(ErrCode::WinreIdentifierAmbiguous)),
     };
     Ok(Info {
         enabled: states[0],
@@ -105,7 +106,7 @@ fn field(block: &str, name: &str) -> Result<String, TaskError> {
         })
         .collect();
     if values.len() != 1 {
-        return Err(crate::err(&format!("BCD 字段缺失或重复：{name}")));
+        return Err(crate::errc_with(ErrCode::BcdFieldDuplicate, &[name]));
     }
     Ok(values[0].clone())
 }
@@ -128,7 +129,7 @@ fn object<'a>(text: &'a str, id: &str) -> Result<&'a str, TaskError> {
         })
         .collect();
     if blocks.len() != 1 {
-        return Err(crate::err("BCD 对象缺失或重复"));
+        return Err(crate::errc(ErrCode::BcdObjectDuplicate));
     }
     Ok(blocks[0])
 }
@@ -218,22 +219,22 @@ fn verify_with_payload(
             .as_deref()
             .is_some_and(|location| location.eq_ignore_ascii_case(&payload.location))
     {
-        return Err(crate::err("WinRE 未启用或注册位置与目标分区不符"));
+        return Err(crate::errc(ErrCode::WinreNotEnabledOrWrongLocation));
     }
     if !crate::pe_safety::target_loader(text, system_letter)?.eq_ignore_ascii_case(loader) {
-        return Err(crate::err("WinRE 关联的目标系统加载器已变化"));
+        return Err(crate::errc(ErrCode::WinreLoaderChanged));
     }
     let text = text.replace("\r\n", "\n");
     let os = object(&text, loader)?;
     let recovery = field(os, "recoverysequence")?;
     if crate::bcd_identifier_from_line(&recovery) != Some(recovery.as_str()) {
-        return Err(crate::err("系统恢复关联不是唯一 GUID"));
+        return Err(crate::errc(ErrCode::RecoveryGuidNotUnique));
     }
     if field(os, "recoveryenabled")? != "yes" {
-        return Err(crate::err("系统恢复启动未启用"));
+        return Err(crate::errc(ErrCode::RecoveryEntryNotEnabled));
     }
     if info.recovery_id.as_deref() != Some(recovery.as_str()) {
-        return Err(crate::err("BCD 恢复关联与 WinRE 注册标识符不一致"));
+        return Err(crate::errc(ErrCode::RecoveryBcdMismatch));
     }
     verify_recovery_object(&text, &recovery, payload)
 }
@@ -242,14 +243,14 @@ fn verify_with_payload(
 fn split_ramdisk_device(device: &str) -> Result<(String, String, String), TaskError> {
     let rest = device
         .strip_prefix("ramdisk=")
-        .ok_or_else(|| crate::err("恢复加载器设备不是内存盘"))?;
+        .ok_or_else(|| crate::errc(ErrCode::RecoveryDeviceNotRamdisk))?;
     let (token, rest) = rest
         .strip_prefix('[')
         .and_then(|value| value.split_once(']'))
-        .ok_or_else(|| crate::err("恢复加载器设备缺少分区标识"))?;
+        .ok_or_else(|| crate::errc(ErrCode::RecoveryDeviceNoPartitionId))?;
     let (path, options) = rest
         .rsplit_once(',')
-        .ok_or_else(|| crate::err("恢复加载器设备缺少选项对象"))?;
+        .ok_or_else(|| crate::errc(ErrCode::RecoveryDeviceNoOptionObject))?;
     Ok((
         token.trim().to_string(),
         path.trim().to_string(),
@@ -286,7 +287,7 @@ fn verify_partition_token(
     if lowered.starts_with(r"\device\") || lowered.starts_with(r"\\.\") {
         return verify_partition_token_by_device(token, payload, label);
     }
-    Err(crate::err(&format!("{label}的分区标识无法识别：{token}")))
+    Err(crate::errc_with(ErrCode::PartitionTokenUnrecognized, &[label, token]))
 }
 
 #[cfg(windows)]
@@ -299,10 +300,15 @@ fn verify_partition_token_by_letter(
     if live.disk_number == Some(payload.disk) && live.partition_number == Some(payload.partition) {
         return Ok(());
     }
-    Err(crate::err(&format!(
-        "{label}指向的 {letter}: 不是登记位置所在的 disk{}/partition{}",
-        payload.disk, payload.partition
-    )))
+    Err(crate::errc_with(
+        ErrCode::PartitionLetterMismatch,
+        &[
+            label,
+            &letter.to_string(),
+            &payload.disk.to_string(),
+            &payload.partition.to_string(),
+        ],
+    ))
 }
 
 #[cfg(not(windows))]
@@ -311,7 +317,7 @@ fn verify_partition_token_by_letter(
     _payload: &RecoveryPayload,
     _label: &str,
 ) -> Result<(), TaskError> {
-    Err(crate::err("恢复对象分区核对仅在 Windows 上可用"))
+    Err(crate::errc(ErrCode::PartitionVerifyWindowsOnly))
 }
 
 #[cfg(windows)]
@@ -324,10 +330,17 @@ fn verify_partition_token_by_device(
     if disk == payload.disk && partition == payload.partition {
         return Ok(());
     }
-    Err(crate::err(&format!(
-        "{label}指向的 {token} 是 disk{disk}/partition{partition}，不是登记位置所在的 disk{}/partition{}",
-        payload.disk, payload.partition
-    )))
+    Err(crate::errc_with(
+        ErrCode::PartitionDeviceMismatch,
+        &[
+            label,
+            token,
+            &disk.to_string(),
+            &partition.to_string(),
+            &payload.disk.to_string(),
+            &payload.partition.to_string(),
+        ],
+    ))
 }
 
 #[cfg(not(windows))]
@@ -336,7 +349,7 @@ fn verify_partition_token_by_device(
     _payload: &RecoveryPayload,
     _label: &str,
 ) -> Result<(), TaskError> {
-    Err(crate::err("恢复对象分区核对仅在 Windows 上可用"))
+    Err(crate::errc(ErrCode::PartitionVerifyWindowsOnly))
 }
 
 fn verify_recovery_object(
@@ -348,26 +361,26 @@ fn verify_recovery_object(
     let device = field(re, "device")?;
     let (token, path, options) = split_ramdisk_device(&device)?;
     if !path.eq_ignore_ascii_case("\\recovery\\windowsre\\winre.wim") {
-        return Err(crate::err("恢复加载器未指向原始 Winre.wim"));
+        return Err(crate::errc(ErrCode::RecoveryLoaderNotOriginalWim));
     }
     if crate::bcd_identifier_from_line(&options) != Some(options.as_str()) {
-        return Err(crate::err("恢复加载器选项对象标识符无效"));
+        return Err(crate::errc(ErrCode::RecoveryLoaderOptionInvalid));
     }
     verify_partition_token(&token, payload, "恢复加载器设备")?;
     if field(re, "osdevice")? != device
         || field(re, "path")? != "\\windows\\system32\\winload.efi"
         || field(re, "winpe")? != "yes"
     {
-        return Err(crate::err("恢复加载器设备或执行模式不完整"));
+        return Err(crate::errc(ErrCode::RecoveryLoaderIncomplete));
     }
     let ramdisk = object(text, &options)?;
     let sdi_device = field(ramdisk, "ramdisksdidevice")?;
     let sdi_token = sdi_device
         .strip_prefix("partition=")
-        .ok_or_else(|| crate::err("恢复内存盘启动设备格式无效"))?;
+        .ok_or_else(|| crate::errc(ErrCode::RamdiskDeviceFormatInvalid))?;
     verify_partition_token(sdi_token, payload, "恢复内存盘启动设备")?;
     if field(ramdisk, "ramdisksdipath")? != "\\recovery\\windowsre\\boot.sdi" {
-        return Err(crate::err("恢复内存盘启动文件不在目标注册目录"));
+        return Err(crate::errc(ErrCode::RamdiskFileNotInTarget));
     }
     Ok(())
 }
@@ -398,9 +411,7 @@ fn run(backend: &mut impl Backend) -> Result<RegistrationOutcome, TaskError> {
     if backend.reset_clone(&before)? {
         before = backend.info()?;
         if before.enabled {
-            return Err(crate::err(
-                "第二系统克隆配置重置后仍启用，拒绝修改原恢复对象",
-            ));
+            return Err(crate::errc(ErrCode::SecondaryCloneStillEnabled));
         }
     }
     // BCDBoot 可重建系统加载器；注册仍启用并不代表新加载器已有恢复关联。
@@ -493,9 +504,9 @@ fn repair_with_mode(
             let location = info
                 .location
                 .clone()
-                .ok_or_else(|| crate::err("已启用 WinRE 缺少注册位置"))?;
+                .ok_or_else(|| crate::errc(ErrCode::WinreLocationMissing))?;
             let (disk, partition) = parse_recovery_location(&location).ok_or_else(|| {
-                crate::err(&format!("已启用 WinRE 的注册位置无法解析：{location}"))
+                crate::errc_with(ErrCode::WinreLocationUnparsable, &[&location])
             })?;
             if location.eq_ignore_ascii_case(&self.location) {
                 return Ok(RecoveryPayload {
@@ -513,9 +524,10 @@ fn repair_with_mode(
                 let path = format!(r"{root}\{name}");
                 let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
                 if size == 0 {
-                    return Err(crate::err(&format!(
-                        "已启用 WinRE 位于独立恢复分区（{location}），但该分区缺少可用的 {name}，拒绝重接"
-                    )));
+                    return Err(crate::errc_with(
+                        ErrCode::WinrePartitionMissingFiles,
+                        &[&location, name],
+                    ));
                 }
             }
             append_log(
@@ -551,7 +563,7 @@ fn repair_with_mode(
             let is_winpe = std::path::Path::new(r"X:\Windows\System32\wpeutil.exe").is_file()
                 || std::path::Path::new(r"C:\Windows\System32\wpeutil.exe").is_file();
             if !is_winre && !is_winpe {
-                return Err(crate::err("离线 WinRE 注册只允许在恢复环境（WinRE/WinPE）中执行"));
+                return Err(crate::errc(ErrCode::OfflineWinreReOnly));
             }
             // 自定义 WinPE 入口可能绕过 wpeinit；让系统工具读取本次真实固件类型。
             // wpeutil.exe 只有 WinPE 附带，纯 WinRE 环境没有它——那一支已经能自己
@@ -573,7 +585,7 @@ fn repair_with_mode(
                 let fields: Vec<_> = line.split_whitespace().collect();
                 fields == ["PEFirmwareType", "REG_DWORD", "0x2"]
             }) {
-                return Err(crate::err("WinRE 注册要求已确认的 UEFI 固件环境"));
+                return Err(crate::errc(ErrCode::WinreNeedsUefi));
             }
             self.identity()?;
             // 缺注册组件 = 降级跳过，不是任务失败（用户 2026-10-16 裁定，原 P5）。
@@ -603,16 +615,16 @@ fn repair_with_mode(
             self.loader = pe_safety::target_loader(&self.bcd(false)?, self.letter)?;
             // reagentc 没有 /store，必须先确认活动存储中的同一目标，禁止误关联别的系统。
             if pe_safety::target_loader(&self.bcd(true)?, self.letter)? != self.loader {
-                return Err(crate::err("指定 ESP 与活动 BCD 的目标加载器不一致"));
+                return Err(crate::errc(ErrCode::EspLoaderMismatch));
             }
             self.location = format!(
                 "\\\\?\\globalroot\\device\\harddisk{}\\partition{}\\recovery\\windowsre",
                 self.expected
                     .disk_number
-                    .ok_or_else(|| crate::err("目标磁盘编号缺失"))?,
+                    .ok_or_else(|| crate::errc(ErrCode::TargetDiskNumberMissing))?,
                 self.expected
                     .partition_number
-                    .ok_or_else(|| crate::err("目标分区编号缺失"))?
+                    .ok_or_else(|| crate::errc(ErrCode::TargetPartitionNumberMissing))?
             );
             for (name, source) in [
                 (
@@ -629,7 +641,7 @@ fn repair_with_mode(
                 // 仅使用本次还原镜像内的原件；绝不拿任务注入镜像作为系统 WinRE。
                 if !pe_safety::probe_file(self.target, &parts)? {
                     if !pe_safety::probe_file(self.target, &source)? {
-                        return Err(crate::err(&format!("还原镜像缺少恢复原件：{name}")));
+                        return Err(crate::errc_with(ErrCode::ImageMissingRecoveryPayload, &[name]));
                     }
                     let source = source
                         .iter()
@@ -638,11 +650,11 @@ fn repair_with_mode(
                     fs::create_dir_all(destination.parent().expect("恢复目录"))?;
                     fs::copy(&source, &destination)?;
                     if crate::sha256_file(&destination)? != hash {
-                        return Err(crate::err("恢复原件复制校验失败"));
+                        return Err(crate::errc(ErrCode::RecoveryPayloadCopyVerifyFailed));
                     }
                 }
                 if fs::metadata(&destination)?.len() == 0 {
-                    return Err(crate::err("恢复原件为空"));
+                    return Err(crate::errc(ErrCode::RecoveryPayloadEmpty));
                 }
                 self.hashes
                     .push((destination.clone(), crate::sha256_file(&destination)?));
@@ -690,12 +702,12 @@ fn repair_with_mode(
                 let hash = crate::sha256_file(&path)?;
                 if exists {
                     if crate::sha256_file(&backup)? != hash {
-                        return Err(crate::err("第二系统原注册备份已存在且内容不同"));
+                        return Err(crate::errc(ErrCode::SecondaryBackupExists));
                     }
                 } else {
                     fs::copy(&path, &backup)?;
                     if crate::sha256_file(&backup)? != hash {
-                        return Err(crate::err("第二系统原注册备份摘要不符"));
+                        return Err(crate::errc(ErrCode::SecondaryBackupDigestMismatch));
                     }
                 }
                 fs::remove_file(&path)?;
@@ -730,7 +742,7 @@ fn repair_with_mode(
             let recovery = info
                 .recovery_id
                 .as_deref()
-                .ok_or_else(|| crate::err("WinRE 注册标识符缺失"))?;
+                .ok_or_else(|| crate::errc(ErrCode::WinreIdentifierMissing))?;
             let mut missing = false;
             // 两个存储都必须拥有经过完整核验的原件链；不能凭注册状态臆造恢复对象。
             for active in [false, true] {
@@ -748,7 +760,7 @@ fn repair_with_mode(
                 if links.is_empty() {
                     missing = true;
                 } else if field(os, "recoverysequence")? != recovery {
-                    return Err(crate::err("系统已有不同的恢复关联，拒绝覆盖"));
+                    return Err(crate::errc(ErrCode::RecoveryAssociationConflict));
                 }
                 missing |= field(os, "recoveryenabled").ok().as_deref() != Some("yes");
             }
@@ -783,7 +795,7 @@ fn repair_with_mode(
             verify_with_payload(info, &self.bcd(true)?, &self.loader, self.letter, &payload)?;
             for (file, hash) in &self.hashes {
                 if crate::sha256_file(file)? != *hash {
-                    return Err(crate::err("注册过程改变了恢复原件"));
+                    return Err(crate::errc(ErrCode::RecoveryPayloadMutated));
                 }
             }
             append_log(
@@ -797,7 +809,7 @@ fn repair_with_mode(
         .chars()
         .next()
         .filter(char::is_ascii_alphabetic)
-        .ok_or_else(|| crate::err("目标盘符无效"))?;
+        .ok_or_else(|| crate::errc(ErrCode::TargetLetterInvalid))?;
     let mut backend = WindowsBackend {
         target,
         efi,
@@ -822,7 +834,7 @@ fn repair_with_mode(
                     if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
                         fs::write(&path, bytes)?;
                         if fs::read(&path)? != *bytes {
-                            return Err(crate::err("WinRE 启用失败后的 boot.sdi 恢复校验失败"));
+                            return Err(crate::errc(ErrCode::BootSdiRestoreVerifyFailed));
                         }
                         append_log(
                             log,

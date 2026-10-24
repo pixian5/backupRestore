@@ -35,12 +35,12 @@ impl TaskStore {
             || status.operation != task.operation
             || status.stage != task.status
         {
-            return Err(TaskError::Invalid("状态事务身份或阶段不一致".into()));
+            return Err(TaskError::coded("BR-CORE-073", "状态事务身份或阶段不一致"));
         }
         // 事务只能改变阶段，不能换掉目标、镜像或已授权参数。
         let mut current: Task = read_json(self.task_path(id)?)?;
         if current.status != task.status && !current.status.can_transition_to(task.status) {
-            return Err(TaskError::Invalid("状态事务存在非法阶段跳转".into()));
+            return Err(TaskError::coded("BR-CORE-074", "状态事务存在非法阶段跳转"));
         }
         current.status = task.status;
         let mut expected = task.clone();
@@ -63,7 +63,7 @@ impl TaskStore {
             }
         }
         if current != expected {
-            return Err(TaskError::Invalid("状态事务改变了任务身份或参数".into()));
+            return Err(TaskError::coded("BR-CORE-075", "状态事务改变了任务身份或参数"));
         }
         write_json_atomic(self.task_path(id)?, task)?;
         write_json_atomic(self.status_path(id)?, status)?;

@@ -1,4 +1,5 @@
 //! PE 的写盘契约与步骤编排；不依赖 Windows，故障测试直接覆盖真实编排。
+use crate::error_code::ErrCode;
 use backuprestore_core::{TaskError, VolumeIdentity};
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, path::Path};
@@ -21,7 +22,7 @@ pub(crate) fn relative_components(value: &str) -> Result<Vec<&str>, TaskError> {
             || part.ends_with(['.', ' '])
             || part.chars().any(char::is_control)
     }) {
-        return Err(crate::err("镜像相对路径包含无效组件"));
+        return Err(crate::errc(ErrCode::ImgPathComponent));
     }
     Ok(parts)
 }
@@ -50,12 +51,12 @@ pub(crate) fn target_loader(text: &str, letter: char) -> Result<String, TaskErro
             let id = block
                 .lines()
                 .find_map(crate::bcd_identifier_from_line)
-                .ok_or_else(|| crate::err("目标加载器缺少对象 GUID"))?;
+                .ok_or_else(|| crate::errc(ErrCode::LoaderNoObjectGuid))?;
             found.push(id.to_string());
         }
     }
     if found.len() != 1 {
-        return Err(crate::err("目标引导加载器不唯一或设备字段不完整"));
+        return Err(crate::errc(ErrCode::LoaderNotUnique));
     }
     Ok(found.remove(0))
 }
@@ -79,7 +80,7 @@ pub(crate) fn verify_binding(
             && (expected.volume_serial.is_empty()
                 || expected.volume_serial != actual.volume_serial))
     {
-        return Err(crate::err("卷身份、现场编号或几何已变化，拒绝写入"));
+        return Err(crate::errc(ErrCode::VolumeChanged));
     }
     Ok(())
 }
@@ -92,7 +93,7 @@ pub(crate) fn rebind_after_boot(
     serial: bool,
 ) -> Result<VolumeIdentity, TaskError> {
     if !expected.is_complete() {
-        return Err(crate::err("准备期卷身份不完整，拒绝重新绑定"));
+        return Err(crate::errc(ErrCode::PrepareIdentityIncomplete));
     }
     let mut rebound = expected.clone();
     rebound.disk_number = actual.disk_number;
@@ -102,7 +103,7 @@ pub(crate) fn rebind_after_boot(
     if !expected.filesystem.eq_ignore_ascii_case(&actual.filesystem)
         || !crate::text_parsing::same_volume(&expected.volume_guid, &actual.volume_guid)
     {
-        return Err(crate::err("跨启动卷身份或文件系统变化，拒绝重新绑定"));
+        return Err(crate::errc(ErrCode::BootVolumeChanged));
     }
     Ok(rebound)
 }
@@ -120,19 +121,17 @@ pub(crate) fn check_target(
             .eq_ignore_ascii_case("{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}")
         || !target.filesystem.eq_ignore_ascii_case("NTFS")
     {
-        return Err(crate::err("目标必须是身份完整的 GPT/NTFS 基本数据分区"));
+        return Err(crate::errc(ErrCode::TargetNotGptNtfs));
     }
     for role in protected {
         if !role.is_complete() || role.same_partition(target) {
-            return Err(crate::err(
-                "目标与镜像、工作区、运行程序或恢复载荷冲突，或必需角色未知",
-            ));
+            return Err(crate::errc(ErrCode::TargetRoleConflict));
         }
     }
     if intent == RestoreIntent::SecondaryInstall {
-        let main = main.ok_or_else(|| crate::err("第二系统任务缺少已确认的主系统身份"))?;
+        let main = main.ok_or_else(|| crate::errc(ErrCode::SecondaryNoPrimary))?;
         if !main.is_complete() || main.same_partition(target) {
-            return Err(crate::err("第二系统不能覆盖主系统，确认不能豁免角色禁区"));
+            return Err(crate::errc(ErrCode::SecondaryCannotOverwrite));
         }
     }
     Ok(())
@@ -215,7 +214,7 @@ pub(crate) fn probe_file_metadata(root: &Path, components: &[&str]) -> Result<bo
 fn probe_file_inner(root: &Path, components: &[&str], open: bool) -> Result<bool, TaskError> {
     let root_info = fs::symlink_metadata(root)?;
     if !root_info.is_dir() || root_info.file_type().is_symlink() {
-        return Err(crate::err("探测卷根不可用或存在重解析"));
+        return Err(crate::errc(ErrCode::ProbeRootUnusable));
     }
     let mut path = root.to_path_buf();
     for (index, part) in components.iter().enumerate() {
@@ -226,15 +225,15 @@ fn probe_file_inner(root: &Path, components: &[&str], open: bool) -> Result<bool
                 {
                     use std::os::windows::fs::MetadataExt;
                     if info.file_attributes() & 0x400 != 0 {
-                        return Err(crate::err("安全探测不跟随重解析点"));
+                        return Err(crate::errc(ErrCode::ProbeNoReparse));
                     }
                 }
                 if info.file_type().is_symlink() {
-                    return Err(crate::err("安全探测不跟随链接"));
+                    return Err(crate::errc(ErrCode::ProbeNoSymlink));
                 }
                 if index + 1 == components.len() {
                     if !info.is_file() {
-                        return Err(crate::err("必要文件路径不是普通文件"));
+                        return Err(crate::errc(ErrCode::NotRegularFile));
                     }
                     if open {
                         fs::File::open(&path)?;
@@ -242,18 +241,18 @@ fn probe_file_inner(root: &Path, components: &[&str], open: bool) -> Result<bool
                     return Ok(true);
                 }
                 if !info.is_dir() {
-                    return Err(crate::err("探测祖先路径不是目录"));
+                    return Err(crate::errc(ErrCode::AncestorNotDirectory));
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 // 再验证祖先仍可达，避免卷离线产生的 NotFound 被当成缺文件。
-                fs::read_dir(path.parent().ok_or_else(|| crate::err("探测父路径缺失"))?)?;
+                fs::read_dir(path.parent().ok_or_else(|| crate::errc(ErrCode::ParentMissing))?)?;
                 return Ok(false);
             }
             Err(error) => return Err(error.into()),
         }
     }
-    Err(crate::err("探测路径为空"))
+    Err(crate::errc(ErrCode::ProbePathEmpty))
 }
 
 /// 领取记录采用独占创建并刷新；记录存在（包括上轮崩溃留下的半记录）就拒绝重放。
@@ -300,9 +299,10 @@ pub(crate) fn run_restore(backend: &mut impl RestoreBackend) -> Result<(), TaskE
     if let Err(ref error) = result {
         // 失败状态若也无法落盘，原先意图记录仍会阻止自动重放；不能改成成功。
         if let Err(write_error) = backend.persist(&format!("failed: {error}")) {
-            return Err(crate::err(&format!(
-                "{error}；失败状态落盘也失败：{write_error}"
-            )));
+            return Err(crate::errc_with(
+                ErrCode::StateWriteFailed,
+                &[&error.to_string(), &write_error.to_string()],
+            ));
         }
     }
     result
@@ -438,7 +438,7 @@ mod tests {
         fn call(&mut self, name: &str) -> Result<(), TaskError> {
             self.calls.push(name.into());
             if self.fail == name {
-                Err(crate::err("注入失败"))
+                Err(crate::errc(ErrCode::InjectFailed))
             } else {
                 Ok(())
             }

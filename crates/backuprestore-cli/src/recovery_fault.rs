@@ -1,4 +1,5 @@
 //! 显式开发验收钩子。配置来自已验证的任务载荷，正常任务不会触发。
+use crate::error_code::ErrCode;
 use backuprestore_core::TaskError;
 use std::{
     path::{Path, PathBuf},
@@ -65,7 +66,7 @@ pub(crate) fn pause_running_bcdboot(
     }
     std::thread::sleep(std::time::Duration::from_millis(10));
     if child.try_wait()?.is_some() {
-        return Err(crate::err("BCDBoot 已结束，运行中断电点未命中"));
+        return Err(crate::errc(ErrCode::BcdbootPowerCutMissed));
     }
     #[link(name = "ntdll")]
     unsafe extern "system" {
@@ -74,7 +75,7 @@ pub(crate) fn pause_running_bcdboot(
     }
     let handle = child.as_raw_handle();
     if unsafe { NtSuspendProcess(handle) } != 0 {
-        return Err(crate::err("无法暂停运行中的 BCDBoot"));
+        return Err(crate::errc(ErrCode::CannotPauseRunningBcdboot));
     }
     let result = (|| {
         crate::append_log(
@@ -127,17 +128,17 @@ pub(crate) fn checkpoint(point: &str, log: &Path) -> Result<(), TaskError> {
                 backuprestore_core::read_json(dir.join("task.json"))?;
             let target = task
                 .target
-                .ok_or_else(|| crate::err("空间故障缺少目标"))?
+                .ok_or_else(|| crate::errc(ErrCode::SpaceFaultNoTarget))?
                 .volume;
             let letter = target
                 .drive_letter
-                .ok_or_else(|| crate::err("空间故障缺少盘符"))?;
+                .ok_or_else(|| crate::errc(ErrCode::SpaceFaultNoLetter))?;
             if target.partition_size > 8 * 1024 * 1024 * 1024
                 || std::env::var("SystemRoot")
                     .unwrap_or_default()
                     .starts_with(&format!("{letter}:"))
             {
-                return Err(crate::err("空间故障只允许小型非系统测试卷"));
+                return Err(crate::errc(ErrCode::SpaceFaultOnlySmallNonSystem));
             }
             #[link(name = "kernel32")]
             unsafe extern "system" {
@@ -172,7 +173,7 @@ pub(crate) fn checkpoint(point: &str, log: &Path) -> Result<(), TaskError> {
                 log,
             )
         }
-        "error" | "error-once" => Err(crate::err(&format!("验收注入错误：{point}"))),
+        "error" | "error-once" => Err(crate::errc_with(ErrCode::AcceptanceInjectFailed, &[point])),
         "hold" => loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
         },

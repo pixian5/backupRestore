@@ -1,5 +1,6 @@
 //! 还原期间编辑引导方案，映像应用完成后才写入 BCD。
 
+use crate::error_code::ErrCode;
 use backuprestore_core::{TaskError, VolumeIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
@@ -119,10 +120,10 @@ impl BootMenuPlan {
                 .iter()
                 .any(|e| e.is_restore_target && !e.selected)
         {
-            return Err(crate::err("本次还原系统必须且只能出现一次，不能取消"));
+            return Err(crate::errc(ErrCode::MenuTargetMustAppearOnce));
         }
         if self.timeout_seconds > TIMEOUT_MAX {
-            return Err(crate::err("启动菜单等待时间超出范围"));
+            return Err(crate::errc(ErrCode::MenuTimeoutOutOfRange));
         }
         // 当前默认启动项（通常是主系统）不能被取消：它必须在菜单里留着，否则
         // 用户再也启动不回原系统——这与"还原后 default 指向新系统"是两回事
@@ -133,7 +134,7 @@ impl BootMenuPlan {
             .iter()
             .any(|e| e.is_current_default && !e.selected)
         {
-            return Err(crate::err("当前默认启动的系统不能从启动菜单中移除"));
+            return Err(crate::errc(ErrCode::DefaultCannotBeRemoved));
         }
         // 名字重复会让启动菜单出现两个同名项，用户无法区分该选哪个。
         for (i, entry) in self.entries.iter().enumerate() {
@@ -141,7 +142,7 @@ impl BootMenuPlan {
                 .iter()
                 .any(|e| e.selected && entry.selected && e.display_name == entry.display_name)
             {
-                return Err(crate::err("启动菜单出现同名项，请改名以便区分"));
+                return Err(crate::errc(ErrCode::MenuDuplicateName));
             }
         }
         for (i, entry) in self.entries.iter().enumerate() {
@@ -150,13 +151,13 @@ impl BootMenuPlan {
                 || entry.display_name.chars().count() > NAME_MAX_CHARS
                 || !entry.volume.is_complete()
             {
-                return Err(crate::err("引导方案名称或卷身份无效"));
+                return Err(crate::errc(ErrCode::PlanNameOrVolumeInvalid));
             }
             if self.entries[..i]
                 .iter()
                 .any(|e| e.volume.same_partition(&entry.volume))
             {
-                return Err(crate::err("引导方案重复系统分区"));
+                return Err(crate::errc(ErrCode::PlanDuplicatePartition));
             }
         }
         Ok(())
@@ -686,7 +687,7 @@ impl BootMenuSession {
                     .iter()
                     .any(|e| e.is_restore_target && e.volume.same_partition(target))
             {
-                return Err(crate::err("引导方案不属于当前还原任务"));
+                return Err(crate::errc(ErrCode::PlanNotForTask));
             }
             saved.plan
         } else {
@@ -811,7 +812,7 @@ impl BootMenuSession {
 fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskError> {
     let target_letter = target
         .drive_letter
-        .ok_or_else(|| crate::err("还原目标盘符缺失"))?;
+        .ok_or_else(|| crate::errc(ErrCode::TargetLetterMissing))?;
     // 默认顺序沿用既有约定：原有系统在前，本次还原的目标追加在后。
     // （早先版本把目标放在首位，导致启动菜单第一项变成新系统、而默认启动项仍是
     // 主系统，两者不一致会让用户困惑；现在默认与 run10 验收过的行为一致，
@@ -1021,7 +1022,7 @@ pub(crate) fn apply(
         log,
     )?;
     let previous = crate::parse_boot_manager_state(&output)
-        .ok_or_else(|| crate::err("引导修复前启动管理器无效"))?;
+        .ok_or_else(|| crate::errc(ErrCode::PreRepairBootMgrInvalid))?;
     for entry in plan.entries.iter().filter(|e| e.selected) {
         let actual = crate::windows_prepare::volume_identity(entry.drive_letter)?;
         crate::pe_safety::verify_binding(&entry.volume, &actual, false)?;
@@ -1029,7 +1030,7 @@ pub(crate) fn apply(
             "{}:\\",
             entry.drive_letter
         )))? {
-            return Err(crate::err("引导修复时所选系统已不存在"));
+            return Err(crate::errc(ErrCode::SelectedSystemGone));
         }
         if loader_identifier_for_partition(&output, entry.drive_letter)?.is_none() {
             if let Some(re) = resume {
@@ -1072,7 +1073,7 @@ pub(crate) fn apply(
         if !entry.selected {
             continue;
         }
-        let id = id.ok_or_else(|| crate::err("引导修复后找不到系统加载器"))?;
+        let id = id.ok_or_else(|| crate::errc(ErrCode::PostRepairLoaderMissing))?;
         // 名字只在两种情况下写：该条目是本次新建的（原本没有 loader），
         // 或用户在弹窗里主动改过名。既有条目且名字没变就一个字都不写——
         // 否则会把用户给已有系统起的名字覆盖成默认值。
@@ -1173,7 +1174,7 @@ pub(crate) fn apply(
         log,
     )?;
     let actual = crate::parse_boot_manager_state(&verify)
-        .ok_or_else(|| crate::err("无法回读引导修复结果"))?;
+        .ok_or_else(|| crate::errc(ErrCode::RepairResultUnreadable))?;
     let timeout = verify.lines().any(|line| {
         line.split_whitespace().collect::<Vec<_>>()
             == ["timeout", &plan.timeout_seconds.to_string()]
@@ -1183,13 +1184,11 @@ pub(crate) fn apply(
         || actual.resume_object != previous.resume_object
         || !timeout
     {
-        return Err(crate::err(
-            "引导修复顺序、默认项、休眠引用或显示时间回读不一致",
-        ));
+        return Err(crate::errc(ErrCode::RepairOrderMismatch));
     }
     for entry in plan.entries.iter().filter(|e| e.selected) {
         let id = loader_identifier_for_partition(&verify, entry.drive_letter)?
-            .ok_or_else(|| crate::err("回读缺少所选系统"))?;
+            .ok_or_else(|| crate::errc(ErrCode::RepairMissingSelectedSystem))?;
         let object =
             crate::capture_logged("bcdedit.exe", &["/store", &store, "/enum", &id, "/v"], log)?;
         // 只校验我们写过名字的条目；故意保留原名的条目回读必然是旧名字，
@@ -1203,7 +1202,7 @@ pub(crate) fn apply(
                 .find(|(key, _)| matches!(*key, "description" | "说明"))
                 .map(|(_, value)| value.trim());
             if !menu_name_matches(shown, &entry.display_name) {
-                return Err(crate::err("引导菜单名称回读不一致"));
+                return Err(crate::errc(ErrCode::MenuNameMismatch));
             }
         }
     }

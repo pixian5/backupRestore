@@ -1,5 +1,6 @@
 //! 在线入口的执行事务：只在捕获、保留策略、校验和副档落盘全部成功后返回成功。
 use crate::windows_command::{self, INFINITE};
+use crate::error_code::ErrCode;
 use backuprestore_core::{BackupMetadata, TaskError, VolumeIdentity, image_metadata as im};
 use chrono::Utc;
 use std::fs;
@@ -163,10 +164,14 @@ fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
             log_path,
             crate::text_parsing::LOG_TAIL_MAX_BYTES,
         );
-        return Err(crate::err(&format!(
-            "DISM failed: {outcome}\n--- 输出尾部（至多 {} 字节）---\n{tail}",
-            crate::text_parsing::LOG_TAIL_MAX_BYTES
-        )));
+        return Err(crate::errc_with(
+            ErrCode::DismApplyFailedOnline,
+            &[
+                &format!("{outcome}"),
+                &crate::text_parsing::LOG_TAIL_MAX_BYTES.to_string(),
+                &tail,
+            ],
+        ));
     }
     Ok(())
 }
@@ -220,7 +225,7 @@ fn run_dism_wim_info(
     let out_file = cmd_out_file(
         log_path
             .parent()
-            .ok_or_else(|| crate::err("日志目录缺失"))?,
+            .ok_or_else(|| crate::errc(ErrCode::LogDirMissing))?,
     );
     let mut args = vec![
         "/English".to_string(),
@@ -416,7 +421,7 @@ fn execute_inner(
             let baseline = if params.format_target {
                 let dir = log_path
                     .parent()
-                    .ok_or_else(|| crate::err("日志目录缺失"))?;
+                    .ok_or_else(|| crate::errc(ErrCode::LogDirMissing))?;
                 log(
                     log_path,
                     crate::i18n::msg("ol_step_format"),
@@ -460,7 +465,7 @@ fn execute_inner(
             let apply_root = PathBuf::from(
                 baseline
                     .volume_path()
-                    .ok_or_else(|| crate::err("目标卷缺少稳定 GUID 路径，拒绝按盘符应用镜像"))?,
+                    .ok_or_else(|| crate::errc(ErrCode::VolumeGuidMissingRefuseApply))?,
             );
             fs::read_dir(&apply_root)?;
             log(
@@ -536,7 +541,7 @@ fn restore_to_windows_volume(
     let image: &Path = Path::new(&params.image_path);
     let dir = log_path
         .parent()
-        .ok_or_else(|| crate::err("日志目录缺失"))?;
+        .ok_or_else(|| crate::errc(ErrCode::LogDirMissing))?;
     // 【准备期判定 · 2026-10-22 任务 #110：原「硬拒」已改「路由」】
     // 本函数只在目标卷**已含 Windows** 时进入（execute_inner 按
     // `target_is_windows_volume` 分流）。此时「取消格式化（覆盖式应用）」对 DISM
@@ -684,7 +689,7 @@ fn restore_to_windows_volume(
         dir,
     )?;
     let old = crate::parse_boot_manager_state(&before)
-        .ok_or_else(|| crate::err("引导管理器状态未知，拒绝继续"))?;
+        .ok_or_else(|| crate::errc(ErrCode::BootManagerUnknownContinue))?;
     fs::copy(&store, dir.join("bcd-before"))?;
     fs::write(dir.join("bootmgr-before.txt"), &before)?;
     // 与 WinRE 执行链对齐的第二个名字：进度窗「BCD 回退」按钮（与 B 快捷键）
@@ -734,7 +739,7 @@ fn restore_to_windows_volume(
     let target_root = PathBuf::from(
         after
             .volume_path()
-            .ok_or_else(|| crate::err("目标卷缺少稳定 GUID 路径"))?,
+            .ok_or_else(|| crate::errc(ErrCode::VolumeGuidMissing))?,
     );
     fs::read_dir(&target_root)?;
 
@@ -752,10 +757,10 @@ fn restore_to_windows_volume(
         // 由 build-win.sh --deploy 随包部署到那里。
         let executable_dir = std::env::current_exe()
             .map_err(|error| {
-                crate::err(&format!("无法定位程序目录（wimlib 通道）：{error}"))
+                crate::errc_with(ErrCode::ProgramDirUnresolvable, &[&error.to_string()])
             })?
             .parent()
-            .ok_or_else(|| crate::err("程序目录解析失败（wimlib 通道）"))?
+            .ok_or_else(|| crate::errc(ErrCode::ProgramDirResolveFailed))?
             .to_path_buf();
         crate::wimlib_apply::apply_overlay(
             &executable_dir,
@@ -774,7 +779,7 @@ fn restore_to_windows_volume(
         vec!["Windows", "System32", "ntoskrnl.exe"],
     ] {
         if !crate::pe_safety::probe_file(&target_root, &components)? {
-            return Err(crate::err("系统文件验证失败，不能降级为数据还原成功"));
+            return Err(crate::errc(ErrCode::SystemFileVerifyFailed));
         }
     }
 
@@ -881,7 +886,7 @@ fn restore_to_windows_volume(
             .as_ref()
             .is_some_and(|now| now.resume_object == old.resume_object);
         if !unchanged {
-            return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
+            return Err(crate::errc(ErrCode::BootStateChangedAfterPrecheck));
         }
     }
     // 不再无条件 bcdboot：STEP 3.6 已经建好 loader 并追加进菜单。此处再跑一次
@@ -902,7 +907,7 @@ fn restore_to_windows_volume(
     // device/osdevice/path，在中文 Windows 上会直接判定"目标引导加载器不唯一或
     // 设备字段不完整"而失败，连 apply 都走不到。
     let loader = crate::boot_menu::loader_identifier_for_partition(&all, target_letter)?
-        .ok_or_else(|| crate::err("bcdboot 后找不到第二系统的启动加载器"))?;
+        .ok_or_else(|| crate::errc(ErrCode::PostBootLoaderMissing))?;
     // 上面的 bcdboot 已把第二系统 loader 建好；引导方案此刻冻结，由 boot_menu::apply
     // 统一写入菜单名称、顺序、默认项、休眠引用与显示时间，并逐项回读校验。
     // 原先这里手写一套 description/displayorder/default/resumeobject，与 apply 职责
@@ -926,7 +931,7 @@ fn restore_to_windows_volume(
     )?;
     let cur = match crate::parse_boot_manager_state(&current) {
         Some(c) => c,
-        None => return Err(crate::err("无法解析还原后的引导管理器状态，拒绝报成功")),
+        None => return Err(crate::errc(ErrCode::PostBootManagerUnparsable)),
     };
     // 验收（2026-10-15 用户规则）：默认启动项必须指向**本次还原出来的系统**
     // （目标卷分区），而不是仍在运行的原主系统；bootmgr 的 resume_object 恢复为
@@ -968,9 +973,7 @@ fn restore_to_windows_volume(
         }
     };
     if !target_is_default {
-        return Err(crate::err(
-            "默认启动项未指向本次还原的系统，拒绝报成功",
-        ));
+        return Err(crate::errc(ErrCode::DefaultNotRestoredTarget));
     }
     // 原有菜单项一个都不能少。同样不能直接比 GUID 文本：bcdedit 可能把其中某项
     // 显示成 {current}/{memdiag}/{default} 之类的别名。把两边的常见别名都展开成
@@ -1103,15 +1106,13 @@ fn restore_to_windows_volume(
         }
     });
     if lost_foreign {
-        return Err(crate::err("原有启动菜单项丢失，拒绝报成功"));
+        return Err(crate::errc(ErrCode::MenuEntryLost));
     }
     if !cur.display_order.iter().any(|id| id == &loader) {
-        return Err(crate::err("第二系统启动项未进入菜单，拒绝报成功"));
+        return Err(crate::errc(ErrCode::SecondaryMenuEntryMissing));
     }
     if cur.resume_object != old.resume_object {
-        return Err(crate::err(
-            "bootmgr resume_object 未恢复为主系统，拒绝报成功",
-        ));
+        return Err(crate::errc(ErrCode::ResumeObjectNotRestored));
     }
     for (l, r) in &old.loader_resume_objects {
         if !cur
@@ -1119,7 +1120,7 @@ fn restore_to_windows_volume(
             .iter()
             .any(|(cl, cr)| cl == l && cr == r)
         {
-            return Err(crate::err("原有系统恢复对象被破坏，拒绝报成功"));
+            return Err(crate::errc(ErrCode::RecoveryObjectDestroyed));
         }
     }
     // 注：在线（非 PE）入口不调用 winre_registration::repair——该修复拒绝非 PE 环境，
@@ -1225,7 +1226,7 @@ fn run_capture(
     };
     let text = crate::pe_operation::decode_output(&raw)?;
     if !outcome.is_success() {
-        return Err(crate::err(&format!("{program} 失败：{outcome}\n{text}")));
+        return Err(crate::errc_with(ErrCode::ProgramFailed, &[program, &format!("{outcome}"), &text]));
     }
     Ok(text)
 }

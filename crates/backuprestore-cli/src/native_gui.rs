@@ -21,6 +21,7 @@ use crate::text_parsing::{
     WimImageInfo, compression_from_ui_index, decode_bcdedit_bytes, first_braced_guid, format_bytes,
     json_text, parse_wim_images, quote_argument,
 };
+use crate::error_code::ErrCode;
 use backuprestore_core::PROGRAM_VERSION;
 
 type Handle = *mut c_void;
@@ -7876,7 +7877,7 @@ unsafe fn schedule_pe_task(
         };
         let index = _index
             .parse::<u32>()
-            .map_err(|_| crate::err("镜像索引无效"))?;
+            .map_err(|_| crate::errc(ErrCode::ImageIndexInvalid))?;
         // overlay_no_acl=false：PE 三入口（backup/restore/secondary）恒格式化，
         // 不存在「覆盖式应用到已含 Windows 卷」组合（任务 #110）。
         let request = crate::pe_operation::new_request(mode, drive, image_path, index, None, "", false)?;
@@ -9893,7 +9894,7 @@ unsafe fn pe_run_interactive(hwnd: Hwnd, operation: &str) {
         Ok(1)
     };
     let request = index
-        .map_err(|_| crate::err("镜像索引必须是正整数"))
+        .map_err(|_| crate::errc(ErrCode::ImageIndexNotPositive))
         .and_then(|index| {
             // overlay_no_acl=false：PE 桌面三入口恒格式化，无覆盖式组合（任务 #110）。
             crate::pe_operation::new_request(operation, drive, image.trim(), index, main, &name, false)

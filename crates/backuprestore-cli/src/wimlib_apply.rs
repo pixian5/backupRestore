@@ -43,6 +43,7 @@
 //! 执行期「DISM 倒了 wimlib 接得上」。设计见
 //! `docs/20261024-1636-DISM失败自动降级wimlib与错误分类详细设计-Step-5-Preview.md`。
 
+use crate::error_code::ErrCode;
 use backuprestore_core::TaskError;
 use std::path::{Path, PathBuf};
 
@@ -79,23 +80,17 @@ pub(crate) fn wimlib_args(image: &Path, index: u32, apply_root: &Path) -> Vec<St
 pub(crate) fn locate_wimlib(executable_dir: &Path) -> Result<PathBuf, TaskError> {
     let exe = executable_dir.join(WIMLIB_EXE);
     if !exe.is_file() {
-        return Err(crate::err(&format!(
-            "覆盖式应用需要 wimlib 二进制：未找到 {}（{WIMLIB_DLL} 须与其同目录）。\
-             请把 wimlib 官方 Windows ARM64 预编译包的两个文件放进程序目录后重试；\
-             不会回退 DISM（该组合下 DISM 必然失败）。",
-            exe.display()
-        )));
+        return Err(crate::errc_with(
+            ErrCode::WimlibBinaryMissing,
+            &[&exe.display().to_string(), WIMLIB_DLL],
+        ));
     }
     let dll = executable_dir.join(WIMLIB_DLL);
     if !dll.is_file() {
-        return Err(crate::err(&format!(
-            "覆盖式应用需要 wimlib 依赖库：{} 已就位，但同目录缺少 {}。\
-             wimlib 启动时加载不到该库会被系统直接终止（报错不含这两个文件名，\
-             也无法归因到部署缺口）；请把 wimlib 官方 Windows ARM64 预编译包的\
-             两个文件一起放进程序目录后重试；不会回退 DISM（该组合下 DISM 必然失败）。",
-            exe.display(),
-            dll.display()
-        )));
+        return Err(crate::errc_with(
+            ErrCode::WimlibDllMissing,
+            &[&exe.display().to_string(), &dll.display().to_string()],
+        ));
     }
     Ok(exe)
 }
@@ -140,9 +135,10 @@ pub(crate) fn apply_overlay(
         // `failure_policy::classify_apply_failure` 拿到空文本 → 归 Unknown，
         // 双失败的第二条因果丢失归因能力。
         let tail = crate::text_parsing::tail_text(log, 8192);
-        return Err(crate::err(&format!(
-            "wimlib apply failed: {outcome}\n--- 输出尾部（至多 8192 字节）---\n{tail}"
-        )));
+        return Err(crate::errc_with(
+            ErrCode::WimlibApplyFailed,
+            &[&format!("{outcome}"), &tail],
+        ));
     }
     Ok(())
 }
@@ -179,9 +175,9 @@ pub(crate) fn fallback_after_dism_failure(
         &crate::i18n::msg_tpl("apply_classified", &[&format!("{kind:?}"), cause]),
     )?;
     let executable_dir = std::env::current_exe()
-        .map_err(|error| crate::err(&format!("无法定位程序目录（wimlib 降级通道）：{error}")))?
+        .map_err(|error| crate::errc_with(ErrCode::ProgramDirUnresolvableFallback, &[&error.to_string()]))?
         .parent()
-        .ok_or_else(|| crate::err("程序目录解析失败（wimlib 降级通道）"))?
+        .ok_or_else(|| crate::errc(ErrCode::ProgramDirResolveFailedFallback))?
         .to_path_buf();
     let located = locate_wimlib(&executable_dir);
     if !crate::failure_policy::decide_fallback(kind, located.is_ok()) {
@@ -191,9 +187,10 @@ pub(crate) fn fallback_after_dism_failure(
             Ok(_) => crate::i18n::msg("fallback_skip_corrupt").to_string(),
         };
         crate::append_log(log, &format!("[WARN] {reason}"))?;
-        return Err(crate::err(&format!(
-            "DISM apply 失败：{cause}\n{reason}\n{dism_text}"
-        )));
+        return Err(crate::errc_with(
+            ErrCode::DismApplyFailedWithReason,
+            &[cause, &reason, &dism_text],
+        ));
     }
     crate::append_log(log, &crate::i18n::msg_tpl("fallback_start", &[cause]))?;
     match apply_overlay(
@@ -211,10 +208,15 @@ pub(crate) fn fallback_after_dism_failure(
         Err(wimlib_error) => {
             let wimlib_kind =
                 crate::failure_policy::classify_apply_failure(&wimlib_error.to_string());
-            Err(crate::err(&format!(
-                "DISM apply 失败：{cause}\n自动降级 wimlib 重试仍失败：{}\n{dism_text}\n{wimlib_error}",
-                wimlib_kind.cause()
-            )))
+            Err(crate::errc_with(
+                ErrCode::FallbackAlsoFailed,
+                &[
+                    cause,
+                    wimlib_kind.cause(),
+                    &dism_text,
+                    &wimlib_error.to_string(),
+                ],
+            ))
         }
     }
 }

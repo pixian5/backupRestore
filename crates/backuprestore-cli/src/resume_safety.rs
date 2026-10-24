@@ -1,4 +1,5 @@
 //! 断电续跑的跨启动校验；纯逻辑同时在本机与 Windows 上测试。
+use crate::error_code::ErrCode;
 use backuprestore_core::{Stage, Task, TaskError};
 use std::collections::BTreeMap;
 
@@ -15,7 +16,7 @@ pub(crate) fn field(text: &str, key: &str) -> Result<String, TaskError> {
             .is_some_and(|name| crate::text_parsing::bcd_field_name_is(name, key))
         {
             if found {
-                return Err(crate::err("BCD 字段重复，拒绝继续"));
+                return Err(crate::errc(ErrCode::ResumeBcdFieldDuplicate));
             }
             found = true;
             reading = true;
@@ -32,7 +33,7 @@ pub(crate) fn field(text: &str, key: &str) -> Result<String, TaskError> {
 
 pub(crate) fn allow_rearm(sequence: &str, loader: &str) -> Result<(), TaskError> {
     if !sequence.is_empty() && !sequence.eq_ignore_ascii_case(loader) {
-        return Err(crate::err("存在其他一次性启动请求，拒绝覆盖"));
+        return Err(crate::errc(ErrCode::ResumeOneShotRequestExists));
     }
     Ok(())
 }
@@ -53,7 +54,7 @@ pub(crate) fn payload_path(saved: &str, letter: char, task_id: &str) -> Result<S
         || !saved[2..].eq_ignore_ascii_case(&expected)
         || !letter.is_ascii_alphabetic()
     {
-        return Err(crate::err("续跑载荷路径不属于任务暂存目录"));
+        return Err(crate::errc(ErrCode::ResumePayloadOutsideStaging));
     }
     Ok(format!("{letter}:{expected}"))
 }
@@ -79,7 +80,7 @@ pub(crate) fn verify_chain(
         (options, "ramdisksdipath", &sdi),
     ] {
         if !field(text, key)?.eq_ignore_ascii_case(expected) {
-            return Err(crate::err(&format!("续跑启动链字段不符：{key}")));
+            return Err(crate::errc_with(ErrCode::ResumeBootChainFieldMismatch, &[key]));
         }
     }
     Ok(())

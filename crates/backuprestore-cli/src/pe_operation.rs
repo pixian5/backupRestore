@@ -1,5 +1,6 @@
 //! PE 写任务：稳定身份、完整预检、持久执行意图及失败阻断。
 use crate::{
+    error_code::ErrCode,
     pe_safety::{self, RestoreBackend, RestoreIntent},
     windows_command, windows_prepare as wp,
 };
@@ -27,7 +28,7 @@ pub(crate) fn enqueue(request: &Request) -> Result<(), TaskError> {
         let path = entry?.path();
         if path.extension().is_some_and(|s| s == "json") && !path.with_extension("claimed").exists()
         {
-            return Err(crate::err("已有待执行 PE 请求，请先处理原任务"));
+            return Err(crate::errc(ErrCode::PendingRequestExists));
         }
     }
     let path = dir.join(format!("{}.json", request.id));
@@ -39,7 +40,7 @@ pub(crate) fn enqueue(request: &Request) -> Result<(), TaskError> {
     file.write_all(&bytes)?;
     file.sync_all()?;
     if fs::read(&path)? != bytes {
-        return Err(crate::err("任务写后回读不一致"));
+        return Err(crate::errc(ErrCode::TaskWriteReadbackMismatch));
     }
     Ok(())
 }
@@ -64,7 +65,7 @@ pub(crate) fn execute_pending() -> Result<bool, TaskError> {
         return Ok(false);
     }
     if pending.len() != 1 {
-        return Err(crate::err("多个待执行请求冲突，拒绝猜测"));
+        return Err(crate::errc(ErrCode::PendingRequestConflict));
     }
     let bytes = pe_safety::claim_request(&pending[0])?;
     let request: Request = serde_json::from_slice(&bytes)?;
@@ -120,15 +121,15 @@ pub(crate) fn new_request(
     backuprestore_core::validate_absolute_path(&image)?;
     let bytes = image.as_bytes();
     if bytes.len() < 4 || bytes[1] != b':' || bytes[2] != b'\\' || !bytes[0].is_ascii_alphabetic() {
-        return Err(crate::err("镜像必须位于本地卷的绝对路径"));
+        return Err(crate::errc(ErrCode::ImageMustBeLocalAbsolute));
     }
     let image_relative = image[3..].to_string();
     backuprestore_core::validate_relative_path(&image_relative)?;
     if index == 0 {
-        return Err(crate::err("镜像索引必须大于零"));
+        return Err(crate::errc(ErrCode::ImageIndexMustBePositive));
     }
     if !["backup", "restore", "secondary", "data"].contains(&operation) {
-        return Err(crate::err("未知 PE 操作"));
+        return Err(crate::errc(ErrCode::UnknownPeOperation));
     }
     Ok(Request {
         version: 1,
@@ -137,7 +138,7 @@ pub(crate) fn new_request(
             std::process::id(),
             chrono::Utc::now()
                 .timestamp_nanos_opt()
-                .ok_or_else(|| crate::err("无法生成任务编号"))?
+                .ok_or_else(|| crate::errc(ErrCode::TaskIdGenerationFailed))?
         ),
         operation: operation.into(),
         target: wp::volume_identity(letter)?,
@@ -153,7 +154,7 @@ pub(crate) fn new_request(
 fn drive_letter(value: &str) -> Result<char, TaskError> {
     let value = value.trim().trim_end_matches(':');
     if value.len() != 1 || !value.as_bytes()[0].is_ascii_alphabetic() {
-        return Err(crate::err("盘符无效"));
+        return Err(crate::errc(ErrCode::DriveLetterInvalid));
     }
     Ok(value.as_bytes()[0].to_ascii_uppercase() as char)
 }
@@ -161,7 +162,7 @@ fn root(identity: &VolumeIdentity) -> Result<PathBuf, TaskError> {
     identity
         .volume_path()
         .map(PathBuf::from)
-        .ok_or_else(|| crate::err("卷缺少稳定 GUID 路径"))
+        .ok_or_else(|| crate::errc(ErrCode::VolumeNoStableGuid))
 }
 
 /// 跨启动允许编号改变，但分区身份、类型、几何和原序列号必须匹配。
@@ -202,7 +203,7 @@ impl WriteLock {
             unsafe {
                 CloseHandle(handle);
             }
-            return Err(crate::err("已有 PE 写任务运行，拒绝并发执行"));
+            return Err(crate::errc(ErrCode::PeWriterBusy));
         }
         Ok(Self(handle))
     }
@@ -221,22 +222,22 @@ pub(crate) fn execute(request: &Request) -> Result<String, TaskError> {
     if request.version != 1
         || !["backup", "restore", "secondary", "data"].contains(&request.operation.as_str())
     {
-        return Err(crate::err("不支持的 PE 任务版本或动作"));
+        return Err(crate::errc(ErrCode::UnsupportedPeTaskVersion));
     }
     backuprestore_core::validate_relative_path(&request.image_relative)?;
     backuprestore_core::validate_relative_path(&request.id)?;
     if request.id.contains(['\\', '/']) {
-        return Err(crate::err("任务编号不能含路径"));
+        return Err(crate::errc(ErrCode::TaskIdHasPath));
     }
     let image_volume = locate(&request.image_volume)?;
     let image = root(&image_volume)?.join(&request.image_relative);
-    let parent = image.parent().ok_or_else(|| crate::err("镜像没有父目录"))?;
+    let parent = image.parent().ok_or_else(|| crate::errc(ErrCode::ImageNoParentDir))?;
     fs::read_dir(parent)?;
     // 拒绝目录重解析，防止镜像或日志实际落入待擦除卷。
     let components = pe_safety::relative_components(&request.image_relative)?;
     if request.operation != "backup" {
         if !pe_safety::probe_file(&root(&image_volume)?, &components)? {
-            return Err(crate::err("镜像文件不存在，未执行任何格式化"));
+            return Err(crate::errc(ErrCode::ImageFileMissing));
         }
     } else {
         let mut path = root(&image_volume)?;
@@ -244,7 +245,7 @@ pub(crate) fn execute(request: &Request) -> Result<String, TaskError> {
         for part in components.iter().take(components.len().saturating_sub(1)) {
             path.push(part);
             if fs::symlink_metadata(&path)?.file_attributes() & 0x400 != 0 {
-                return Err(crate::err("备份目录不能经过重解析点"));
+                return Err(crate::errc(ErrCode::BackupDirReparse));
             }
         }
     }
@@ -308,7 +309,7 @@ pub(crate) fn decode_output(bytes: &[u8]) -> Result<String, TaskError> {
         crate::text_parsing::ConsoleBytes::Utf16 => {
             let bytes = bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes);
             if !bytes.len().is_multiple_of(2) {
-                return Err(crate::err("UTF-16 输出被截断"));
+                return Err(crate::errc(ErrCode::Utf16OutputTruncated));
             }
             let words: Vec<u16> = bytes
                 .as_chunks::<2>()
@@ -316,10 +317,10 @@ pub(crate) fn decode_output(bytes: &[u8]) -> Result<String, TaskError> {
                 .iter()
                 .map(|b| u16::from_le_bytes([b[0], b[1]]))
                 .collect();
-            String::from_utf16(&words).map_err(|_| crate::err("UTF-16 输出解码失败"))
+            String::from_utf16(&words).map_err(|_| crate::errc(ErrCode::Utf16DecodeFailed))
         }
         crate::text_parsing::ConsoleBytes::Oem => crate::text_parsing::decode_code_page(bytes, 1)
-            .ok_or_else(|| crate::err("控制台输出解码失败")),
+            .ok_or_else(|| crate::errc(ErrCode::ConsoleDecodeFailed)),
     }
 }
 
@@ -348,7 +349,7 @@ impl Engine {
             .dir
             .join(format!("command-{}.out", self.command_number));
         let tool =
-            PathBuf::from(std::env::var("SystemRoot").map_err(|_| crate::err("SystemRoot 未知"))?)
+            PathBuf::from(std::env::var("SystemRoot").map_err(|_| crate::errc(ErrCode::SystemRootUnknown))?)
                 .join("System32")
                 .join(program);
         self.log(&crate::i18n::msg_tpl(
@@ -375,16 +376,16 @@ impl Engine {
         self.progress
             .switch_log_path(self.dir.join("operation.log"), 0);
         if !outcome.is_success() {
-            return Err(crate::err(&format!("{program} 失败：{outcome}\n{text}")));
+            return Err(crate::errc_with(ErrCode::ProgramFailed, &[program, &format!("{outcome}"), &text]));
         }
         Ok(text)
     }
     fn protect(&mut self) -> Result<(), TaskError> {
         let mut protected = vec![self.image_volume.clone()];
-        let system = std::env::var("SystemDrive").map_err(|_| crate::err("运行卷未知"))?;
+        let system = std::env::var("SystemDrive").map_err(|_| crate::errc(ErrCode::RunningVolumeUnknown))?;
         let runtime = drive_letter(&system)?;
         if self.target.drive_letter == Some(runtime) {
-            return Err(crate::err("不能写入当前运行卷"));
+            return Err(crate::errc(ErrCode::CannotWriteRunningVolume));
         }
         if runtime != 'X' {
             protected.push(wp::volume_identity(runtime)?);
@@ -401,11 +402,11 @@ impl Engine {
             let text = self.command("bcdedit.exe", &["/enum".into(), "{current}".into()], false)?;
             let start = text
                 .find("ramdisk=[")
-                .ok_or_else(|| crate::err("当前恢复载荷来源未知，拒绝格式化"))?
+                .ok_or_else(|| crate::errc(ErrCode::PayloadSourceUnknown))?
                 + 9;
             let end = text[start..]
                 .find(']')
-                .ok_or_else(|| crate::err("恢复载荷卷无法解析"))?
+                .ok_or_else(|| crate::errc(ErrCode::PayloadVolumeUnresolvable))?
                 + start;
             let letter = drive_letter(&text[start..end])?;
             protected.push(wp::volume_identity(letter)?);
@@ -415,7 +416,7 @@ impl Engine {
             && self.intent() == RestoreIntent::SecondaryInstall
             && !pe_safety::probe_file(&root(main)?, &["Windows", "System32", "config", "SYSTEM"])?
         {
-            return Err(crate::err("需保留的主系统卷缺少系统证据"));
+            return Err(crate::errc(ErrCode::PrimaryVolumeLacksEvidence));
         }
         pe_safety::check_target(&self.target, &protected, main.as_ref(), self.intent())
     }
@@ -528,10 +529,10 @@ impl Engine {
                     .parse::<u64>()
                     .ok()
             })
-            .ok_or_else(|| crate::err("镜像展开容量未知，拒绝写入"))?;
+            .ok_or_else(|| crate::errc(ErrCode::ImageExpandedSizeUnknown))?;
         let mut required = expanded
             .checked_add((expanded / 10).max(64 * 1024 * 1024))
-            .ok_or_else(|| crate::err("镜像容量溢出"))?;
+            .ok_or_else(|| crate::errc(ErrCode::ImageSizeOverflow))?;
         let sidecar = backuprestore_core::image_metadata::index_metadata_path(
             &self.image,
             self.request.index,
@@ -542,7 +543,7 @@ impl Engine {
                 if metadata.wim_index != self.request.index
                     || metadata.image_sha256 != self.image_hash
                 {
-                    return Err(crate::err("副档索引或摘要不匹配"));
+                    return Err(crate::errc(ErrCode::SidecarMismatch));
                 }
                 required = required
                     .max(metadata.required_target_size())
@@ -554,17 +555,20 @@ impl Engine {
             Err(error) => return Err(error.into()),
         }
         if self.target.partition_size < required {
-            return Err(crate::err(&format!(
-                "目标容量不足：{} < {required}",
-                self.target.partition_size
-            )));
+            return Err(crate::errc_with(
+                ErrCode::TargetCapacityInsufficient,
+                &[
+                    &self.target.partition_size.to_string(),
+                    &required.to_string(),
+                ],
+            ));
         }
         if self.intent() == RestoreIntent::DataOverlay {
             let letter =
                 wp::ensure_volume_mounted(&self.target, 'T', &self.dir.join("operation.log"))?;
             pe_safety::verify_binding(&self.target, &wp::volume_identity(letter)?, true)?;
             if wp::disk_free_space(letter)?.1 < required {
-                return Err(crate::err("数据覆盖目标可用空间不足"));
+                return Err(crate::errc(ErrCode::DataOverlaySpaceInsufficient));
             }
         }
         if self.intent() != RestoreIntent::DataOverlay {
@@ -588,9 +592,7 @@ impl Engine {
                 "\\windows\\system32\\ntoskrnl.exe",
             ] {
                 if !paths.iter().any(|p| p == required) {
-                    return Err(crate::err(&format!(
-                        "镜像缺少系统文件 {required}；不能按系统还原成功"
-                    )));
+                    return Err(crate::errc_with(ErrCode::ImageMissingSystemFile, &[required]));
                 }
             }
         }
@@ -635,7 +637,7 @@ impl RestoreBackend for Engine {
             )?;
             self.boot_manager = Some(
                 crate::parse_boot_manager_state(&before)
-                    .ok_or_else(|| crate::err("启动管理器状态未知，拒绝格式化"))?,
+                    .ok_or_else(|| crate::errc(ErrCode::BootManagerStateUnknown))?,
             );
             fs::copy(&store, self.dir.join("bcd-before"))?;
             fs::write(self.dir.join("bootmgr-before.txt"), &before)?;
@@ -701,10 +703,10 @@ impl RestoreBackend for Engine {
             let log = self.dir.join("operation.log");
             let executable_dir = std::env::current_exe()
                 .map_err(|error| {
-                    crate::err(&format!("无法定位程序目录（wimlib 通道）：{error}"))
+                    crate::errc_with(ErrCode::ProgramDirUnresolvable, &[&error.to_string()])
                 })?
                 .parent()
-                .ok_or_else(|| crate::err("程序目录解析失败（wimlib 通道）"))?
+                .ok_or_else(|| crate::errc(ErrCode::ProgramDirResolveFailed))?
                 .to_path_buf();
             crate::wimlib_apply::apply_overlay(
                 &executable_dir,
@@ -752,7 +754,7 @@ impl RestoreBackend for Engine {
                 vec!["Windows", "System32", "ntoskrnl.exe"],
             ] {
                 if !pe_safety::probe_file(&root(&actual)?, &components)? {
-                    return Err(crate::err("系统文件验证失败，不能降级为数据还原成功"));
+                    return Err(crate::errc(ErrCode::SystemFileVerifyFailed));
                 }
             }
         }
@@ -762,7 +764,7 @@ impl RestoreBackend for Engine {
         let esp = self
             .esp
             .clone()
-            .ok_or_else(|| crate::err("引导许可缺少 ESP"))?;
+            .ok_or_else(|| crate::errc(ErrCode::BootPermitMissingEsp))?;
         pe_safety::verify_binding(&esp, &wp::refresh_identity(&esp)?, true)?;
         let target = self.recheck(true)?;
         let log = self.dir.join("operation.log");
@@ -785,9 +787,9 @@ impl RestoreBackend for Engine {
         let old = self
             .boot_manager
             .clone()
-            .ok_or_else(|| crate::err("缺少格式化前引导状态"))?;
+            .ok_or_else(|| crate::errc(ErrCode::MissingPreFormatBootState))?;
         if crate::parse_boot_manager_state(&before).as_ref() != Some(&old) {
-            return Err(crate::err("预检后引导状态发生变化，停止引导写入"));
+            return Err(crate::errc(ErrCode::BootStateChangedAfterPrecheck));
         }
         // 2026-10-15 用户规则修订：**不再带 /d**。此前 /d 让 default 留在原主系统，
         // 现在要求还原完成后 default 指向本次还原出来的系统——这正是 bcdboot 不带
@@ -889,9 +891,7 @@ impl RestoreBackend for Engine {
                     loader_resume_objects: old.loader_resume_objects,
                 })
             {
-                return Err(crate::err(
-                    "第二系统默认项或菜单顺序不符合约定，拒绝报成功",
-                ));
+                return Err(crate::errc(ErrCode::SecondaryMenuOrderInvalid));
             }
         }
         match crate::winre_registration::repair(
