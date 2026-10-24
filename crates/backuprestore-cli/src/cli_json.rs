@@ -11,8 +11,9 @@
 //! 【边界（务必知情）】
 //!   · 只影响 **stdout 的最后一行**；日志文件、GUI 弹窗文案完全不变
 //!     （日志无语言维度，`append_log` 不带 language，这是既有设计）；
-//!   · 失败时 `error` 仍是中文文案——它是给人看的诊断串，不是判据输入；
-//!     判据请只认 `success` / `log_path` / `operation` 这些结构化字段。
+//!   · 失败时 `error` 是给人看的诊断串（`[BR-域-序号] 文案`），**不是判据输入**；
+//!     判据请判 `success` / `error_code` / `log_path` / `operation` 这些结构化字段。
+//!     `error_code` 是稳定契约（无码的用法错误为 `null`），`error` 的文案随时会改。
 //!
 //! 【设计】
 //!   · 全局开关只在此模块内可见，避免散落各处各自判断；
@@ -46,6 +47,7 @@ pub(crate) fn command_result(
     task_id: Option<&str>,
     log_path: Option<&str>,
     error: Option<&str>,
+    error_code: Option<&str>,
 ) -> serde_json::Value {
     serde_json::json!({
         "command": command,
@@ -54,6 +56,9 @@ pub(crate) fn command_result(
         "task_id": task_id,
         "log_path": log_path,
         "error": error,
+        // 稳定的 `BR-域-序号`；用法错误（无码）为 null。
+        // 判据判这个字段，**不要**去解析 `error` 里的 `[码] ` 前缀。
+        "error_code": error_code,
     })
 }
 
@@ -101,6 +106,7 @@ mod tests {
             None,
             Some(r"H:\logs\a.log"),
             None,
+            None,
         );
         assert_eq!(ok["command"], "online");
         assert_eq!(ok["operation"], "restore-existing");
@@ -109,19 +115,45 @@ mod tests {
         assert!(ok["error"].is_null());
         assert!(ok["task_id"].is_null(), "online 不建任务目录，task_id 应为 null");
 
-        let prep = command_result("prepare", "backup", true, Some("abc-123"), Some("p.log"), None);
+        let prep = command_result(
+            "prepare",
+            "backup",
+            true,
+            Some("abc-123"),
+            Some("p.log"),
+            None,
+            None,
+        );
         assert_eq!(prep["task_id"], "abc-123");
 
-        let bad = command_result("online", "backup", false, None, None, Some("boom"));
+        let bad = command_result(
+            "online",
+            "backup",
+            false,
+            None,
+            None,
+            Some("[BR-APL-001] boom"),
+            Some("BR-APL-001"),
+        );
         assert_eq!(bad["success"], false);
         assert!(bad["log_path"].is_null(), "缺日志路径时必须是 null 而非省略");
-        assert_eq!(bad["error"], "boom");
+        assert_eq!(bad["error"], "[BR-APL-001] boom");
+        // 码是独立字段：消费方判它，不解析 error 里的方括号前缀。
+        assert_eq!(bad["error_code"], "BR-APL-001");
     }
 
     #[test]
     fn windows_path_backslashes_are_escaped() {
         // 单反斜杠必须被 JSON 转义成 \\，否则消费方 json.loads 会报错。
-        let value = command_result("online", "backup", true, None, Some(r"H:\BRImages\x.wim"), None);
+        let value = command_result(
+            "online",
+            "backup",
+            true,
+            None,
+            Some(r"H:\BRImages\x.wim"),
+            None,
+            None,
+        );
         let text = value.to_string();
         assert!(text.contains(r"H:\\BRImages\\x.wim"), "实际输出：{text}");
         // 反解一次，确认是合法 JSON 且路径还原无损。

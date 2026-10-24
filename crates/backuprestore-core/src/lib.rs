@@ -90,6 +90,28 @@ pub enum TaskError {
 }
 
 impl TaskError {
+    /// 稳定错误码（`BR-域-序号`）；无码的用法错误返回 `None`。
+    ///
+    /// 给 `--json` 用：判据可以直接判 `error_code == "BR-APPLY-001"`，
+    /// 不必解析 `error` 文案里的 `[码] ` 前缀——**文案是给人看的，码才是契约**。
+    ///
+    /// 结构变体（`Io` / `Json` / `InvalidTransition`）给**固定码**但 `Display`
+    /// 不加前缀：它们的文案是 OS 本地化串或 serde 原文，硬加 `[BR-…] ` 只会
+    /// 让本来就难读的报错更难读；但自动化侧仍需区分「环境失败」还是「脚本
+    /// 写错」，所以码要能拿到。
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Self::Coded { code, .. } => Some(code),
+            Self::Io(_) => Some("BR-IO-001"),
+            Self::Json(_) => Some("BR-IO-002"),
+            Self::InvalidTransition { .. } => Some("BR-TSK-028"),
+            // 用法错误：英文原文本身唯一，故意无码（见 cli 的 error_code 文档）。
+            Self::Invalid(_) => None,
+        }
+    }
+}
+
+impl TaskError {
     /// 带稳定错误码的构造。码的分配原则：**一条语义一个码**，同一条文案
     /// 出现在多处时共用一个码；码一旦发布不得重排（用户报障直接报码）。
     pub fn coded(code: &'static str, message: impl Into<String>) -> Self {

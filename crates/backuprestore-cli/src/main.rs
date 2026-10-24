@@ -364,9 +364,9 @@ fn main() {
     #[cfg(windows)]
     {
         if crate::cli_json::enabled() {
-            let (ok, error_text) = match &result {
-                Ok(()) => (true, None),
-                Err(error) => (false, Some(error.to_string())),
+            let (ok, error_text, error_code) = match &result {
+                Ok(()) => (true, None, None),
+                Err(error) => (false, Some(error.to_string()), error.code()),
             };
             // operation 已在 `into_iter()` 之前从 `--operation <值>` 取好，
             // 口径与命令自己理解的一致（probe / backup / restore-existing / …）。
@@ -381,6 +381,7 @@ fn main() {
                 task_id.as_deref(),
                 log_path.as_deref(),
                 error_text.as_deref(),
+                error_code,
             ));
         }
     }
