@@ -7777,6 +7777,8 @@ unsafe fn run_online_operation(
                             "在线执行线程异常退出（{detail}）。完整调用栈见 \
                              <程序目录>\\logs\\panic.log；请检查本轮日志和候选目录；不能判定为成功。"
                         ),
+                        // panic 发生时连 `execute` 的第一行都没走完，没有本轮日志。
+                        log_path: None,
                     }
                 });
             *ONLINE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);

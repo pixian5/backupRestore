@@ -24,6 +24,9 @@ pub(crate) struct OnlineOpParams {
 pub(crate) struct OnlineResult {
     pub success: bool,
     pub detail: String,
+    /// 本轮任务日志的绝对路径。`--json` 的输出用得到；日志目录创建失败时为
+    /// `None`（那种情况下本来也没有日志可看）。
+    pub log_path: Option<String>,
 }
 struct ProgressGuard(std::sync::Arc<crate::recovery_progress::ProgressShared>);
 impl Drop for ProgressGuard {
@@ -66,6 +69,7 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
             return OnlineResult {
                 success: false,
                 detail: format!("无法创建日志目录：{error}"),
+                log_path: None,
             };
         }
     };
@@ -110,6 +114,7 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
                 .map(|e| format!("\n写最终日志失败：{e}"))
                 .unwrap_or_default()
         ),
+        log_path: Some(path.display().to_string()),
     }
 }
 fn drive(value: &str) -> Result<char, TaskError> {

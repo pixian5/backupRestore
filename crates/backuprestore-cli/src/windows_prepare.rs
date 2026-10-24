@@ -1253,8 +1253,29 @@ fn prepare_task(
             "created": Utc::now(),
         }),
     )?;
-    println!("TASK_ID={}", task.task_id);
-    println!("TASK_ROOT={}", task_dir.display());
+    // `--json` 下用单行 JSON 取代两行 `KEY=VALUE`：判据只认字段，不再解析
+    // 自然语言，也不必再区分「哪些命令有 TASK_ID 哪些没有」。
+    // 非 json 模式保持旧的两行输出（既有脚本依赖它，不动）。
+    if crate::cli_json::enabled() {
+        // `Operation` 是枚举、无 `as_str`；走 serde 的 kebab-case 序列化，
+        // 保证与 `online --operation <值>` 的字符串口径完全一致
+        // （probe / backup / restore-existing / create-secondary）。
+        let operation = serde_json::to_value(&task.operation)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("{:?}", task.operation));
+        crate::cli_json::emit(&crate::cli_json::command_result(
+            "prepare",
+            &operation,
+            true,
+            Some(&task.task_id),
+            Some(&prepare_log.display().to_string()),
+            None,
+        ));
+    } else {
+        println!("TASK_ID={}", task.task_id);
+        println!("TASK_ROOT={}", task_dir.display());
+    }
     Ok(())
 }
 

@@ -326,24 +326,28 @@ restore() {
     # 判据会连锁失败——按幂等性重试（format+apply 可安全重跑）。
     local t
     for t in 1 2 3; do
-        vm_cmd "H:\\brwork\\BackupRestore.exe online --operation restore-existing --source-drive ${DRIVE} --target-drive ${DRIVE} --image-path ${IMAGE} --index 1 --format-target" \
+        # ★ ` --json`：结论以单行结构化 JSON 输出（command/operation/success/
+        #   task_id/log_path/error），判据只认字段。这比从中文 stdout 里抠
+        #   日志路径强得多——程序自己声明成功与否，无需猜文案。
+        vm_cmd "H:\\brwork\\BackupRestore.exe online --operation restore-existing --source-drive ${DRIVE} --target-drive ${DRIVE} --image-path ${IMAGE} --index 1 --format-target --json" \
             > "$ART/restore.out" 2>&1
-        # ★ 成功判据只用 ASCII 结构化特征：CLI 收尾会打印任务日志路径
-        # （`...\logs\BackupRestore-online-*\Online.log`，纯 ASCII），命中即
-        # 说明 apply 主链走完。绝不用中文文案判断——
-        #   ① 文案随版本/语言变化，判据会脆；
-        #   ② 中文在 GBK/UTF-8 两种字节流里表现不同，是编码地雷。
-        # 实测：本脚本 100% ASCII 判据下，主程序 stdout 是 UTF-8、cmd 内建
-        # 是 GBK，两种都能正确处理，因为判据从不解析中文。
-        if grep -aqE 'Online\.log' "$ART/restore.out"; then
+        # JSON 行以 `{"command"` 开头；用 LC_ALL=C 按字节匹配（stdout 里还混着
+        # cmd 的 GBK 字节流，UTF-8 locale 下 grep 会整行跳过）。
+        RESTORE_JSON=$(LC_ALL=C grep -a '^{"command"' "$ART/restore.out" | tail -1)
+        if [ -n "$RESTORE_JSON" ]; then
             break
         fi
-        log "  ⚠ 还原命令未返回日志路径（第 ${t} 次：$(head -1 "$ART/restore.out" | cut -c1-60)），重试"
+        log "  ⚠ 还原命令未返回 JSON 结论（第 ${t} 次：$(head -1 "$ART/restore.out" | cut -c1-60)），重试"
         sleep 6
     done
-    # CLI stdout 只有收尾两行（「操作完成」+「日志：<Online.log 路径>」），
-    # STEP 明细全在日志文件里——C3 判据必须回读该日志，不能只看 stdout。
-    RESTORE_LOG=$(grep -aoE 'H:\\brwork\\logs\\[^ ]*\\Online.log' "$ART/restore.out" | head -1)
+    printf '%s\n' "$RESTORE_JSON" > "$ART/restore.json"
+    # 日志路径直接取自 JSON 字段（不再用正则从中文里抠）。
+    RESTORE_LOG=$(printf '%s' "$RESTORE_JSON" | python3 -c '
+import json, sys
+try:
+    print(json.loads(sys.stdin.read()).get("log_path") or "")
+except Exception:
+    print("")' 2>/dev/null)
     if [ -n "$RESTORE_LOG" ]; then
         # 日志一般几十 KB，通道字节透传可整份回读；超大才在 VM 端截尾。
         local lsz
@@ -374,9 +378,18 @@ collect_post() {
 
     local pre
     pre=$(cat "$ART/pre.json")
-    python3 - "$post" "$ART/restore.out" "$ART/restore-Online.log" "$SKIP_BACKUP" <<'PY' > "$ART/verdict.txt"
+    python3 - "$post" "$ART/restore.out" "$ART/restore-Online.log" "$SKIP_BACKUP" "$ART/restore.json" <<'PY' > "$ART/verdict.txt"
 import json, sys, re, os
-post_raw, restore_out, task_log, skip_backup = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+post_raw, restore_out, task_log, skip_backup, restore_json_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+# 程序自陈的结论（online --json 的单行 JSON）：success / log_path / operation
+# 全是 ASCII 结构化字段，判据不再解析任何中文文案。
+restore_json = {}
+if os.path.exists(restore_json_path):
+    try:
+        restore_json = json.loads(open(restore_json_path, encoding='utf-8').read().strip() or '{}')
+    except Exception:
+        restore_json = {}
+j_success = restore_json.get('success')
 log_text = ''
 if os.path.exists(task_log):
     log_text = open(task_log, encoding='utf-8', errors='replace').read()
@@ -410,11 +423,18 @@ steps = sorted(set(re.findall(r'STEP ([0-9/]+)', log)))
 #   行只作附加信息展示，不作硬判据，避免误伤降级路径。
 c3_ok = bool(re.search(r'STEP 4/4', log))
 dism_ok = 'The operation completed successfully' in log
-v('C3 任务 success/100', c3_ok,
-  '任务日志 STEP ' + '/'.join(steps)
+# ★ C3 升级为「程序自陈 + 结构化交叉验证」：主判据是 --json 的 success 字段
+#   （程序自己声明成没成），再用日志的 STEP 4/4 交叉验证一遍，两条都对才算过。
+#   旧版是「STEP 4/4 + 中文『操作完成』文案」——文案随版本变，且是编码地雷。
+j_ok = (j_success is True)
+c3_final = j_ok and c3_ok
+v('C3 任务 success/100', c3_final,
+  ('--json success=true' if j_ok else '--json success=' + repr(j_success))
+  + '，任务日志 STEP ' + '/'.join(steps)
   + ('，DISM 英文成功行在' if dism_ok else '，无 DISM 成功行（wimlib 降级路径或日志截尾）')
-  if c3_ok else
-  ('任务日志仅到 STEP ' + ('/'.join(steps) or '<无>') + '，末行：'
+  if c3_final else
+  (('--json success=' + repr(j_success))
+   + '，任务日志仅到 STEP ' + ('/'.join(steps) or '<无>') + '，末行：'
    + (log.strip().splitlines()[-1][:50] if log.strip() else '<空>')))
 v('C4 100MB 载荷字节级一致', post_d['bigsha'] == pre_d['bigsha'] and post_d['biglen'] == pre_d['biglen'],
   f"sha {'一致' if post_d['bigsha'] == pre_d['bigsha'] else '不一致'}，{post_d['biglen']}/{pre_d['biglen']} B")

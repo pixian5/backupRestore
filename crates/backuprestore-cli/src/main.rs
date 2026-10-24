@@ -48,6 +48,10 @@ mod boot_cleanup;
 mod boot_entry;
 /// DISM 等待上限：把「无限等待」变成可配置，**默认仍是无限**（零回归）。
 /// 跨平台纯逻辑，本机单测即可覆盖全部分支。
+/// CLI 结构化输出（`--json`）：让自动化判据不再解析中文文案，只认字段。
+/// 纯逻辑 + 本机单测，故与 `pe_safety` 同门控。
+#[cfg(any(windows, test))]
+mod cli_json;
 #[cfg(any(windows, test))]
 mod dism_timeout;
 /// 恢复环境「连续失败 N 次后如何处理」策略：判据、文案与设置的单一来源。
@@ -107,7 +111,7 @@ mod winre_registration;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -129,6 +133,15 @@ fn main() {
     #[cfg(windows)]
     crate::dism_timeout::init_process_env_from_settings();
     let arguments: Vec<String> = env::args().skip(1).collect();
+    // `--json`：命令把结论以单行 JSON 打印（command/operation/success/
+    // log_path/error），让自动化判据只认字段、不再解析中文文案。
+    // 子命令的解析循环遇到未知 `--json` 走 `_ => {}`，故无需从 arguments 摘除。
+    #[cfg(windows)]
+    {
+        if arguments.iter().any(|a| a == "--json") {
+            crate::cli_json::enable();
+        }
+    }
     if arguments.is_empty() && should_launch_gui() {
         if let Err(error) = launch_gui() {
             eprintln!("error: {error}");
@@ -380,7 +393,25 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
         format_target,
     };
     let result = crate::online_operation::execute(&params);
-    println!("{}", result.detail);
+    // `--json` 下只打印一行结构化结论（判据认字段），中文 detail 不再进 stdout；
+    // 否则保持旧行为（人类读中文摘要）。日志内容与 GUI 弹窗两种模式完全一致。
+    if crate::cli_json::enabled() {
+        crate::cli_json::emit(&crate::cli_json::command_result(
+            "online",
+            &params.operation,
+            result.success,
+            // online 不建 TaskStore（日志在 logs/ 下），故无 task_id。
+            None,
+            result.log_path.as_deref(),
+            if result.success {
+                None
+            } else {
+                Some(result.detail.as_str())
+            },
+        ));
+    } else {
+        println!("{}", result.detail);
+    }
     if result.success {
         Ok(())
     } else {
