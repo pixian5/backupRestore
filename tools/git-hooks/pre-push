@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# pre-push —— 本地推送门禁（P2-a：替代 GitHub Actions CI 的方案）
+#
+# 为什么是本地钩子而不是 GitHub Actions：
+#   ① 省流量——依赖已在本机 cargo 缓存，全离线可跑；Actions 每次要在 runner 上
+#      重新下载全部依赖（流量与时间都是白花）。
+#   ② 本项目反复踩的坑是「cargo test 通过 ≠ 构建通过」（cfg(windows) 缺陷只在
+#      非 test 构建/交叉编译暴露，E0433/E0382 出过多次）。mac 侧 ./build-win.sh
+#      交叉编译正好在每次 push 前自动兜住这一类。
+#   ③ 项目开发就在 mac 宿主提交，钩子装一次全程生效；VM 侧部署另有
+#      tools/smoke/deploy-and-smoke.sh 门禁（构建+部署+冒烟）。
+#
+# 安装（一次性，per-clone）：
+#   git config core.hooksPath tools/git-hooks
+# 强行跳过（不鼓励）：git push --no-verify
+#
+# 退出码：0 = 放行；1 = 有检查失败（push 被拒）。
+
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+cd "$repo_root" || exit 1
+
+fail() {
+    echo ""
+    echo "[pre-push] $*"
+    echo "[pre-push] push 已拒绝。修复后重试；确需强行推送用 git push --no-verify。"
+    exit 1
+}
+
+echo "[pre-push] 1/2 cargo test --workspace（core + 跨平台单测）"
+cargo test --workspace 2>&1 | tail -5 || fail "单测失败（见上方输出）"
+
+if [ -x ./build-win.sh ]; then
+    echo "[pre-push] 2/2 ./build-win.sh（Windows ARM64 交叉编译，抓 cfg(windows) 缺陷）"
+    ./build-win.sh 2>&1 | tail -3 || fail "交叉编译失败（见上方输出）"
+else
+    echo "[pre-push] 2/2 非 mac 宿主（无 build-win.sh）：跳过交叉编译。"
+    echo "[pre-push]     Windows 侧请自行跑 windows/build-windows.ps1 确认构建。"
+fi
+
+echo "[pre-push] OK：单测与交叉编译均通过，放行 push。"

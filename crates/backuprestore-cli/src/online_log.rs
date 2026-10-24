@@ -40,6 +40,7 @@ fn dir_tag(operation: &str) -> &'static str {
         "restore-existing" | "restore" => "restore",
         "create-secondary" => "secondary",
         "probe" => "probe",
+        "image-admin" => "image-admin",
         _ => "online",
     }
 }

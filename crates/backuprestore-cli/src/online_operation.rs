@@ -139,7 +139,7 @@ fn drive(value: &str) -> Result<char, TaskError> {
     }
     Ok(raw.chars().next().unwrap().to_ascii_uppercase())
 }
-fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
+pub(crate) fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
     // 【2026-10-16 审查修订，卡死 6】等待上限可配置（`dism_timeout`），
     // 默认仍是 INFINITE、与旧版行为一致。此前是硬编码 INFINITE：DISM 挂死则
     // 工作线程永久等待，「创建任务」按钮与状态永远停在「执行中」。
@@ -207,7 +207,7 @@ fn apply_image_with_fallback(
     }
     Ok(())
 }
-fn indexes(image: &Path, log_path: &Path) -> Result<Vec<u32>, TaskError> {
+pub(crate) fn indexes(image: &Path, log_path: &Path) -> Result<Vec<u32>, TaskError> {
     crate::wim_indexes(image, log_path)
 }
 

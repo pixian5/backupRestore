@@ -34,7 +34,7 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层（共 212 条）
+## CLI 层（共 213 条）
 
 ### `BR-APL` — 应用镜像（DISM / wimlib）（9 条）
 
@@ -93,7 +93,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-GUI-001` | `ImageIndexInvalid` | 镜像索引无效 | The image index is invalid |
 | `BR-GUI-002` | `ImageIndexNotPositive` | 镜像索引必须是正整数 | The image index must be a positive integer |
 
-### `BR-IMG` — 镜像文件与 DISM 探测（6 条）
+### `BR-IMG` — 镜像文件与 DISM 探测（7 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -103,6 +103,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-IMG-004` | `ImageMountProbeFailed` | 镜像挂载探测失败（dism /Mount-Wim 退出码 {0}{1}）。完整输出已写入准备日志。 | Image mount probe failed (dism /Mount-Wim exit code {0}{1}). The full output was written to the preparation log. |
 | `BR-IMG-005` | `ImageUnmountFailed` | 镜像挂载探测的卸载失败（dism /Unmount-Wim 退出码 {0}{1}）。镜像可能仍处于挂载状态并被锁定，请手动用 dism /Unmount-Wim /Discard 清理后再试。 | Unmounting the probe mount failed (dism /Unmount-Wim exit code {0}{1}). The image may still be mounted and locked; clean it up manually with dism /Unmount-Wim /Discard and retry. |
 | `BR-IMG-006` | `ImageNameReadFailed` | 读取镜像名失败（dism /Get-WimInfo 退出码 {0}{1}）。请确认镜像文件可访问且未被占用。 | Failed to read the image name (dism /Get-WimInfo exit code {0}{1}). Make sure the image file is accessible and not in use. |
+| `BR-IMG-007` | `DeleteIndexReadbackMismatch` | 删除旧索引后回读的索引集合与期望不一致，已中止；镜像可能停在半删状态，请用 wim-info 核实后再试 | The index set read back after deleting old indexes does not match the expectation; aborted. The image may be left half-deleted - verify with wim-info before retrying |
 
 ### `BR-PE` — PE 通道与写盘契约（58 条）
 

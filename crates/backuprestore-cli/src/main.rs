@@ -90,6 +90,10 @@ mod native_gui;
 mod online_log;
 #[cfg(windows)]
 mod online_operation;
+/// 备份文件管理（P1-c）：纯逻辑（钳制）跨平台可测；DISM 相关的列举/删除
+/// 单独 `#[cfg(windows)]`（与 `online_operation` 同门控）。
+#[cfg(any(windows, test))]
+mod image_admin;
 #[cfg(windows)]
 mod pe_operation;
 #[cfg(any(windows, test))]
@@ -131,7 +135,9 @@ mod winre_registration;
 fn usage() -> ! {
     eprintln!(
         "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)
-  online --operation <backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--index <n>] [--compress <fast|none> (default fast)] [--image-name <name>] [--keep-indexes <n>] [--format-target] [--ui-language <zh|en>]\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+  online --operation <backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--index <n>] [--compress <fast|none> (default fast)] [--image-name <name>] [--keep-indexes <n>] [--format-target] [--ui-language <zh|en>]\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>
+  list-images [dir]  (default H:\\BRImages; list WIMs and their indexes)
+  delete-old-indexes <absolute-wim> --keep <n>  (destructive: delete the oldest indexes, keep the latest n)\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -327,6 +333,35 @@ fn main() {
         }
         #[cfg(windows)]
         Some("online") => online_cli(args.collect()),
+        #[cfg(windows)]
+        Some("list-images") => {
+            // 备份文件管理（P1-c）：列目录下的 WIM 及索引元数据，目录缺省 H:\BRImages。
+            let remaining: Vec<String> = args.collect();
+            let dir = remaining
+                .into_iter()
+                .find(|a| !a.starts_with("--"))
+                .unwrap_or_else(default_image_dir);
+            image_admin_cli_list(dir)
+        }
+        #[cfg(windows)]
+        Some("delete-old-indexes") => {
+            // 备份文件管理（P1-c）：删最旧索引、保留最新 N 个（破坏性；GUI 侧有确认框）。
+            let remaining: Vec<String> = args.collect();
+            let image = remaining
+                .iter()
+                .find(|a| !a.starts_with("--"))
+                .cloned()
+                .ok_or_else(|| err("WIM image path is required"));
+            let keep = remaining
+                .iter()
+                .position(|a| a == "--keep")
+                .and_then(|i| remaining.get(i + 1))
+                .and_then(|v| v.parse::<u32>().ok())
+                .ok_or_else(|| err("--keep <n> is required"));
+            image
+                .and_then(|image| keep.map(|keep| (image, keep)))
+                .and_then(|(image, keep)| image_admin_cli_delete(image, keep))
+        }
         Some("recover") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));
@@ -510,6 +545,158 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
         Ok(())
     } else {
         Err(err("online operation did not complete successfully"))
+    }
+}
+
+/// 备份文件管理的默认目录：项目约定的镜像卷 `H:\BRImages`；不存在则退回程序目录。
+/// 只影响 `list-images` 的缺省值与 GUI 对话框初值，用户随时可以显式指定别的目录。
+#[cfg(windows)]
+fn default_image_dir() -> String {
+    let preferred = std::path::PathBuf::from("H:\\BRImages");
+    if preferred.is_dir() {
+        return preferred.to_string_lossy().into_owned();
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `list-images`：打印镜像与索引清单。人类可读模式给人看；`--json` 模式每镜像一行
+/// 结构化结论（供自动化/排障），日志路径统一走 `cli_json` 单一出口。
+#[cfg(windows)]
+fn image_admin_cli_list(dir: String) -> Result<(), TaskError> {
+    let dir = std::path::PathBuf::from(dir);
+    let (log_dir, _note) = crate::online_log::resolve_dir("image-admin")
+        .map_err(|error| err(&format!("cannot create log directory: {error}")))?;
+    let log_path = log_dir.join("admin.log");
+    let images = crate::image_admin::list_images(&dir, &log_path)?;
+    if crate::cli_json::enabled() {
+        for image in &images {
+            let indexes: Vec<_> = image
+                .indexes
+                .iter()
+                .map(|index| {
+                    let entry = image.entries.get(index);
+                    serde_json::json!({
+                        "index": index,
+                        "name": entry.and_then(|e| e.name.clone()),
+                        "created": entry.and_then(|e| e.created.clone()),
+                        "source": entry.and_then(|e| e.source.clone()),
+                        "image_size": entry.and_then(|e| e.image_size),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "command": "list-images",
+                    "success": true,
+                    "dir": dir.display().to_string(),
+                    "image": image.path.display().to_string(),
+                    "file_size": image.file_size,
+                    "index_count": image.indexes.len(),
+                    "indexes": indexes,
+                    "log_path": log_path.display().to_string(),
+                })
+            );
+        }
+        if images.is_empty() {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "command": "list-images",
+                    "success": true,
+                    "dir": dir.display().to_string(),
+                    "image": null,
+                    "index_count": 0,
+                    "indexes": [],
+                    "log_path": log_path.display().to_string(),
+                })
+            );
+        }
+    } else if images.is_empty() {
+        println!("目录下没有 WIM 镜像：{}", dir.display());
+    } else {
+        for image in &images {
+            println!(
+                "{}  ({}, {} 个索引)",
+                image.path.display(),
+                format_size(image.file_size),
+                image.indexes.len()
+            );
+            for index in &image.indexes {
+                let entry = image.entries.get(index);
+                let name = entry
+                    .and_then(|e| e.name.clone())
+                    .unwrap_or_else(|| "(无副档)".to_string());
+                let created = entry
+                    .and_then(|e| e.created.clone())
+                    .unwrap_or_else(|| "-".to_string());
+                let source = entry
+                    .and_then(|e| e.source.clone())
+                    .unwrap_or_else(|| "-".to_string());
+                let size = entry
+                    .and_then(|e| e.image_size)
+                    .map(format_size)
+                    .unwrap_or_else(|| "-".to_string());
+                println!("  索引 {index:<3} {name:<24} {created}  {size:<12} {source}");
+            }
+        }
+        println!("共 {} 个镜像：{}", images.len(), dir.display());
+    }
+    crate::cli_json::set_detail(None, Some(log_path.display().to_string()));
+    Ok(())
+}
+
+/// `delete-old-indexes`：破坏性操作。删除前后各记一行日志；结果同时进 `--json`。
+#[cfg(windows)]
+fn image_admin_cli_delete(image: String, keep: u32) -> Result<(), TaskError> {
+    let image = std::path::PathBuf::from(image);
+    let (log_dir, _note) = crate::online_log::resolve_dir("image-admin")
+        .map_err(|error| err(&format!("cannot create log directory: {error}")))?;
+    let log_path = log_dir.join("admin.log");
+    crate::append_log(
+        &log_path,
+        &format!(
+            "delete-old-indexes started: image={} keep={keep}",
+            image.display()
+        ),
+    )?;
+    let (removed, kept) = crate::image_admin::delete_oldest_indexes(&image, keep, &log_path)?;
+    crate::append_log(
+        &log_path,
+        &format!(
+            "delete-old-indexes done: removed={removed} kept={kept} image={}",
+            image.display()
+        ),
+    )?;
+    if !crate::cli_json::enabled() {
+        println!(
+            "已删除 {removed} 个旧索引，保留最新 {kept} 个：{}",
+            image.display()
+        );
+    }
+    crate::cli_json::set_detail(None, Some(log_path.display().to_string()));
+    Ok(())
+}
+
+/// 字节数的人类可读格式（二进制单位，与界面其它容量显示一致）。
+#[cfg(windows)]
+fn format_size(bytes: u64) -> String {
+    const units: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < units.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", units[unit])
     }
 }
 
