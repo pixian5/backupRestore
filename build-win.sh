@@ -1,19 +1,17 @@
 #!/bin/bash
 # BackupRestore macOS 交叉编译 Windows ARM64 一键构建脚本
 # 用法：./build-win.sh [--deploy]
-#   --deploy  构建后部署到 VM 两处（每处都写 BackupRestore.exe 与 Recovery.exe 两份）：
-#             包目录/自启点 C:\Users\Public\backupRestore-package
-#             工作目录     H:\brwork
+#   --deploy  构建后部署到 VM 唯一目标 H:\brwork（BackupRestore.exe / Recovery.exe
+#             / wimlib-imagex.exe / libwim-15.dll / winpe-winpeshl.ini 五件套）
 #
-# ⚠️ 权威运行目录 = H:\brwork（2026-10-24 用户裁定「TaskStore 搬离 C:」）。
+# ⚠️ 部署目标唯一 = H:\brwork（2026-10-24 用户裁定「不再往 C: 部署 exe」）。
 #    TaskStore 的根 = 可执行文件所在目录（GUI `TaskStore::new(&state.executable_dir)`、
 #    CLI `current_exe().parent()`），任务目录随之落在 `<运行目录>\tasks`。
-#    所以「任务存哪」由「从哪启动」决定：从 H:\brwork 起 → 任务在 H:\brwork\tasks；
-#    从 C: 包目录起 → 任务落回 C:（会被 A 入口还原 C: 一起回滚，还会让镜像把旧任务
-#    状态带回来）。因此所有启动入口一律走 H:\brwork（tools/win-clicker 里的
-#    restart-gui-h.ps1 与各 br-*-launch.ps1 均已如此）。
-#    C: 包目录退为**分发副本**（Recovery.exe / winpeshl.ini / wimlib 二进制），
-#    不再承载任务存储；其 \tasks 已于 2026-10-24 清空并把 4 个终态任务迁到 H:\brwork\tasks。
+#    所以「任务存哪」由「从哪启动」决定：从 H:\brwork 起 → 任务在 H:\brwork\tasks。
+#    C:\Users\Public\backupRestore-package 是历史部署位，自本版起**不再写入**：
+#    备份 C: 会把该目录连旧 exe 一起打进镜像，A 入口还原 C: 后自启 GUI 会从那里
+#    带回旧版二进制（2026-10-24 A 入口回归实测：自启实例 v2.6.31，而 H: 里是
+#    v2.6.32）。脚本每次 --deploy 会顺带清掉该目录残留，让 C: 上零程序痕迹。
 
 # ⚠️ 部署目标唯一约定（2026-10-13 用户裁定）：工作目录只有 H:\brwork。
 #    旧工作区 F:\BR 已于 2026-10-13 退役并删除——F: 是镜像卷（标签 BRIMG），只放镜像。
@@ -100,8 +98,8 @@ if [ "$1" = "--deploy" ]; then
   # SHA-256 比对，重试不会放过真实失败。
   # 实机踩过的坑（2026-09-30）：部署只更新包目录，真正的运行目录 H:\brwork
   # 里的 Recovery.exe 还是旧件，于是 WinRE 载荷被烘进旧代码，唯一症状是镜像
-  # 元数据里的 programVersion 偏低，静态检查看不出来。因此部署必须把两个目录、
-  # 两个文件名（BackupRestore.exe / Recovery.exe）全部刷新并逐个比对哈希。
+  # 元数据里的 programVersion 偏低，静态检查看不出来。因此部署必须把 H:\brwork
+  # 里两个文件名（BackupRestore.exe / Recovery.exe）全部刷新并逐个比对哈希。
   # 清理步骤的失败都是良性的（进程本来没在跑、文件本来不存在），
   # 用 exit /b 0 收尾，避免良性退出码在 set -e 下中断部署。
   #
@@ -113,15 +111,17 @@ if [ "$1" = "--deploy" ]; then
   # 因为它失败必须让部署中止（后面 copy 到不存在的目录必然失败）。
   # 1) 停掉可能在跑的旧进程（找不到进程是常态，良性）
   prl_exec_retry "Windows 11" cmd /d /c "taskkill /f /im BackupRestore.exe & taskkill /f /im Recovery.exe & exit /b 0" || true
-  # 2) 建两个目标目录（各一次独立调用，确认真的建起来了）
-  prl_exec_retry "Windows 11" cmd /d /c "if not exist C:\\Users\\Public\\backupRestore-package\\NUL mkdir C:\\Users\\Public\\backupRestore-package"
+  # 2) 清掉历史部署位 C:\Users\Public\backupRestore-package（2026-10-24 用户裁定
+  #    「不再往 C: 部署 exe」后该目录只会有残留；rmdir /s /q 对不存在的目录返回
+  #    非零，属良性，用 exit /b 0 收尾）
+  prl_exec_retry "Windows 11" cmd /d /c "rmdir /s /q C:\\Users\\Public\\backupRestore-package & exit /b 0" || true
+  # 3) 建唯一目标目录（独立调用，确认真的建起来了）
   prl_exec_retry "Windows 11" cmd /d /c "if not exist H:\\brwork\\NUL mkdir H:\\brwork"
-  # 3) 清掉包目录里的旧启动件（文件本来就不存在是常态，良性）
-  prl_exec_retry "Windows 11" cmd /d /c "del /f /q C:\\Users\\Public\\backupRestore-package\\RecoveryLauncher.cmd & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl.ini & del /f /q C:\\Users\\Public\\backupRestore-package\\winpeshl-boot.cmd & exit /b 0" || true
   # wimlib 官方 ARM64 二进制（任务 #110 覆盖式还原通道）：在线态按 executable_dir
-  # 定位，故必须随包目录与 H:\brwork 各部署一份；RE 态由 winre_payload 从
-  # executable_dir 暂存注入 Winre.wim 的 System32（同一来源，哈希校验在注入链）。
-  DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe C:\\Users\\Public\\backupRestore-package\\Recovery.exe && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini C:\\Users\\Public\\backupRestore-package\\winpe-winpeshl.ini && copy /y \\\\Mac\\backupRestore\\windows\\wimlib-aarch64\\wimlib-imagex.exe C:\\Users\\Public\\backupRestore-package\\wimlib-imagex.exe && copy /y \\\\Mac\\backupRestore\\windows\\wimlib-aarch64\\libwim-15.dll C:\\Users\\Public\\backupRestore-package\\libwim-15.dll && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\Recovery.exe && copy /y \\\\Mac\\backupRestore\\windows\\wimlib-aarch64\\wimlib-imagex.exe H:\\brwork\\wimlib-imagex.exe && copy /y \\\\Mac\\backupRestore\\windows\\wimlib-aarch64\\libwim-15.dll H:\\brwork\\libwim-15.dll && echo DEPLOYED")
+  # 定位，故必须随 H:\brwork 部署；RE 态由 winre_payload 从 executable_dir
+  # 暂存注入 Winre.wim 的 System32（同一来源，哈希校验在注入链）。
+  # winpe-winpeshl.ini 是 PE 桌面壳模板（`--pe-desktop`），随部署位放一份便于人工比对。
+  DEPLOY_OUTPUT=$(prl_exec_retry "Windows 11" cmd /d /c "copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\BackupRestore.exe && copy /y \\\\Mac\\backupRestore\\target\\aarch64-pc-windows-msvc\\release\\BackupRestore.exe H:\\brwork\\Recovery.exe && copy /y \\\\Mac\\backupRestore\\windows\\winpe-winpeshl.ini H:\\brwork\\winpe-winpeshl.ini && copy /y \\\\Mac\\backupRestore\\windows\\wimlib-aarch64\\wimlib-imagex.exe H:\\brwork\\wimlib-imagex.exe && copy /y \\\\Mac\\backupRestore\\windows\\wimlib-aarch64\\libwim-15.dll H:\\brwork\\libwim-15.dll && echo DEPLOYED")
   if ! echo "$DEPLOY_OUTPUT" | grep -q '^DEPLOYED'; then
     echo "部署失败：客体未返回 DEPLOYED 成功标记" >&2
     echo "$DEPLOY_OUTPUT" >&2
@@ -131,20 +131,16 @@ if [ "$1" = "--deploy" ]; then
   # wimlib 二进制基线哈希（仓库 windows/wimlib-aarch64/，任务 #110）
   WIMLIB_EXE_SHA=$(shasum -a 256 windows/wimlib-aarch64/wimlib-imagex.exe | awk '{print $1}')
   WIMLIB_DLL_SHA=$(shasum -a 256 windows/wimlib-aarch64/libwim-15.dll | awk '{print $1}')
-  GUEST_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\BackupRestore.exe').Hash.ToLowerInvariant()" | tr -d '\r')
-  RECOVERY_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\Recovery.exe').Hash.ToLowerInvariant()" | tr -d '\r')
   WORK_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\BackupRestore.exe').Hash.ToLowerInvariant()" | tr -d '\r')
   WORK_RECOVERY_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\Recovery.exe').Hash.ToLowerInvariant()" | tr -d '\r')
-  PKG_WIMLIB_EXE_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\wimlib-imagex.exe').Hash.ToLowerInvariant()" | tr -d '\r')
-  PKG_WIMLIB_DLL_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'C:\\Users\\Public\\backupRestore-package\\libwim-15.dll').Hash.ToLowerInvariant()" | tr -d '\r')
   WORK_WIMLIB_EXE_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\wimlib-imagex.exe').Hash.ToLowerInvariant()" | tr -d '\r')
   WORK_WIMLIB_DLL_SHA=$(prl_exec_retry "Windows 11" powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 'H:\\brwork\\libwim-15.dll').Hash.ToLowerInvariant()" | tr -d '\r')
   # 每项「名称:期望哈希:实际哈希」——期望值按项取（程序两份同哈希，wimlib 另有基线）。
   # ⚠️ 冒号是切分符（`name=${triple%%:*}` / `expected` / `sha` 三段靠它切），
   #    所以**标签里绝不能出现冒号**：2026-10-24 把标签写成「分发副本(C:包目录)」，
   #    被切成 `分发副本(C`，三段错位 → 八联校验全部误报「与基线不一致」。
-  #    标签一律用「C包目录 / H-brwork」这类不含冒号的写法。
-  for triple in "分发副本(C包目录) BackupRestore.exe:$HOST_SHA:$GUEST_SHA" "分发副本(C包目录) Recovery.exe:$HOST_SHA:$RECOVERY_SHA" "权威运行目录(H-brwork) BackupRestore.exe:$HOST_SHA:$WORK_SHA" "权威运行目录(H-brwork) Recovery.exe:$HOST_SHA:$WORK_RECOVERY_SHA" "分发副本(C包目录) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$PKG_WIMLIB_EXE_SHA" "分发副本(C包目录) libwim-15.dll:$WIMLIB_DLL_SHA:$PKG_WIMLIB_DLL_SHA" "权威运行目录(H-brwork) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$WORK_WIMLIB_EXE_SHA" "权威运行目录(H-brwork) libwim-15.dll:$WIMLIB_DLL_SHA:$WORK_WIMLIB_DLL_SHA"; do
+  #    标签一律用「H-brwork」这类不含冒号的写法。
+  for triple in "唯一部署位(H-brwork) BackupRestore.exe:$HOST_SHA:$WORK_SHA" "唯一部署位(H-brwork) Recovery.exe:$HOST_SHA:$WORK_RECOVERY_SHA" "唯一部署位(H-brwork) wimlib-imagex.exe:$WIMLIB_EXE_SHA:$WORK_WIMLIB_EXE_SHA" "唯一部署位(H-brwork) libwim-15.dll:$WIMLIB_DLL_SHA:$WORK_WIMLIB_DLL_SHA"; do
     name=${triple%%:*}
     rest=${triple#*:}
     expected=${rest%%:*}

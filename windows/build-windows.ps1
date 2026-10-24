@@ -9,7 +9,11 @@ param(
     # 因此把原先 build-win.sh --deploy 的能力补到这里，让 Windows 侧也能
     # 一条命令「构建 + 部署 + 核对」收工。
     [switch]$Deploy,
-    [string]$DeployPackageDir = 'C:\Users\Public\backupRestore-package',
+    # ⚠️ 部署目标唯一约定（2026-10-24 用户裁定「不再往 C: 部署 exe」）：
+    #    只部署 H:\brwork。历史部署位 C:\Users\Public\backupRestore-package
+    #    自本版起不再写入，且每次 -Deploy 会清掉其残留——备份 C: 会把该目录
+    #    连旧 exe 一起打进镜像，A 入口还原 C: 后自启 GUI 会从那里带回旧版
+    #    二进制（2026-10-24 回归实测：自启 v2.6.31 而 H: 是 v2.6.32）。
     # ⚠️ 部署目标唯一约定（2026-10-13 用户裁定）：工作目录只有 H:\brwork。
     # 旧工作区 F:\BR 已于同日退役删除——F: 是镜像卷（标签 BRIMG），只放镜像。
     # 不要再往 F:\BR（或 F: 上任何目录）部署程序：两套工作区会争抢机器上唯一那份
@@ -153,11 +157,10 @@ function Initialize-MsvcEnvironment([string]$arch) {
 function Publish-Build {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
-        [Parameter(Mandatory = $true)][string]$PackageDir,
         [Parameter(Mandatory = $true)][string]$WorkDir
     )
     $sourceHash = (Get-FileHash $Binary -Algorithm SHA256).Hash.ToLowerInvariant()
-    Write-Host "Deploying to $PackageDir and $WorkDir (sha256 $sourceHash)"
+    Write-Host "Deploying to $WorkDir (sha256 $sourceHash)"
 
     # 先停掉可能在跑的旧进程，否则文件被占用会导致复制半途而废。
     # 找不到进程是常态，不算失败。
@@ -167,22 +170,20 @@ function Publish-Build {
     # 句柄释放需要一点时间；立刻复制可能撞上"另一个程序正在使用此文件"。
     Start-Sleep -Milliseconds 500
 
-    New-Item -ItemType Directory -Force -Path $PackageDir, $WorkDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 
-    # 清掉包目录里的历史启动件：它们已被 Recovery.exe 内嵌的 WinRE 契约取代，
-    # 留着会让人误以为还有这条回退路径。
-    foreach ($stale in @('RecoveryLauncher.cmd', 'winpeshl.ini', 'winpeshl-boot.cmd')) {
-        $path = Join-Path $PackageDir $stale
-        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+    # 清掉历史部署位 C:\Users\Public\backupRestore-package 的残留（2026-10-24
+    # 用户裁定「不再往 C: 部署 exe」）。目录不存在是常态，良性。
+    $legacyPackageDir = 'C:\Users\Public\backupRestore-package'
+    if (Test-Path -LiteralPath $legacyPackageDir) {
+        Remove-Item -LiteralPath $legacyPackageDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # 四个 exe 目标文件：两个目录 × 两个名字（BackupRestore.exe / Recovery.exe）。
+    # 两个 exe 目标文件：同一目录 × 两个名字（BackupRestore.exe / Recovery.exe）。
     # 少更新任何一个都会让 WinRE 载荷烘进旧代码。
-    # 另有四个 wimlib 目标文件（见下方 wimlib 块）：两个目录 × 两个名字，
-    # 合计八个文件逐个核对 SHA-256。
+    # 另有两个 wimlib 目标文件（见下方 wimlib 块）：同一目录 × 两个名字，
+    # 合计四个文件逐个核对 SHA-256。
     $targets = @(
-        @{ Path = (Join-Path $PackageDir 'BackupRestore.exe'); Label = '包目录 BackupRestore.exe' },
-        @{ Path = (Join-Path $PackageDir 'Recovery.exe'); Label = '包目录 Recovery.exe' },
         @{ Path = (Join-Path $WorkDir 'BackupRestore.exe'); Label = '运行目录 BackupRestore.exe' },
         @{ Path = (Join-Path $WorkDir 'Recovery.exe'); Label = '运行目录 Recovery.exe' }
     )
@@ -192,11 +193,11 @@ function Publish-Build {
             throw "部署失败：$($target.Label) 未生成于 $($target.Path)"
         }
     }
-    # WinPE 的 winpeshl.ini 是仓库里的审计夹具，随包目录一起放，便于人工比对。
-    Copy-Item (Join-Path $PSScriptRoot 'winpe-winpeshl.ini') (Join-Path $PackageDir 'winpe-winpeshl.ini') -Force
+    # WinPE 的 winpeshl.ini 是仓库里的审计夹具，随运行目录一起放，便于人工比对。
+    Copy-Item (Join-Path $PSScriptRoot 'winpe-winpeshl.ini') (Join-Path $WorkDir 'winpe-winpeshl.ini') -Force
 
     # wimlib 覆盖式还原通道（任务 #110，v2.6.25 引入）：独立进程调用的官方预编译
-    # 二进制，必须随包部署到两个目录——在线态 locate_wimlib 在程序同目录找它；
+    # 二进制，必须随运行目录部署——在线态 locate_wimlib 在程序同目录找它；
     # RE 态由 OPTIONAL_RUNTIME_FILES 从 executable_dir 暂存后注入 WinRE System32。
     # 仓库里缺失属打包事故，直接抛错（用到时 locate_wimlib 也会明确报错，
     # 绝不静默回退 DISM，所以这里不做容错跳过）。
@@ -207,15 +208,13 @@ function Publish-Build {
             throw "wimlib 运行时缺失：$source（任务 #110 覆盖式还原通道的必备件，仓库 windows\wimlib-aarch64\ 下应有）"
         }
         $wimlibHash = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
-        foreach ($dir in @($PackageDir, $WorkDir)) {
-            $dest = Join-Path $dir $name
-            Copy-Item $source $dest -Force
-            $deployedWimlib = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($deployedWimlib -ne $wimlibHash) {
-                throw "部署失败：$dest 的 SHA-256 与仓库基线不一致（客体=$deployedWimlib 基线=$wimlibHash）"
-            }
-            Write-Host ("  OK wimlib {0} => {1}" -f $dest, $deployedWimlib)
+        $dest = Join-Path $WorkDir $name
+        Copy-Item $source $dest -Force
+        $deployedWimlib = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($deployedWimlib -ne $wimlibHash) {
+            throw "部署失败：$dest 的 SHA-256 与仓库基线不一致（客体=$deployedWimlib 基线=$wimlibHash）"
         }
+        Write-Host ("  OK wimlib {0} => {1}" -f $dest, $deployedWimlib)
     }
 
     foreach ($target in $targets) {
@@ -287,9 +286,9 @@ foreach ($arch in $architectures) {
     Write-Host "Package: $package"
 
     if ($Deploy) {
-        # 部署判据只有一个：客体上四个文件的 SHA-256 与刚构建的成品逐个相等。
+        # 部署判据只有一个：客体上文件的 SHA-256 与刚构建的成品逐个相等。
         # 复制成功不算数——2026-09-30 踩过「只更新包目录、运行目录还是旧件」的坑，
         # 唯一症状是镜像元数据里的 programVersion 偏低，静态检查看不出来。
-        Publish-Build -Binary $binary -PackageDir $DeployPackageDir -WorkDir $DeployWorkDir
+        Publish-Build -Binary $binary -WorkDir $DeployWorkDir
     }
 }
