@@ -45,13 +45,12 @@ fn log(path: &Path, message: &str) -> Result<(), TaskError> {
 /// 要被格式化；且旧还原措辞里「不改动主系统默认启动项」在 v2.6.1 default 归属翻转后
 /// 已是**事实错误**（还原后 default 指向本次还原的新系统），一并订正。
 fn step1_notice(operation: &str) -> String {
+    // 开场白按语言走（此前恒为中文；2026-10-15 用户裁定 A3 要求按 operation 分叉，
+    // 这里保留分叉、只把文案改为查表）。
     if operation == "backup" {
-        "STEP 1/4 校验参数和卷身份；备份只读取源卷并写入镜像，不格式化任何卷、不改写启动引导"
-            .to_string()
+        crate::i18n::msg("step1_backup").to_string()
     } else {
-        "STEP 1/4 校验参数和卷身份；还原到另一 Windows 卷时会格式化目标卷并写入引导，\
-         还原完成后默认启动项指向本次还原的系统（原系统仍保留在菜单中）"
-            .to_string()
+        crate::i18n::msg("step1_restore").to_string()
     }
 }
 
@@ -79,9 +78,19 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
     let _ = log(
         &path,
         &if placement_note.is_empty() {
-            format!("日志位置：{}（统一日志根，不随 %TEMP% 清理丢失）", path.display())
+            format!(
+                "{}{}{}",
+                crate::i18n::msg("log_location"),
+                path.display(),
+                crate::i18n::msg("log_unified_note")
+            )
         } else {
-            format!("日志位置：{}；{}", path.display(), placement_note)
+            format!(
+                "{}{}；{}",
+                crate::i18n::msg("log_location"),
+                path.display(),
+                placement_note
+            )
         },
     );
     let progress = ProgressGuard(crate::recovery_progress::spawn(
@@ -96,8 +105,13 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
         .and_then(|()| execute_inner(params, &path, &progress.0));
     let mut success = result.is_ok();
     let final_message = match result {
-        Ok(()) => "操作完成：命令、回读和副档簿记均已通过".to_string(),
-        Err(error) => format!("[ERROR] 在线操作未完成：{error}；不要将部分产物视为有效备份"),
+        Ok(()) => crate::i18n::msg("online_done").to_string(),
+        Err(error) => format!(
+            "{}{}{}",
+            crate::i18n::msg("online_failed_prefix"),
+            error,
+            crate::i18n::msg("online_failed_suffix")
+        ),
     };
     let log_error = log(&path, &final_message).err();
     drop(progress);

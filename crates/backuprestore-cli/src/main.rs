@@ -48,6 +48,10 @@ mod boot_cleanup;
 mod boot_entry;
 /// DISM 等待上限：把「无限等待」变成可配置，**默认仍是无限**（零回归）。
 /// 跨平台纯逻辑，本机单测即可覆盖全部分支。
+/// 全局语言层：让日志与 CLI 结论文案也能按语言输出（界面之外的地方）。
+/// 依赖 `pe_safety::MessageLanguage`，故与它同门控。
+#[cfg(any(windows, test))]
+mod i18n;
 /// CLI 结构化输出（`--json`）：让自动化判据不再解析中文文案，只认字段。
 /// 纯逻辑 + 本机单测，故与 `pe_safety` 同门控。
 #[cfg(any(windows, test))]
@@ -141,6 +145,9 @@ fn main() {
         if arguments.iter().any(|a| a == "--json") {
             crate::cli_json::enable();
         }
+        // 语言：`BACKUPRESTORE_LANG=en*` 让日志与 CLI 结论文案走英文。
+        // 放在最前，后面 RE 侧读到 UI_LANGUAGE、GUI 切语言时会再覆盖一次。
+        crate::i18n::init_from_env();
     }
     if arguments.is_empty() && should_launch_gui() {
         if let Err(error) = launch_gui() {
@@ -1265,6 +1272,10 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
     let values = read_env_file(&path).unwrap_or_default();
     let policy = crate::failure_policy::FailurePolicy::from_values(&values);
     let language = ui_language(&values);
+    // 恢复环境里的语言来自 `UI_LANGUAGE`（由 `prepare --ui-language` 写进
+    // `RecoveryTask.env`）。同步给全局语言层，本进程后续写到日志里的
+    // 结论性文案就跟着这个语言走——此前只有弹窗文案跟、日志一律中文。
+    crate::i18n::set(language);
     let escape_log = PathBuf::from(r"X:\BackupRestore-escape.log");
     let _ = append_log(&escape_log, &policy.log_line(0));
     // 自定义恢复入口没有经过系统恢复桌面；先枚举即插即用设备，

@@ -3061,6 +3061,12 @@ fn compress_level_labels(language: Language) -> [&'static str; 2] {
 
 unsafe fn apply_language(state: &mut State) {
     let language = selected_language(state);
+    // 界面语言同步给全局语言层：此后本进程写进日志的结论性文案也跟着走，
+    // 不再"界面英文、日志中文"（此前日志无语言维度，切了界面也没用）。
+    crate::i18n::set(match language {
+        Language::Chinese => crate::pe_safety::MessageLanguage::Chinese,
+        Language::English => crate::pe_safety::MessageLanguage::English,
+    });
     set_operation_tabs(state, language);
     let desired = [
         None,
