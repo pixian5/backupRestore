@@ -130,7 +130,8 @@ mod winre_registration;
 
 fn usage() -> ! {
     eprintln!(
-        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+        "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)
+  online --operation <backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--index <n>] [--compress <fast|none>] [--image-name <name>] [--keep-indexes <n>] [--format-target] [--ui-language <zh|en>]\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -403,6 +404,10 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
     let mut compress = String::new();
     let mut image_name = String::new();
     let mut keep_indexes: Option<u32> = None;
+    // `--ui-language`：online 自己的语言开关。注意与 `prepare --ui-language` 的
+    // 区别——prepare 那个只写进任务 env 给恢复环境用；online 在 Windows 里直接跑，
+    // 旗标切的是**本进程**的日志与 CLI 结论文案。
+    let mut ui_language: Option<crate::i18n::MessageLanguage> = None;
     // CLI 在线还原的「格式化目标分区」开关（与 GUI 复选框同语义，默认不格式化）
     let mut format_target = false;
     let mut i = 0;
@@ -443,12 +448,35 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
                 i += 1;
                 keep_indexes = args.get(i).and_then(|v| v.parse().ok());
             }
+            "--ui-language" => {
+                // 与 `prepare --ui-language` 同口径：只认 zh*/en* 前缀（`zh-CN`、
+                // `en-US` 都接受），其余明确拒绝，避免把恢复环境看不懂的值放进来。
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                if raw.starts_with("zh") {
+                    ui_language = Some(crate::i18n::MessageLanguage::Chinese);
+                } else if raw.starts_with("en") {
+                    ui_language = Some(crate::i18n::MessageLanguage::English);
+                } else {
+                    return Err(err("--ui-language must be zh or en"));
+                }
+            }
             _ => {}
         }
         i += 1;
     }
     if operation.is_empty() {
         return Err(err("online requires --operation"));
+    }
+    // 显式旗标 > env `BACKUPRESTORE_LANG` > ini `ui_language` > 中文：
+    // 自动化要确定性，一次命令也能覆盖界面偏好。
+    if let Some(language) = ui_language {
+        crate::i18n::set(language);
     }
     let params = crate::online_operation::OnlineOpParams {
         operation,
