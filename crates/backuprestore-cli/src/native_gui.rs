@@ -790,9 +790,12 @@ fn control_name(control_id: usize) -> &'static str {
 ///
 /// 2026-09-30 的教训：用户报「点了没反应」，而日志里连一行都没有，分不清是
 /// 点击根本没送达、还是送达后后续步骤静默失败——有这一行就能一眼区分。
-unsafe fn audit_gui_action(state: &mut State, control_id: usize, notification: usize) {
-    append_gui_log(
-        state,
+/// 真正落盘的那一行。**不依赖 `State`**——对话框（RE 选择、无效路径选择、
+/// 设置窗口）没有 `State` 可传，但它们同样需要留痕，所以取 `State` 之外的
+/// 写法，让所有窗口过程都能调用同一个函数。
+fn audit_control_action(control_id: usize, notification: usize) {
+    let _ = super::append_log(
+        &crate::log_root::logs_dir().join("gui.log"),
         &format!(
             "GUI action: control={} id={} notification=0x{:x}",
             control_name(control_id),
@@ -3291,6 +3294,8 @@ unsafe extern "system" fn window_proc_system_choice(
     }
     if message == WM_COMMAND {
         let control_id = w_param & 0xffff;
+            // GUI 操作审计：与 main 主窗口同一入口策略——先留痕再走业务分支。
+            audit_control_action(control_id, (w_param >> 16) & 0xffff);
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
         if !state_ptr.is_null() {
             let result = match control_id {
@@ -3494,6 +3499,8 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
     }
     if message == WM_COMMAND {
         let control_id = w_param & 0xffff;
+            // GUI 操作审计：与 main 主窗口同一入口策略——先留痕再走业务分支。
+            audit_control_action(control_id, (w_param >> 16) & 0xffff);
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut i32;
         if !state_ptr.is_null() {
             let result = match control_id {
@@ -3943,6 +3950,8 @@ unsafe extern "system" fn window_proc_settings(
     }
     if message == WM_COMMAND {
         let control_id = w_param & 0xffff;
+            // GUI 操作审计：与 main 主窗口同一入口策略——先留痕再走业务分支。
+            audit_control_action(control_id, (w_param >> 16) & 0xffff);
         match control_id {
             ID_SETTINGS_CANCEL => {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
@@ -8591,7 +8600,7 @@ unsafe extern "system" fn window_proc(
             // 自己有没有写日志、也不管它最后是成功还是失败，gui.log 里都有一行
             // 「用户当时点了什么」。逐个分支补会漏、会随新功能腐化，放这里则
             // 天然全覆盖。分支自己的语义日志（GUI action completed: …）保留不动。
-            audit_gui_action(state, control_id, notification);
+            audit_control_action(control_id, notification);
             if control_id == ID_LANGUAGE && notification == CBN_SELCHANGE {
                 apply_language(state);
                 append_gui_log(state, "GUI action completed: language changed");

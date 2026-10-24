@@ -126,14 +126,13 @@ pub(crate) fn apply_overlay(
     let args = wimlib_args(image, index, apply_root);
     crate::append_log(
         log,
-        &format!(
-            "wimlib 开始（覆盖式应用，还原安全描述符）：{} {}",
-            exe.display(),
-            args.join(" ")
+        &crate::i18n::msg_tpl(
+            "wimlib_start",
+            &[&exe.display().to_string(), &args.join(" ")],
         ),
     )?;
     let outcome = windows_command::run_program(&exe.to_string_lossy(), &args, Some(log), wait_ms);
-    crate::append_log(log, &format!("wimlib 结果：{outcome}"))?;
+    crate::append_log(log, &crate::i18n::msg_tpl("wimlib_result", &[&outcome.to_string()]))?;
     if !outcome.is_success() {
         // 失败必须带输出尾部（与在线链 `dism()` 同一契约）：实机第三层双失败
         // 时 wimlib 的真实报错（`[ERROR] Can't open "…" for deletion …

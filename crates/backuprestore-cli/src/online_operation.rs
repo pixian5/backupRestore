@@ -144,19 +144,17 @@ fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
     // 工作线程永久等待，「创建任务」按钮与状态永远停在「执行中」。
     // 在线路径前后各有一条日志，所以比 prepare 路径强；缺的就是这个超时。
     let wait_ms = crate::dism_timeout::wait_ms();
+    let wait_text = if wait_ms == crate::windows_command::INFINITE {
+        crate::i18n::msg("wait_unlimited").to_string()
+    } else {
+        crate::i18n::msg_tpl("wait_ms", &[&wait_ms.to_string()])
+    };
     log(
         log_path,
-        &format!(
-            "DISM 开始（等待上限 {}）：{args:?}",
-            if wait_ms == crate::windows_command::INFINITE {
-                "不限制".to_string()
-            } else {
-                format!("{wait_ms} 毫秒")
-            }
-        ),
+        &crate::i18n::msg_tpl("dism_start", &[&wait_text, &format!("{args:?}")]),
     )?;
     let outcome = windows_command::run_program("dism.exe", args, Some(log_path), wait_ms);
-    log(log_path, &format!("DISM 结果：{outcome}"))?;
+    log(log_path, &crate::i18n::msg_tpl("dism_result", &[&outcome.to_string()]))?;
     if !outcome.is_success() {
         // 【D2 2026-10-24】失败回执带上输出尾部：DISM 的真实原因写在
         // stdout/stderr 里（已由 run_program 追加进日志），只回退出码等于

@@ -60,6 +60,21 @@ const MISSING: &str = "<i18n:missing>";
 
 /// 关键文案表：`(key, 中文, 英文)`。新增文案请按字母序插入并补单测。
 const MESSAGES: &[(&str, &str, &str)] = &[
+    // apply 关键路径：这两条是排障时最先看的（等待上限、退出码）。
+    // ★ 安全性已核实：`failure_policy::strip_self_log_lines` 只剥"时间戳行"
+    //   与"命令行回显"（`/Apply-Image` 等 ASCII 参数），**与语言无关**；
+    //   失败分类本身靠 DISM 的英文错误串与 NTSTATUS 码，也不依赖中文，
+    //   故翻译这两条不会破坏 D1/D2 的自动降级判据。
+    (
+        "dism_result",
+        "DISM 结果：{0}",
+        "DISM result: {0}",
+    ),
+    (
+        "dism_start",
+        "DISM 开始（等待上限 {0}）：{1}",
+        "DISM start (wait limit {0}): {1}",
+    ),
     (
         "log_location",
         "日志位置：",
@@ -104,6 +119,26 @@ const MESSAGES: &[(&str, &str, &str)] = &[
          volume formats the target and writes boot entries, after which the default entry \
          points to the restored system (the original system stays in the boot menu)",
     ),
+    (
+        "wimlib_result",
+        "wimlib 结果：{0}",
+        "wimlib result: {0}",
+    ),
+    (
+        "wimlib_start",
+        "wimlib 开始（覆盖式应用，还原安全描述符）：{0} {1}",
+        "wimlib start (overlay apply, restoring security descriptors): {0} {1}",
+    ),
+    (
+        "wait_ms",
+        "{0} 毫秒",
+        "{0} ms",
+    ),
+    (
+        "wait_unlimited",
+        "不限制",
+        "unlimited",
+    ),
 ];
 
 /// 按指定语言取文案（**纯函数**）。
@@ -131,6 +166,20 @@ pub(crate) fn msg(key: &str) -> &'static str {
     msg_in(get(), key)
 }
 
+/// 带占位的文案：`{0}`、`{1}`… 按顺序替换（**纯函数**，理由同 `msg_in`）。
+/// 用于"文案里夹着数字/路径/退出码"的日志行（如 `DISM 结果：退出码 0`）。
+pub(crate) fn msg_tpl_in(language: MessageLanguage, key: &str, args: &[&str]) -> String {
+    let mut text = msg_in(language, key).to_string();
+    for (index, value) in args.iter().enumerate() {
+        text = text.replace(&format!("{{{index}}}"), value);
+    }
+    text
+}
+
+pub(crate) fn msg_tpl(key: &str, args: &[&str]) -> String {
+    msg_tpl_in(get(), key, args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +203,24 @@ mod tests {
         // 这里再验一次最容易被复制粘贴污染的 STEP 文案）。
         let step = msg_in(MessageLanguage::English, "step1_restore");
         assert!(step.starts_with("STEP 1/4"), "STEP 前缀是判据依赖的 ASCII 特征：{step}");
+    }
+
+    #[test]
+    fn template_placeholders_are_replaced_in_both_languages() {
+        // 排障最先看的两条：退出码 / 等待上限。占位替换必须两边都对。
+        assert_eq!(
+            msg_tpl_in(MessageLanguage::Chinese, "dism_result", &["退出码 0"]),
+            "DISM 结果：退出码 0"
+        );
+        assert_eq!(
+            msg_tpl_in(MessageLanguage::English, "dism_result", &["exit code 0"]),
+            "DISM result: exit code 0"
+        );
+        assert_eq!(
+            msg_tpl_in(MessageLanguage::Chinese, "wait_ms", &["90"]),
+            "90 毫秒"
+        );
+        assert_eq!(msg_tpl_in(MessageLanguage::English, "wait_ms", &["90"]), "90 ms");
     }
 
     #[test]
