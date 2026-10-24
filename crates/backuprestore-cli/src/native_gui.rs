@@ -687,6 +687,121 @@ fn append_gui_log(_state: &State, message: &str) {
     let _ = super::append_log(&crate::log_root::logs_dir().join("gui.log"), message);
 }
 
+/// 控件 ID → 可读名称。用于 GUI 操作审计日志：
+/// 出问题时能从 gui.log 一眼看出「用户点了哪个控件」，而不是只有数字 ID。
+/// 由 `const ID_*` 生成，新增控件时请同步补一行。
+const CONTROL_NAMES: &[(usize, &str)] = &[
+    (ID_REFRESH, "ID_REFRESH"),
+    (ID_READ_IMAGE, "ID_READ_IMAGE"),
+    (ID_CREATE_TASK, "ID_CREATE_TASK"),
+    (ID_REFRESH_TASK, "ID_REFRESH_TASK"),
+    (ID_LANGUAGE, "ID_LANGUAGE"),
+    (ID_BROWSE_IMAGE, "ID_BROWSE_IMAGE"),
+    (ID_SETTINGS, "ID_SETTINGS"),
+    (ID_CANCEL_PENDING, "ID_CANCEL_PENDING"),
+    (ID_OPERATION_BACKUP, "ID_OPERATION_BACKUP"),
+    (ID_OPERATION_RESTORE, "ID_OPERATION_RESTORE"),
+    (ID_OPERATION_PE, "ID_OPERATION_PE"),
+    (ID_OPERATION_RESTORE_DATA, "ID_OPERATION_RESTORE_DATA"),
+    (ID_OPERATION_RESTORE_OTHER, "ID_OPERATION_RESTORE_OTHER"),
+    (ID_SOURCE, "ID_SOURCE"),
+    (ID_IMAGE, "ID_IMAGE"),
+    (ID_TARGET, "ID_TARGET"),
+    (ID_INDEX, "ID_INDEX"),
+    (ID_MENU, "ID_MENU"),
+    (ID_COMPRESS, "ID_COMPRESS"),
+    (ID_INDEX_NAME_EDIT, "ID_INDEX_NAME_EDIT"),
+    (ID_KEEP_EDIT, "ID_KEEP_EDIT"),
+    (ID_VERIFY_HASH, "ID_VERIFY_HASH"),
+    (ID_CHANNEL_ONLINE, "ID_CHANNEL_ONLINE"),
+    (ID_CHANNEL_OFFLINE, "ID_CHANNEL_OFFLINE"),
+    (ID_FORMAT_TARGET, "ID_FORMAT_TARGET"),
+    (ID_STATUS, "ID_STATUS"),
+    (ID_PE_BACKUP, "ID_PE_BACKUP"),
+    (ID_PE_RESTORE, "ID_PE_RESTORE"),
+    (ID_PE_SECONDARY, "ID_PE_SECONDARY"),
+    (ID_PE_CMD, "ID_PE_CMD"),
+    (ID_PE_EXIT, "ID_PE_EXIT"),
+    (ID_PE_MAIN_GUI, "ID_PE_MAIN_GUI"),
+    (ID_PE_TITLE, "ID_PE_TITLE"),
+    (ID_PE_VERSION, "ID_PE_VERSION"),
+    (ID_PE_CLOCK, "ID_PE_CLOCK"),
+    (ID_PE_REBOOT_MAIN, "ID_PE_REBOOT_MAIN"),
+    (ID_PE_SHORTCUT, "ID_PE_SHORTCUT"),
+    (ID_PE_MODE_RAM, "ID_PE_MODE_RAM"),
+    (ID_PE_MODE_DISK, "ID_PE_MODE_DISK"),
+    (ID_PE_DIR_LABEL, "ID_PE_DIR_LABEL"),
+    (ID_PE_DIR_EDIT, "ID_PE_DIR_EDIT"),
+    (ID_PE_NAME_LABEL, "ID_PE_NAME_LABEL"),
+    (ID_PE_NAME_EDIT, "ID_PE_NAME_EDIT"),
+    (ID_PE_DIR_BROWSE, "ID_PE_DIR_BROWSE"),
+    (ID_PE_SYSINFO, "ID_PE_SYSINFO"),
+    (ID_PE_SYSINFO_TEXT, "ID_PE_SYSINFO_TEXT"),
+    (ID_PE_DLG_COMBO, "ID_PE_DLG_COMBO"),
+    (ID_PE_DLG_EDIT, "ID_PE_DLG_EDIT"),
+    (ID_PE_DLG_NAME, "ID_PE_DLG_NAME"),
+    (ID_PE_DLG_OK, "ID_PE_DLG_OK"),
+    (ID_PE_DLG_CANCEL, "ID_PE_DLG_CANCEL"),
+    (ID_PE_DLG_LABEL1, "ID_PE_DLG_LABEL1"),
+    (ID_PE_DLG_LABEL2, "ID_PE_DLG_LABEL2"),
+    (ID_PE_DLG_LABEL3, "ID_PE_DLG_LABEL3"),
+    (ID_PE_DLG_WARN, "ID_PE_DLG_WARN"),
+    (ID_CHOICE_BODY, "ID_CHOICE_BODY"),
+    (ID_CHOICE_PE, "ID_CHOICE_PE"),
+    (ID_CHOICE_RE, "ID_CHOICE_RE"),
+    (ID_CHOICE_CANCEL, "ID_CHOICE_CANCEL"),
+    (ID_LANGUAGE_LABEL, "ID_LANGUAGE_LABEL"),
+    (ID_SOURCE_DETAILS, "ID_SOURCE_DETAILS"),
+    (ID_TARGET_DETAILS, "ID_TARGET_DETAILS"),
+    (ID_CHOICE_CHOOSE_LOCATION, "ID_CHOICE_CHOOSE_LOCATION"),
+    (ID_CHOICE_PATH_CANCEL, "ID_CHOICE_PATH_CANCEL"),
+    (ID_SETTINGS_THRESHOLD_EDIT, "ID_SETTINGS_THRESHOLD_EDIT"),
+    (ID_SETTINGS_ACTION_AUTO, "ID_SETTINGS_ACTION_AUTO"),
+    (ID_SETTINGS_ACTION_PAUSE, "ID_SETTINGS_ACTION_PAUSE"),
+    (ID_SETTINGS_SAVE, "ID_SETTINGS_SAVE"),
+    (ID_SETTINGS_CANCEL, "ID_SETTINGS_CANCEL"),
+    (ID_SETTINGS_HINT, "ID_SETTINGS_HINT"),
+    (ID_SETTINGS_DETAIL_AUTO, "ID_SETTINGS_DETAIL_AUTO"),
+    (ID_SETTINGS_DETAIL_PAUSE, "ID_SETTINGS_DETAIL_PAUSE"),
+    (ID_SETTINGS_DISM_TIMEOUT_EDIT, "ID_SETTINGS_DISM_TIMEOUT_EDIT"),
+    (ID_SETTINGS_DISM_TIMEOUT_HINT, "ID_SETTINGS_DISM_TIMEOUT_HINT"),
+    (ID_SETTINGS_PAUSE_WAIT_EDIT, "ID_SETTINGS_PAUSE_WAIT_EDIT"),
+];
+
+/// 控件 ID → 可读名称；未知 ID 返回 `"?"`（查名字绝不能让日志失败）。
+fn control_name(control_id: usize) -> &'static str {
+    for (value, name) in CONTROL_NAMES {
+        if *value == control_id {
+            return name;
+        }
+    }
+    "?"
+}
+
+/// GUI 操作审计：**每一次**用户操作在进业务分支之前先留一行痕。
+///
+/// 【为什么放在 WM_COMMAND 入口，而不是逐个分支补】逐个补会漏、也会随新功能
+/// 腐化；放在入口则"所有操作"天然全覆盖，新加控件只要出现在 `CONTROL_NAMES`
+/// 里就有名字（没有也只是显示 `?`，日志本身不会丢）。
+///
+/// 各分支原有的语义日志（如 `GUI action completed: ...`）**保留不动**，两者互补：
+///   · 入口这行 = 用户当时**做了什么**（一定在，不看业务是否成功）
+///   · 分支那行 = 那件事**做成了没有**（业务自己决定写什么）
+///
+/// 2026-09-30 的教训：用户报「点了没反应」，而日志里连一行都没有，分不清是
+/// 点击根本没送达、还是送达后后续步骤静默失败——有这一行就能一眼区分。
+unsafe fn audit_gui_action(state: &mut State, control_id: usize, notification: usize) {
+    append_gui_log(
+        state,
+        &format!(
+            "GUI action: control={} id={} notification=0x{:x}",
+            control_name(control_id),
+            control_id,
+            notification
+        ),
+    );
+}
+
 unsafe fn install_tooltips(state: &mut State) {
     if !state.tooltip.is_null() {
         DestroyWindow(state.tooltip);
@@ -8466,6 +8581,11 @@ unsafe extern "system" fn window_proc(
         if message == WM_COMMAND {
             let control_id = w_param & 0xffff;
             let notification = (w_param >> 16) & 0xffff;
+            // ★ 统一审计：所有用户操作**先留痕再走业务分支**——不管这个分支
+            // 自己有没有写日志、也不管它最后是成功还是失败，gui.log 里都有一行
+            // 「用户当时点了什么」。逐个分支补会漏、会随新功能腐化，放这里则
+            // 天然全覆盖。分支自己的语义日志（GUI action completed: …）保留不动。
+            audit_gui_action(state, control_id, notification);
             if control_id == ID_LANGUAGE && notification == CBN_SELCHANGE {
                 apply_language(state);
                 append_gui_log(state, "GUI action completed: language changed");
