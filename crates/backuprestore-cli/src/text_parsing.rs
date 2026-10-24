@@ -302,6 +302,39 @@ pub(crate) fn plan_console_bytes(bytes: &[u8]) -> ConsoleBytes {
     }
 }
 
+/// 失败回执里附带的输出尾部上限（字节）。
+///
+/// DISM/wimlib 的 stdout/stderr 已由执行通道落进日志文件，但 RE 主链
+/// （`main.rs::run_logged`）与在线链（`online_operation::dism`）的失败错误
+/// 历来只回退出码——「DISM 为什么失败」全在输出里，不回传就等于现场无法
+/// 归因（2026-10-24 D2 前置修复）。8 KB 足够覆盖 DISM 的错误块
+/// （真实失败案的错误行都在输出末尾几行），又不把整份进度日志灌进错误。
+pub(crate) const LOG_TAIL_MAX_BYTES: usize = 8 * 1024;
+
+/// 读文本文件的尾部至多 `max_bytes` 字节，按 UTF-8 宽松解码成 `String`。
+///
+/// 跨平台纯文件读（macOS 单测可覆盖）；按字节截断 + `from_utf8_lossy`，
+/// 不因半个多字节字符 panic。文件不存在/不可读/空文件一律返回空串——
+/// 附不上输出不该让「命令失败」这个主错误变形。
+pub(crate) fn tail_text(path: &std::path::Path, max_bytes: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let Ok(len) = file.seek(SeekFrom::End(0)) else {
+        return String::new();
+    };
+    let start = len.saturating_sub(max_bytes as u64);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if file.take(max_bytes as u64).read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// Win32 multiline `EDIT` controls only break lines on `\r\n`. A lone `\n` is
 /// stored as an invisible control character, which is how the information
 /// window's report header collapsed into a single unreadable row.
@@ -1319,6 +1352,34 @@ pub(crate) fn require_identifier(value: &str, what: &str) -> Result<String, Stri
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tail_text_returns_last_bytes_and_survives_edge_cases() {
+        let dir = std::env::temp_dir().join(format!("br-tail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.log");
+        // 长文件：只取尾部，且必须从 max_bytes 边界之后开始。
+        let mut content = String::new();
+        for i in 0..1000 {
+            content.push_str(&format!("line {i:04} padding-padding-padding\n"));
+        }
+        std::fs::write(&path, &content).unwrap();
+        let tail = tail_text(&path, 64);
+        assert!(tail.len() <= 64 + 8, "尾部超限：{}", tail.len());
+        assert!(tail.contains("line 0999"), "{tail}");
+        assert!(!tail.contains("line 0000"), "不应包含开头：{tail}");
+        // 不存在的文件 / 目录：返回空串而不是 panic。
+        assert_eq!(tail_text(&dir.join("missing.log"), 64), "");
+        assert_eq!(tail_text(&dir, 64), "");
+        // max_bytes 大于文件长度：整文件返回。
+        std::fs::write(&path, "short").unwrap();
+        assert_eq!(tail_text(&path, 4096), "short");
+        // 半个多字节字符（UTF-8 截断）：宽松解码成替换字符，不 panic。
+        std::fs::write(&path, [0xE4u8, 0xB8]).unwrap();
+        assert_eq!(tail_text(&path, 1), "\u{FFFD}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn compression_dropdown_has_only_two_supported_mappings() {

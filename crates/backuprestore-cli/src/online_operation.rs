@@ -139,7 +139,49 @@ fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
     let outcome = windows_command::run_program("dism.exe", args, Some(log_path), wait_ms);
     log(log_path, &format!("DISM 结果：{outcome}"))?;
     if !outcome.is_success() {
-        return Err(crate::err(&format!("DISM failed: {outcome}")));
+        // 【D2 2026-10-24】失败回执带上输出尾部：DISM 的真实原因写在
+        // stdout/stderr 里（已由 run_program 追加进日志），只回退出码等于
+        // 现场无法归因；分类判据（classify_apply_failure）也需要这段文本。
+        let tail = crate::text_parsing::tail_text(
+            log_path,
+            crate::text_parsing::LOG_TAIL_MAX_BYTES,
+        );
+        return Err(crate::err(&format!(
+            "DISM failed: {outcome}\n--- 输出尾部（至多 {} 字节）---\n{tail}",
+            crate::text_parsing::LOG_TAIL_MAX_BYTES
+        )));
+    }
+    Ok(())
+}
+
+/// STEP apply：DISM `/Apply-Image`，失败时按 D1 判据**自动降级 wimlib 重试一次**。
+///
+/// 数据卷分支（STEP 2.5/4）与第二系统分支（STEP 3/4）共用本函数——两个落点
+/// 都必须降级，否则就是「PE 降级了、在线没降级」的分叉（failure_policy 模块
+/// 注释里写过的前科）。判据/分类/文案单一来源 = `failure_policy`（纯函数 +
+/// macOS 单测），编排 = `wimlib_apply::fallback_after_dism_failure`，
+/// 设计见 `docs/20261024-1636-DISM失败自动降级wimlib与错误分类详细设计-Step-5-Preview.md`。
+fn apply_image_with_fallback(
+    image: &Path,
+    index: u32,
+    apply_root: &Path,
+    log_path: &Path,
+) -> Result<(), TaskError> {
+    if let Err(error) = dism(
+        &[
+            "/English".into(),
+            "/Apply-Image".into(),
+            format!("/ImageFile:{}", image.display()),
+            format!("/Index:{index}"),
+            format!("/ApplyDir:{}", apply_root.display()),
+            "/CheckIntegrity".into(),
+            "/Verify".into(),
+        ],
+        log_path,
+    ) {
+        return crate::wimlib_apply::fallback_after_dism_failure(
+            &error, log_path, image, index, apply_root,
+        );
     }
     Ok(())
 }
@@ -412,19 +454,8 @@ fn execute_inner(
                     "STEP 2/4 还原镜像（数据卷在线覆盖，不格式化、不修复引导）"
                 },
             )?;
-            dism(
-                &[
-                    "/English".into(),
-                    "/Apply-Image".into(),
-                    format!("/ImageFile:{}", image.display()),
-                    format!("/Index:{index}"),
-                    // M6：按卷 GUID 路径应用，不按盘符（盘符可能在格式化后被重排）。
-                    format!("/ApplyDir:{}", apply_root.display()),
-                    "/CheckIntegrity".into(),
-                    "/Verify".into(),
-                ],
-                log_path,
-            )?;
+            // M6：按卷 GUID 路径应用，不按盘符（盘符可能在格式化后被重排）。
+            apply_image_with_fallback(image, index, &apply_root, log_path)?;
             log(
                 log_path,
                 "STEP 3/4 回读目标卷身份；DISM 已执行完整性和应用校验",
@@ -719,20 +750,10 @@ fn restore_to_windows_volume(
             index,
             &target_root,
             log_path,
+            crate::dism_timeout::wait_ms(),
         )?;
     } else {
-        dism(
-            &[
-                "/English".into(),
-                "/Apply-Image".into(),
-                format!("/ImageFile:{}", image.display()),
-                format!("/Index:{index}"),
-                format!("/ApplyDir:{}", target_root.display()),
-                "/CheckIntegrity".into(),
-                "/Verify".into(),
-            ],
-            log_path,
-        )?;
+        apply_image_with_fallback(image, index, &target_root, log_path)?;
     }
     for components in [
         vec!["Windows", "System32", "config", "SYSTEM"],

@@ -3763,18 +3763,30 @@ fn recover_windows(
                         image_index,
                         &target_root,
                         log,
+                        crate::dism_timeout::wait_ms(),
                     )?;
-                } else {
-                    run_logged(
-                        "dism.exe",
-                        &[
-                            "/English",
-                            "/Apply-Image",
-                            &format!("/ImageFile:{}", image_path.display()),
-                            &format!("/Index:{}", image_index),
-                            &format!("/ApplyDir:{}", target_root.display()),
-                        ],
+                } else if let Err(error) = run_logged(
+                    "dism.exe",
+                    &[
+                        "/English",
+                        "/Apply-Image",
+                        &format!("/ImageFile:{}", image_path.display()),
+                        &format!("/Index:{}", image_index),
+                        &format!("/ApplyDir:{}", target_root.display()),
+                    ],
+                    log,
+                ) {
+                    // 【D1 2026-10-24】DISM apply 失败 → 按判据自动降级 wimlib
+                    // 重试一次（设计 docs/20261024-1636；判据/分类/文案单一来源
+                    // = failure_policy，编排 = wimlib_apply）。四个 apply 落点
+                    // （RE 主链 / PE / 在线数据卷分支 / 在线第二系统分支）共用
+                    // 同一个编排函数，避免「PE 降级了、RE 没降级」的分叉。
+                    crate::wimlib_apply::fallback_after_dism_failure(
+                        &error,
                         log,
+                        &image_path,
+                        image_index,
+                        &target_root,
                     )?;
                 }
                 if task.status == Stage::TargetErased {
@@ -4470,7 +4482,15 @@ fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError>
         .join()
         .map_err(|_| err(&format!("{program} stderr reader panicked")))??;
     if !status.success() {
-        return Err(err(&format!("{program} failed with {status}")));
+        // 【D2 2026-10-24】失败回执带上输出尾部：外部命令的真实原因写在
+        // stdout/stderr 里（已由上面的 reader 线程落进日志文件），只回退出码
+        // 等于现场无法归因——分类判据（classify_apply_failure）也需要这段文本
+        // 作为输入。tail_text 是跨平台纯文件读，截断宽容忍解码。
+        let tail = crate::text_parsing::tail_text(log, crate::text_parsing::LOG_TAIL_MAX_BYTES);
+        return Err(err(&format!(
+            "{program} failed with {status}\n--- 输出尾部（至多 {} 字节）---\n{tail}",
+            crate::text_parsing::LOG_TAIL_MAX_BYTES
+        )));
     }
     Ok(())
 }

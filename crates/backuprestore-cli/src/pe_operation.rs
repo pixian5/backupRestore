@@ -708,22 +708,34 @@ impl RestoreBackend for Engine {
                 self.request.index,
                 &root(&actual)?,
                 &log,
+                crate::dism_timeout::wait_ms(),
             )?;
             return Ok(());
         }
-        self.command(
+        let apply_root = root(&actual)?;
+        if let Err(error) = self.command(
             "dism.exe",
             &[
                 "/English".into(),
                 "/Apply-Image".into(),
                 format!("/ImageFile:{}", self.image.display()),
                 format!("/Index:{}", self.request.index),
-                format!("/ApplyDir:{}", root(&actual)?.display()),
+                format!("/ApplyDir:{}", apply_root.display()),
                 "/CheckIntegrity".into(),
                 "/Verify".into(),
             ],
             true,
-        )?;
+        ) {
+            // 【D1 2026-10-24】DISM apply 失败 → 按判据自动降级 wimlib 重试一次
+            // （与 RE 主链 / 在线链共用同一编排函数，设计 docs/20261024-1636）。
+            crate::wimlib_apply::fallback_after_dism_failure(
+                &error,
+                &self.dir.join("operation.log"),
+                &self.image,
+                self.request.index,
+                &apply_root,
+            )?;
+        }
         Ok(())
     }
     fn verify(&mut self) -> Result<(), TaskError> {

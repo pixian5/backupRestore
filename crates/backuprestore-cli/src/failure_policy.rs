@@ -137,6 +137,209 @@ impl FailureAction {
     }
 }
 
+// ============================================================================
+// apply 失败错误模式分类与降级判据（D1/D2，2026-10-24）
+//
+// 设计文档：docs/20261024-1636-DISM失败自动降级wimlib与错误分类详细设计-Step-5-Preview.md
+//
+// 为什么在这里：本模块是既有的「纯函数 + 跨平台单测」范式（不依赖 Windows，
+// macOS 上就能锁死全部分支）。分类判据散落到四个 apply 接线点各写一遍，
+// 就是 failure_policy 模块注释里写过的「文案分叉」前科。
+//
+// 文案语言：三条 apply 链的日志与失败回执（OnlineResult.detail → GUI 弹窗、
+// 任务日志）历来是中文单语，与周围日志行（"STEP 3/4 应用镜像…"）一致；
+// MessageLanguage 双语维度服务于设置窗口标签，此处引入反而分叉，故中文单语。
+// ============================================================================
+
+/// apply（DISM `/Apply-Image` 或 wimlib apply）失败的原因分类。
+///
+/// 两个消费者：
+/// ① 失败回执的一句中文因果（GUI 弹窗/CLI/日志直接展示）；
+/// ② D1 降级判据 [`decide_fallback`] 的输入——不同原因决定是否值得
+///    自动降级到 wimlib 重试一次。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyFailureKind {
+    /// 访问被拒（`0x80070005` / `RestoreDirMetadata` / access is denied）——
+    /// wimlib 通道的主场（自行获取 SeRestore/SeBackup 提权），必须降级。
+    AccessDenied,
+    /// 目标卷剩余空间不足（`0x80070070` / not enough space / 空间不足）。
+    DiskFull,
+    /// 目标卷被其它程序占用（`0x80070020` / being used by another process）——
+    /// wimlib 覆盖式写入不删卷上镜像外的既有文件，有可能绕过，降级。
+    Busy,
+    /// 镜像损坏或不完整（`/CheckIntegrity` 未过 / data error / corrupt /
+    /// 损坏）——同一镜像换任何引擎都会失败，重试无益，**不降级**。
+    ImageCorrupt,
+    /// 超过等待上限被终止（`dism_timeout` 逃生阀触发）。降级，且 wimlib 侧
+    /// 改用不限制超时（见 `wimlib_apply::fallback_after_dism_failure`）。
+    TimedOut,
+    /// 未识别——按「可降级」处理：宁可多跑一次 wimlib，也要留住救回机会；
+    /// 两次都失败时两条中文因果比一条更有归因价值。
+    Unknown,
+}
+
+impl ApplyFailureKind {
+    /// 一句中文因果 + 处置建议。进失败回执与日志，用户直接可读。
+    pub(crate) fn cause(self) -> &'static str {
+        match self {
+            ApplyFailureKind::AccessDenied => {
+                "目标卷上受保护目录的权限改写被拒（访问被拒）。这类失败正是 wimlib 通道的设计目标，将自动改用 wimlib 重试。"
+            }
+            ApplyFailureKind::DiskFull => {
+                "目标卷剩余空间不足，镜像无法完整写入。请清理目标卷或换用更大的卷后重试；不要将部分写入视为成功。"
+            }
+            ApplyFailureKind::Busy => {
+                "目标卷正被其它程序占用（文件句柄未释放）。请关闭占用目标卷的程序后重试。"
+            }
+            ApplyFailureKind::ImageCorrupt => {
+                "镜像文件损坏或不完整（校验未通过）。请重新制作备份镜像；同一镜像换任何应用引擎都会失败。"
+            }
+            ApplyFailureKind::TimedOut => {
+                "应用镜像超过等待上限被终止（上限可在设置中调整，默认不限制）。卷上可能留有半成品，重跑前建议先格式化目标卷。"
+            }
+            ApplyFailureKind::Unknown => {
+                "应用镜像失败，原因未识别。请把本日志交给维护者；原始输出已保留在下方。"
+            }
+        }
+    }
+}
+
+/// 分类前的输入净化：剥掉「我们自己的日志行」。
+///
+/// **实机第三层踩到（2026-10-24，T: 锁句柄占用场景）**：`dism()` 等四个
+/// 接线点的错误文本会把**任务日志尾部**一起带进 `Err`，其中
+/// `[…ISO 时间戳…] DISM 开始：[… /CheckIntegrity …]` 回显行的子串
+/// `integrity` 先于真正的 `being used by another process` 命中
+/// ImageCorrupt 模式 → Busy 场景被误判成「镜像损坏」→ 不降级。
+/// 同一污染还会让双失败时 wimlib 的分类被 DISM 阶段的中文因果文案带偏。
+///
+/// 所有 `append_log` 写的行都带 `[ISO8601 时间戳]` 行首前缀，DISM/wimlib
+/// 的进程 stdout 没有——按这个特征剥行。命令行回显（`/Apply-Image` 等）
+/// 再做一层兜底剥离：它只可能来自我们的日志，不可能来自 DISM 的报错正文。
+fn strip_self_log_lines(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            // 行首 `[YYYY-MM-DDTHH:MM:SS` = append_log 的时间戳行。
+            // 注意 get() 边界安全：`[中文…` 这类非 ASCII 行首会得到 None，
+            // 不会 panic；DISM 进度行 `[ 1.0% ]` 年份位不是纯数字，不误剥。
+            let is_log_line = trimmed.starts_with('[')
+                && trimmed
+                    .get(1..5)
+                    .map(|year| year.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false)
+                && trimmed.get(5..6) == Some("-");
+            let is_command_echo = trimmed.contains("/Apply-Image")
+                || trimmed.contains("/ImageFile:")
+                || trimmed.contains("/ApplyDir:")
+                || trimmed.contains("/CheckIntegrity")
+                || trimmed.contains("wimlib-imagex apply");
+            !is_log_line && !is_command_echo
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 从 apply 失败的输出文本推断原因分类。
+///
+/// **以文本为主**：四个 apply 接线点的失败错误文本形态各异（RE
+/// `run_logged` = `dism.exe failed with {status}` + 输出尾部；在线 `dism()`
+/// = `DISM failed: {outcome}` + 输出尾部；PE `command()` = 全文），但都含
+/// `CmdOutcome` 的 Display 文本（`退出码 N` / `等待 N 毫秒超时；进程树确认结束=…`）。
+/// 退出码只做弱信号（DISM 的 5/2/112 在不同版本语义不稳），不单独作为判据。
+///
+/// 判据优先序：**TimedOut > AccessDenied > ImageCorrupt > DiskFull > Busy > Unknown**。
+/// 超时提最前：进程被杀后输出尾部残留的零星错误文本会误导分类，而超时本身
+/// 就是原因（逃生阀是用户显式配置的，日志必须如实反映）。
+///
+/// 匹配大小写不敏感；DISM 与 wimlib 两套输出形态都要覆盖（wimlib 错误行
+/// 行首带 `wimlib-imagex: ERROR:` 计数前缀，参考 `parse_wimlib_progress`
+/// 的教训——所以模式匹配用 `contains` 而不是行首相等）。
+///
+/// **输入先过 `strip_self_log_lines` 净化**：错误文本携带的任务日志尾部里
+/// 有 `DISM 开始：[…/CheckIntegrity…]` 回显行，`integrity` 子串会把 Busy 等
+/// 真实原因误抢到 ImageCorrupt（2026-10-24 实机第三层的真 bug，见
+/// `strip_self_log_lines` 文档与回归单测）。
+pub(crate) fn classify_apply_failure(output_tail: &str) -> ApplyFailureKind {
+    let text = strip_self_log_lines(output_tail).to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|needle| text.contains(needle));
+    if has(&["超时", "timed out", "timeout"]) {
+        return ApplyFailureKind::TimedOut;
+    }
+    if has(&[
+        "0x80070005",
+        "access is denied",
+        "拒绝访问",
+        "restoredirmetadata",
+        // wimlib 的失败输出用 NTSTATUS 码（2026-10-24 实机第三层双失败时
+        // 归过 Unknown）：c0000022 = STATUS_ACCESS_DENIED。
+        "c0000022",
+        "status_access_denied",
+    ]) {
+        return ApplyFailureKind::AccessDenied;
+    }
+    if has(&[
+        "0x80070057",
+        "0x80070103",
+        "integrity",
+        "corrupt",
+        "损坏",
+        "data error",
+        "cyclic redundancy",
+        "not a wim",
+        "invalid wim",
+        "sha1 message digest",
+    ]) {
+        return ApplyFailureKind::ImageCorrupt;
+    }
+    if has(&[
+        "0x80070070",
+        "not enough space",
+        "空间不足",
+        "磁盘空间",
+        "disk is full",
+        "error: 112",
+        "错误: 112",
+    ]) {
+        return ApplyFailureKind::DiskFull;
+    }
+    if has(&[
+        "0x80070020",
+        "being used by another process",
+        "另一个程序正在使用",
+        "sharing violation",
+        "error: 32",
+        "错误: 32",
+        // wimlib 的失败输出用 NTSTATUS 码（2026-10-24 实机第三层双失败时
+        // 归过 Unknown）：c0000043 = STATUS_LOCK_NOT_GRANTED。
+        "c0000043",
+        "lock_not_granted",
+    ]) {
+        return ApplyFailureKind::Busy;
+    }
+    ApplyFailureKind::Unknown
+}
+
+/// 是否允许把本次 apply 失败降级为 wimlib 重试一次。
+///
+/// 相对设计文档的两处**结构性简化**（成立但不作为入参）：
+/// - **只可能在 apply 阶段被调用**——四个接线点本身就是 apply 落点，
+///   format/verify/boot 阶段的失败走不到这里（阶段门是结构性的，不是判据）；
+/// - **不需要「format 已执行」门**——DISM `/Apply-Image` 与 wimlib apply 都是
+///   覆盖式写入（都不删卷上镜像外的既有文件），语义等价；DISM 路径下 format
+///   已完成，wimlib 重写空卷无既有数据风险，overlay 场景下两者同样只覆盖不删。
+///
+/// 决策：
+/// - `ImageCorrupt` → 不降级（同一镜像换引擎必然同样失败，省下无谓重跑）；
+/// - wimlib 二进制缺失 → 不降级（报 `locate_wimlib` 的可归因错误）；
+/// - 其余（含 `Unknown`）→ 降级一次。
+pub(crate) fn decide_fallback(kind: ApplyFailureKind, wimlib_available: bool) -> bool {
+    if !wimlib_available {
+        return false;
+    }
+    !matches!(kind, ApplyFailureKind::ImageCorrupt)
+}
+
 /// 解析 `pause` 等待上限。`Some(0)` = 不限制；`None` = 无法识别。
 ///
 /// 只接受纯 ASCII 数字：`+30`、`30.0`、全角「３」一律拒绝（与
@@ -640,11 +843,255 @@ pub(crate) const PAUSE_TIMEOUT_ENV_VAR: &str = "BACKUPRESTORE_PAUSE_TIMEOUT_SECS
 mod tests {
     use super::*;
 
+    /// 2026-10-24 实机第三层回归：错误文本携带的任务日志尾部里有
+    /// `[…时间戳…] DISM 开始：[… /CheckIntegrity …]` 回显行，其子串
+    /// `integrity` 不得把 Busy 抢成 ImageCorrupt。
+    #[test]
+    fn classify_busy_not_confused_by_command_echo_log_lines() {
+        // 文本形态照抄实机第三层日志：错误文本携带的任务日志尾部里，
+        // DISM 命令行回显行（含 /CheckIntegrity）与 DISM 真实报错混排。
+        let text = concat!(
+            "DISM failed: 退出码 32\n",
+            "--- 输出尾部（至多 8192 字节）---\n",
+            r#"[2026-10-24T13:10:11.595735400+00:00] DISM 开始（等待上限 不限制）：["/English", "/Apply-Image", "/ImageFile:H:\BRImages\br-tdata-2629.wim", "/Index:1", "/ApplyDir:\\?\Volume{950bd694-9a12-43e5-ad52-98d04672091c}\", "/CheckIntegrity", "/Verify"]"#,
+            "\n",
+            "\n",
+            "Deployment Image Servicing and Management tool\n",
+            "Version: 10.0.26100.9549\n",
+            "\n",
+            "Applying image\n",
+            "\n",
+            "Error: 32\n",
+            "\n",
+            "The process cannot access the file because it is being used by another process.\n",
+        );
+        assert_eq!(
+            classify_apply_failure(text),
+            ApplyFailureKind::Busy,
+            "命令行回显行里的 /CheckIntegrity 不得把 Busy 误判成 ImageCorrupt"
+        );
+    }
+
+    /// 净化不能把真损坏信号也剥掉：损坏输出与日志行混排时仍归 ImageCorrupt。
+    #[test]
+    fn classify_corrupt_survives_log_line_stripping() {
+        let text = concat!(
+            "DISM failed: 退出码 1392\n",
+            "--- 输出尾部（至多 8192 字节）---\n",
+            r#"[2026-10-24T12:43:58.681281200+00:00] 日志位置：H:\brwork\logs\x\Online.log"#,
+            "\n",
+            r#"[2026-10-24T12:43:59.209563900+00:00] DISM 开始（等待上限 不限制）：["/English", "/Apply-Image", "/ImageFile:H:\BRImages\corrupt-test.wim", "/CheckIntegrity", "/Verify"]"#,
+            "\n",
+            "Error: 1392\n",
+            "The file or directory is corrupted and unreadable.\n",
+        );
+        assert_eq!(classify_apply_failure(text), ApplyFailureKind::ImageCorrupt);
+    }
+
+    /// DiskFull 与 AccessDenied 同样不受日志行污染。
+    #[test]
+    fn classify_diskfull_and_access_denied_ignore_log_lines() {
+        let disk_full = concat!(
+            r#"[2026-10-24T13:00:00.000000000+00:00] DISM 开始：["/Apply-Image", "/CheckIntegrity"]"#,
+            "\n",
+            "Error: 112\n",
+            "There is not enough space on the disk.\n",
+        );
+        assert_eq!(classify_apply_failure(disk_full), ApplyFailureKind::DiskFull);
+        let access = concat!(
+            "[2026-10-24T13:00:00.000000000+00:00] DISM 结果：退出码 5\n",
+            "Error: 5\n",
+            "Access is denied.\n",
+        );
+        assert_eq!(classify_apply_failure(access), ApplyFailureKind::AccessDenied);
+    }
+
+    /// 双失败时 wimlib 的分类输入含 DISM 阶段写的中文因果日志行
+    /// （`[…时间戳…] DISM apply 失败分类：ImageCorrupt——镜像文件损坏…`），
+    /// 不得把 wimlib 的真实失败原因带偏成 ImageCorrupt。
+    #[test]
+    fn classify_second_failure_not_polluted_by_first_cause_log() {
+        let text = concat!(
+            "wimlib apply failed: 退出码 32\n",
+            "--- 输出尾部（至多 8192 字节）---\n",
+            "[2026-10-24T13:10:11.649476+00:00] [ERROR] DISM apply 失败分类：Busy——目标卷正被其它程序占用（文件句柄未释放）。请关闭占用目标卷的程序后重试。\n",
+            "wimlib-imagex: ERROR: WinError 32: The process cannot access the file because it is being used by another process.\n",
+        );
+        assert_eq!(
+            classify_apply_failure(text),
+            ApplyFailureKind::Busy,
+            "wimlib 双失败分类不得被 DISM 阶段的中文日志行污染"
+        );
+    }
+
+    /// wimlib 覆盖被独占锁定的文件时报 NTSTATUS 码而非 Win32 文案
+    /// （实机第三层原文：`Can't open "..." for deletion (perms=10000,
+    /// flags=1040) (status=c0000043)`），c0000043 = LOCK_NOT_GRANTED → Busy。
+    #[test]
+    fn classify_wimlib_ntstatus_lock_not_granted() {
+        let text = concat!(
+            "wimlib apply failed: 退出码 47\n",
+            "--- 输出尾部（至多 8192 字节）---\n",
+            r#"[2026-10-24T13:16:25.267896100+00:00] wimlib 开始（覆盖式应用，还原安全描述符）：H:\brwork\wimlib-imagex.exe apply H:\BRImages\br-tdata-2629.wim 1 \\?\Volume{950bd694-9a12-43e5-ad52-98d04672091c}\"#,
+            "\n",
+            r#"[ERROR] Can't open "\\?\Volume{950bd694-9a12-43e5-ad52-98d04672091c}\BR38Data\file1.txt" for deletion (perms=10000, flags=1040) (status=c0000043): "#,
+            "\n",
+            "ERROR: Exiting with error code 47:\n",
+        );
+        assert_eq!(
+            classify_apply_failure(text),
+            ApplyFailureKind::Busy,
+            "wimlib 的 NTSTATUS c0000043 必须归 Busy，不能落 Unknown"
+        );
+    }
+
     fn values(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
+    }
+
+    // ---- D2：apply 失败分类 + D1：降级判据（2026-10-24） ----
+
+    #[test]
+    fn classify_recognizes_dism_access_denied() {
+        // #110 的真实形态：RestoreDirMetadata 0x80070005（PE 内对照实验钉死）。
+        assert_eq!(
+            classify_apply_failure(
+                "dism.exe failed with exit code: 5\nError: 5\nRestoreDirMetadata:(2418): Access is denied\n0x80070005"
+            ),
+            ApplyFailureKind::AccessDenied
+        );
+        // 中文 Windows 形态。
+        assert_eq!(
+            classify_apply_failure("拒绝访问"),
+            ApplyFailureKind::AccessDenied
+        );
+    }
+
+    #[test]
+    fn classify_recognizes_disk_full_and_busy() {
+        assert_eq!(
+            classify_apply_failure("Error: 112\nThere is not enough space on the disk."),
+            ApplyFailureKind::DiskFull
+        );
+        assert_eq!(
+            classify_apply_failure("另一个程序正在使用此文件。0x80070020"),
+            ApplyFailureKind::Busy
+        );
+        assert_eq!(
+            classify_apply_failure("The process cannot access the file because it is being used by another process."),
+            ApplyFailureKind::Busy
+        );
+    }
+
+    #[test]
+    fn classify_recognizes_image_corruption() {
+        // /CheckIntegrity 未过的真实文案。
+        assert_eq!(
+            classify_apply_failure("Error: 0x80070057\nThe request could not be performed because of an I/O device error.\nData error (cyclic redundancy check)."),
+            ApplyFailureKind::ImageCorrupt
+        );
+        // wimlib 形态（行首带计数前缀，contains 匹配必须能穿透）。
+        assert_eq!(
+            classify_apply_failure("wimlib-imagex: ERROR: "),
+            ApplyFailureKind::Unknown
+        );
+        assert_eq!(
+            classify_apply_failure(
+                "12345/67890 wimlib-imagex: ERROR: WIM is corrupt; SHA-1 message digest mismatch"
+            ),
+            ApplyFailureKind::ImageCorrupt
+        );
+    }
+
+    #[test]
+    fn classify_puts_timeout_first_even_with_misleading_tail() {
+        // 超时的 CmdOutcome Display 文本 + 残留的误导性错误行：超时优先。
+        assert_eq!(
+            classify_apply_failure(
+                "DISM failed: 等待 90000 毫秒超时；进程树确认结束=true\nError: 5\nAccess is denied"
+            ),
+            ApplyFailureKind::TimedOut
+        );
+        assert_eq!(
+            classify_apply_failure("等待 60000 毫秒超时；进程树确认结束=false"),
+            ApplyFailureKind::TimedOut
+        );
+        assert_eq!(
+            classify_apply_failure("Timed out after 30 seconds"),
+            ApplyFailureKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn classify_priority_is_locked() {
+        // 一个文本同时命中多个模式时，取语义最强者（设计文档 §2.1 优先序）。
+        let text = "0x80070070 not enough space; being used by another process";
+        assert_eq!(classify_apply_failure(text), ApplyFailureKind::DiskFull);
+        let text = "Access is denied; data error (cyclic redundancy check)";
+        assert_eq!(classify_apply_failure(text), ApplyFailureKind::AccessDenied);
+    }
+
+    #[test]
+    fn classify_falls_back_to_unknown() {
+        assert_eq!(classify_apply_failure(""), ApplyFailureKind::Unknown);
+        assert_eq!(
+            classify_apply_failure("dism.exe failed with exit code: 2"),
+            ApplyFailureKind::Unknown
+        );
+        // 无害文本里的数字不得误触「error: 112」这类锚定模式。
+        assert_eq!(
+            classify_apply_failure("progress 112/1000 files applied"),
+            ApplyFailureKind::Unknown
+        );
+    }
+
+    #[test]
+    fn every_kind_has_nonempty_actionable_cause() {
+        for kind in [
+            ApplyFailureKind::AccessDenied,
+            ApplyFailureKind::DiskFull,
+            ApplyFailureKind::Busy,
+            ApplyFailureKind::ImageCorrupt,
+            ApplyFailureKind::TimedOut,
+            ApplyFailureKind::Unknown,
+        ] {
+            let cause = kind.cause();
+            assert!(!cause.is_empty(), "{kind:?} 缺少因果文案");
+            assert!(cause.len() >= 10, "{kind:?} 因果文案过短：{cause}");
+        }
+    }
+
+    #[test]
+    fn decide_fallback_matrix() {
+        // ImageCorrupt：同一镜像换引擎必然同样失败，不降级。
+        assert!(!decide_fallback(ApplyFailureKind::ImageCorrupt, true));
+        // 可恢复类（含 Unknown）：一律降级一次。
+        for kind in [
+            ApplyFailureKind::AccessDenied,
+            ApplyFailureKind::DiskFull,
+            ApplyFailureKind::Busy,
+            ApplyFailureKind::TimedOut,
+            ApplyFailureKind::Unknown,
+        ] {
+            assert!(
+                decide_fallback(kind, true),
+                "{kind:?} 应该允许降级（宁可多跑一次）"
+            );
+        }
+        // wimlib 缺件：任何 kind 都不降级（报 locate_wimlib 的可归因错误）。
+        for kind in [
+            ApplyFailureKind::AccessDenied,
+            ApplyFailureKind::ImageCorrupt,
+            ApplyFailureKind::Unknown,
+        ] {
+            assert!(
+                !decide_fallback(kind, false),
+                "{kind:?} 在 wimlib 缺失时不应降级"
+            );
+        }
     }
 
     #[test]

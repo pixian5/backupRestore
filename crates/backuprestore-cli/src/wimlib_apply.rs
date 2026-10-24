@@ -36,6 +36,12 @@
 //!
 //! **缺失时明确报错，绝不静默回退 DISM**——否则退化成旧的硬拒/失败行为，
 //! 等于没做。
+//!
+//! **另一个方向也有兜底（D1，2026-10-24）**：走了 DISM 却失败的场景
+//! （`fallback_after_dism_failure`）会按判据自动降级到本通道重试一次。
+//! 两个方向合起来才是完整的双保险：路由期「该用 wimlib 就用 wimlib」，
+//! 执行期「DISM 倒了 wimlib 接得上」。设计见
+//! `docs/20261024-1636-DISM失败自动降级wimlib与错误分类详细设计-Step-5-Preview.md`。
 
 use backuprestore_core::TaskError;
 use std::path::{Path, PathBuf};
@@ -98,8 +104,12 @@ pub(crate) fn locate_wimlib(executable_dir: &Path) -> Result<PathBuf, TaskError>
 ///
 /// - 执行通道复用 `windows_command::run_program`（引号转义、Job 对象进程树
 ///   隔离、超时、日志落盘），与 DISM 同等待遇；
-/// - 超时用 `dism_timeout::wait_ms()`：wimlib apply 71GiB 实测约 8–22 分钟，
-///   与 DISM 同属「长任务」，共用同一个可配置上限（默认仍是不限制）；
+/// - 超时由调用方显式传入 `wait_ms`：常规路径传 `dism_timeout::wait_ms()`
+///   （wimlib apply 71GiB 实测约 8–22 分钟，与 DISM 同属「长任务」，共用同一个
+///   可配置上限，默认仍是不限制）；**降级路径传 `windows_command::INFINITE`**
+///   ——用户设短上限的意图是「杀死挂死的 DISM」，不是「这个任务只许跑 N 秒」，
+///   继承被玩坏的上限会把降级后的 wimlib 同样秒杀，降级失去意义
+///   （见 `fallback_after_dism_failure` 的文档）；
 /// - `executable_dir` 传调用方解析好的程序目录（在线态=程序同目录；
 ///   RE 态=current_exe 所在目录，即注入后的 System32）。
 #[cfg(windows)]
@@ -109,6 +119,7 @@ pub(crate) fn apply_overlay(
     index: u32,
     apply_root: &Path,
     log: &Path,
+    wait_ms: u32,
 ) -> Result<(), TaskError> {
     use crate::windows_command;
     let exe = locate_wimlib(executable_dir)?;
@@ -121,17 +132,97 @@ pub(crate) fn apply_overlay(
             args.join(" ")
         ),
     )?;
-    let outcome = windows_command::run_program(
-        &exe.to_string_lossy(),
-        &args,
-        Some(log),
-        crate::dism_timeout::wait_ms(),
-    );
+    let outcome = windows_command::run_program(&exe.to_string_lossy(), &args, Some(log), wait_ms);
     crate::append_log(log, &format!("wimlib 结果：{outcome}"))?;
     if !outcome.is_success() {
-        return Err(crate::err(&format!("wimlib apply failed: {outcome}")));
+        // 失败必须带输出尾部（与在线链 `dism()` 同一契约）：实机第三层双失败
+        // 时 wimlib 的真实报错（`[ERROR] Can't open "…" for deletion …
+        // (status=c0000043)`）只落在日志里，Err 只带退出码会让
+        // `failure_policy::classify_apply_failure` 拿到空文本 → 归 Unknown，
+        // 双失败的第二条因果丢失归因能力。
+        let tail = crate::text_parsing::tail_text(log, 8192);
+        return Err(crate::err(&format!(
+            "wimlib apply failed: {outcome}\n--- 输出尾部（至多 8192 字节）---\n{tail}"
+        )));
     }
     Ok(())
+}
+
+/// DISM apply 失败后的**自动降级编排**（D1，2026-10-24）。
+///
+/// 设计：`docs/20261024-1636-DISM失败自动降级wimlib与错误分类详细设计-Step-5-Preview.md`。
+/// 判据与文案的单一来源在 `failure_policy`（纯函数 + macOS 单测），本函数只做
+/// 编排：分类 → 判据 → 记日志 → 以**不限制**超时重跑 wimlib → 结果合成。
+/// 四个 apply 接线点（RE 主链 / PE / 在线数据卷分支 / 在线第二系统分支）
+/// 共用本函数——各写一遍就是 failure_policy 模块注释里写过的「文案分叉」前科。
+///
+/// **为什么降级路径传不限制超时**：`dism_timeout::wait_ms()` 是 DISM 与 wimlib
+/// 共用的可配上限，用户设短上限的意图是「杀死挂死的 DISM」而不是「这个任务
+/// 只许跑 N 秒」。若降级后还继承同一个被玩坏的上限，wimlib 会被同样秒杀，
+/// 降级失去意义（wimlib apply 71GiB 实测 8–22 分钟，与 DISM 同属长任务）。
+///
+/// 错误合成策略：无论是否降级，失败回执都带**中文因果 + 原始错误全文**；
+/// 双失败时两级因果都带上（DISM 的 + wimlib 的）——两条因果比一条更有归因价值。
+#[cfg(windows)]
+pub(crate) fn fallback_after_dism_failure(
+    dism_error: &TaskError,
+    log: &Path,
+    image: &Path,
+    index: u32,
+    apply_root: &Path,
+) -> Result<(), TaskError> {
+    let dism_text = dism_error.to_string();
+    let kind = crate::failure_policy::classify_apply_failure(&dism_text);
+    let cause = kind.cause();
+    // 无论是否降级，分类行都落日志——失败回执的可归因性本身就是收益。
+    crate::append_log(
+        log,
+        &format!("[ERROR] DISM apply 失败分类：{kind:?}——{cause}"),
+    )?;
+    let executable_dir = std::env::current_exe()
+        .map_err(|error| crate::err(&format!("无法定位程序目录（wimlib 降级通道）：{error}")))?
+        .parent()
+        .ok_or_else(|| crate::err("程序目录解析失败（wimlib 降级通道）"))?
+        .to_path_buf();
+    let located = locate_wimlib(&executable_dir);
+    if !crate::failure_policy::decide_fallback(kind, located.is_ok()) {
+        // 两种不降级：ImageCorrupt（换引擎必然同样失败）/ wimlib 缺件（无法降级）。
+        let reason = match &located {
+            Err(missing) => format!("未尝试自动降级：wimlib 二进制不可用——{missing}"),
+            Ok(_) => "未自动降级：镜像损坏类失败换应用引擎同样会失败，重试无益".to_string(),
+        };
+        crate::append_log(log, &format!("[WARN] {reason}"))?;
+        return Err(crate::err(&format!(
+            "DISM apply 失败：{cause}\n{reason}\n{dism_text}"
+        )));
+    }
+    crate::append_log(
+        log,
+        &format!(
+            "[WARN] DISM apply 失败（{cause}），自动降级 wimlib 重试一次（等待上限：不限制）"
+        ),
+    )?;
+    match apply_overlay(
+        &executable_dir,
+        image,
+        index,
+        apply_root,
+        log,
+        crate::windows_command::INFINITE,
+    ) {
+        Ok(()) => {
+            crate::append_log(log, "降级成功：wimlib 完成 apply，任务继续")?;
+            Ok(())
+        }
+        Err(wimlib_error) => {
+            let wimlib_kind =
+                crate::failure_policy::classify_apply_failure(&wimlib_error.to_string());
+            Err(crate::err(&format!(
+                "DISM apply 失败：{cause}\n自动降级 wimlib 重试仍失败：{}\n{dism_text}\n{wimlib_error}",
+                wimlib_kind.cause()
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
