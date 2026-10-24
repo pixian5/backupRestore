@@ -226,9 +226,13 @@ precheck() {
     prlctl list -a 2>/dev/null | grep -q running || die "VM $VM 未运行"
     prlctl capture "$VM" --file "$ART/precheck.png" > /dev/null 2>&1 || die "截图失败"
     local free
-    # fsutil 的输出是本地化 GBK，宿主 grep 中文会失配（旧版一直显示空），
-    # 改从 PowerShell 取数字格式化（走 EncodedCommand，中文安全）。
-    free=$(vm_ps_raw "\$v = Get-Volume -DriveLetter ${DRIVE}; '{0:N1} GiB 可用 / {1:N1} GiB' -f (\$v.SizeRemaining/1GB), (\$v.Size/1GB)" | tr -d '\r\n')
+    # fsutil 的输出是本地化 GBK，宿主 grep 中文会失配（旧版一直显示空）。
+    # ★ VM 命令体一律纯 ASCII：这里只取两个数字，中文文案由宿主拼——
+    #   凡进入 prlctl 命令行的字符串保持 ASCII，就不存在编码协商问题。
+    free=$(vm_ps_raw "\$v = Get-Volume -DriveLetter ${DRIVE}; '{0:N1}|{1:N1}' -f (\$v.SizeRemaining/1GB), (\$v.Size/1GB)" | LC_ALL=C tr -d '\r\n')
+    if [ -n "$free" ]; then
+        free="${free%|*} GiB 可用 / ${free#*|} GiB 总容量"
+    fi
     log "  VM 运行中；${DRIVE}: ${free:-<读不到>}（截图 $ART/precheck.png）"
     # 宿主空间（Data 卷才是真实空闲）
     local hostfree
@@ -324,10 +328,17 @@ restore() {
     for t in 1 2 3; do
         vm_cmd "H:\\brwork\\BackupRestore.exe online --operation restore-existing --source-drive ${DRIVE} --target-drive ${DRIVE} --image-path ${IMAGE} --index 1 --format-target" \
             > "$ART/restore.out" 2>&1
-        if grep -aq "日志：" "$ART/restore.out" || grep -aq "操作完成" "$ART/restore.out"; then
+        # ★ 成功判据只用 ASCII 结构化特征：CLI 收尾会打印任务日志路径
+        # （`...\logs\BackupRestore-online-*\Online.log`，纯 ASCII），命中即
+        # 说明 apply 主链走完。绝不用中文文案判断——
+        #   ① 文案随版本/语言变化，判据会脆；
+        #   ② 中文在 GBK/UTF-8 两种字节流里表现不同，是编码地雷。
+        # 实测：本脚本 100% ASCII 判据下，主程序 stdout 是 UTF-8、cmd 内建
+        # 是 GBK，两种都能正确处理，因为判据从不解析中文。
+        if grep -aqE 'Online\.log' "$ART/restore.out"; then
             break
         fi
-        log "  ⚠ 还原命令未返回完成语（第 ${t} 次：$(head -1 "$ART/restore.out" | cut -c1-60)），重试"
+        log "  ⚠ 还原命令未返回日志路径（第 ${t} 次：$(head -1 "$ART/restore.out" | cut -c1-60)），重试"
         sleep 6
     done
     # CLI stdout 只有收尾两行（「操作完成」+「日志：<Online.log 路径>」），
@@ -387,9 +398,24 @@ else:
 v('C2 目标卷序列号变化', bool(post_d['serial']) and post_d['serial'] != pre_d['serial'],
   f"{pre_d['serial']} -> {post_d['serial'] or '<空>'}")
 steps = sorted(set(re.findall(r'STEP ([0-9/]+)', log)))
-v('C3 任务 success/100', bool(re.search(r'STEP 4/4', log)) and bool(re.search(r'操作完成', log)),
-  ('任务日志 STEP ' + '/'.join(steps) + ' 且含「操作完成」') if (re.search(r'STEP 4/4', log) and re.search(r'操作完成', log))
-  else ('任务日志仅到 STEP ' + ('/'.join(steps) or '<无>') + '，末行：' + (log.strip().splitlines()[-1][:50] if log.strip() else '<空>')))
+# ★ C3 只用 ASCII 结构化特征，不匹配任何中文文案。踩过的坑：
+#   日志里的 `DISM 结果：退出码 0` 是**中文**——把非 ASCII 字节剥掉后看着像
+#   `DISM  0`，一度以为拿到了 ASCII 判据，其实是假象。真正跨语言稳定的是：
+#   · `STEP 4/4`                          —— 程序自己的阶段进度标识，只在
+#                                            apply 成功后才推进到最后一步；
+#   · `The operation completed successfully` —— DISM 自身输出。程序对 DISM
+#                                            传了 /English，故恒为英文，
+#                                            不受系统语言影响。
+#   降级走 wimlib 时没有 DISM 成功行（wimlib 自身输出也是英文），故 success
+#   行只作附加信息展示，不作硬判据，避免误伤降级路径。
+c3_ok = bool(re.search(r'STEP 4/4', log))
+dism_ok = 'The operation completed successfully' in log
+v('C3 任务 success/100', c3_ok,
+  '任务日志 STEP ' + '/'.join(steps)
+  + ('，DISM 英文成功行在' if dism_ok else '，无 DISM 成功行（wimlib 降级路径或日志截尾）')
+  if c3_ok else
+  ('任务日志仅到 STEP ' + ('/'.join(steps) or '<无>') + '，末行：'
+   + (log.strip().splitlines()[-1][:50] if log.strip() else '<空>')))
 v('C4 100MB 载荷字节级一致', post_d['bigsha'] == pre_d['bigsha'] and post_d['biglen'] == pre_d['biglen'],
   f"sha {'一致' if post_d['bigsha'] == pre_d['bigsha'] else '不一致'}，{post_d['biglen']}/{pre_d['biglen']} B")
 v('C5 BR38Data 完整', bool(post_d['br38complete']),
