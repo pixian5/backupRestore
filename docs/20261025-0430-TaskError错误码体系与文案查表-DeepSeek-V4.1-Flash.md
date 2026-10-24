@@ -1,4 +1,4 @@
-# TaskError 错误码体系：326 处运行期错误改查表
+# TaskError 错误码体系：337 处运行期错误改查表
 
 - 撰写：2026-10-25 04:30
 - 版本：v2.6.46
@@ -85,8 +85,16 @@ crate::errc_with(ErrCode::PartitionLetterMismatch, &[..]) // 带 {0}{1}
 | 侧 | 数量 | 处理 |
 |---|---|---|
 | cli 含中文的 `err()` | **245** | 全部改 `errc`/`errc_with`，**中英双语** |
+| cli 直接 `TaskError::Invalid(...)` | **9** | 全部改带码（`boot_cleanup` 7、`boot_menu` 1、`windows_prepare` 1） |
 | core `TaskError::Invalid` | **81** | 全部改 `coded("BR-CORE-NNN")`，77 个语义码（同文案共用一码） |
-| 合计 | **326** | |
+| 合计 | **337** | |
+
+★ **统计口径第二次踩同一个坑**：第一遍只 grep `err(`，漏掉了**绕过 `err()`
+直接调 `TaskError::Invalid(...)`** 的 9 处（`boot_cleanup.rs` 整整一个文件
+都没被扫到，它全用 `TaskError::Invalid`）。这和 v2.6.43「只数 `append_log`
+漏了模块自带的 `log()`」是同一类错误——**统计"某类调用"前，先确认一共
+有几种写法**。剩下的 2 处 `TaskError::Invalid(message.into())` 是 `err()`
+自身的实现体，必须保留。
 
 core 侧的文案**不翻译**：那些是英文技术诊断（`unsupported task version {}`、
 `EFI/MSR/Recovery partitions cannot be restore targets`），core 没有语言层，
@@ -124,7 +132,7 @@ core 侧的文案**不翻译**：那些是英文技术诊断（`unsupported task
 
 剩余的 `err("...")` 分两类：
 
-**带码（326 处）**：运行期失败。卷身份不符、镜像损坏、引导回读不一致、
+**带码（337 处）**：运行期失败。卷身份不符、镜像损坏、引导回读不一致、
 WinRE 关联错误、任务状态机拒绝——用户真正会撞上，且文案要双语。
 
 **不带码（304 处）**：命令行**用法**错误。`task id is required`、

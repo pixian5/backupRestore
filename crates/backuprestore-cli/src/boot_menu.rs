@@ -801,7 +801,7 @@ impl BootMenuSession {
         let mut state = self.state.lock().unwrap();
         state.editable = false;
         if let Some(error) = &state.error {
-            return Err(crate::err(error));
+            return Err(crate::errc_with(ErrCode::BootMenuFreezeBlocked, &[error]));
         }
         state.plan.validate()?;
         Ok(state.plan.clone())
@@ -985,7 +985,7 @@ pub(crate) fn decide_default(target_id: Option<&str>) -> Result<DefaultDecision,
     // 只此一条规则（2026-10-15 用户规则，2026-10-16 删除另一条兼容分支）：
     // default 一律指向本次还原出来的系统，与目标的性质、与镜像从哪个分区备份
     // 而来都无关。原系统仍然保留在菜单里可选，只是不再是默认项。
-    let id = target_id.ok_or(TaskError::Invalid("缺少必选目标加载器".into()))?;
+    let id = target_id.ok_or(crate::errc(ErrCode::BootMenuTargetLoaderMissing))?;
     Ok(DefaultDecision {
         default_id: id.to_string(),
         note: "指向本次还原出来的系统".into(),

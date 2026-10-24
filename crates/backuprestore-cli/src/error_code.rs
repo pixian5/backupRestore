@@ -339,6 +339,19 @@ error_codes! {
     DefaultSwitchFailed => ("BR-BOOT-028", "无法把默认启动项指向本次还原的系统，拒绝继续后续破坏性步骤", "Cannot point the default boot entry to the system restored this run; refusing to continue with further destructive steps"),
     LoaderMissingRefuseMenu => ("BR-BOOT-029", "主系统或新第二系统加载器缺失，拒绝改写启动菜单", "The primary or new secondary system loader is missing; refusing to rewrite the boot menu"),
 
+    // ── RE 暂存清理与准备阶段补偿（`boot_cleanup` / `windows_prepare`）────
+    ReStagingTaskIdInvalid => ("BR-TSK-029", "RE 暂存任务标识不是 UUID：{0}", "RE staging task id is not a UUID: {0}"),
+    ReStagingVolumeNoGuid => ("BR-TSK-030", "RE 暂存卷没有有效 GUID", "RE staging volume has no valid GUID"),
+    ReStagingCleanupFailed => ("BR-TSK-031", "RE 暂存清理失败（{0}）：{1}", "RE staging cleanup failed at {0}: {1}"),
+    ReStagingRootNotDirectory => ("BR-TSK-032", "RE 暂存卷根不是目录", "RE staging volume root is not a directory"),
+    ReStagingPathNotPlainDir => ("BR-TSK-033", "RE 暂存路径不是普通目录：{0}", "RE staging path is not a plain directory: {0}"),
+    ReStagingStillExists => ("BR-TSK-034", "RE 暂存目录仍然存在：{0}", "RE staging directory still exists: {0}"),
+    PreparationCompensationIncomplete => ("BR-TSK-035", "准备阶段补偿未完成：{0}", "Preparation compensation incomplete: {0}"),
+
+    // ── 引导方案（`boot_menu`）─────────────────────────────────────────
+    BootMenuTargetLoaderMissing => ("BR-BOOT-030", "缺少必选目标加载器", "Missing required target loader"),
+    BootMenuFreezeBlocked => ("BR-BOOT-031", "引导方案在锁定前已记录错误，拒绝继续：{0}", "The boot plan recorded an error before freezing; refusing to continue: {0}"),
+
     // ── 外部命令失败回执（`main` 的 `run_logged_timeout`）────────────────
     ProgramFailedNamed => ("BR-APL-009", "{0} failed with {1}\n--- 输出尾部（至多 {2} 字节）---\n{3}", "{0} failed with {1}\n--- output tail (at most {2} bytes) ---\n{3}"),
 }

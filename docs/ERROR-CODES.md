@@ -34,7 +34,7 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层
+## CLI 层（共 212 条）
 
 ### `BR-APL` — 应用镜像（DISM / wimlib）（9 条）
 
@@ -50,7 +50,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-APL-008` | `FallbackAlsoFailed` | DISM apply 失败：{0}\n自动降级 wimlib 重试仍失败：{1}\n{2}\n{3} | DISM apply failed: {0}\nThe automatic wimlib fallback also failed: {1}\n{2}\n{3} |
 | `BR-APL-009` | `ProgramFailedNamed` | {0} failed with {1}\n--- 输出尾部（至多 {2} 字节）---\n{3} | {0} failed with {1}\n--- output tail (at most {2} bytes) ---\n{3} |
 
-### `BR-BOOT` — 引导、BCD、启动菜单（29 条）
+### `BR-BOOT` — 引导、BCD、启动菜单（31 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -83,6 +83,8 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-BOOT-027` | `PostBcdbootBootMgrUnparsable` | BCDBoot 后启动管理器状态无法解析 | Cannot parse the boot manager state after BCDBoot |
 | `BR-BOOT-028` | `DefaultSwitchFailed` | 无法把默认启动项指向本次还原的系统，拒绝继续后续破坏性步骤 | Cannot point the default boot entry to the system restored this run; refusing to continue with further destructive steps |
 | `BR-BOOT-029` | `LoaderMissingRefuseMenu` | 主系统或新第二系统加载器缺失，拒绝改写启动菜单 | The primary or new secondary system loader is missing; refusing to rewrite the boot menu |
+| `BR-BOOT-030` | `BootMenuTargetLoaderMissing` | 缺少必选目标加载器 | Missing required target loader |
+| `BR-BOOT-031` | `BootMenuFreezeBlocked` | 引导方案在锁定前已记录错误，拒绝继续：{0} | The boot plan recorded an error before freezing; refusing to continue: {0} |
 
 ### `BR-GUI` — 图形界面（2 条）
 
@@ -216,7 +218,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-RE-045` | `BcdRecoveryNoDevice` | BCD 恢复对象未报告 device | The BCD recovery object reports no device |
 | `BR-RE-046` | `BcdRecoveryRamdiskUnrecognized` | BCD 恢复对象的 ramdisk 卷形态无法识别 | The ramdisk volume form of the BCD recovery object is unrecognized |
 
-### `BR-TSK` — 任务、状态机、续跑（27 条）
+### `BR-TSK` — 任务、状态机、续跑（34 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -247,6 +249,13 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-TSK-025` | `ResumePayloadOnEraseTarget` | 续跑载荷位于擦除目标，拒绝执行 | The resume payload lives on the erase target; refusing to proceed |
 | `BR-TSK-026` | `ResumePayloadVolumeMismatch` | 续跑载荷卷与本任务镜像卷不符 | The resume payload volume does not match this task's image volume |
 | `BR-TSK-027` | `ProgramTimeout` | {0} 超时（上限 {1} ms），进程已终止 | {0} timed out (limit {1} ms); the process was terminated |
+| `BR-TSK-029` | `ReStagingTaskIdInvalid` | RE 暂存任务标识不是 UUID：{0} | RE staging task id is not a UUID: {0} |
+| `BR-TSK-030` | `ReStagingVolumeNoGuid` | RE 暂存卷没有有效 GUID | RE staging volume has no valid GUID |
+| `BR-TSK-031` | `ReStagingCleanupFailed` | RE 暂存清理失败（{0}）：{1} | RE staging cleanup failed at {0}: {1} |
+| `BR-TSK-032` | `ReStagingRootNotDirectory` | RE 暂存卷根不是目录 | RE staging volume root is not a directory |
+| `BR-TSK-033` | `ReStagingPathNotPlainDir` | RE 暂存路径不是普通目录：{0} | RE staging path is not a plain directory: {0} |
+| `BR-TSK-034` | `ReStagingStillExists` | RE 暂存目录仍然存在：{0} | RE staging directory still exists: {0} |
+| `BR-TSK-035` | `PreparationCompensationIncomplete` | 准备阶段补偿未完成：{0} | Preparation compensation incomplete: {0} |
 
 ### `BR-VOL` — 卷身份与盘符（26 条）
 

@@ -2323,10 +2323,10 @@ fn compensate_prepare_failure(
         )?;
         Ok(())
     } else {
-        Err(TaskError::Invalid(format!(
-            "preparation compensation incomplete: {}",
-            problems.join("; ")
-        )))
+        Err(crate::errc_with(
+            ErrCode::PreparationCompensationIncomplete,
+            &[&problems.join("; ")],
+        ))
     }
 }
 

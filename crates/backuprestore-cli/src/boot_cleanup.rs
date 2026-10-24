@@ -1,5 +1,6 @@
 //! 任务 RE 暂存清理：只用卷身份，不相信跨重启保存的盘符；删除失败必须上报。
 
+use crate::error_code::ErrCode;
 use backuprestore_core::{TaskError, VolumeIdentity};
 use std::fs;
 use std::io;
@@ -10,7 +11,7 @@ pub(crate) const RE_STAGING_DIR: &str = "BackupRestoreRE";
 /// 载荷子目录名：只接受规范 UUID，杜绝空段、分隔符与路径穿越。
 pub(crate) fn staging_task_segment(task_id: &str) -> Result<&str, TaskError> {
     backuprestore_core::validate_task_id(task_id)
-        .map_err(|_| TaskError::Invalid(format!("RE staging task id is not a UUID: {task_id}")))?;
+        .map_err(|_| crate::errc_with(ErrCode::ReStagingTaskIdInvalid, &[task_id]))?;
     Ok(task_id)
 }
 
@@ -46,7 +47,7 @@ pub(crate) fn staging_task_path(root: &Path, task_id: &str) -> Result<PathBuf, T
 pub(crate) fn staging_volume_root(volume: &VolumeIdentity) -> Result<PathBuf, TaskError> {
     let guid = crate::text_parsing::bare_volume_guid(&volume.volume_guid)
         .filter(|guid| crate::text_parsing::is_guid(guid))
-        .ok_or_else(|| TaskError::Invalid("RE staging volume has no valid GUID".into()))?;
+        .ok_or_else(|| crate::errc(ErrCode::ReStagingVolumeNoGuid))?;
     Ok(PathBuf::from(format!(r"\\?\Volume{guid}\")))
 }
 
@@ -59,10 +60,10 @@ fn remove_if_present(path: &Path, directory: bool) -> Result<(), TaskError> {
     match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(TaskError::Invalid(format!(
-            "RE staging cleanup failed at {}: {error}",
-            path.display()
-        ))),
+        Err(error) => Err(crate::errc_with(
+            ErrCode::ReStagingCleanupFailed,
+            &[&path.display().to_string(), &error.to_string()],
+        )),
     }
 }
 
@@ -71,18 +72,16 @@ fn remove_if_present(path: &Path, directory: bool) -> Result<(), TaskError> {
 /// 卷不可访问、文件被占用、目录非空等情况都不能伪报成功。
 pub(crate) fn remove_staging(root: &Path, task_id: &str) -> Result<PathBuf, TaskError> {
     if !fs::metadata(root)?.is_dir() {
-        return Err(TaskError::Invalid(
-            "RE staging volume root is not a directory".into(),
-        ));
+        return Err(crate::errc(ErrCode::ReStagingRootNotDirectory));
     }
     let parent = root.join(RE_STAGING_DIR);
     let dir = staging_task_path(root, task_id)?;
     match fs::symlink_metadata(&dir) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(TaskError::Invalid(format!(
-                "RE staging path is not a plain directory: {}",
-                dir.display()
-            )));
+            return Err(crate::errc_with(
+                ErrCode::ReStagingPathNotPlainDir,
+                &[&dir.display().to_string()],
+            ));
         }
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -100,10 +99,7 @@ pub(crate) fn remove_staging(root: &Path, task_id: &str) -> Result<PathBuf, Task
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
         Ok(_) => {
-            return Err(TaskError::Invalid(format!(
-                "RE staging directory still exists: {}",
-                dir.display()
-            )));
+            return Err(crate::errc_with(ErrCode::ReStagingStillExists, &[&dir.display().to_string()]));
         }
     }
     prune_empty_parent(&parent)?;
@@ -127,10 +123,10 @@ fn prune_empty_parent(parent: &Path) -> Result<(), TaskError> {
         // 竞态下别的任务刚放进新载荷：保留目录，不算失败。
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) if is_not_empty(&error) => Ok(()),
-        Err(error) => Err(TaskError::Invalid(format!(
-            "RE staging cleanup failed at {}: {error}",
-            parent.display()
-        ))),
+        Err(error) => Err(crate::errc_with(
+            ErrCode::ReStagingCleanupFailed,
+            &[&parent.display().to_string(), &error.to_string()],
+        )),
     }
 }
 
