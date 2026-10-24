@@ -752,11 +752,11 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         //   英文模式下这一条永远不命中 → 终态识别不到，进度窗停在上一阶段。
         //   文案从 i18n 表取（单一来源），避免两处硬编码不同步。
         || line.contains(&crate::i18n::msg_in(
-            crate::pe_safety::MessageLanguage::Chinese,
+            crate::i18n::MessageLanguage::Chinese,
             "online_done",
         ))
         || line.contains(&crate::i18n::msg_in(
-            crate::pe_safety::MessageLanguage::English,
+            crate::i18n::MessageLanguage::English,
             "online_done",
         ))
     {

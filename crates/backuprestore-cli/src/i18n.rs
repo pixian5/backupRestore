@@ -18,8 +18,22 @@
 //! 【为什么不改 `append_log` 的签名】258 个调用点逐个加参数是灾难级改动，
 //! 且绝大多数细节日志不值得翻译。改为：需要双语的点主动查这张表。
 
-use crate::pe_safety::MessageLanguage;
 use std::sync::atomic::{AtomicU8, Ordering};
+
+/// 中英双语文案的语言维度。
+///
+/// ★ 2026-10-25 搬家：原来定义在 `pe_safety.rs`，而那个模块是
+/// `#[cfg(any(windows, test))]`。问题在于 `text_parsing.rs` 是**无条件编译**的，
+/// 它要用本模块的判据文案（终态识别要双语都认），于是 macOS 上不带 `test` 的
+/// `cargo check` 直接 E0433——**`cargo test` 因为带 `test` cfg 反而能过**，
+/// 所以 v2.6.41 只跑单测时没暴露。语言枚举本就属于语言层，搬到这里、让 `i18n`
+/// 无条件编译即可；`pe_safety` 仍然 `pub(crate) use` 重导出，
+/// 既有的 `crate::pe_safety::MessageLanguage` 引用一行都不用改。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MessageLanguage {
+    Chinese,
+    English,
+}
 
 /// 进程级语言。0 = 中文（默认，与既有行为一致），1 = 英文。
 static LANG: AtomicU8 = AtomicU8::new(0);

@@ -152,15 +152,16 @@ pub(crate) fn target_is_windows_volume(root: &Path) -> Result<bool, TaskError> {
 }
 
 /// GUI 中英双语文案的语言维度（CLI 输出固定中文）。
-/// 定义在本模块是因为这里是 `cfg(any(windows, test))`、macOS 单测可直达；
+///
+/// ★ 2026-10-25 已**搬到 `i18n` 模块**定义（语言枚举属于语言层），这里只做
+/// `pub(crate) use` 重导出：既有的 `crate::pe_safety::MessageLanguage` 引用
+/// 全部继续有效。搬家的理由——本模块是 `cfg(any(windows, test))`，而
+/// `text_parsing` 无条件编译且需要用到它，导致 macOS 非 test 构建 E0433。
+///
 /// 使用者：`failure_policy`（设置窗口标签/详情/解析错误）、`dism_timeout`（提示语）。
 /// 注意：覆盖式还原判据（下方 `overlay_restore_on_windows_volume`）#110 起收敛为
 /// 纯谓词，不再需要语言维度——它的旧双语文案是硬拒时代的，已随硬拒一起退役。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MessageLanguage {
-    Chinese,
-    English,
-}
+pub(crate) use crate::i18n::MessageLanguage;
 
 /// 「覆盖式应用（取消格式化）」打到**已含 Windows 的目标卷**的判据
 /// （准备期命中；用户 2026-10-16 拍板立项，2026-10-22 #110 起改路由）。

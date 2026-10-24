@@ -49,8 +49,12 @@ mod boot_entry;
 /// DISM 等待上限：把「无限等待」变成可配置，**默认仍是无限**（零回归）。
 /// 跨平台纯逻辑，本机单测即可覆盖全部分支。
 /// 全局语言层：让日志与 CLI 结论文案也能按语言输出（界面之外的地方）。
-/// 依赖 `pe_safety::MessageLanguage`，故与它同门控。
-#[cfg(any(windows, test))]
+/// ★ 2026-10-25：**无条件编译**。`text_parsing`（无条件）要用它的判据文案做
+/// 双语终态识别；一旦门控成 `any(windows, test)`，macOS 上不带 `test` 的
+/// `cargo check` 就 E0433（而 `cargo test` 因为带 `test` cfg 反而能过，
+/// v2.6.41 只跑单测所以没发现）。`MessageLanguage` 也随之从 `pe_safety`
+/// 搬到本模块（`pe_safety` 重导出，旧路径不变）。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 mod i18n;
 /// CLI 结构化输出（`--json`）：让自动化判据不再解析中文文案，只认字段。
 /// 纯逻辑 + 本机单测，故与 `pe_safety` 同门控。
@@ -250,8 +254,12 @@ fn main() {
     }
     // 命令名与 operation 先留一份：--json 的结论行要用。
     // 必须在 `into_iter()` 之前取——那会 move 掉 `arguments`，之后再借用会
-    // 编译失败（E0382，交叉编译时才暴露，本机 check 因 cfg 看不到这段）。
+    // 编译失败（E0382）。
+    // 注意这两行**不在** `cfg(windows)` 里（只有下面的 emit 块是），所以本机
+    // check 也会检查它们；非 Windows 下没人用 → allow 掉「未使用」。
+    #[cfg_attr(not(windows), allow(unused_variables))]
     let command_name = arguments.first().cloned().unwrap_or_default();
+    #[cfg_attr(not(windows), allow(unused_variables))]
     let operation_arg = arguments
         .iter()
         .position(|a| a == "--operation")

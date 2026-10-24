@@ -3062,6 +3062,97 @@ fn compress_level_labels(language: Language) -> [&'static str; 2] {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 界面语言偏好：记住用户上一次选的语言（`BackupRestore.settings.ini` 的
+// `ui_language` 键）。
+//
+// 2026-10-25 补：此前语言切换只在进程内生效，**每次启动都回到中文**——右上角
+// 选了 English，关掉再开又是中文，等于开关是"临时"的。用户没提，但这是半截
+// 功能（同文件里 failure_threshold / dism_timeout_secs 都是持久化的）。
+// ---------------------------------------------------------------------------
+const SETTINGS_UI_LANGUAGE_KEY: &str = "ui_language";
+
+fn settings_ini_path() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(crate::failure_policy::SETTINGS_FILE_NAME)))
+}
+
+/// 读界面语言偏好。文件缺失 / 读失败 / 值不认识 → 中文（GUI 必须能起来）。
+fn load_ui_language_pref() -> Language {
+    let Some(path) = settings_ini_path() else {
+        return Language::Chinese;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Language::Chinese;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == SETTINGS_UI_LANGUAGE_KEY {
+            return match value.trim().to_ascii_lowercase().as_str() {
+                "en" | "english" => Language::English,
+                _ => Language::Chinese,
+            };
+        }
+    }
+    Language::Chinese
+}
+
+/// 保存界面语言偏好（**合并写**）。
+///
+/// 不能整文件重写：`BackupRestore.settings.ini` 是共享文件，
+/// `failure_policy` 与 `dism_timeout` 都往同一个文件写。整文件重写会把
+/// 失败策略和 DISM 上限静默冲掉（同文件里那段注释记着这个教训）。
+///
+/// 注释处理：只剔除**自己**那一条注释再重写，其余注释原样保留——不能像别处
+/// 那样把所有注释一起丢掉，否则每次保存都会顺手抹掉别人的说明。
+fn save_ui_language_pref(language: Language) {
+    let Some(path) = settings_ini_path() else {
+        return;
+    };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut kept: Vec<String> = existing
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("# ui_language:") {
+                return false;
+            }
+            if trimmed.starts_with('#') || trimmed.starts_with(';') {
+                return true;
+            }
+            match trimmed.split_once('=') {
+                Some((key, _)) => key.trim() != SETTINGS_UI_LANGUAGE_KEY,
+                None => true,
+            }
+        })
+        .map(|line| line.to_string())
+        .collect();
+    if kept.is_empty() {
+        kept.push("# BackupRestore 程序设置（本文件由程序自动生成，可手工编辑）".to_string());
+    }
+    let value = match language {
+        Language::Chinese => "zh",
+        Language::English => "en",
+    };
+    kept.push(
+        "# ui_language: 界面语言 zh=中文 en=English；在界面右上角语言栏切换时自动保存".to_string(),
+    );
+    kept.push(format!("{SETTINGS_UI_LANGUAGE_KEY}={value}"));
+    let mut text = kept.join("\r\n");
+    text.push_str("\r\n");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, text);
+}
+
 unsafe fn apply_language(state: &mut State) {
     let language = selected_language(state);
     // 界面语言同步给全局语言层：此后本进程写进日志的结论性文案也跟着走，
@@ -8207,7 +8298,16 @@ unsafe extern "system" fn window_proc(
         };
         add_combo_item(controls.language, "中文");
         add_combo_item(controls.language, "English");
-        SendMessageW(controls.language, CB_SETCURSEL, 0, 0);
+        // 恢复上一次选的语言（默认中文）。索引 0/1 ↔ 中文/English。
+        SendMessageW(
+            controls.language,
+            CB_SETCURSEL,
+            match load_ui_language_pref() {
+                Language::Chinese => 0,
+                Language::English => 1,
+            },
+            0,
+        );
         SendMessageW(controls.operation_tabs[0], BM_SETCHECK, BST_CHECKED, 0);
         // 压缩下拉：初始语言为中文；索引 0/1 ↔ fast/none，默认「压缩」。
         for label in compress_level_labels(Language::Chinese) {
@@ -8603,7 +8703,19 @@ unsafe extern "system" fn window_proc(
             audit_control_action(control_id, notification);
             if control_id == ID_LANGUAGE && notification == CBN_SELCHANGE {
                 apply_language(state);
-                append_gui_log(state, "GUI action completed: language changed");
+                // 只在这里保存（用户真的动了选择），初始化时不写盘。
+                let language = selected_language(state);
+                save_ui_language_pref(language);
+                append_gui_log(
+                    state,
+                    &format!(
+                        "GUI action completed: language changed (ui_language={} saved)",
+                        match language {
+                            Language::Chinese => "zh",
+                            Language::English => "en",
+                        }
+                    ),
+                );
                 return 0;
             }
             if let Some(index) = match control_id {
