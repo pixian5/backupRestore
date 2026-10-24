@@ -131,7 +131,7 @@ mod winre_registration;
 fn usage() -> ! {
     eprintln!(
         "BackupRestore commands:\n  validate-task <task.json>\n  hash <file>\n  status <task-root> <task-id>\n  prepare --operation <probe|backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--wim-index <n>] [--boot-menu-name <name>] [--allow-destructive] [--no-reboot] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape|pause>] [--ui-language <zh|en>]\n  prepare ... [--test-efi-drive <letter>] [--test-fault <identity-env-mismatch|bcdboot-failure|power-loss-window>]  (development test only)
-  online --operation <backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--index <n>] [--compress <fast|none>] [--image-name <name>] [--keep-indexes <n>] [--format-target] [--ui-language <zh|en>]\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
+  online --operation <backup|restore-existing|create-secondary> --source-drive <letter> [--target-drive <letter>] [--image-path <absolute-wim>] [--index <n>] [--compress <fast|none> (default fast)] [--image-name <name>] [--keep-indexes <n>] [--format-target] [--ui-language <zh|en>]\n  list-volumes\n  inspect-environment\n  wim-info <absolute-wim> [--skip-hash]\n  recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]\n  resume <task-root> <task-id>  (retry existing recovery or cleanup)\n  recover-env <RecoveryTask.env>\n  run-command <program> [args...]\n  --json  (print the verdict as ONE line of JSON: command/operation/success/log_path/error; for automation)\n  --open-image <absolute-wim>  (GUI only)\n  --tab <0..=4>  (GUI only: 0=backup 1=restore-A to C: 2=restore-B to non-C: 3=second system 4=install PE)\n  --pe-desktop  (WinPE recovery desktop, GUI only)\n"
     );
     std::process::exit(2)
 }
@@ -472,6 +472,13 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
     }
     if operation.is_empty() {
         return Err(err("online requires --operation"));
+    }
+    // 不显式指定 = `fast`（与 GUI 压缩下拉「不选也是 fast」同口径）。空串原样下传
+    // 会被 core 的 `canonical_compression` 判 BR-CORE-034——可选旗标不该变成必填
+    // （2026-10-25 实机撞到：不带 --compress 的 T: 备份直接失败，冒烟一直显式传
+    // fast 所以没暴露）。
+    if compress.is_empty() {
+        compress = "fast".to_string();
     }
     // 显式旗标 > env `BACKUPRESTORE_LANG` > ini `ui_language` > 中文：
     // 自动化要确定性，一次命令也能覆盖界面偏好。
