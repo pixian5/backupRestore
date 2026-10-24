@@ -371,10 +371,8 @@ pub(crate) fn errc_with(code: ErrCode, args: &[&str]) -> TaskError {
         crate::i18n::MessageLanguage::Chinese => code.zh(),
         crate::i18n::MessageLanguage::English => code.en(),
     };
-    let mut rendered = template.to_string();
-    for (index, value) in args.iter().enumerate() {
-        rendered = rendered.replace(&format!("{{{index}}}"), value);
-    }
+    // 单遍填空：参数值里即使含 `{1}` 也不会被二次替换（见 `fill_placeholders`）。
+    let rendered = crate::i18n::fill_placeholders(template, args);
     TaskError::Coded {
         code: code.code(),
         rendered,

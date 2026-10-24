@@ -1011,11 +1011,47 @@ pub(crate) fn msg(key: &str) -> &'static str {
 /// 带占位的文案：`{0}`、`{1}`… 按顺序替换（**纯函数**，理由同 `msg_in`）。
 /// 用于"文案里夹着数字/路径/退出码"的日志行（如 `DISM 结果：退出码 0`）。
 pub(crate) fn msg_tpl_in(language: MessageLanguage, key: &str, args: &[&str]) -> String {
-    let mut text = msg_in(language, key).to_string();
-    for (index, value) in args.iter().enumerate() {
-        text = text.replace(&format!("{{{index}}}"), value);
+    fill_placeholders(msg_in(language, key), args)
+}
+
+/// 单遍填空：`{n}` 按 `args[n]` 替换。
+///
+/// ★ **不能写成 `for i { text = text.replace("{i}", args[i]) }`**——那是多遍
+/// 替换，前一轮填进去的**参数内容**会在后一轮被当成占位符再替换一次
+/// （2026-10-25 实测过的真实缺陷）：路径 `C:\a{1}b.log` 作为 `{0}` 填入后，
+/// 第二轮会把里面的 `{1}` 换成第二个参数，用户看到的是被篡改过的路径。
+/// 这类 bug 只在"参数值恰好含 `{数字}`"时出现，靠人工测试几乎撞不到。
+///
+/// 未匹配的占位符原样保留（宁可显示 `{7}` 也不静默吞掉，便于发现漏传参数）。
+pub(crate) fn fill_placeholders(template: &str, args: &[&str]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('}') {
+            Some(close) => {
+                let key = &after[..close];
+                match key.parse::<usize>().ok().and_then(|n| args.get(n)) {
+                    Some(value) => out.push_str(value),
+                    // 非数字占位（如 JSON 片段 `{"a":1}`）或越界索引：原样保留。
+                    None => {
+                        out.push('{');
+                        out.push_str(key);
+                        out.push('}');
+                    }
+                }
+                rest = &after[close + 1..];
+            }
+            None => {
+                // 没有闭合的 `{`，剩下的全是字面量。
+                out.push('{');
+                rest = after;
+            }
+        }
     }
-    text
+    out.push_str(rest);
+    out
 }
 
 pub(crate) fn msg_tpl(key: &str, args: &[&str]) -> String {
@@ -1101,6 +1137,23 @@ mod tests {
         // dism_timeout_secs 之类的行不能被误读成语言。
         let text = "dism_timeout_secs=300\nfailure_action=pause\nui_language=en\n";
         assert_eq!(parse_settings_language(text), Some(MessageLanguage::English));
+    }
+
+    #[test]
+    fn placeholders_are_filled_in_one_pass() {
+        // 参数内容里的 `{1}` 不能被当成占位符二次替换。
+        // 多遍 replace 的写法在这里会得到 "C:\aBANANA b.log"，路径被篡改。
+        let text = fill_placeholders("[{0}] {1}", &["C:\\a{1}b.log", "BANANA"]);
+        assert_eq!(text, "[C:\\a{1}b.log] BANANA");
+    }
+
+    #[test]
+    fn unknown_or_out_of_range_placeholders_survive() {
+        // 非数字占位（JSON 片段）与越界索引都原样保留——宁可露出 `{7}`，
+        // 也不要静默吞掉，否则漏传参数只能靠肉眼发现。
+        assert_eq!(fill_placeholders("{\"a\":1}", &[]), "{\"a\":1}");
+        assert_eq!(fill_placeholders("{0} {7}", &["x"]), "x {7}");
+        assert_eq!(fill_placeholders("no close {", &[]), "no close {");
     }
 
     #[test]
