@@ -176,7 +176,7 @@ pub(crate) fn fallback_after_dism_failure(
     // 无论是否降级，分类行都落日志——失败回执的可归因性本身就是收益。
     crate::append_log(
         log,
-        &format!("[ERROR] DISM apply 失败分类：{kind:?}——{cause}"),
+        &crate::i18n::msg_tpl("apply_classified", &[&format!("{kind:?}"), cause]),
     )?;
     let executable_dir = std::env::current_exe()
         .map_err(|error| crate::err(&format!("无法定位程序目录（wimlib 降级通道）：{error}")))?
@@ -187,20 +187,15 @@ pub(crate) fn fallback_after_dism_failure(
     if !crate::failure_policy::decide_fallback(kind, located.is_ok()) {
         // 两种不降级：ImageCorrupt（换引擎必然同样失败）/ wimlib 缺件（无法降级）。
         let reason = match &located {
-            Err(missing) => format!("未尝试自动降级：wimlib 二进制不可用——{missing}"),
-            Ok(_) => "未自动降级：镜像损坏类失败换应用引擎同样会失败，重试无益".to_string(),
+            Err(missing) => crate::i18n::msg_tpl("fallback_skip_missing", &[missing]),
+            Ok(_) => crate::i18n::msg("fallback_skip_corrupt").to_string(),
         };
         crate::append_log(log, &format!("[WARN] {reason}"))?;
         return Err(crate::err(&format!(
             "DISM apply 失败：{cause}\n{reason}\n{dism_text}"
         )));
     }
-    crate::append_log(
-        log,
-        &format!(
-            "[WARN] DISM apply 失败（{cause}），自动降级 wimlib 重试一次（等待上限：不限制）"
-        ),
-    )?;
+    crate::append_log(log, &crate::i18n::msg_tpl("fallback_start", &[cause]))?;
     match apply_overlay(
         &executable_dir,
         image,
@@ -210,7 +205,7 @@ pub(crate) fn fallback_after_dism_failure(
         crate::windows_command::INFINITE,
     ) {
         Ok(()) => {
-            crate::append_log(log, "降级成功：wimlib 完成 apply，任务继续")?;
+            crate::append_log(log, crate::i18n::msg("fallback_ok"))?;
             Ok(())
         }
         Err(wimlib_error) => {

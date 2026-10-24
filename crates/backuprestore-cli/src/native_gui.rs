@@ -3070,7 +3070,8 @@ fn compress_level_labels(language: Language) -> [&'static str; 2] {
 // 选了 English，关掉再开又是中文，等于开关是"临时"的。用户没提，但这是半截
 // 功能（同文件里 failure_threshold / dism_timeout_secs 都是持久化的）。
 // ---------------------------------------------------------------------------
-const SETTINGS_UI_LANGUAGE_KEY: &str = "ui_language";
+/// 键名单一来源在 `i18n`（CLI 侧 `init_from_env` 也读同一个键）。
+const SETTINGS_UI_LANGUAGE_KEY: &str = crate::i18n::SETTINGS_UI_LANGUAGE_KEY;
 
 fn settings_ini_path() -> Option<std::path::PathBuf> {
     std::env::current_exe()

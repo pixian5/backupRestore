@@ -181,25 +181,17 @@ pub(crate) enum ApplyFailureKind {
 impl ApplyFailureKind {
     /// 一句中文因果 + 处置建议。进失败回执与日志，用户直接可读。
     pub(crate) fn cause(self) -> &'static str {
+        // 文案走 i18n 表（英文环境下 CLI/日志给英文因果）。
+        // ★ 安全边界：`classify_apply_failure` 只认 DISM/wimlib 的**输出原文**
+        //   与 `CmdOutcome` 的 Display（"超时" 等），不读这些文案；而本方法的
+        //   英文措辞也刻意避开了分类模式的整串，见 `i18n::MESSAGES` 的注释。
         match self {
-            ApplyFailureKind::AccessDenied => {
-                "目标卷上受保护目录的权限改写被拒（访问被拒）。这类失败正是 wimlib 通道的设计目标，将自动改用 wimlib 重试。"
-            }
-            ApplyFailureKind::DiskFull => {
-                "目标卷剩余空间不足，镜像无法完整写入。请清理目标卷或换用更大的卷后重试；不要将部分写入视为成功。"
-            }
-            ApplyFailureKind::Busy => {
-                "目标卷正被其它程序占用（文件句柄未释放）。请关闭占用目标卷的程序后重试。"
-            }
-            ApplyFailureKind::ImageCorrupt => {
-                "镜像文件损坏或不完整（校验未通过）。请重新制作备份镜像；同一镜像换任何应用引擎都会失败。"
-            }
-            ApplyFailureKind::TimedOut => {
-                "应用镜像超过等待上限被终止（上限可在设置中调整，默认不限制）。卷上可能留有半成品，重跑前建议先格式化目标卷。"
-            }
-            ApplyFailureKind::Unknown => {
-                "应用镜像失败，原因未识别。请把本日志交给维护者；原始输出已保留在下方。"
-            }
+            ApplyFailureKind::AccessDenied => crate::i18n::msg("cause_access_denied"),
+            ApplyFailureKind::DiskFull => crate::i18n::msg("cause_disk_full"),
+            ApplyFailureKind::Busy => crate::i18n::msg("cause_busy"),
+            ApplyFailureKind::ImageCorrupt => crate::i18n::msg("cause_image_corrupt"),
+            ApplyFailureKind::TimedOut => crate::i18n::msg("cause_timed_out"),
+            ApplyFailureKind::Unknown => crate::i18n::msg("cause_unknown"),
         }
     }
 }

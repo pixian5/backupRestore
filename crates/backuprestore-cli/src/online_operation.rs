@@ -62,7 +62,7 @@ fn step1_notice(operation: &str) -> String {
 /// 【2026-10-18 用户要求】落点再搬到 `log_root::logs_dir()`（不放 PE、
 /// 不放目标分区）。选址规则见 `online_log`（纯逻辑 + 本机单测），这里只消费结果。
 pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
-    let (dir, placement_note) = match crate::online_log::resolve_dir() {
+    let (dir, placement_note) = match crate::online_log::resolve_dir(&params.operation) {
         Ok(found) => found,
         Err(error) => {
             return OnlineResult {

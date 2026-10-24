@@ -279,7 +279,7 @@ impl ProgressShared {
         if !self.paused.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let _ = crate::append_log(log, &format!("恢复已暂停（用户请求），停在：{stage}"));
+        let _ = crate::append_log(log, &crate::i18n::msg_tpl("re_paused", &[stage]));
         let limit_secs = pause_total_timeout();
         // 【2026-10-18 缺陷修复 M4】截止时刻只在第一次暂停时落定并记进 shared，
         // 之后「继续 → 再暂停」沿用同一个 deadline —— 「总上限」才是真的总上限。
@@ -301,9 +301,9 @@ impl ProgressShared {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             let _ = crate::append_log(
                 log,
-                &format!(
-                    "暂停总上限 {limit_secs} 秒（累计，本次继续后不再重置）；剩余约 {} 秒，超时将中断恢复链并按失败处理",
-                    remaining.as_secs()
+                &crate::i18n::msg_tpl(
+                    "re_pause_limit",
+                    &[&limit_secs.to_string(), &remaining.as_secs().to_string()],
                 ),
             );
         }
@@ -312,24 +312,22 @@ impl ProgressShared {
             if self.pause_abandoned.load(Ordering::SeqCst) {
                 let _ = crate::append_log(
                     log,
-                    "进度窗口已关闭且当时处于暂停：中断恢复链，按失败处理（现场保留）",
+                    crate::i18n::msg("re_pause_window_closed"),
                 );
-                return Err(crate::err("进度窗口已关闭，恢复已中断"));
+                return Err(crate::err(crate::i18n::msg("re_window_closed_err")));
             }
             if let Some(deadline) = deadline
                 && std::time::Instant::now() >= deadline
             {
                 let _ = crate::append_log(
                     log,
-                    &format!(
-                        "暂停已达总上限 {limit_secs} 秒：中断恢复链，按失败处理（现场保留）"
-                    ),
+                    &crate::i18n::msg_tpl("re_pause_limit_reached", &[&limit_secs.to_string()]),
                 );
-                return Err(crate::err("暂停等待超时，恢复已中断"));
+                return Err(crate::err(crate::i18n::msg("re_pause_timeout_err")));
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        let _ = crate::append_log(log, "恢复已继续（用户请求）");
+        let _ = crate::append_log(log, crate::i18n::msg("re_resumed"));
         Ok(())
     }
 
@@ -766,7 +764,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
                 if online {
                     "发布副档/完成在线操作"
                 } else {
-                    "清理re启动项/配置"
+                    "清理恢复启动项/配置"
                 },
             ),
         ];
@@ -1075,12 +1073,12 @@ unsafe fn open_cmd_prompt(shared: &ProgressShared) {
     if crate::windows_command::spawn_detached_interactive("cmd.exe") {
         let _ = crate::append_log(
             &*shared.log_path.lock().unwrap(),
-            "已打开命令提示符（用户请求，恢复流程不受影响）",
+            crate::i18n::msg("re_cmd_opened"),
         );
     } else {
         let _ = crate::append_log(
             &*shared.log_path.lock().unwrap(),
-            "打开命令提示符失败：CreateProcessW 返回 0",
+            crate::i18n::msg("re_cmd_open_failed"),
         );
     }
 }
@@ -1277,7 +1275,7 @@ unsafe fn open_boot_menu_editor(hwnd: Hwnd, shared: &ProgressShared) {
     if editor.is_null() {
         let _ = crate::append_log(
             &shared.log_path.lock().unwrap(),
-            "引导修复编辑窗口创建失败",
+            crate::i18n::msg("re_boot_editor_failed"),
         );
     }
 }
@@ -1304,7 +1302,7 @@ unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: boo
     let Some(action) = action else {
         let _ = crate::append_log(
             &log_path,
-            "BCD 回退尚不可用：恢复流程尚未装载任务目录/ESP 身份",
+            crate::i18n::msg("re_rollback_unavailable"),
         );
         unsafe {
             show_rollback_result(
@@ -1320,11 +1318,15 @@ unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: boo
     if BCD_ROLLBACK_RUNNING.swap(true, Ordering::SeqCst) {
         let _ = crate::append_log(
             &log_path,
-            "BCD 回退：上一次回退仍在执行，本次请求已忽略",
+            crate::i18n::msg("re_rollback_busy"),
         );
         return;
     }
-    let actor: &'static str = if via_key { "用户按 B 键" } else { "用户点击" };
+    let actor: &'static str = if via_key {
+        crate::i18n::msg("actor_key_b")
+    } else {
+        crate::i18n::msg("actor_click")
+    };
     // `*mut c_void` 不是 Send，按 usize 过线程再还原；窗口句柄在本进程内有效。
     let target = hwnd as usize;
     std::thread::spawn(move || {
@@ -1335,14 +1337,14 @@ unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: boo
                 BCD_ROLLED_BACK.store(true, Ordering::SeqCst);
                 let _ = crate::append_log(
                     &log_path,
-                    &format!("{actor} BCD 回退：已按字节恢复准备期 BCD 快照"),
+                    &crate::i18n::msg_tpl("re_rollback_done", &[actor]),
                 );
                 None
             }
             Err(message) => {
                 let _ = crate::append_log(
                     &log_path,
-                    &format!("{actor} BCD 回退失败：{message}"),
+                    &crate::i18n::msg_tpl("re_rollback_failed", &[actor, &message]),
                 );
                 Some(message)
             }
@@ -1654,7 +1656,7 @@ unsafe extern "system" fn window_proc(
                         let log_path = (*shared_ptr).log_path.lock().unwrap().clone();
                         let _ = crate::append_log(
                             &log_path,
-                            "用户关闭进度窗口（当时处于暂停）：恢复链将中断并按失败处理，现场保留",
+                            crate::i18n::msg("re_window_closed_paused"),
                         );
                     }
                 }
@@ -1782,9 +1784,9 @@ pub fn close_and_wait(shared: &ProgressShared) {
     if !log.as_os_str().is_empty() {
         let _ = crate::append_log(
             &log,
-            &format!(
-                "进度窗口线程 {} 秒内没有退出，`close_and_wait` 放弃等待并继续恢复链（窗口可能卡在日志刷新或 BCD 回退）",
-                JOIN_TIMEOUT.as_secs()
+            &crate::i18n::msg_tpl(
+                "re_window_close_timeout",
+                &[&JOIN_TIMEOUT.as_secs().to_string()],
             ),
         );
     }

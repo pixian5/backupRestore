@@ -2318,7 +2318,7 @@ fn complete_recovery_cleanup(
     if task.status != Stage::RecoveryComplete {
         return Err(err("任务尚未完成恢复，拒绝清理"));
     }
-    append_log(log, "STEP 4/4 清理恢复启动项/配置")?;
+    append_log(log, crate::i18n::msg("step_cleanup"))?;
     let env = store
         .task_dir(&task.task_id)?
         .join("payload/RecoveryTask.env");
@@ -3340,7 +3340,7 @@ fn recover_windows(
         }
         Operation::Backup => {
             use backuprestore_core::{BackupMetadata, PROGRAM_VERSION, write_json_atomic};
-            append_log(log, "STEP 1/4 挂载卷、校验")?;
+            append_log(log, crate::i18n::msg("step_mount"))?;
             if let Some(p) = progress {
                 p.reset_start_time();
             }
@@ -3441,7 +3441,7 @@ fn recover_windows(
             // original remains recoverable until the candidate has passed
             // DISM inspection and is renamed into place.
             let _ = fs::remove_file(&partial);
-            append_log(log, "STEP 2/4 捕获镜像（时间长）")?;
+            append_log(log, crate::i18n::msg("step_capture"))?;
             let new_index = if existing {
                 let candidate = PathBuf::from(format!(
                     "{}.{}.append-candidate.wim",
@@ -3516,7 +3516,7 @@ fn recover_windows(
                     image_size,
                 ),
             )?;
-            append_log(log, "STEP 3/4 校验")?;
+            append_log(log, crate::i18n::msg("step_verify"))?;
             let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
             let source_volume_serial = source.volume_serial.clone();
             let source_partition_size = source.partition_size;
@@ -3628,7 +3628,7 @@ fn recover_windows(
                 }
             }
             if finalize_success {
-                append_log(log, "STEP 4/4 清理re启动项/配置")?;
+                append_log(log, crate::i18n::msg("step_cleanup"))?;
                 store.write_transition(task, Stage::Success)?;
             }
         }
@@ -3727,7 +3727,7 @@ fn recover_windows(
                 append_log(log, "目标卷不是 Windows 系统卷，跳过引导修复候选探测")?;
                 None
             };
-            append_log(log, "STEP 1/4 挂载卷、校验")?;
+            append_log(log, crate::i18n::msg("step_mount"))?;
             if let Some(p) = progress {
                 p.reset_start_time();
             }
@@ -3799,7 +3799,7 @@ fn recover_windows(
                     &windows_prepare::volume_identity(target_letter)?,
                     false,
                 )?;
-                append_log(log, "STEP 2/4 还原镜像（时间长）")?;
+                append_log(log, crate::i18n::msg("step_apply"))?;
                 let entering_image_applied = task.status == Stage::TargetErased;
                 // 应用镜像前是最后一个「还没动目标」的安全暂停点：用户可在这里
                 // 停下确认镜像/目标，再决定是否继续。
@@ -3883,7 +3883,7 @@ fn recover_windows(
                     .join("System32\\config\\SYSTEM")
                     .is_file()
             {
-                append_log(log, "STEP 3/4 校验")?;
+                append_log(log, crate::i18n::msg("step_verify"))?;
                 let efi = find_efi_root(efi_root)?;
                 let entering_boot_repaired = task.status == Stage::ImageApplied;
                 // 修引导前暂停点：BCD 尚未被改动，用户在此停下可安全放弃。
@@ -4031,12 +4031,12 @@ fn recover_windows(
                     .freeze()?;
                 crate::boot_menu::apply(&boot_menu_plan, &efi, log, resume_entry.as_ref())?;
                 if finalize_success {
-                    append_log(log, "STEP 4/4 清理re启动项/配置")?;
+                    append_log(log, crate::i18n::msg("step_cleanup"))?;
                     store.write_transition(task, Stage::Success)?;
                 }
             } else if matches!(task.status, Stage::ImageApplied | Stage::BootRepaired) {
                 // 数据卷还原：目标卷无 SYSTEM hive（非 Windows 系统），跳过 BCDBoot 启动修复。
-                append_log(log, "STEP 3/4 校验")?;
+                append_log(log, crate::i18n::msg("step_verify"))?;
                 append_log(
                     log,
                     "data-volume restore: target has no SYSTEM hive; skipping BCDBoot",
@@ -4045,7 +4045,7 @@ fn recover_windows(
                     store.write_transition(task, Stage::BootRepaired)?;
                 }
                 if finalize_success {
-                    append_log(log, "STEP 4/4 清理re启动项/配置")?;
+                    append_log(log, crate::i18n::msg("step_cleanup"))?;
                     store.write_transition(task, Stage::Success)?;
                 }
             } else {

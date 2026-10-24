@@ -2442,7 +2442,7 @@ Hotfix(s):                 1 Hotfix(s) Installed.
             "STEP 1/4 挂载卷、校验",
             "STEP 2/4 还原镜像（时间长）",
             "STEP 3/4 校验",
-            "STEP 4/4 清理re启动项/配置",
+            "STEP 4/4 清理恢复启动项/配置",
         ];
         for line in lines {
             let (stage, _, _) = classify_log_line(line);
