@@ -1681,6 +1681,29 @@ fn relative_to_volume_root(p: &Path) -> Option<String> {
 /// `self_exe_dir` 是程序自身 exe 所在目录（调用方传
 /// `current_exe().parent()`）：与 `source_root` 同卷时，把该目录下的
 /// 部署件（[`SELF_DEPLOY_FILES`]）逐个排除。跨卷时无对应路径，不加项。
+/// 该路径是不是**重解析点**（符号链接 / 目录联接点），且不跟随它。
+///
+/// Windows 侧必须看 `FILE_ATTRIBUTE_REPARSE_POINT`：Rust 的
+/// `FileType::is_symlink()` 对目录联接点（IO_REPARSE_TAG_MOUNT_POINT）返回 false，
+/// 而 Windows 卷根上的 `Documents and Settings` 正是联接点，用 `is_symlink()`
+/// 会漏判。非 Windows 侧没有联接点概念，用符号链接近似即可（只为单测可跑）。
+pub fn is_reparse_point(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        fs::symlink_metadata(path)
+            .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::symlink_metadata(path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+}
+
 pub fn build_capture_exclusions(source_root: &Path, self_exe_dir: Option<&Path>) -> Result<String, TaskError> {
     // 固定的根级可排除项（全部为 DISM 规范内的根路径锚定写法，无通配符）。
     // 注意：hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information
@@ -1709,11 +1732,32 @@ pub fn build_capture_exclusions(source_root: &Path, self_exe_dir: Option<&Path>)
         LEGACY_PACKAGE_DIR.to_string(),
     ];
 
+    // 根级自引用联接点（2026-10-26）。
+    //
+    // Windows 卷根上的 `Documents and Settings` 是 XP 兼容名，实际是一个指向
+    // **本卷 `Users` 目录**的联接点。不排除它，捕获就会把它当作一棵真实子树再遍历
+    // 一遍 `Users`——文件数凭空翻倍，预扫时间同比例拉长（而 DISM 的预扫发生在写第一
+    // 个字节之前，用户看到的就是「一直没动静」）。
+    //
+    // ★ 只在**确认它是重解析点**时才排除。数据卷上万一真有一个叫这个名字的普通
+    //   目录，无脑排除会静默丢掉用户数据——排除表的错误是"少备份"，不报错。
+    for junction in ["Documents and Settings"] {
+        if is_reparse_point(&source_root.join(junction)) {
+            lines.push(format!("\\{junction}"));
+        }
+    }
+
     // 枚举真实用户配置文件，补上按用户字面路径的排除项。
     let users_root = source_root.join("Users");
     if let Ok(profiles) = fs::read_dir(&users_root) {
         let mut user_entries: Vec<String> = Vec::new();
         for profile in profiles.flatten() {
+            // ★ 必须是目录：`C:\Users` 下还有一个 `desktop.ini` 文件，早期版本把它
+            // 当成了用户名，于是排除表里出现了 `\Users\desktop.ini\AppData\Local\Temp`
+            // 这种畸形条目（2026-10-26 在实机排除表里抓到）。
+            if !profile.path().is_dir() {
+                continue;
+            }
             let Some(name) = profile.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
@@ -2821,6 +2865,63 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// 2026-10-26 实机发现的两处排除表缺陷：
+    ///
+    /// ① 卷根 `Documents and Settings` 是指向本卷 `Users` 的自引用联接点，漏排就等于
+    ///    把 `Users` 整棵树再遍历一遍，预扫时间翻倍（DISM 预扫发生在写第一个字节之前，
+    ///    用户看到的是「一直没动静」）。
+    /// ② `C:\Users` 下还存在 `desktop.ini` 这个**文件**，早期版本把它当用户名，生成
+    ///    `\Users\desktop.ini\AppData\Local\Temp` 这种畸形条目。
+    #[test]
+    fn capture_exclusions_cover_root_junction_and_skip_non_directory_profiles() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-excl-junction-{suffix}"));
+        let users = root.join("Users");
+        fs::create_dir_all(users.join("alice").join("AppData").join("Local")).unwrap();
+        // 非目录条目：不能被当成用户名。
+        fs::write(users.join("desktop.ini"), "[.ShellClassInfo]").unwrap();
+
+        // 没有联接点时，绝不能排除同名真实目录——排除表的错误是「少备份」，不报错。
+        fs::create_dir_all(root.join("Documents and Settings")).unwrap();
+        let ini = build_capture_exclusions(&root, None).unwrap();
+        assert!(
+            !ini.contains("\\Documents and Settings"),
+            "普通同名目录不能被排除，否则静默丢用户数据: {ini}"
+        );
+        assert!(
+            !ini.contains("\\Users\\desktop.ini\\"),
+            "desktop.ini 是文件、不是用户: {ini}"
+        );
+        assert!(ini.contains("\\Users\\alice\\AppData\\Local\\Temp"));
+
+        // 换成真正指向 Users 的联接点后，必须被排除。
+        fs::remove_dir_all(root.join("Documents and Settings")).unwrap();
+        let linked = link_dir(&users, &root.join("Documents and Settings"));
+        if linked {
+            let ini = build_capture_exclusions(&root, None).unwrap();
+            assert!(
+                ini.contains("\\Documents and Settings"),
+                "自引用联接点必须排除: {ini}"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 建目录链接（Windows 上退化为目录联接点）。不支持时返回 false，测试跳过。
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link).is_ok()
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
     }
 
     #[test]
