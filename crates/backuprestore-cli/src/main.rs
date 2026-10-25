@@ -68,6 +68,9 @@ pub(crate) use error_code::{ErrCode, errc, errc_with};
 /// 纯逻辑 + 本机单测，故与 `pe_safety` 同门控。
 #[cfg(any(windows, test))]
 mod cli_json;
+/// 捕获心跳：把「DISM 在扫盘还是卡死」变成日志里可读的状态。
+/// **跨平台**（纯 std 线程 + 文件读），本机单测即可覆盖三分支（心跳/停滞/总账）。
+mod capture_heartbeat;
 #[cfg(any(windows, test))]
 mod dism_timeout;
 /// 恢复环境「连续失败 N 次后如何处理」策略：判据、文案与设置的单一来源。
@@ -3756,7 +3759,13 @@ fn recover_windows(
                     "/CheckIntegrity",
                     &exclude_arg,
                 ];
+                // 捕获心跳：恢复环境里这条链同样要「先全卷预扫再写」，期间镜像恒为
+                // WIM 头、DISM 日志静默，进度窗口的百分比会长时间不动。心跳行让
+                // 「还在扫盘」与「真的卡死」在日志里可区分（只观测，不干预）。
+                let heartbeat =
+                    crate::capture_heartbeat::Heartbeat::start(candidate.clone(), log.to_path_buf());
                 let append_result = run_logged("dism.exe", &append_args, log);
+                drop(heartbeat);
                 if let Err(error) = append_result {
                     let _ = fs::remove_file(&candidate);
                     return Err(error);
@@ -3776,7 +3785,11 @@ fn recover_windows(
                 // 压缩率：仅首次创建 WIM 时生效；追加备份沿用 WIM 已有压缩设置。
                 let compress_level =
                     canonical_compression(task.compress.as_deref().unwrap_or("fast"))?;
-                run_logged(
+                let heartbeat = crate::capture_heartbeat::Heartbeat::start(
+                    partial.clone(),
+                    log.to_path_buf(),
+                );
+                let capture_result = run_logged(
                     "dism.exe",
                     &[
                         "/English",
@@ -3789,7 +3802,9 @@ fn recover_windows(
                         &exclude_arg,
                     ],
                     log,
-                )?;
+                );
+                drop(heartbeat);
+                capture_result?;
                 let indexes = wim_indexes(&partial, log)?;
                 if indexes != [1] {
                     return Err(err("first backup capture did not produce WIM index 1"));

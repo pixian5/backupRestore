@@ -228,6 +228,60 @@ pub(crate) fn restore_selfcheck_line(
     )
 }
 
+/// WIM 头部长度上限：DISM 一创建镜像文件就写下 WIM 头（实测恰好 208 字节），
+/// 此后在**全卷预扫**阶段一个字节都不写。用它区分「预扫中」与「正在写入」。
+///
+/// ★ 这个阈值来自 2026-10-26 实测，不是猜的：捕获 `F:\Program Files`
+/// （8.7 GB / 32,732 文件）时镜像从 07:33:21 到 07:35:11 恒为 208 字节共 100 秒，
+/// 之后 50 秒内写到 3.4 GB。所以「零字节静默」在开头是**正常**的，
+/// 不能据此判定卡死——这正是旧版界面上「看起来死了」的真实原因。
+pub(crate) const CAPTURE_HEADER_BYTES_MAX: u64 = 1024;
+
+/// 捕获阶段判据：`pre_scan` = 只有 WIM 头、还没开始写数据；`writing` = 已在写。
+pub(crate) fn capture_phase(image_bytes: u64) -> &'static str {
+    if image_bytes <= CAPTURE_HEADER_BYTES_MAX {
+        "pre_scan"
+    } else {
+        "writing"
+    }
+}
+
+/// 捕获心跳行：把「已跑多久 + 镜像已经多大 + 处于哪个阶段」压成一行固定 ASCII，
+/// 每 `interval` 秒写一次。
+///
+/// ★ 存在的理由：DISM 捕获整卷时**先全卷预扫、后写数据**，预扫期间镜像大小恒等于
+/// WIM 头（208 字节）、`dism.log` 也一行不写、stdout 只有横幅——三层全是静默。
+/// 没有心跳，用户与验收脚本都无法区分「在扫盘」与「卡死」，2026-10-26 那次
+/// 58 分钟零产出的观测就是被迫用外部脚本每 30 秒采样才看清的。
+/// ★ 与 `RESTORE_SELFCHECK` 同理：走固定前缀、不走 i18n，判据不能随界面语言漂移。
+pub(crate) fn capture_heartbeat_line(elapsed_secs: u64, image_bytes: u64) -> String {
+    format!(
+        "CAPTURE_HEARTBEAT elapsed_secs={elapsed_secs} image_bytes={image_bytes} phase={}",
+        capture_phase(image_bytes)
+    )
+}
+
+/// 捕获停滞行：镜像在 `silent_secs` 秒内没有任何增长时追加一行。
+///
+/// ★ 只**记录**、绝不影响捕获：预扫时长随文件数线性增长（实测 8.7 GB 约 100 秒，
+/// 构建卷那种海量小文件可以到几分钟），在这里杀进程会把正常备份也杀掉。
+/// 它取代的是「界面上什么都没发生」这种无信息状态，而不是取代超时策略——
+/// 超时仍由 `dism_timeout` 那个显式配置的逃生阀负责。
+pub(crate) fn capture_stall_line(elapsed_secs: u64, image_bytes: u64, silent_secs: u64) -> String {
+    format!(
+        "CAPTURE_STALL elapsed_secs={elapsed_secs} image_bytes={image_bytes} silent_secs={silent_secs} phase={} note=dism_scans_whole_volume_before_first_write",
+        capture_phase(image_bytes)
+    )
+}
+
+/// 捕获收尾行：心跳线程停下时补一行总账，供验收脚本直接读。
+pub(crate) fn capture_summary_line(elapsed_secs: u64, image_bytes: u64, samples: u64) -> String {
+    format!(
+        "CAPTURE_SUMMARY elapsed_secs={elapsed_secs} image_bytes={image_bytes} samples={samples} phase={}",
+        capture_phase(image_bytes)
+    )
+}
+
 pub(crate) fn format_bytes(size: Option<u64>) -> String {
     let Some(size) = size else {
         return "?".to_string();
@@ -1764,6 +1818,39 @@ Possible values for VolumeName along with current mount points are:
         let overlay = restore_selfcheck_line('D', "56E51A05", "56E51A05", false);
         assert!(overlay.contains("serial_before=56E51A05 serial_after=56E51A05"));
         assert!(overlay.contains("ntoskrnl=false"));
+    }
+
+    #[test]
+    fn capture_phase_splits_header_only_from_real_writing() {
+        // 208 字节是 DISM 实测写下的 WIM 头长度；「只有头」必须判成预扫。
+        assert_eq!(capture_phase(0), "pre_scan");
+        assert_eq!(capture_phase(208), "pre_scan");
+        assert_eq!(capture_phase(CAPTURE_HEADER_BYTES_MAX), "pre_scan");
+        assert_eq!(capture_phase(CAPTURE_HEADER_BYTES_MAX + 1), "writing");
+        assert_eq!(capture_phase(143_216_153), "writing");
+    }
+
+    #[test]
+    fn capture_heartbeat_lines_are_ascii_and_language_independent() {
+        let beat = capture_heartbeat_line(100, 208);
+        assert_eq!(
+            beat,
+            "CAPTURE_HEARTBEAT elapsed_secs=100 image_bytes=208 phase=pre_scan"
+        );
+        assert!(beat.is_ascii(), "heartbeat must stay ASCII: {beat}");
+        assert!(beat.starts_with("CAPTURE_HEARTBEAT elapsed_secs="));
+
+        let stall = capture_stall_line(600, 208, 420);
+        assert!(stall.is_ascii(), "stall must stay ASCII: {stall}");
+        assert!(stall.contains("silent_secs=420"));
+        assert!(stall.contains("phase=pre_scan"));
+        // 停滞行只描述现象，不带任何「已失败」的结论：预扫慢不等于失败。
+        assert!(!stall.contains("failed"));
+
+        let summary = capture_summary_line(1234, 3_414_782_392, 41);
+        assert!(summary.is_ascii(), "summary must stay ASCII: {summary}");
+        assert!(summary.contains("image_bytes=3414782392"));
+        assert!(summary.contains("phase=writing"));
     }
 
     #[test]

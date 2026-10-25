@@ -1457,7 +1457,14 @@ pub(crate) fn capture(
         ));
     }
     log(log_path, crate::i18n::msg("ol_step_capture"))?;
+    // 捕获心跳（2026-10-26）：DISM 捕获整卷先全卷预扫再写数据，预扫期间镜像恒等于
+    // WIM 头（实测 208 字节）、dism.log 一行不写、stdout 只有横幅——三层全静默，
+    // 界面上看就是「死了」。心跳每 30 秒写一行 CAPTURE_HEARTBEAT 记录
+    // elapsed/bytes/phase，10 分钟无增长时改写 CAPTURE_STALL，Drop 时补
+    // CAPTURE_SUMMARY 总账。它只观测、绝不杀进程也不改超时。
+    let heartbeat = crate::capture_heartbeat::Heartbeat::start(candidate.clone(), log_path.to_path_buf());
     dism(&args, log_path)?;
+    drop(heartbeat);
     let after = indexes(&candidate, log_path)?;
     let new_index = im::verify_appended_index(&before, &after)?;
     let duration = (Utc::now() - started).num_seconds().max(1) as u64;
