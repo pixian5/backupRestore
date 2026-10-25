@@ -1118,6 +1118,17 @@ fn prepare_task(
     task.compress = options.compress.clone();
     match options.operation {
         Operation::Backup => {
+            // 备份前镜像卷空间预检（2026-10-26）：在「决定重启去做」之前就挡掉
+            // 明显装不下的目标，省得进恢复环境写了几十 GiB 才失败。★ 硬闸比例
+            // 故意很低（源已用量的 5%），宁可放过也不误拒——WIM 压缩比随内容
+            // 变化极大，按固定比例预估会拦掉真实可行的备份。
+            if let Some(path) = image_path.as_ref() {
+                ensure_backup_image_capacity(
+                    options.source_drive,
+                    path,
+                    options.compress.as_deref().unwrap_or("fast"),
+                )?;
+            }
             task.destination = Some(DestinationSpec {
                 volume: image_volume.clone(),
                 absolute_path: image_path.clone(),
@@ -3030,6 +3041,65 @@ fn ensure_workspace_capacity(
         return Err(err(&format!(
             "program directory volume has insufficient free space for WinRE staging: {available} < {required}"
         )));
+    }
+    Ok(())
+}
+
+/// 备份前镜像卷空间预检：镜像所在卷可用空间低于硬闸 → 带码拒绝。
+///
+/// 与在线通道（`online_operation::capture`）用的是同一对 core 纯函数，保证两条
+/// 链阈值一致。读不到卷空间（卷不存在/权限）时**静默放过**：预检只是提前止损，
+/// 不是权威判据，真正的权威是捕获过程本身与它的回滚。
+fn ensure_backup_image_capacity(
+    source_letter: char,
+    image_path: &str,
+    compress: &str,
+) -> Result<(), TaskError> {
+    let image_letter = match Path::new(image_path)
+        .parent()
+        .and_then(|parent| parent.to_string_lossy().chars().next())
+        .filter(|c| c.is_ascii_uppercase())
+    {
+        Some(letter) => letter,
+        // 非盘符路径（UNC 等）：无法判定卷，放过。
+        None => return Ok(()),
+    };
+    let (source_total, source_free, available) = match (
+        disk_free_space(source_letter),
+        volume_free_bytes(image_letter),
+    ) {
+        (Ok((total, free)), Ok(available)) => (total, free, available),
+        _ => return Ok(()),
+    };
+    let used = source_total.saturating_sub(source_free);
+    let floor = backuprestore_core::backup_space_floor(used);
+    if available < floor {
+        return Err(crate::errc_with(
+            ErrCode::BackupSpaceInsufficient,
+            &[
+                &crate::text_parsing::format_bytes(Some(available)),
+                &crate::text_parsing::format_bytes(Some(floor)),
+                &crate::text_parsing::format_bytes(Some(used)),
+            ],
+        ));
+    }
+    // 低于保守估计只做记录不做拦截（估计值本身对含大量媒体的数据卷可能偏低）。
+    let estimated = backuprestore_core::estimate_backup_bytes(used, compress);
+    if available < estimated {
+        let dir = crate::log_root::logs_dir();
+        {
+            let _ = append_log(
+                &dir.join("prepare.log"),
+                &crate::i18n::msg_tpl(
+                    "ol_backup_space_warn",
+                    &[
+                        &crate::text_parsing::format_bytes(Some(available)),
+                        &crate::text_parsing::format_bytes(Some(estimated)),
+                        &crate::text_parsing::format_bytes(Some(used)),
+                    ],
+                ),
+            );
+        }
     }
     Ok(())
 }

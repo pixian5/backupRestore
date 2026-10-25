@@ -133,6 +133,19 @@ const MESSAGES: &[(&str, &str, &str)] = &[
     // ★ 这批用的是模块自己的 `log()` 而不是 `append_log`，2026-10-25 第一遍统计
     //   漏了它们（按 `append_log(` 数的），实测日志里还剩中文才补上。
     (
+        "ol_backup_space_warn",
+        "镜像卷可用空间 {0} 低于新索引的保守估计 {1}（源卷已用 {2}）。不阻止本次备份，\
+但若空间耗尽，捕获将失败并回滚（原镜像不受影响）。",
+        "Free space on the image volume ({0}) is below the conservative estimate for the new index \
+({1}); the source volume uses {2}. This run is not blocked, but if space runs out the capture \
+fails and rolls back (the original image is untouched).",
+    ),
+    (
+        "ol_backup_space_unknown",
+        "无法读取镜像卷 {0}: 的可用空间（{1}），跳过备份前空间预检。",
+        "Cannot read the free space of image volume {0}: ({1}); skipping the pre-backup space check.",
+    ),
+    (
         "ol_boot_written",
         "引导与启动菜单已写入；系统实际可启动性需另行启动验收",
         "Boot entries and the boot menu are written; actual bootability still needs a separate \

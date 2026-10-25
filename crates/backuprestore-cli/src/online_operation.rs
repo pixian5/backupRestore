@@ -388,6 +388,9 @@ fn execute_inner(
         ));
     }
     let identity = crate::windows_prepare::volume_identity(affected)?;
+    // 终态自检要的「还原前序列号」：`identity` 会在后面的分支里被 move 掉，
+    // 先克隆出来（序列号是自检的唯一铁证之一，不能等到用的时候再取）。
+    let serial_before = identity.volume_serial.clone();
     if !identity.is_complete() {
         return Err(crate::err("online volume identity is incomplete"));
     }
@@ -508,6 +511,20 @@ fn execute_inner(
             {
                 return Err(crate::err("restore target identity changed during apply"));
             }
+            // 终态自检（2026-10-26）：把「目标卷序列号前后 + Windows 内核文件」压成
+            // 一行 ASCII 结论，替代人工「放哨兵文件 + 记序列号」的验收动作。
+            // 数据卷还原时 ntoskrnl 本就不存在，字段如实记 false 即可（判据是序列号）。
+            let ntoskrnl =
+                root.join("Windows").join("System32").join("ntoskrnl.exe").is_file();
+            log(
+                log_path,
+                &crate::text_parsing::restore_selfcheck_line(
+                    affected,
+                    &serial_before,
+                    &after.volume_serial,
+                    ntoskrnl,
+                ),
+            )?;
             // 数据卷并不包含 Windows 内核，不能用 ntoskrnl.exe 存在与否判断数据还原成功。
             log(
                 log_path,
@@ -815,6 +832,16 @@ fn restore_to_windows_volume(
     // 注册表与服务里的绝对路径全部指向别的卷，服务初始化失败（LogonUI/dwm 崩溃循环）。
     // 离线路径在 bcdboot 前做同一件事（main.rs 的 CreateSecondary 分支），此处对齐。
     crate::secondary_registry::repair(&target_root, target_letter, &after, log_path)?;
+    // 终态自检（2026-10-26）：同一行 ASCII 结论，序列号前后 + 内核文件。
+    log(
+        log_path,
+        &crate::text_parsing::restore_selfcheck_line(
+            target_letter,
+            &target.volume_serial,
+            &after.volume_serial,
+            target_root.join("Windows").join("System32").join("ntoskrnl.exe").is_file(),
+        ),
+    )?;
 
     // 用户要求：还原进行中就要能在真实启动菜单里看到这一项（占位），
     // 最后 STEP 4 再按用户在弹窗里的选择补成正式项。
@@ -1266,6 +1293,57 @@ pub(crate) fn capture(
     let parent = destination
         .parent()
         .ok_or_else(|| crate::err("missing image parent"))?;
+    // 备份前空间预检（2026-10-26）：镜像所在卷可用空间低于硬闸就带码拒绝，避免
+    // 写到几十 GiB 之后才失败。★ 硬闸比例故意定得很低（源已用量的 5%）——WIM
+    // 压缩比随内容变化极大（系统盘实测 13%、装满媒体的数据卷接近 100%），按固定
+    // 压缩比预估会误拒真实可行的备份，所以这里只挡明显不可能的情形。读不到空间
+    // 只记录不阻断（预检不是权威判据，捕获本身的失败与回滚才是）。
+    if let Some(letter) = parent
+        .to_string_lossy()
+        .chars()
+        .next()
+        .filter(|c| c.is_ascii_uppercase())
+    {
+        match crate::windows_prepare::disk_free_space(letter) {
+            Ok((_, free)) => {
+                let floor = backuprestore_core::backup_space_floor(used);
+                if free < floor {
+                    return Err(crate::errc_with(
+                        ErrCode::BackupSpaceInsufficient,
+                        &[
+                            &crate::text_parsing::format_bytes(Some(free)),
+                            &crate::text_parsing::format_bytes(Some(floor)),
+                            &crate::text_parsing::format_bytes(Some(used)),
+                        ],
+                    ));
+                }
+                let estimated =
+                    backuprestore_core::estimate_backup_bytes(used, &params.compress);
+                if free < estimated {
+                    log(
+                        log_path,
+                        &crate::i18n::msg_tpl(
+                            "ol_backup_space_warn",
+                            &[
+                                &crate::text_parsing::format_bytes(Some(free)),
+                                &crate::text_parsing::format_bytes(Some(estimated)),
+                                &crate::text_parsing::format_bytes(Some(used)),
+                            ],
+                        ),
+                    )?;
+                }
+            }
+            Err(error) => {
+                log(
+                    log_path,
+                    &crate::i18n::msg_tpl(
+                        "ol_backup_space_unknown",
+                        &[&letter.to_string(), &error.to_string()],
+                    ),
+                )?;
+            }
+        }
+    }
     let workspace = parent.join(format!(
         ".br-online-{}-{}",
         std::process::id(),

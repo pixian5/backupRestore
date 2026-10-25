@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# 一键图形界面点击验收（2026-10-26）
+#
+# 为什么需要它：图形界面是 Windows 专属代码，mac 上 `cargo test` 对它零证明力；
+# 每次改按钮/入口都靠人肉点一遍，回归成本高且容易漏。这里把 2026-10-26 建的三个
+# 点击脚本串成一条命令：借图形界面**自己的令牌**提权到会话 1（绕开 UIPI），
+# 点按钮 → 读断言文件 → 汇总 PASS/FAIL。
+#
+# 前置条件（缺一不可）：
+#   ① 虚拟机在跑；
+#   ② 图形界面已从 H:\brwork 启动（tools/win-clicker/br-s1.sh start-gui.ps1）。
+#
+# 用法：
+#   tools/smoke/gui-clicks.sh              # 默认只跑无副作用的两项
+#   tools/smoke/gui-clicks.sh probe-run    # 额外真跑一次探测任务（会建任务目录）
+#
+# 判据纪律：只认脚本写出的 ASCII 断言行（LOGS_WINDOW_FOUND / probe_checked=1 …）。
+# 窗口标题是中文，在 cmd 通道里是乱码，**绝不能拿它当判据**。
+set -uo pipefail
+
+VM="Windows 11"
+UNC_BODY='\\Mac\Home\code\backupRestore\tools\win-clicker'
+UNC_LAUNCH='\\Mac\Home\code\backupRestore\tools\run-gui-token.ps1'
+HOOK='H:\brwork\gui-token-body.txt'
+MODE="${1:-default}"
+
+pass=0
+fail=0
+
+gui_alive() {
+    prlctl exec "$VM" cmd /d /c 'tasklist /fi "imagename eq BackupRestore.exe" /fo csv /nh' 2>/dev/null \
+        | grep -q BackupRestore.exe
+}
+
+run_case() {
+    local body="$1" out="$2" label="$3" expect="$4"
+    echo "-- ${label}"
+    prlctl exec "$VM" cmd /d /c "echo ${UNC_BODY}\\${body}>${HOOK}" >/dev/null 2>&1
+    prlctl exec "$VM" cmd /d /c "powershell -NoProfile -ExecutionPolicy Bypass -Command \"iex (Get-Content -Raw -Encoding UTF8 ${UNC_LAUNCH})\"" >/dev/null 2>&1
+    # 子进程没有 stdout，结果只能从文件读；给它 7 秒写完。
+    sleep 7
+    local text
+    text="$(prlctl exec "$VM" cmd /d /c "type ${out}" 2>/dev/null)"
+    if printf '%s' "$text" | grep -qaF "$expect"; then
+        echo "   PASS  [${expect}]"
+        pass=$((pass + 1))
+    else
+        echo "   FAIL  [expected ${expect}]"
+        printf '%s\n' "$text" | sed 's/^/         /'
+        fail=$((fail + 1))
+    fi
+}
+
+if ! gui_alive; then
+    echo "图形界面未运行。先从 H:\\brwork 启动它："
+    echo "  tools/win-clicker/br-s1.sh start-gui.ps1"
+    exit 2
+fi
+
+run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志…」→ 日志清单窗口' LOGS_WINDOW_FOUND
+run_case _t-probe-entry.ps1 'H:\brwork\probe-entry-check.txt'  '第六入口「探测」→ 选中且无关字段隐藏' 'after: probe_checked=1'
+
+if [ "$MODE" = "probe-run" ]; then
+    # 真建一个探测任务（不重启、不写盘），用于验证入口到任务创建这一段没断。
+    run_case _t-probe-run.ps1 'H:\brwork\probe-run-check.txt' '探测任务实跑 → 任务目录 + 非武装引导' PROBE_TASK
+fi
+
+echo ""
+echo "结果：PASS=${pass} FAIL=${fail}"
+[ "$fail" -eq 0 ] || exit 1

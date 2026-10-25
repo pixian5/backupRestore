@@ -983,6 +983,33 @@ pub fn canonical_compression(value: &str) -> Result<&'static str, TaskError> {
         _ => Err(TaskError::coded("BR-CORE-034", "compression must be fast or none; max compression is not supported")),
     }
 }
+/// 备份开始前对「镜像所在卷」可用空间的**硬闸**下限（字节）。
+///
+/// 为什么比例定得这么低：WIM 的压缩比随内容变化极大——实测系统盘 fast 压缩产出
+/// 约为源已用量的 13%（249 GiB 源 → 31.96 GiB 镜像），而装满已压缩媒体的数据卷
+/// 可能接近 100%。任何按固定压缩比预估的硬闸都会误拒真实可行的备份，所以这里
+/// **只挡明显不可能的情形**（源已用量的 5%，且绝对下限 1 GiB）：宁可放过，
+/// 也不误拒。真正的「够不够」交给捕获过程中的失败与回滚来处理。
+pub fn backup_space_floor(source_used_bytes: u64) -> u64 {
+    const MIN_FLOOR: u64 = 1024 * 1024 * 1024; // 1 GiB
+    (source_used_bytes / 20).max(MIN_FLOOR)
+}
+
+/// 新索引大小的保守估计（字节），**只用于日志警告，永不用于拒绝**。
+///
+/// `none` 时 WIM 与源已用量基本 1:1（略高：文件头与目录结构）；`fast` 取 0.7，
+/// 对系统盘偏保守（实际常低于 0.2）、对含大量媒体的数据卷可能偏低——这正是它
+/// 只能当警告、不能当闸门的原因。未识别的压缩值按 `fast` 处理。
+pub fn estimate_backup_bytes(source_used_bytes: u64, compression: &str) -> u64 {
+    let percent = match compression {
+        "none" => 105,
+        _ => 70,
+    };
+    source_used_bytes
+        .saturating_mul(percent)
+        .saturating_div(100)
+}
+
 pub fn validate_task_id(value: &str) -> Result<(), TaskError> {
     canonical_task_id(value).map(|_| ())
 }
@@ -1933,6 +1960,35 @@ mod tests {
         task.destination.as_mut().unwrap().volume.partition_guid = "source".into();
         assert!(task.validate().is_err());
     }
+    #[test]
+    fn backup_space_floor_is_a_last_resort_gate_not_a_prediction() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // 空源卷也至少要求 1 GiB——镜像容器本身有开销。
+        assert_eq!(backup_space_floor(0), GIB);
+        // 小源卷（10 GiB）按比例算只有 0.5 GiB，被绝对下限抬到 1 GiB。
+        assert_eq!(backup_space_floor(10 * GIB), GIB);
+        // 大源卷按比例：249 GiB 系统盘 → 硬闸 12.45 GiB，低于它实测的 31.96 GiB
+        // 镜像，也就是**永远不会误拒**那次真实备份。
+        assert_eq!(backup_space_floor(249 * GIB), 249 * GIB / 20);
+        assert!(backup_space_floor(249 * GIB) < 32 * GIB);
+        // 单调不减。
+        assert!(backup_space_floor(100 * GIB) <= backup_space_floor(200 * GIB));
+    }
+
+    #[test]
+    fn estimate_backup_bytes_is_conservative_and_only_informative() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let used = 100 * GIB;
+        assert_eq!(estimate_backup_bytes(used, "fast"), 70 * GIB);
+        assert_eq!(estimate_backup_bytes(used, "none"), 105 * GIB);
+        // 未识别值按 fast，绝不 panic。
+        assert_eq!(estimate_backup_bytes(used, "max"), 70 * GIB);
+        assert_eq!(estimate_backup_bytes(used, ""), 70 * GIB);
+        // 估计值恒大于硬闸：警告先于硬闸触发（硬闸是极端兜底，不是常规阈值）。
+        assert!(estimate_backup_bytes(used, "fast") > backup_space_floor(used));
+        assert!(estimate_backup_bytes(0, "none") == 0);
+    }
+
     #[test]
     fn compression_supports_fast_and_none_but_rejects_max() {
         assert_eq!(canonical_compression("fast").unwrap(), "fast");

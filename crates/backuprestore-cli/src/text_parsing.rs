@@ -209,6 +209,25 @@ pub(crate) fn parse_wim_images(output: &str) -> Result<Vec<WimImageInfo>, String
     Ok(images)
 }
 
+/// 还原终态自检行：把「目标卷序列号前后 + Windows 内核文件是否存在」压成一行
+/// 固定 ASCII 前缀的结论，写进任务日志。
+///
+/// ★ 故意不走 i18n：它是**判据数据行**（与 `STEP n/m`、`stage=success` 同类），
+/// 交给语言层后判据会随界面语言漂移——2026-10-25 英文模式下终态识别失效正是这么
+/// 来的（那时是拿中文原文当判据）。判据只认结构化前缀与字段值，永不翻译。
+/// ★ 它取代的是人工「放哨兵文件 + 记序列号」这套验收动作：`serial_before` 与
+/// `serial_after` 不同即证明目标卷被重写过，与哨兵消失等价。
+pub(crate) fn restore_selfcheck_line(
+    letter: char,
+    before: &str,
+    after: &str,
+    ntoskrnl: bool,
+) -> String {
+    format!(
+        "RESTORE_SELFCHECK target={letter} serial_before={before} serial_after={after} ntoskrnl={ntoskrnl}"
+    )
+}
+
 pub(crate) fn format_bytes(size: Option<u64>) -> String {
     let Some(size) = size else {
         return "?".to_string();
@@ -1729,6 +1748,22 @@ Possible values for VolumeName along with current mount points are:
 
         let no_size = parse_wim_images(r#"[{"ImageIndex":1}]"#).unwrap();
         assert_eq!(no_size[0].size_bytes, None);
+    }
+
+    #[test]
+    fn restore_selfcheck_line_is_ascii_and_language_independent() {
+        let line = restore_selfcheck_line('E', "08835EE0", "E880494B", true);
+        assert_eq!(
+            line,
+            "RESTORE_SELFCHECK target=E serial_before=08835EE0 serial_after=E880494B ntoskrnl=true"
+        );
+        // 判据靠前缀与字段定位，整行必须是纯 ASCII（不随界面语言变化）。
+        assert!(line.is_ascii(), "self-check line must stay ASCII: {line}");
+        assert!(line.starts_with("RESTORE_SELFCHECK target="));
+        // 覆盖式还原（序列号不变）也必须照实记，不能因为"没变"就不写。
+        let overlay = restore_selfcheck_line('D', "56E51A05", "56E51A05", false);
+        assert!(overlay.contains("serial_before=56E51A05 serial_after=56E51A05"));
+        assert!(overlay.contains("ntoskrnl=false"));
     }
 
     #[test]

@@ -235,6 +235,7 @@ error_codes! {
     ImageUnmountFailed => ("BR-IMG-005", "镜像挂载探测的卸载失败（dism /Unmount-Wim 退出码 {0}{1}）。镜像可能仍处于挂载状态并被锁定，请手动用 dism /Unmount-Wim /Discard 清理后再试。", "Unmounting the probe mount failed (dism /Unmount-Wim exit code {0}{1}). The image may still be mounted and locked; clean it up manually with dism /Unmount-Wim /Discard and retry."),
     ImageNameReadFailed => ("BR-IMG-006", "读取镜像名失败（dism /Get-WimInfo 退出码 {0}{1}）。请确认镜像文件可访问且未被占用。", "Failed to read the image name (dism /Get-WimInfo exit code {0}{1}). Make sure the image file is accessible and not in use."),
     DeleteIndexReadbackMismatch => ("BR-IMG-007", "删除旧索引后回读的索引集合与期望不一致，已中止；镜像可能停在半删状态，请用 wim-info 核实后再试", "The index set read back after deleting old indexes does not match the expectation; aborted. The image may be left half-deleted - verify with wim-info before retrying"),
+    BackupSpaceInsufficient => ("BR-IMG-008", "镜像所在卷可用空间不足以开始备份：可用 {0}，至少需要 {1}（源卷已用 {2}）。请换一个更大的卷或先清理镜像卷；本次未写入任何镜像数据。", "Not enough free space on the volume holding the image to start a backup: {0} available, at least {1} required (source volume uses {2}). Use a larger volume or free space on the image volume first; no image data was written this run."),
 
     // ── 引导与启动菜单（`online_operation` / `windows_prepare`）───────────
     BootManagerUnknownContinue => ("BR-BOOT-001", "引导管理器状态未知，拒绝继续", "Boot manager state is unknown; refusing to continue"),

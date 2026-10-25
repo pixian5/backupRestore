@@ -82,6 +82,9 @@ mod boot_menu;
 /// 一次都不编译）。这里放纯数据与文件 I/O，让簿记语义有本机单测兜底。
 #[cfg(any(windows, test))]
 mod boot_record;
+// 文案表不依赖任何 Win32 句柄，**无条件编译**——这样 mac 上也能单测它
+// （2026-10-26 拆分的目的之一）。`native_gui` 仍然是 Windows 专属。
+mod gui_text;
 #[cfg(windows)]
 mod native_gui;
 /// 在线任务本轮工作目录的选址：统一日志根（`log_root`）优先、`%TEMP%` 兜底。
@@ -2566,6 +2569,35 @@ fn annotate_chain_failure(error: &str, rolled_back: bool) -> Option<String> {
     }
 }
 
+/// 还原终态自检（2026-10-26）：把「目标卷序列号前后 + Windows 内核文件」写成一行
+/// ASCII 结论。它取代人工「放哨兵文件 + 记序列号」：`serial_before` 与
+/// `serial_after` 不同即证明目标卷被重写过。
+///
+/// ★ 自检是**记录**，失败绝不能把一次成功的还原判成失败，所以调用处一律忽略
+/// 返回值；盘符或卷身份取不到时字段记 `unknown`，宁可少记也不改判定。
+#[cfg(windows)]
+fn append_restore_selfcheck(log: &Path, task: &backuprestore_core::Task) {
+    let Some(target) = task.target.as_ref() else {
+        return;
+    };
+    let Some(letter) = target.volume.drive_letter else {
+        return;
+    };
+    let after = crate::windows_prepare::volume_identity(letter)
+        .map(|identity| identity.volume_serial)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let ntoskrnl = PathBuf::from(format!(r"{letter}:\Windows\System32\ntoskrnl.exe")).is_file();
+    let _ = append_log(
+        log,
+        &crate::text_parsing::restore_selfcheck_line(
+            letter,
+            &target.volume.volume_serial,
+            &after,
+            ntoskrnl,
+        ),
+    );
+}
+
 /// 该阶段证明磁盘、引导、恢复注册均已完成；重复执行不会重做磁盘操作。
 #[cfg(windows)]
 fn complete_recovery_cleanup(
@@ -2589,6 +2621,8 @@ fn complete_recovery_cleanup(
     }
     let result = (|| {
         finalize_boot_entry_after_task(&store.task_dir(&task.task_id)?, log)?;
+        // 终态自检：备份任务没有 target，函数自身会直接返回，不用在这里分叉。
+        append_restore_selfcheck(log, task);
         recovery_fault::checkpoint("success-before", log)?;
         store.write_transition(task, Stage::Success)?;
         recovery_fault::checkpoint("success-after", log)?;
@@ -4303,6 +4337,7 @@ fn recover_windows(
                     .freeze()?;
                 crate::boot_menu::apply(&boot_menu_plan, &efi, log, resume_entry.as_ref())?;
                 if finalize_success {
+                    append_restore_selfcheck(log, task);
                     append_log(log, crate::i18n::msg("step_cleanup"))?;
                     store.write_transition(task, Stage::Success)?;
                 }
@@ -4317,6 +4352,7 @@ fn recover_windows(
                     store.write_transition(task, Stage::BootRepaired)?;
                 }
                 if finalize_success {
+                    append_restore_selfcheck(log, task);
                     append_log(log, crate::i18n::msg("step_cleanup"))?;
                     store.write_transition(task, Stage::Success)?;
                 }
