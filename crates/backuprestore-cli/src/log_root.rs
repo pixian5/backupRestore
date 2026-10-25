@@ -163,6 +163,75 @@ fn writable_dir(dir: &Path) -> bool {
     true
 }
 
+/// 日志目录里最近修改的日志文件（新的在前）。
+///
+/// 【为什么要有它】错误码体系落地后，报障第一步就是「日志给我」，而日志根目录
+/// 下既有常驻的 `gui.log`，也有每个在线任务一层子目录的任务日志
+/// （`<根>/<动作>/<会话>/…`）——让用户自己在资源管理器里翻目录找本轮日志，
+/// 是把排障成本转嫁给用户。图形界面的「查看日志…」入口要列的就是这个清单。
+///
+/// 【为什么是纯函数】排序、截断和「什么算日志文件」都是平台无关逻辑，
+/// 放在这里本机（macOS）就能单测；GUI 只负责把它显示出来。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LogFileEntry {
+    pub path: std::path::PathBuf,
+    pub size: u64,
+    /// 拿不到修改时间时如实为空（不能拿"现在"糊弄排序）。
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// 递归深度上限。日志目录只有「动作/会话」两层，留一倍余量：
+/// 既躲得开用户自己塞进去的深层目录，也防止无限递归。
+const LOG_SCAN_MAX_DEPTH: usize = 4;
+
+/// 列举 `root` 下的日志文件，按修改时间倒序取前 `limit` 个。
+///
+/// 只认 `.log` 后缀（大小写不敏感）：目录里还有 `log-root.txt`、
+/// `status.json` 等说明性文件，混进来会稀释清单。目录不可读返回空清单——
+/// 「没有日志可看」与「看不了」在界面上都表现为空列表加一句提示，
+/// 不额外分叉。
+pub(crate) fn recent_log_files(root: &Path, limit: usize) -> Vec<LogFileEntry> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut found: Vec<LogFileEntry> = Vec::new();
+    collect_log_files(root, 0, &mut found);
+    found.sort_by(|left, right| right.modified.cmp(&left.modified));
+    found.truncate(limit);
+    found
+}
+
+fn collect_log_files(dir: &Path, depth: usize, out: &mut Vec<LogFileEntry>) {
+    if depth >= LOG_SCAN_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let path = entry.path();
+        if metadata.is_dir() {
+            collect_log_files(&path, depth + 1, out);
+            continue;
+        }
+        if !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+        {
+            continue;
+        }
+        out.push(LogFileEntry {
+            path,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        });
+    }
+}
+
 /// 策略 3：程序目录兜底。
 fn exe_logs_dir() -> PathBuf {
     std::env::current_exe()
@@ -242,6 +311,78 @@ mod tests {
             root.join(crate::session_log::MIRROR_DIR_NAME)
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 造一个带指定修改时间的日志文件（显式设时间，不靠 sleep 赌精度）。
+    fn write_log(path: &std::path::Path, modified: std::time::SystemTime) {
+        std::fs::write(path, b"log").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(modified).unwrap();
+    }
+
+    fn stamp(seconds: u64) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+    }
+
+    /// 清单按修改时间倒序：报障要的是「本轮日志」，新的必须在最上面。
+    #[test]
+    fn recent_log_files_returns_the_newest_first() {
+        let root = std::env::temp_dir().join(format!("br-log-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("backup").join("session")).unwrap();
+        write_log(&root.join("gui.log"), stamp(1_000));
+        write_log(&root.join("old.log"), stamp(500));
+        // 任务日志在子目录里——只扫根目录会让本轮日志永远找不到。
+        write_log(&root.join("backup").join("session").join("task.log"), stamp(2_000));
+
+        let files = recent_log_files(&root, 10);
+        let names: Vec<String> = files
+            .iter()
+            .map(|entry| entry.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["task.log", "gui.log", "old.log"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 只认 `.log`：`log-root.txt`、`status.json` 混进来会把清单冲淡。
+    #[test]
+    fn recent_log_files_ignores_non_log_files() {
+        let root = std::env::temp_dir().join(format!("br-log-filter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_log(&root.join("gui.log"), stamp(10));
+        write_log(&root.join("log-root.txt"), stamp(20));
+        write_log(&root.join("status.json"), stamp(30));
+        write_log(&root.join("panic.LOG"), stamp(40));
+
+        let files = recent_log_files(&root, 10);
+        let names: Vec<String> = files
+            .iter()
+            .map(|entry| entry.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        // 后缀大小写不敏感：Windows 上文件名大小写随手写，不能只认小写。
+        assert_eq!(names, vec!["panic.LOG", "gui.log"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 截断与边界：清单长度受 `limit` 约束，`limit=0` 和「目录不存在」
+    /// 都返回空清单而不是 panic（界面据此显示一句提示）。
+    #[test]
+    fn recent_log_files_respects_the_limit_and_missing_roots() {
+        let root = std::env::temp_dir().join(format!("br-log-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        write_log(&root.join("a.log"), stamp(1));
+        write_log(&root.join("b.log"), stamp(2));
+        write_log(&root.join("c.log"), stamp(3));
+        assert_eq!(recent_log_files(&root, 2).len(), 2);
+        assert_eq!(recent_log_files(&root, 0).len(), 0);
+        assert_eq!(
+            recent_log_files(&root, 2)[0].path.file_name().unwrap(),
+            "c.log"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(recent_log_files(&root, 5).is_empty());
     }
 
     /// 兜底分支在任何平台都必然可解析：本机（macOS）没有 `H:\brwork`、
