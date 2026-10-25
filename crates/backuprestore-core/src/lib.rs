@@ -1332,6 +1332,15 @@ impl TaskStore {
                     path.display()
                 ))
             })?;
+            // 【探测任务不参与「未终结」判定】
+            // 探测是一次性的环境自检：`prepare --operation probe` 带 `--no-reboot`，
+            // 准备成功就是它的全部成果——不重启、不写目标卷，**不存在「等着续跑」
+            // 的语义**，因此它永远停在 `Prepared` 而不是终态。若照常算进来，
+            // 每点一次「探测」就留下一个僵尸任务，之后创建任何任务都会先弹
+            // 「是否放弃旧任务」——这恰恰是探测入口最不该有的副作用。
+            if status.operation == Operation::Probe {
+                continue;
+            }
             if !status.stage.is_incomplete() {
                 continue;
             }
@@ -2496,6 +2505,39 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].task_id, pending.task_id);
         assert_eq!(tasks[0].status, Stage::BootRequested);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 探测任务停在 `Prepared` 却不能算「未终结」：它带 `--no-reboot`，准备成功即
+    /// 完成，没有等待续跑的阶段。算进来会让每次探测都留下一个僵尸任务，之后创建
+    /// 任何任务都先弹「是否放弃旧任务」。备份任务同样停在非终态时必须照常列出。
+    #[test]
+    fn incomplete_tasks_ignores_probe_tasks_but_keeps_real_pending_ones() {
+        let root = std::env::temp_dir().join(format!("br-incomplete-probe-{}", Uuid::new_v4()));
+        let store = TaskStore::new(&root);
+        // 探测任务：只有 operation 不同，阶段与下面的备份任务一致（Prepared）。
+        let mut probe = Task::new(
+            Operation::Probe,
+            BootPlan {
+                mode: BootMode::ReturnExisting,
+                previous_bcd_sha256: Some("a".repeat(64)),
+                menu_name: None,
+                boot_sequence_requested: false,
+            },
+        );
+        probe.source = Some(identity("source", 100));
+        probe.workspace_volume = Some(identity("task", 100));
+        store.create(&probe).unwrap();
+
+        let mut pending = backup_task();
+        store.create(&pending).unwrap();
+        store
+            .write_transition(&mut pending, Stage::BootRequested)
+            .unwrap();
+
+        let tasks = store.incomplete_tasks().unwrap();
+        assert_eq!(tasks.len(), 1, "探测任务不应算作未终结：{tasks:?}");
+        assert_eq!(tasks[0].task_id, pending.task_id);
         fs::remove_dir_all(root).unwrap();
     }
 

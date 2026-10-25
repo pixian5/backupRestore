@@ -82,6 +82,8 @@ const VK_R: u32 = 0x52;
 const VK_P: u32 = 0x50;
 const VK_O: u32 = 0x4F;
 const VK_F5: u32 = 0x74;
+/// Ctrl+I：切到「探测」入口（Inspect，与其它入口的 Ctrl+B/R/P 同一套快捷键）。
+const VK_I: u32 = 0x49;
 // 默认按钮样式：无焦点时按回车也会触发该按钮。
 const BS_DEFPUSHBUTTON: u32 = 0x00000001;
 const SW_HIDE: i32 = 0;
@@ -199,6 +201,8 @@ const ID_OPERATION_PE: usize = 1104;
 // tab 总数 4 → 6。B=还原数据到非 C 盘，C=还原系统到非 C 盘。
 const ID_OPERATION_RESTORE_DATA: usize = 1105;
 const ID_OPERATION_RESTORE_OTHER: usize = 1106;
+/// 第六个入口「探测」：需求 §7/§8 要求「先自检再用」，此前只有命令行有它。
+const ID_OPERATION_PROBE: usize = 1107;
 const ID_SOURCE: usize = 1202;
 const ID_IMAGE: usize = 1203;
 const ID_TARGET: usize = 1204;
@@ -668,9 +672,9 @@ struct TokenElevation {
 
 struct Controls {
     language: Hwnd,
-    /// 六个操作入口 tab（备份 / 还原系统到 C 盘 / 还原数据到非 C 盘 / 还原系统到非 C 盘 /
-    /// 新增第二系统 / 安装 PE），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
-    operation_tabs: [Hwnd; 5],
+    /// 七个操作入口 tab（备份 / 还原系统到 C 盘 / 还原数据到非 C 盘 / 还原系统到非 C 盘 /
+    /// 新增第二系统 / 安装 PE / 探测），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
+    operation_tabs: [Hwnd; 6],
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
@@ -765,6 +769,7 @@ const CONTROL_NAMES: &[(usize, &str)] = &[
     (ID_OPERATION_PE, "ID_OPERATION_PE"),
     (ID_OPERATION_RESTORE_DATA, "ID_OPERATION_RESTORE_DATA"),
     (ID_OPERATION_RESTORE_OTHER, "ID_OPERATION_RESTORE_OTHER"),
+    (ID_OPERATION_PROBE, "ID_OPERATION_PROBE"),
     (ID_SOURCE, "ID_SOURCE"),
     (ID_IMAGE, "ID_IMAGE"),
     (ID_TARGET, "ID_TARGET"),
@@ -897,6 +902,7 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.operation_tabs[2], "restore_b"),
         (state.controls.operation_tabs[3], "secondary"),
         (state.controls.operation_tabs[4], "pe"),
+        (state.controls.operation_tabs[5], "probe"),
         (
             GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32),
             "channel_online",
@@ -1490,6 +1496,8 @@ unsafe fn selected_operation(state: &State) -> &'static str {
         2 => "restore-data",
         3 => "create-secondary",
         4 => "install-pe-entry",
+        // 探测：全程无破坏的环境自检（不写盘、不重启），需求 §7/§8 的「先自检再用」。
+        5 => "probe",
         _ => "backup",
     }
 }
@@ -1592,7 +1600,7 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
         .operation_tabs
         .iter()
         .zip([
-            "backup", "restore_a", "restore_b", "secondary", "pe",
+            "backup", "restore_a", "restore_b", "secondary", "pe", "probe",
         ])
         .enumerate()
     {
@@ -2309,7 +2317,7 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     // 源卷静默重置为第 0 项，切走再切回可能备份到错误的分区。
     let keep_target = selected_drive_letter(state, state.controls.target);
     let keep_source = selected_drive_letter(state, state.controls.source);
-    state.operation_index = index.min(4);
+    state.operation_index = index.min(5);
     set_operation_tabs(state, selected_language(state));
     let operation = selected_operation(state);
     if operation == "restore-existing" {
@@ -6126,6 +6134,7 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         // 2026-10-16 用户裁定：「还原系统到非 C 盘」与「新增第二系统」本就是同一个
         // 功能（只差文案），已合并为「新增非 C 盘第二系统」一个标签页，两个键都指 3。
         "secondary" => 3,
+        "probe" => 5,
         _ => 4,
     };
     select_operation(state, op_index);
@@ -7973,28 +7982,35 @@ unsafe fn create_task(state: &mut State) {
     // 源卷按入口归一——A/B 的 prepare 链要求 source==target（restore-existing），
     // C 的语义是「保留当前系统、装另一个分区」（create-secondary 的 source）。
     // 源卷下拉只在备份/新增第二系统显示，A/B/C 不再读它的选择。
-    let target_drive = match selected_or_error(
-        state.controls.target,
-        if language == Language::English {
-            "Restore target"
-        } else {
-            "目标卷"
-        },
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            append_gui_log(state, &format!("GUI action blocked: {error}"));
-            show_message(
-                state.root,
-                &error,
-                if language == Language::English {
-                    "Validation failed"
-                } else {
-                    "参数校验失败"
-                },
-                MB_OK | MB_ICONERROR,
-            );
-            return;
+    // 探测页不显示目标卷行（`set_operation_visibility` 隐藏了它），下拉里根本
+    // 不存在「用户的选择」。探测不写入任何卷，这个值只是交给 prepare 的参数，
+    // 取不到就退回当前系统盘——不能让一个用不到的字段挡住环境自检。
+    let target_drive = if operation == "probe" {
+        selected_drive_letter(state, state.controls.target).unwrap_or_else(active_system_letter)
+    } else {
+        match selected_or_error(
+            state.controls.target,
+            if language == Language::English {
+                "Restore target"
+            } else {
+                "目标卷"
+            },
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                append_gui_log(state, &format!("GUI action blocked: {error}"));
+                show_message(
+                    state.root,
+                    &error,
+                    if language == Language::English {
+                        "Validation failed"
+                    } else {
+                        "参数校验失败"
+                    },
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
         }
     };
     // 【2026-10-18 缺陷修复 H1 第二层：A 入口目标硬闸】
@@ -8045,6 +8061,10 @@ unsafe fn create_task(state: &mut State) {
     let source_drive = match operation.as_str() {
         "restore-existing" | "restore-data" => target_drive.clone(),
         "create-secondary" => active_system_letter(),
+        // 探测页同样不显示源卷行，与上面目标卷同理退回当前系统盘。
+        "probe" => {
+            selected_drive_letter(state, state.controls.source).unwrap_or_else(active_system_letter)
+        }
         _ => match selected_or_error(
             state.controls.source,
             if language == Language::English {
@@ -8355,7 +8375,16 @@ unsafe fn create_task(state: &mut State) {
     };
     // 测试钩子（--test-hook + auto_install）下自动接受确认框，与 PE 安装确认同策略：
     // 自动化验收环境无法精确点击弹窗按钮，卡在这里等于流程永远走不下去。
-    let destructive_answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
+    // 探测入口不弹这道确认：它承诺「不写盘、不重启」，弹「破坏性确认」与自身
+    // 语义直接冲突，还会让首次使用者以为自检有风险——而该入口的存在意义恰恰是
+    // 让人放心地先自检一遍（需求 §7/§8）。备份与三个还原入口的行为一字不动。
+    let destructive_answer = if operation == "probe" {
+        append_gui_log(
+            state,
+            "probe: destructive confirmation skipped (no disk write, no reboot)",
+        );
+        IDYES
+    } else if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
         append_gui_log(state, "test hook: destructive confirmation auto-accepted");
         IDYES
     } else {
@@ -9290,7 +9319,7 @@ unsafe extern "system" fn window_proc(
                     // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 5
                     // 个之间切换，不会跳到下方 PE 启动方式/通道那一组。
                     // 布局：入口名用用户拍板的全称（长短不一），按钮不等宽、
-                    // 间距 3px，从 x=90 排到 ~693；语言栏靠右（layout_operation
+                    // 间距 3px，从 x=90 排到 ~741；语言栏靠右（layout_operation
                     // 动态右对齐），最小窗口 1020 宽下两者不重叠。
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP,
                     90,
@@ -9342,6 +9371,19 @@ unsafe extern "system" fn window_proc(
                     72,
                     32,
                     ID_OPERATION_PE,
+                ),
+                create_control(
+                    hwnd,
+                    "BUTTON",
+                    "",
+                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
+                    // 六个入口的最后一位（623-741）：语言标签从 759 起，
+                    // 最小客户宽 1020 下两者仍留 18px 间隙，不重叠。
+                    623,
+                    60,
+                    118,
+                    32,
+                    ID_OPERATION_PROBE,
                 ),
             ],
             source: create_control(
@@ -9885,6 +9927,7 @@ unsafe extern "system" fn window_proc(
                 (true, VK_B) => Some(ID_OPERATION_BACKUP),
                 (true, VK_R) => Some(ID_OPERATION_RESTORE),
                 (true, VK_P) => Some(ID_OPERATION_PE),
+                (true, VK_I) => Some(ID_OPERATION_PROBE),
                 (true, VK_O) => Some(ID_READ_IMAGE),
                 (false, VK_F5) => Some(ID_REFRESH),
                 (true, VK_RETURN) => Some(ID_CREATE_TASK),
@@ -9931,6 +9974,7 @@ unsafe extern "system" fn window_proc(
                 ID_OPERATION_RESTORE_DATA => Some(2),
                 ID_OPERATION_RESTORE_OTHER => Some(3),
                 ID_OPERATION_PE => Some(4),
+                ID_OPERATION_PROBE => Some(5),
                 _ => None,
             } {
                 select_operation(state, index);
