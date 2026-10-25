@@ -20,14 +20,14 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use backuprestore_core::TaskError;
 
 /// 一个索引的展示信息（sidecar 缺失时字段为 None，不致命）。
 #[derive(Clone)]
 pub(crate) struct IndexEntry {
-    pub index: u32,
+    // 【2026-10-26】去掉冗余的 `index` 字段：`entries` 是 `BTreeMap<u32, _>`，
+    // 索引号本就是键，字段从未被读（编译器 dead_code 告警）。
     pub name: Option<String>,
     pub created: Option<String>,
     pub source: Option<String>,
@@ -39,7 +39,6 @@ pub(crate) struct IndexEntry {
 pub(crate) struct ImageSummary {
     pub path: PathBuf,
     pub file_size: u64,
-    pub modified: Option<SystemTime>,
     /// DISM 实际列出的索引号（连续 1..=N）。
     pub indexes: Vec<u32>,
     pub entries: BTreeMap<u32, IndexEntry>,
@@ -103,7 +102,6 @@ pub(crate) fn list_images(dir: &Path, log_path: &Path) -> Result<Vec<ImageSummar
             entries.insert(
                 index,
                 IndexEntry {
-                    index,
                     name: sidecar.and_then(|m| m.image_name.clone()),
                     created: sidecar.map(|m| {
                         m.created.format("%Y-%m-%d %H:%M:%S").to_string()
@@ -116,7 +114,6 @@ pub(crate) fn list_images(dir: &Path, log_path: &Path) -> Result<Vec<ImageSummar
         result.push(ImageSummary {
             path,
             file_size: file_metadata.len(),
-            modified: file_metadata.modified().ok(),
             indexes,
             entries,
         });

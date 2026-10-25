@@ -28,6 +28,14 @@ pub(crate) struct OnlineResult {
     /// 本轮任务日志的绝对路径。`--json` 的输出用得到；日志目录创建失败时为
     /// `None`（那种情况下本来也没有日志可看）。
     pub log_path: Option<String>,
+    /// 失败的稳定错误码（`BR-域-序号`）；成功或「故意无码的用法错误」时为 `None`。
+    ///
+    /// 【2026-10-26 修复】此前 `main` 在 `!success` 时一律换成一个无码的
+    /// `err("online operation did not complete successfully")`，把内部真实的
+    /// 带码错误（如 DISM 超时的 `BR-APL-…`）**整体吞掉**——结果是 `online`
+    /// 这条主路径（备份/还原）的 `--json` 里 `error_code` 恒为 `null`，
+    /// 错误码体系在最需要它的地方完全失效。码必须由结果结构体带出来。
+    pub error_code: Option<&'static str>,
 }
 struct ProgressGuard(std::sync::Arc<crate::recovery_progress::ProgressShared>);
 impl Drop for ProgressGuard {
@@ -66,10 +74,15 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
     let (dir, placement_note) = match crate::online_log::resolve_dir(&params.operation) {
         Ok(found) => found,
         Err(error) => {
+            // `resolve_dir` 给的是 `io::Error`；包成 `TaskError::Io` 才能拿到稳定码
+            // （`TaskError::code()` 对 `Io` 返回 `BR-IO-001`，与全项目口径一致）。
+            let error = TaskError::from(error);
+            let error_code = error.code();
             return OnlineResult {
                 success: false,
                 detail: format!("无法创建日志目录：{error}"),
                 log_path: None,
+                error_code,
             };
         }
     };
@@ -105,6 +118,8 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
     let result = log(&path, &step1_notice(&params.operation))
         .and_then(|()| execute_inner(params, &path, &progress.0));
     let mut success = result.is_ok();
+    // 真实错误的码必须在 `result` 被 match 消费之前取出来（见 `error_code` 字段注释）。
+    let mut error_code = result.as_ref().err().and_then(|e| e.code());
     let final_message = match result {
         Ok(()) => crate::i18n::msg("online_done").to_string(),
         Err(error) => format!(
@@ -118,6 +133,8 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
     drop(progress);
     if log_error.is_some() {
         success = false;
+        // 步骤本身成功但收尾日志写失败：仍要给出能定位的码。
+        error_code = error_code.or_else(|| log_error.as_ref().and_then(|e| e.code()));
     }
     // 弹窗只显示摘要，完整输出始终保留在本轮独立日志，避免共享临时文件互相覆盖。
     OnlineResult {
@@ -130,6 +147,7 @@ pub(crate) fn execute(params: &OnlineOpParams) -> OnlineResult {
                 .unwrap_or_default()
         ),
         log_path: Some(path.display().to_string()),
+        error_code,
     }
 }
 fn drive(value: &str) -> Result<char, TaskError> {

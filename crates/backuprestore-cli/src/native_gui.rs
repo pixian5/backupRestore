@@ -8710,6 +8710,8 @@ unsafe fn run_online_operation(
                         ),
                         // panic 发生时连 `execute` 的第一行都没走完，没有本轮日志。
                         log_path: None,
+                        // panic 不是业务失败，没有稳定码（归因看 panic.log）。
+                        error_code: None,
                     }
                 });
             *ONLINE_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);

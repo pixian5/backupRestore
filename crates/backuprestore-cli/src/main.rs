@@ -544,7 +544,15 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
     if result.success {
         Ok(())
     } else {
-        Err(err("online operation did not complete successfully"))
+        // 【2026-10-26 修复】此前无论内部是什么错，一律换成一句无码的 `err(...)`，
+        // 把 `dism()` 等真实带码错误吞掉，`--json` 的 `error_code` 恒为 `null`——
+        // 错误码体系在 `online` 这条主路径上从未生效。现在把码原样带出来；
+        // **文案一字不改**（历史判据可能 still 在匹配这句英文），只多一个码。
+        let message = "online operation did not complete successfully";
+        Err(match result.error_code {
+            Some(code) => TaskError::coded(code, message),
+            None => err(message),
+        })
     }
 }
 
@@ -686,17 +694,17 @@ fn image_admin_cli_delete(image: String, keep: u32) -> Result<(), TaskError> {
 /// 字节数的人类可读格式（二进制单位，与界面其它容量显示一致）。
 #[cfg(windows)]
 fn format_size(bytes: u64) -> String {
-    const units: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < units.len() {
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
         value /= 1024.0;
         unit += 1;
     }
     if unit == 0 {
         format!("{bytes} B")
     } else {
-        format!("{value:.1} {}", units[unit])
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
