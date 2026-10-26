@@ -32,23 +32,31 @@ gui_alive() {
         | grep -q BackupRestore.exe
 }
 
+# 断言可以给多条（第 3 个参数之后全部是期望子串），每条单独计分。
+# 2026-10-26：原来只支持一条，而「镜像清单窗口」需要同时证明清单已填充、
+# 提示非空、详情可读、窗口能关——一条子串证明不了这些互不相干的事。
 run_case() {
-    local body="$1" out="$2" label="$3" expect="$4"
+    local body="$1" out="$2" label="$3"
+    shift 3
     echo "-- ${label}"
     prlctl exec "$VM" cmd /d /c "echo ${UNC_BODY}\\${body}>${HOOK}" >/dev/null 2>&1
     prlctl exec "$VM" cmd /d /c "powershell -NoProfile -ExecutionPolicy Bypass -Command \"iex (Get-Content -Raw -Encoding UTF8 ${UNC_LAUNCH})\"" >/dev/null 2>&1
     # 子进程没有 stdout，结果只能从文件读；给它 7 秒写完。
     sleep 7
-    local text
+    local text ok
     text="$(prlctl exec "$VM" cmd /d /c "type ${out}" 2>/dev/null)"
-    if printf '%s' "$text" | grep -qaF "$expect"; then
-        echo "   PASS  [${expect}]"
-        pass=$((pass + 1))
-    else
-        echo "   FAIL  [expected ${expect}]"
-        printf '%s\n' "$text" | sed 's/^/         /'
-        fail=$((fail + 1))
-    fi
+    ok=1
+    for expect in "$@"; do
+        if printf '%s' "$text" | grep -qaF "$expect"; then
+            echo "   PASS  [${expect}]"
+            pass=$((pass + 1))
+        else
+            echo "   FAIL  [expected ${expect}]"
+            ok=0
+            fail=$((fail + 1))
+        fi
+    done
+    [ "$ok" -eq 1 ] || printf '%s\n' "$text" | sed 's/^/         /'
 }
 
 if ! gui_alive; then
@@ -58,6 +66,8 @@ if ! gui_alive; then
 fi
 
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志…」→ 日志清单窗口' LOGS_WINDOW_FOUND
+run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理…」→ 镜像清单窗口（零副作用）' \
+    IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'
 run_case _t-probe-entry.ps1 'H:\brwork\probe-entry-check.txt'  '第六入口「探测」→ 选中且无关字段隐藏' 'after: probe_checked=1'
 
 if [ "$MODE" = "probe-run" ]; then

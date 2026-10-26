@@ -94,6 +94,13 @@ copy_to_e_*.cmd
 # 一次性 WinRE/BCD 诊断脚本（方法已沉淀到 docs），不入库
 tools/win-clicker/_*.ps1
 tools/win-clicker/_*.b64
+# 例外：tools/smoke/gui-clicks.sh 会调用这四个验收体。它进了库、脚本却不在，
+# 换台机器（或 clone 到别处）跑冒烟会直接找不到文件——这正是「受管脚本依赖
+# 未受管文件」的隐性断裂，2026-10-26 补例外。加/改验收体时同步这里。
+!tools/win-clicker/_t-view-logs.ps1
+!tools/win-clicker/_t-image-admin.ps1
+!tools/win-clicker/_t-probe-entry.ps1
+!tools/win-clicker/_t-probe-run.ps1
 pe-assets/
 pe-debug-winpeshl.ini
 pe-debug.cmd
