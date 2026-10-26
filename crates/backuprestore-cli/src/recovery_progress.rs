@@ -574,17 +574,6 @@ fn create_font(height: i32, bold: bool) -> Hwnd {
 }
 
 /// 格式化秒数为 hh:mm:ss 或 mm:ss。
-fn format_hms(secs: u64) -> String {
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    if h > 0 {
-        format!("{h:02}:{m:02}:{s:02}")
-    } else {
-        format!("{m:02}:{s:02}")
-    }
-}
-
 /// 读取日志增量新行并更新缓存状态与步骤跟踪器。
 fn read_log_delta(shared: &ProgressShared) {
     let path = shared.log_path.lock().unwrap().clone();
@@ -719,14 +708,9 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         // 标题右侧增加一块显示已用时间/剩余时间、当前时间，靠右显示。
         // 关键：每秒钟调用一次，当前时间精确跳动！
         let elapsed = shared.start_time.lock().unwrap().elapsed().as_secs();
-        let elapsed_str = format_hms(elapsed);
-        let remaining_str = if pos > 0 && pos < 100 {
-            let total_est = elapsed * 100 / (pos as u64);
-            let rem = total_est.saturating_sub(elapsed);
-            format_hms(rem)
-        } else {
-            "--:--".to_string()
-        };
+        let elapsed_str = crate::progress_text::format_hms(elapsed);
+        let remaining_str = crate::progress_text::estimate_remaining_secs(elapsed, pos as u32)
+            .map_or_else(|| "--:--".to_string(), crate::progress_text::format_hms);
         let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
         let time_text =
             format!("已用: {elapsed_str}  剩余: {remaining_str}\r\n当前时间: {now_str}");
@@ -750,62 +734,17 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
                 })
                 .unwrap_or(false)
         };
-        let step2_default = if is_backup {
-            "捕获镜像（时间长）"
-        } else {
-            "还原镜像（时间长）"
-        };
-        let default_stages = [
-            (1, "挂载卷、校验"),
-            (2, step2_default),
-            (3, "校验"),
-            (
-                4,
-                if online {
-                    "发布副档/完成在线操作"
-                } else {
-                    "清理恢复启动项/配置"
-                },
-            ),
-        ];
-
-        let total_steps = progress.total.unwrap_or(4);
-        let current = progress.current.unwrap_or(0);
-        // 最后一步出现 100% 也不能代替终态落盘证据。
-        let all_done = latest_stage.as_deref() == Some("操作完成");
-
-        let mut body: Vec<String> = Vec::new();
-        for (idx, default_name) in default_stages {
-            if idx > total_steps {
-                continue;
-            }
-            let recorded = progress.steps.iter().find(|(i, _, _)| *i == idx);
-            let name = recorded.map(|(_, n, _)| n.as_str()).unwrap_or(default_name);
-            let ts = recorded.and_then(|(_, _, t)| t.as_deref());
-
-            let mark = if all_done || idx < current {
-                "✓"
-            } else if idx == current {
-                // 用户要求：当前正在执行阶段的小箭头亮 1 秒、消失 1 秒（每秒刷新时交替闪烁），
-                // 消失时使用全角空格占位，保证排版平稳、文字不发生横向抖动。
-                if elapsed.is_multiple_of(2) {
-                    "▶"
-                } else {
-                    "\u{3000}"
-                }
-            } else {
-                "·"
-            };
-            let time_str = match ts {
-                Some(t) => format!(" [{t}]"),
-                None => String::new(),
-            };
-            body.push(format!("{mark} {idx}/{total_steps} {name}{time_str}"));
-        }
-        // 移除总进度，只保留当前进度
-        if let Some(step) = latest_percent {
-            body.push(format!("—— 当前进度 {step}% ——"));
-        }
+        // 骨架清单的排版规则（三档标记、闪烁占位、阶段标题分叉、不满 4 步不补行）
+        // 全部在跨平台的 `progress_text::stage_skeleton` 里，本机单测覆盖。
+        let body = crate::progress_text::stage_skeleton(&crate::progress_text::SkeletonInput {
+            is_backup,
+            online,
+            progress: &progress,
+            // 最后一步出现 100% 也不能代替终态落盘证据。
+            all_done: latest_stage.as_deref() == Some("操作完成"),
+            elapsed_secs: elapsed,
+            latest_percent,
+        });
         if !body.is_empty() {
             let text = body.join("\r\n");
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();

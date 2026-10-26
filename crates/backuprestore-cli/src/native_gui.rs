@@ -7608,28 +7608,30 @@ unsafe fn create_task(state: &mut State) {
             read_image(state);
         }
         let recheck = selected_wim_index(state);
-        if recheck.is_none() {
-            append_gui_log(
-                state,
-                "GUI action blocked: restore requested without a selected WIM index",
-            );
-            show_message(
-                state.root,
-                if language == Language::English {
-                    "Read the WIM first, then select a valid image index from the dropdown."
-                } else {
-                    "请先读取 WIM，再从下拉框选择有效的镜像索引。"
-                },
-                if language == Language::English {
-                    "Validation failed"
-                } else {
-                    "参数校验失败"
-                },
-                MB_OK | MB_ICONERROR,
-            );
-            return;
+        match recheck {
+            Some(value) => value.to_string(),
+            None => {
+                append_gui_log(
+                    state,
+                    "GUI action blocked: restore requested without a selected WIM index",
+                );
+                show_message(
+                    state.root,
+                    if language == Language::English {
+                        "Read the WIM first, then select a valid image index from the dropdown."
+                    } else {
+                        "请先读取 WIM，再从下拉框选择有效的镜像索引。"
+                    },
+                    if language == Language::English {
+                        "Validation failed"
+                    } else {
+                        "参数校验失败"
+                    },
+                    MB_OK | MB_ICONERROR,
+                );
+                return;
+            }
         }
-        recheck.unwrap().to_string()
     } else {
         index.unwrap_or(1).to_string()
     };

@@ -123,6 +123,11 @@ mod log_root;
 mod settings_file;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
+/// 进度窗的纯文本逻辑（时间格式化 / 剩余时间估算 / 4 阶段骨架）。
+/// **无条件编译**：`recovery_progress` 整份是 `#[cfg(windows)]`，逻辑留在那里
+/// 写多少单测都不会在本机跑；剥到这里才能被 `cargo test` 真正执行。
+#[cfg_attr(not(windows), allow(dead_code))]
+mod progress_text;
 #[cfg(windows)]
 mod windows_command;
 #[cfg(windows)]

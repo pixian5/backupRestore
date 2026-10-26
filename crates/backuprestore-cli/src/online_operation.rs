@@ -1385,14 +1385,15 @@ pub(crate) fn capture(
             None
         }
     };
-    let own_legacy = legacy.as_ref().is_some_and(|m| {
+    // 判定与取值走同一趟 `filter`：早先是 `is_some_and(...)` 之后再
+    // `legacy.as_ref().unwrap()`，两个条件分开写在两处，改动任一条件都可能脱钩。
+    let own_legacy = legacy.as_ref().filter(|m| {
         original_hash
             .as_deref()
             .is_some_and(|h| h.eq_ignore_ascii_case(&m.image_sha256))
             && before.contains(&m.wim_index)
     });
-    if own_legacy {
-        let value = legacy.as_ref().unwrap();
+    if let Some(value) = own_legacy {
         metadata
             .entry(value.wim_index)
             .or_insert_with(|| value.clone());
@@ -1418,7 +1419,7 @@ pub(crate) fn capture(
             Err(e) => return Err(e.into()),
         }
     }
-    if own_legacy {
+    if own_legacy.is_some() {
         saved_sidecars.push((legacy_path.clone(), Some(fs::read(&legacy_path)?)));
     }
     if existing {
@@ -1561,7 +1562,7 @@ pub(crate) fn capture(
     let publish = (|| -> Result<(), TaskError> {
         fs::rename(&candidate, destination)?;
         im::write_sidecars(destination, &metadata, &hash, final_size, new_index)?;
-        if own_legacy {
+        if own_legacy.is_some() {
             if let Some(first) = metadata.get(&1) {
                 let mut first = first.clone();
                 first.image_sha256 = hash.clone();

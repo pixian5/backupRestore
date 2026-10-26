@@ -2474,9 +2474,18 @@ fn validate_operation_inputs(
             if image.same_partition(source) {
                 return Err(err("image volume must differ from backup source"));
             }
+            // 盘符在这里**显式**取，不靠 400 行外那条为 BitLocker 写的
+            // `assert_bitlocker_off(...ok_or_else...)` 顺带保证：那条守卫
+            // 一旦被重构掉，这里就会退化成 panic。
+            let source_letter = source
+                .drive_letter
+                .ok_or_else(|| err("backup source volume has no drive letter"))?;
+            let image_letter = image
+                .drive_letter
+                .ok_or_else(|| err("image volume has no drive letter"))?;
             let required = source
                 .partition_size
-                .saturating_sub(volume_free_bytes(source.drive_letter.unwrap())?)
+                .saturating_sub(volume_free_bytes(source_letter)?)
                 .saturating_add(RESERVED_BYTES);
             // Appending is transactional: Recovery copies the current WIM to
             // a same-volume candidate before capture. Reserve that extra copy
@@ -2488,7 +2497,7 @@ fn validate_operation_inputs(
                 .transpose()?
                 .unwrap_or(0);
             let required = required.saturating_add(append_candidate_bytes);
-            if volume_free_bytes(image.drive_letter.unwrap())? < required {
+            if volume_free_bytes(image_letter)? < required {
                 return Err(err("backup destination free space is insufficient"));
             }
             Ok(ValidationOutcome {
