@@ -978,14 +978,33 @@ mod tests {
         assert!(decode_output(&[0xff, 0xfe, 0x2d]).is_err());
     }
 
-    /// 只创建本轮专有的 128 MiB 虚拟盘；真实系统卷仅作为测试文件目录。
-    #[test]
-    #[ignore = "需要 Windows 管理员；显式创建一次性 VHD 验证真实 DISM 及无写入拒绝"]
-    fn disposable_vhd_preflight_and_index_two_apply() {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetLogicalDrives() -> u32;
-        }
+    // ★ 2026-10-27 拆分：这条安全测试原本是一个函数，前半（真实 DISM 捕获、
+    // 数据索引应用、全部拒绝路径都不写源卷）在 Windows 管理员下就能验，
+    // 后半（格式化后引导失败的回滚）必须进 PE 才能验——`run_restore` 内含
+    // reagentc 调用，在线 Windows 会以 BR-IMG-001 提前退出。
+    // 混在一起的结果是整条永远被 skip，**最该被自动化的「不往源卷写」
+    // 一次都没跑过**。拆开后前半进 `tools/test/ignored-acceptance.sh` 门禁。
+
+    /// 一次性 128 MiB 虚拟盘夹具：建 VHD、挂 V:、格式化 NTFS、写哨兵、
+    /// 用真实 DISM 捕获首索引。**只碰本测试专有的虚拟盘**，真实系统卷仅作
+    /// 临时目录。
+    struct DisposableVhdFixture {
+        dir: PathBuf,
+        vhd: PathBuf,
+        log: PathBuf,
+        source: PathBuf,
+        image: PathBuf,
+        /// `None` = 已手动 detach；用 `Option` 是为了 detach 之后 `forget`，
+        /// 不让 `Drop` 再 detach 一次。
+        guard: Option<OwnedVhd>,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLogicalDrives() -> u32;
+    }
+
+    fn create_disposable_vhd_fixture() -> DisposableVhdFixture {
         let letters = unsafe { GetLogicalDrives() };
         assert_ne!(letters, 0, "必须能枚举盘符");
         assert_eq!(letters & (1 << (b'V' - b'A')), 0, "V: 已占用，绝不覆盖");
@@ -1038,24 +1057,68 @@ mod tests {
             )
             .is_success()
         );
-        fs::write(source.join("payload.txt"), "second").unwrap();
+        DisposableVhdFixture {
+            dir,
+            vhd,
+            log,
+            source,
+            image,
+            guard: Some(guard),
+        }
+    }
+
+    fn teardown_disposable_vhd_fixture(mut fx: DisposableVhdFixture) {
+        let detach = fx.dir.join("detach.txt");
+        fs::write(
+            &detach,
+            format!(
+                "select vdisk file=\"{}\"\r\ndetach vdisk\r\n",
+                fx.vhd.display()
+            ),
+        )
+        .unwrap();
+        assert!(
+            windows_command::run_program(
+                "diskpart.exe",
+                &["/s".into(), detach.to_string_lossy().into_owned()],
+                Some(&fx.log),
+                60_000
+            )
+            .is_success()
+        );
+        assert_eq!(unsafe { GetLogicalDrives() } & (1 << (b'V' - b'A')), 0);
+        if let Some(guard) = fx.guard.take() {
+            std::mem::forget(guard);
+        }
+        println!("PE_SAFETY_TEARDOWN_PASS evidence={}", fx.dir.display());
+    }
+
+    /// **Windows 管理员即可运行**：真实 DISM 捕获、数据索引应用，以及全部拒绝
+    /// 路径（镜像缺失 / 索引越界 / 目标卷上放镜像 / 非数据模式的 restore）
+    /// 都不许改动源卷一个字节。这是「不往源卷写」这条安全属性的自动化判据。
+    #[test]
+    #[ignore = "需要 Windows 管理员与 DISM（自建一次性 128MiB 虚拟盘到 V:）"]
+    fn disposable_vhd_preflight_index_two_apply_and_reject_without_write() {
+        let fx = create_disposable_vhd_fixture();
+        let before = wp::volume_identity('V').unwrap();
+        fs::write(fx.source.join("payload.txt"), "second").unwrap();
         assert!(
             windows_command::run_program(
                 "dism.exe",
                 &[
                     "/English".into(),
                     "/Append-Image".into(),
-                    format!("/ImageFile:{}", image.display()),
-                    format!("/CaptureDir:{}", source.display()),
+                    format!("/ImageFile:{}", fx.image.display()),
+                    format!("/CaptureDir:{}", fx.source.display()),
                     "/Name:second".into()
                 ],
-                Some(&log),
+                Some(&fx.log),
                 windows_command::INFINITE
             )
             .is_success()
         );
-        let before = wp::volume_identity('V').unwrap();
-        let request = new_request("data", "V", image.to_str().unwrap(), 2, None, "", false).unwrap();
+        let request =
+            new_request("data", "V", fx.image.to_str().unwrap(), 2, None, "", false).unwrap();
         execute(&request).unwrap();
         assert_eq!(fs::read_to_string("V:\\payload.txt").unwrap(), "second");
         assert!(Path::new("V:\\sentinel.txt").is_file());
@@ -1068,8 +1131,16 @@ mod tests {
             ("two-index.wim", "restore", 999),
             ("two-index.wim", "restore", 1),
         ] {
-            let request =
-                new_request(mode, "V", dir.join(name).to_str().unwrap(), index, None, "", false).unwrap();
+            let request = new_request(
+                mode,
+                "V",
+                fx.dir.join(name).to_str().unwrap(),
+                index,
+                None,
+                "",
+                false,
+            )
+            .unwrap();
             assert!(execute(&request).is_err());
             assert!(Path::new("V:\\sentinel.txt").is_file());
             assert_eq!(
@@ -1077,14 +1148,14 @@ mod tests {
                 before.volume_serial
             );
         }
-        fs::copy(&image, "V:\\on-target.wim").unwrap();
+        fs::copy(&fx.image, "V:\\on-target.wim").unwrap();
         let conflict = new_request("restore", "V", "V:\\on-target.wim", 1, None, "", false).unwrap();
         assert!(execute(&conflict).is_err());
         assert!(Path::new("V:\\sentinel.txt").is_file());
         let backup = new_request(
             "backup",
             "V",
-            dir.join("capture.wim").to_str().unwrap(),
+            fx.dir.join("capture.wim").to_str().unwrap(),
             1,
             None,
             "",
@@ -1092,17 +1163,31 @@ mod tests {
         )
         .unwrap();
         execute(&backup).unwrap();
-        assert!(dir.join("capture.wim").is_file());
+        assert!(fx.dir.join("capture.wim").is_file());
+        teardown_disposable_vhd_fixture(fx);
+        println!("PE_SAFETY_NO_WRITE_ON_REJECT_PASS");
+    }
+
+    /// **只能在 Windows PE/RE 内运行**：验「格式化已发生、引导写入失败 → 回滚
+    /// 后内容按镜像恢复、哨兵消失、卷序列号变化」。在线 Windows 跑到这里会以
+    /// `BR-IMG-001`（reagentc 不可用）提前退出，所以它无法进入常规门禁。
+    #[test]
+    #[ignore = "需要 Windows PE/RE 环境（run_restore 内含 reagentc 调用）与管理员"]
+    fn disposable_vhd_boot_failure_rollback_in_pe() {
+        let fx = create_disposable_vhd_fixture();
+        let before = wp::volume_identity('V').unwrap();
         // 合成系统标记仅用于安全步骤测试，不能宣称该镜像能启动。
-        fs::create_dir_all(source.join("Windows\\System32\\config")).unwrap();
+        fs::create_dir_all(fx.source.join("Windows\\System32\\config")).unwrap();
         for name in ["config\\SYSTEM", "winload.efi", "ntoskrnl.exe"] {
             fs::write(
-                source.join("Windows\\System32").join(name),
+                fx.source.join("Windows\\System32").join(name),
                 "synthetic test fixture",
             )
             .unwrap();
         }
-        let system_image = dir.join("synthetic.wim");
+        // 回滚成功时恢复出来的就是这个值。
+        fs::write(fx.source.join("payload.txt"), "second").unwrap();
+        let system_image = fx.dir.join("synthetic.wim");
         assert!(
             windows_command::run_program(
                 "dism.exe",
@@ -1110,17 +1195,18 @@ mod tests {
                     "/English".into(),
                     "/Capture-Image".into(),
                     format!("/ImageFile:{}", system_image.display()),
-                    format!("/CaptureDir:{}", source.display()),
+                    format!("/CaptureDir:{}", fx.source.display()),
                     "/Name:synthetic".into(),
                 ],
-                Some(&log),
+                Some(&fx.log),
                 windows_command::INFINITE
             )
             .is_success()
         );
         let request =
-            new_request("restore", "V", system_image.to_str().unwrap(), 1, None, "", false).unwrap();
-        let state_dir = dir.join("format-apply-failure");
+            new_request("restore", "V", system_image.to_str().unwrap(), 1, None, "", false)
+                .unwrap();
+        let state_dir = fx.dir.join("format-apply-failure");
         fs::create_dir(&state_dir).unwrap();
         let progress = ProgressGuard(crate::recovery_progress::spawn(
             state_dir.join("operation.log"),
@@ -1157,26 +1243,7 @@ mod tests {
         drop(backend);
         drop(progress);
         // 保留全部文件和证据；只卸载本测试刚创建、路径已绑定的虚拟盘。
-        let detach = dir.join("detach.txt");
-        fs::write(
-            &detach,
-            format!(
-                "select vdisk file=\"{}\"\r\ndetach vdisk\r\n",
-                vhd.display()
-            ),
-        )
-        .unwrap();
-        assert!(
-            windows_command::run_program(
-                "diskpart.exe",
-                &["/s".into(), detach.to_string_lossy().into_owned()],
-                Some(&log),
-                60_000
-            )
-            .is_success()
-        );
-        assert_eq!(unsafe { GetLogicalDrives() } & (1 << (b'V' - b'A')), 0);
-        std::mem::forget(guard);
-        println!("PE_SAFETY_NATIVE_PASS evidence={}", dir.display());
+        teardown_disposable_vhd_fixture(fx);
+        println!("PE_SAFETY_ROLLBACK_PASS");
     }
 }
