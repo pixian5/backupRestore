@@ -115,6 +115,11 @@ impl Heartbeat {
     }
 
     /// 已写出的心跳行数（不含总账）。验收脚本之外也可用于断言。
+    ///
+    /// **只在测试里用**：生产路径读的是 Drop 里的 `self.samples.load(...)` 本体，
+    /// 所以不加 `#[cfg(test)]` 会让 Windows 发布构建报 `dead_code`（本机 `cargo test`
+    /// 因 test cfg 成立而看不见这条告警——2026-10-26 VM 原生构建抓到）。
+    #[cfg(test)]
     pub(crate) fn samples(&self) -> u64 {
         self.samples.load(Ordering::SeqCst)
     }
