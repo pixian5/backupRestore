@@ -7,7 +7,20 @@
 
 ## 当前入口
 
-仓库版本 **2.6.57**（2026-10-26 09:10 增补：**启动项簿记搬到跨平台模块 + Windows 测试目标编译门禁**——
+仓库版本 **2.6.58**（2026-10-26 12:15 时点：**设置文件合并写不再误删别人的注释与文件头，外加修一个「假通过」的验收脚本**——
+① **真缺陷**：`failure_policy::save_to_dir` 为修 2026-10-18 的「注释每次保存多 3 行」膨胀，一刀切丢掉**所有**注释行，而文件头只在「文件为空」时才补；
+只要文件里还有 `dism_timeout_secs`（写入顺序上几乎必然），**用户每打开一次设置窗口并保存，`BackupRestore.settings.ini` 的第一行就永久消失一次**，
+`dism_timeout` 将来给自己那行加的说明也会被静默删掉。改为按**归属**过滤（只丢自己那三条前缀与文件头，别人的注释原样留）、文件头无条件重写第一行，
+头部文本提成两个写入方共用的 `SETTINGS_HEADER`。
+② **度量仪器缺陷（更危险）**：验收脚本用 `Get-Content` 默认编码（PS5.1 对无 BOM 文件按 GBK）读 UTF-8 的 ini，全角 `）`（`E3 80 89`）的末字节 `0x89`
+是合法 GBK 首字节，**把紧跟的 `0x0A` 吞掉** → 3 条注释与 `failure_threshold=3` 被并成一行，`IniPairs` 报 3 个键而非 4 个；而「保存前后键完全相同」
+这条核心判据**两侧共用同一个坏读取器**，于是恒真——上一轮「`failure_threshold` 没落盘」的错误结论正是这样得出的。改为 `-Encoding UTF8`，
+并补两条不由该仪器产生的绝对判据（四个键必须齐全、文件头恰好一行且在首行）。
+★ 变异验证（过滤改回一刀切 → 新用例红、其余 34 绿）；命令行侧 271→272；实机部署 SHA `52fc6c6c…`，点击验收连跑两轮：
+文件头 0→1 行被补回、行数 9→9 不再变化、四键齐全、三个值与界面一致。
+同轮另落地 `native_gui.rs` 拆分第一步：「程序设置」对话框搬进 `native_gui/settings_dialog.rs` 子模块（11,960 → 11,058 行，行为等价不升版本）。
+详见 [设置文件注释归属修复与验收脚本编码缺陷](20261026-1215-设置文件注释归属修复与验收脚本编码缺陷-deepseek-4.1-flash.md)。
+2026-10-26 09:10 增补：**启动项簿记搬到跨平台模块 + Windows 测试目标编译门禁**——
 `ReBootEntry`（`boot-entry.json`）从 `boot_entry.rs`（`#[cfg(windows)]`、零覆盖）搬进 `boot_record.rs`，补 4 个单测钉住
 **键名契约**（历史任务目录里躺着旧版本写的文件，改键名=续跑与清理找不到启动项）；★ 顺带发现 **从 mac 能编译 Windows 测试目标**
 （补上「`cargo test` 不打开 cfg(windows)、`build-win.sh` 不带 test cfg」的夹缝），`pre-push` 加第 5 步并注入 E0308 验证。
@@ -46,6 +59,7 @@
 
 | 文档 | 用途 |
 |---|---|
+| [设置文件注释归属修复与验收脚本编码缺陷 2026-10-26 12:15](20261026-1215-设置文件注释归属修复与验收脚本编码缺陷-deepseek-4.1-flash.md) | **【最新 · v2.6.58】**① **真缺陷**：`failure_policy::save_to_dir` 2026-10-18 为防注释膨胀改成 `starts_with('#') → 丢`，一刀切掉**全部**注释；文件头又只在 `kept.is_empty()` 时补 → 只要文件里还有 `dism_timeout_secs`，**每次保存都永久删掉文件第一行**。改法 = 注释按**归属**过滤（`OWN_SETTINGS_COMMENTS` 三条前缀 + 文件头，别人的注释原样留）、文件头无条件写第一行（先滤旧同文本行防重复）、头部文本提成两写入方共用的 `SETTINGS_HEADER`。② **度量仪器缺陷**：`_t-settings-dialog.ps1` 用 `Get-Content` 默认编码（PS5.1 无 BOM 按 GBK）读 UTF-8 ini，全角 `）`（`E3 80 89`）末字节 `0x89` 是合法 GBK 首字节 → **吞掉后面的 `0x0A`**，8 行变 5 行、`failure_threshold=3` 被并进上一行；而 `ini_pairs_identical` 两侧共用同一坏读取器 → 恒真。★ **教训：一个「A 等不等等于 B」的判据，若两侧由同一台仪器产生，它证明的是仪器自洽**。修法 = `-Encoding UTF8` + `LineCountUtf8()`（走 `[IO.File]::ReadAllText` 另一条路径）+ 两条绝对判据（四键齐全、文件头恰好一行且在首行）。③ 单测新增 `save_to_dir_preserves_foreign_comments_and_writes_the_header_once`（含「两次保存逐字节相同」的幂等守卫），变异验证 1 红 34 绿，命令行侧 271→272；实机 SHA `52fc6c6c…`，两轮点击验收：文件头 0→1、行数 9→9、四键齐全、值与界面一致。 |
 | [交付包收口 dist 追上 2.6.57 2026-10-26 08:49](20261026-0849-交付包收口dist追上2.6.57-deepseek-4.1-flash.md) | **【最新 · 交付物收口，未改版本号】**`dist/` 最后一份包停在 **v2.1.9**（10-10），与仓库差约 50 个版本 → 「给一份能跑的东西给别人」实际做不到，且 `.gitignore` 里的 `dist/` 不会有任何机制提醒它旧了。① ★ 踩坑并纠正：第一版脚本从 macOS 交叉编译产物取 exe，打出的包**看着完全正常但不符合发布约定**——README §三明确「macOS 侧产物不得作为发布版」（两产物 3,185,664 vs 3,194,368 字节）；② 改法 = `tools/release/pack-dist.sh` 默认只认 `artifacts/windows/BackupRestore-windows-arm64-v<版本>/`（虚拟机内原生构建产物），找不到就报错并打印该跑的命令；`--local` 保留但打警告 + 包名加 `-local`；③ ★ 原生构建打的是**开发包**、故意不含 wimlib 两文件 → 直接发出去会让覆盖式还原在运行到一半才报找不到 wimlib，脚本补齐 `wimlib-imagex.exe`/`libwim-15.dll`/`USER-GUIDE`×2/`README.txt`/`SHA256SUMS.txt`；④ **验收判据只看哈希**：包内 exe 与 `H:\brwork\BackupRestore.exe` 同为 `8d71ada5…`（相等 ⇒ 交付包就是正在实机跑的那份），另 10 个文件 `shasum -c` 全 OK；⑤ 顺带清掉只在 Windows 构建出现的 `Heartbeat::samples` 死代码告警（mac `cargo test` 因 test cfg 看不见），清完必须重打（SHA `30854bf6…`→`8d71ada5…`）。产物 `dist/BackupRestore-2.6.57-windows-arm64.zip` 3,200,944 字节 / 14 条目。 |
 | [unwrap 盘点结案与进度窗纯逻辑剥离 2026-10-26 08:38](20261026-0838-unwrap盘点结案与进度窗纯逻辑剥离-deepseek-4.1-flash.md) | **【最新 · v2.6.57】**① `unwrap/expect` 口径定死：全仓 605 处 = **生产 71 / 测试 534**（不要再用 592），切分必须按**花括号深度**判 `#[cfg(test)] mod` 块，按「第一个/最后一个」都会错；71 处里 **56 处是 `.lock().unwrap()`**（Mutex 中毒，最廉价），其余 15 处逐个核实全有守卫（含 1 处跨行 `.lock()`+`.unwrap()` 会被单行 grep 误判）→ **结论：没有一处能被外部输入打崩，本项结案**。② 只硬化 4 处「守卫离太远」的：`windows_prepare.rs` 两处盘符（守卫在 400 行外，且 `drive_letter` 真是 `Option<char>`）、`online_operation.rs` `is_some_and`+`unwrap` 合成 `filter`+`if let`、`native_gui.rs` `is_none` 早退改 `match`。③ ★ **「零测试高危模块」前提不成立**：三个模块全在 `#[cfg(windows)]` 下，mac 上编译器从不打开这些文件 → 写 `mod tests` 是死测试。解法 = 新增无条件模块 **`progress_text.rs`**（时间格式化 / 剩余时间估算 / 4 阶段骨架）+ **8 个单测**，钉住 3600 秒小时分叉、进度 0 与 100 的边界、百分比不单调收敛到 0、奇数秒全角空格占位、**最后一步 100% 不等于完成**、不满 4 步不补行、阶段标题两处分叉。④ ★ 工具坑：`cargo check`/`cargo test` 对 `cfg(windows)` 文件**零信息**（不在 dep-info，改了也不重编，打印的告警是缓存回放），本轮两次 E0308 只有 `./build-win.sh` 抓到。单测 267+49、交叉编译 3,185,664 字节。 |
 | [DISM 整卷捕获实测与捕获心跳设计 2026-10-26 07:50](20261026-0750-DISM整卷捕获先全卷预扫的实测与捕获心跳设计-deepseek-4.1-flash.md) | **【零代码观测结案 + v2.6.55 产品化】**DISM 捕获整卷**先全卷预扫、再写数据**：捕获 `F:\Program Files`（8.7 GB / 32,732 文件）实测**预扫 100 秒**（期间镜像恒为 208 字节 WIM 头、`dism.log` 一行不写、stdout 只有横幅，三层静默）、随后 60 秒写到 3.4 GB。**「开头零字节」是正常行为，不是卡死**——上一轮「58 分钟零产出」是预扫未完成。四组合 A/B 排除排除表与 `/CheckIntegrity`。产品化 = `capture_heartbeat.rs` 旁路线程每 30 秒写 `CAPTURE_HEARTBEAT`/`CAPTURE_STALL`/`CAPTURE_SUMMARY` 判据行（固定前缀纯 ASCII、不走 i18n），**只观测不干预**；实机端到端生效。另含 4 条工具坑（`Start-Process` 不给含空格参数加引号、SYSTEM 通道看不到 `X:` 且 `--current-user` 打不开 `\\.\F:`、跨用户读不到 `CPU`/`StartTime` 要用 CIM、`dir /AL` 找联接点）。 |
