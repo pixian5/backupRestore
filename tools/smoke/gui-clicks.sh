@@ -11,10 +11,9 @@
 #   ② 图形界面已从 H:\brwork 启动（tools/win-clicker/br-s1.sh start-gui.ps1）。
 #
 # 用法：
-#   tools/smoke/gui-clicks.sh              # 默认只跑无副作用的两项
-#   tools/smoke/gui-clicks.sh probe-run    # 额外真跑一次探测任务（会建任务目录）
+#   tools/smoke/gui-clicks.sh              # 跑全部无副作用用例
 #
-# 判据纪律：只认脚本写出的 ASCII 断言行（LOGS_WINDOW_FOUND / probe_checked=1 …）。
+# 判据纪律：只认脚本写出的 ASCII 断言行（LOGS_WINDOW_FOUND / OVERLAP_COUNT=0 …）。
 # 窗口标题是中文，在 cmd 通道里是乱码，**绝不能拿它当判据**。
 set -uo pipefail
 
@@ -87,16 +86,10 @@ fi
 #     「枚举全部直接子窗口、六个页签各查一遍」。隐藏行会把别的行顶上去，
 #     每页几何不同——只查一页等于只验了 1/6。PAGES_CHECKED=6 证明六页都真走过。
 run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '全部页签两两不重叠（几何判据，全量枚举）' \
-    'OVERLAP_COUNT=0' 'PAGES_CHECKED=6' 'CLIENT_W='
+    'OVERLAP_COUNT=0' 'PAGES_CHECKED=5' 'CLIENT_W='
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志」→ 日志清单窗口' LOGS_WINDOW_FOUND
 run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'
-run_case _t-probe-entry.ps1 'H:\brwork\probe-entry-check.txt'  '第六入口「探测」→ 选中且无关字段隐藏' 'after: probe_checked=1'
-
-if [ "$MODE" = "probe-run" ]; then
-    # 真建一个探测任务（不重启、不写盘），用于验证入口到任务创建这一段没断。
-    run_case _t-probe-run.ps1 'H:\brwork\probe-run-check.txt' '探测任务实跑 → 任务目录 + 非武装引导' PROBE_TASK
-fi
 
 echo ""
 echo "结果：PASS=${pass} FAIL=${fail}"

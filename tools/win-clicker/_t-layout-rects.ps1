@@ -1,6 +1,6 @@
 # _t-layout-rects.ps1 - ASCII only. Geometric acceptance for the main window.
 #
-# Read-only except for a click on each of the six operation tabs (which only
+# Read-only except for a click on each of the five operation tabs (which only
 # changes the selected page; it creates no task and touches no disk).
 #
 # Why this exists (2026-10-26): the user found the top toolbar buttons drawn on
@@ -59,7 +59,7 @@ $BM_CLICK = 0x00F5
 
 $NAMES = @{
     1101='tab_backup'; 1102='tab_restore_c'; 1105='tab_restore_nonC';
-    1106='tab_secondary'; 1104='tab_install_pe'; 1107='tab_probe';
+    1106='tab_secondary'; 1104='tab_install_pe';
     1005='combo_language'; 2009='lbl_language'; 1007='btn_settings';
     1008='btn_cancel_pending'; 1009='btn_image_admin'; 1010='btn_view_logs';
     2001='lbl_operation'
@@ -112,9 +112,10 @@ function Get-ChildRects([IntPtr]$parent) {
     return @{ Rects = $list; W = $cr.Right; H = $cr.Bottom }
 }
 
+# 五个入口（2026-10-26 用户要求移除「探测」，第六个 tab 已删）
 $tabs = @(
     @(1101,'backup'), @(1102,'restore_c'), @(1105,'restore_nonC'),
-    @(1106,'secondary'), @(1104,'install_pe'), @(1107,'probe')
+    @(1106,'secondary'), @(1104,'install_pe')
 )
 
 $totalOverlaps = 0

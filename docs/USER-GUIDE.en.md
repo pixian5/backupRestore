@@ -1,6 +1,6 @@
 # BackupRestore User Guide (English)
 
-> **Applies to: v2.6.60 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
+> **Applies to: v2.6.61 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
 > intentionally named evergreen file). It describes end-user visible behaviour; development and
 > acceptance details live in the dated files under `docs/`, and the error-code lookup lives in
 > [`ERROR-CODES.md`](./ERROR-CODES.md).
@@ -11,11 +11,10 @@
 
 ## 1. What this is
 
-BackupRestore is a one-click Windows backup/restore tool (development test build). It does five things:
+BackupRestore is a one-click Windows backup/restore tool (development test build). It does four things:
 
 | Capability | One-line summary | Destructive? |
 |---|---|---|
-| Inspect (check only) | Validates the current Windows, the recovery environment and every volume identity | **No (fully non-destructive)** |
 | Backup | Captures the selected partition into a WIM image | No (reads the source, writes only the image file) |
 | Restore system to C: | Writes an image back onto the running system drive and rebuilds boot | **Yes (overwrites everything on the system drive)** |
 | Restore data to non-C: | Applies an image to another partition online | **Yes (overwrites the target volume)** |
@@ -45,10 +44,10 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 ### 3.1 Layout
 
-Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.60`):
+Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.61`):
 
 - **Operation mode** (a row of radio entries): `Backup` / `Restore system to C:` /
-  `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE` / `Inspect`
+  `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE`
 - **Top-bar buttons**: `View logs` (lists the most recently modified log files; open one in
   Notepad or open the log folder), `Backup files…` (lists the WIMs and indexes on the image
   volume; delete the oldest indexes and keep only the latest N), `Cancel pending reboot`
@@ -69,18 +68,25 @@ Click `Refresh environment` and confirm that the current Windows, the recovery e
 (WinRE / PE entry) and every volume identity are recognised. Identity is matched by
 **disk + partition GUID**, not by drive letter, so changed letters do not break recognition.
 
-### 3.3 First run, step two: run "Inspect" once
+### 3.3 First run: run an environment self-check (command line)
 
-Select the `Inspect` entry and click `Create task`. It performs an **environment self-check only**:
-it refreshes and validates the current Windows, the recovery environment (WinRE / PE entry) and
-every volume identity (by disk + partition GUID), and writes the task files plus recovery payload to
-confirm the setup is wired correctly.
+> **The GUI no longer offers an `Inspect` entry (removed on 2026-10-26 at the user's request).**
+> The capability still exists on the command line via the same `prepare` path.
 
-- It **never backs up, restores, formats, touches boot entries, or reboots** (it runs with
-  `--no-reboot`);
-- When it finishes, check `Refresh task status` and the log: a successful preparation means the
-  self-check passed, and you can use the backup/restore entries with confidence;
-- An Inspect task never turns into a "waiting for reboot" task — it does not reboot by design, so it
+To validate the environment without touching any data, run this from the program directory:
+
+```
+BackupRestore.exe prepare --operation probe --source-drive C --no-reboot
+```
+
+It performs an **environment self-check only**: it validates the current Windows, the recovery
+environment (WinRE / PE entry) and every volume identity (by disk + partition GUID), and writes the
+task files plus recovery payload to confirm the setup is wired correctly.
+
+- It **never backs up, restores, formats, touches boot entries, or reboots** (`--no-reboot`);
+- Afterwards check the task status and the log: a successful preparation means the self-check passed,
+  and you can use the backup/restore entries with confidence;
+- A self-check task never turns into a "waiting for reboot" task — it does not reboot by design, so it
   never blocks your next operation.
 
 ### 3.4 Backup

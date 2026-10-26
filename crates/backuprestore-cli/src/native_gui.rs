@@ -89,8 +89,6 @@ const VK_R: u32 = 0x52;
 const VK_P: u32 = 0x50;
 const VK_O: u32 = 0x4F;
 const VK_F5: u32 = 0x74;
-/// Ctrl+I：切到「探测」入口（Inspect，与其它入口的 Ctrl+B/R/P 同一套快捷键）。
-const VK_I: u32 = 0x49;
 // 默认按钮样式：无焦点时按回车也会触发该按钮。
 const BS_DEFPUSHBUTTON: u32 = 0x00000001;
 const SW_HIDE: i32 = 0;
@@ -175,10 +173,10 @@ const ID_OPERATION_RESTORE: usize = 1102;
 const ID_OPERATION_PE: usize = 1104;
 // 三入口拆分（2026-10-14 拍板）：「单系统还原」拆成 A/B/C 三个入口，
 // tab 总数 4 → 6。B=还原数据到非 C 盘，C=还原系统到非 C 盘。
+// 2026-10-26 用户要求移除「探测」入口（ID 1107）：tab 总数 6 → 5。
+// 探测**能力仍在命令行**（`prepare --operation probe`），只是 GUI 不再提供入口。
 const ID_OPERATION_RESTORE_DATA: usize = 1105;
 const ID_OPERATION_RESTORE_OTHER: usize = 1106;
-/// 第六个入口「探测」：需求 §7/§8 要求「先自检再用」，此前只有命令行有它。
-const ID_OPERATION_PROBE: usize = 1107;
 const ID_SOURCE: usize = 1202;
 const ID_IMAGE: usize = 1203;
 const ID_TARGET: usize = 1204;
@@ -648,9 +646,9 @@ struct TokenElevation {
 
 struct Controls {
     language: Hwnd,
-    /// 七个操作入口 tab（备份 / 还原系统到 C 盘 / 还原数据到非 C 盘 / 还原系统到非 C 盘 /
-    /// 新增第二系统 / 安装 PE / 探测），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
-    operation_tabs: [Hwnd; 6],
+    /// 五个操作入口 tab（备份 / 还原系统到 C 盘 / 还原数据到非 C 盘 /
+    /// 新增第二系统 / 安装 PE），BS_AUTORADIOBUTTON + BS_PUSHLIKE 单选组。
+    operation_tabs: [Hwnd; 5],
     source: Hwnd,
     image: Hwnd,
     target: Hwnd,
@@ -745,7 +743,6 @@ const CONTROL_NAMES: &[(usize, &str)] = &[
     (ID_OPERATION_PE, "ID_OPERATION_PE"),
     (ID_OPERATION_RESTORE_DATA, "ID_OPERATION_RESTORE_DATA"),
     (ID_OPERATION_RESTORE_OTHER, "ID_OPERATION_RESTORE_OTHER"),
-    (ID_OPERATION_PROBE, "ID_OPERATION_PROBE"),
     (ID_SOURCE, "ID_SOURCE"),
     (ID_IMAGE, "ID_IMAGE"),
     (ID_TARGET, "ID_TARGET"),
@@ -890,7 +887,6 @@ unsafe fn install_tooltips(state: &mut State) {
         (state.controls.operation_tabs[2], "restore_b"),
         (state.controls.operation_tabs[3], "secondary"),
         (state.controls.operation_tabs[4], "pe"),
-        (state.controls.operation_tabs[5], "probe"),
         (
             GetDlgItem(state.root, ID_CHANNEL_ONLINE as i32),
             "channel_online",
@@ -1150,8 +1146,6 @@ unsafe fn selected_operation(state: &State) -> &'static str {
         2 => "restore-data",
         3 => "create-secondary",
         4 => "install-pe-entry",
-        // 探测：全程无破坏的环境自检（不写盘、不重启），需求 §7/§8 的「先自检再用」。
-        5 => "probe",
         _ => "backup",
     }
 }
@@ -1254,7 +1248,7 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
         .operation_tabs
         .iter()
         .zip([
-            "backup", "restore_a", "restore_b", "secondary", "pe", "probe",
+            "backup", "restore_a", "restore_b", "secondary", "pe",
         ])
         .enumerate()
     {
@@ -1401,7 +1395,7 @@ unsafe fn set_operation_visibility(state: &State) {
 /// 顶栏操作按钮（查看日志 / 备份文件管理… / 取消待重启任务 / 设置… / 语言）
 /// 独立成一行，放在客户区顶部这条原本空着的窄带里。
 ///
-/// ★ 2026-10-26 修缺陷：此前这 5 个控件与「操作模式」的 6 个入口**同在 y=60**，
+/// ★ 2026-10-26 修缺陷：此前这 5 个控件与「操作模式」的入口行**同在 y=60**，
 /// 两组横向总宽约 90+650(入口) + 4 按钮+语言约 750 = 远超任何窗口宽度，于是
 /// 顶栏按钮被画在入口按钮上面。实机 GetWindowRect 量到 **6 对重叠**，最严重的是
 /// 「新增非 C 盘第二系统」被「查看日志」盖掉 107×24 px（占该按钮宽度 71%）。
@@ -1636,7 +1630,7 @@ unsafe fn layout_operation(state: &State) {
         reposition(format_hwnd, field_x, format_row_y, 460, 22);
     }
     // ★ 高度必须按**整行**取整（行高 = SimSun 9pt 的 tmHeight 12 + extLead 2 = 14）。
-    // 126 = 9 行整：backup(8 行) / probe(6) / restore(9) 的提示都完整可见，更长的
+    // 126 = 9 行整：backup(8 行) / restore(9) 的提示都完整可见，更长的
     // （PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。此前 64px 只够 4.5 行，
     // 第 5 行被边框切成半截，看着像控件坏了（2026-10-26 实测）。
     let status_height = 126;
@@ -1992,7 +1986,7 @@ unsafe fn select_operation(state: &mut State, index: usize) {
     // 源卷静默重置为第 0 项，切走再切回可能备份到错误的分区。
     let keep_target = selected_drive_letter(state, state.controls.target);
     let keep_source = selected_drive_letter(state, state.controls.source);
-    state.operation_index = index.min(5);
+    state.operation_index = index.min(4);
     set_operation_tabs(state, selected_language(state));
     let operation = selected_operation(state);
     if operation == "restore-existing" {
@@ -3773,7 +3767,6 @@ unsafe fn test_hook_auto_install(state: &mut State) {
         // 2026-10-16 用户裁定：「还原系统到非 C 盘」与「新增第二系统」本就是同一个
         // 功能（只差文案），已合并为「新增非 C 盘第二系统」一个标签页，两个键都指 3。
         "secondary" => 3,
-        "probe" => 5,
         _ => 4,
     };
     select_operation(state, op_index);
@@ -7014,19 +7007,6 @@ unsafe extern "system" fn window_proc(
                     32,
                     ID_OPERATION_PE,
                 ),
-                create_control(
-                    hwnd,
-                    "BUTTON",
-                    "",
-                    WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE,
-                    // 六个入口的最后一位（623-741）：语言标签从 759 起，
-                    // 最小客户宽 1020 下两者仍留 18px 间隙，不重叠。
-                    623,
-                    60,
-                    118,
-                    32,
-                    ID_OPERATION_PROBE,
-                ),
             ],
             source: create_control(
                 hwnd,
@@ -7569,7 +7549,6 @@ unsafe extern "system" fn window_proc(
                 (true, VK_B) => Some(ID_OPERATION_BACKUP),
                 (true, VK_R) => Some(ID_OPERATION_RESTORE),
                 (true, VK_P) => Some(ID_OPERATION_PE),
-                (true, VK_I) => Some(ID_OPERATION_PROBE),
                 (true, VK_O) => Some(ID_READ_IMAGE),
                 (false, VK_F5) => Some(ID_REFRESH),
                 (true, VK_RETURN) => Some(ID_CREATE_TASK),
@@ -7616,7 +7595,6 @@ unsafe extern "system" fn window_proc(
                 ID_OPERATION_RESTORE_DATA => Some(2),
                 ID_OPERATION_RESTORE_OTHER => Some(3),
                 ID_OPERATION_PE => Some(4),
-                ID_OPERATION_PROBE => Some(5),
                 _ => None,
             } {
                 select_operation(state, index);

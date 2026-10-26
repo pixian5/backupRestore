@@ -221,12 +221,14 @@ fn main() {
         .first()
         .is_some_and(|argument| argument == "--tab")
     {
-        // GUI 启动选项：--tab N 打开指定操作模式（1=备份 2=还原A 系统→C盘
-        // 3=还原B 数据→非C盘 4=新增非C盘第二系统 5=安装 PE）。越界值交给
+        // GUI 启动选项：--tab N 打开指定操作模式（**0 基**：0=备份 1=还原A 系统→C盘
+        // 2=还原B 数据→非C盘 3=新增非C盘第二系统 4=安装 PE）。越界值交给
         // native_gui 侧按默认（备份）处理，这里只做数字校验。
+        // （2026-10-26 订正：旧注释写 1..=5，与实际 0 基索引不符；且原第 6 个入口
+        // 「探测」已按用户要求移除，上限确为 4。）
         let tab = arguments
             .get(1)
-            .ok_or_else(|| err("--tab requires an index 1..=5"));
+            .ok_or_else(|| err("--tab requires an index 0..=4"));
         let result = tab.and_then(|index| {
             let _ = index
                 .parse::<usize>()
