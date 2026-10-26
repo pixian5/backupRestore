@@ -17,7 +17,10 @@
 #    last row, and a non-multiple remainder with all rows visible is just
 #    bottom padding. The counter stays in the output as a constant 0.)
 # plus ZERO_SIZE for visible controls that collapsed to 0x0 (the old code
-# silently skipped them, which is how a vanished control passes unnoticed).
+# silently skipped them, which is how a vanished control passes unnoticed),
+# and MISSING_CONTROLS against a checked-in baseline of (page|id|class):
+# deleting a control without updating the baseline is exactly how the
+# "removed the entry but left the wiring" class of bug survives.
 #
 # Lessons baked in:
 #   1. Enumerate ALL children instead of a hand-picked list. The 2.5.2 defect
@@ -38,7 +41,10 @@
 #
 # Results go to a FILE: the CreateProcessAsUser child has no inherited stdout.
 param(
-    [string]$Out = 'H:\brwork\gui-layout-rects.txt'
+    [string]$Out = 'H:\brwork\gui-layout-rects.txt',
+    # 控件存在性基线的真值来源。不用「解析 native_gui.rs」:那依赖仓库路径、
+    # 且删了控件却忘了删脚本时两边一起错。基线文件可 diff、可 review。
+    [string]$Baseline = '\\Mac\Home\code\backupRestore\tools\win-clicker\control-baseline.txt'
 )
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -199,6 +205,7 @@ $tabs = @(
     @(1106,'secondary'), @(1104,'install_pe')
 )
 
+$observed = @{}
 $totalOverlaps = 0
 $totalOutside = 0
 $totalClipped = 0
@@ -222,6 +229,7 @@ try {
         $snap = Get-ChildRects $main
         if ($first) { Emit "CLIENT_W=$($snap.W) CLIENT_H=$($snap.H)"; $first = $false }
         Emit "PAGE $tabName visible_children=$($snap.Rects.Count)"
+        foreach ($rc in $snap.Rects) { $observed[("{0}|{1}|{2}" -f $tabName, $rc.Id, $rc.Cls)] = $true }
 
         foreach ($rc in $snap.Rects) {
             Emit ("  RECT {0} x={1} y={2} w={3} h={4}" -f $rc.Name, $rc.X, $rc.Y, $rc.W, $rc.H)
@@ -312,4 +320,35 @@ Emit "TEXT_OVERFLOW=$totalOverflow"
 Emit "PARTIAL_LINE=$totalPartial"
 Emit "ZERO_SIZE=$totalZero"
 Emit "PAGES_CHECKED=5"
+
+# --- 6. control presence vs checked-in baseline ------------------------------
+# A control that silently disappears (or a page that stops showing a row) is
+# invisible to every geometric check above: nothing overlaps, nothing overflows,
+# there is simply less than there used to be.
+if (Test-Path -LiteralPath $Baseline) {
+    $want = @(Get-Content -LiteralPath $Baseline -Encoding UTF8 |
+              Where-Object { $_ -and -not $_.StartsWith('#') })
+    $missing = @($want | Where-Object { -not $observed.ContainsKey($_) })
+    $added   = @($observed.Keys | Where-Object { $want -notcontains $_ })
+    Emit "MISSING_CONTROLS=$($missing.Count)"
+    foreach ($m in $missing) { Emit "  MISSING $m" }
+    foreach ($a in $added)   { Emit "  NEW_CONTROL $a" }
+    if ($added.Count -gt 0) {
+        Emit "BASELINE_STALE=$($added.Count)"  # 新增控件：确认无误后删掉基线文件重跑一次即可更新
+    }
+} else {
+    # 自动生成一份：让第一次跑就有产出，但用 -1 明确表示「这条判据没有真值可比」，
+    # 而不是伪造一个 0（伪造 0 会让「基线丢了」看起来像「全部都在」）。
+    Emit "MISSING_CONTROLS=-1"
+    $dir = Split-Path -Parent $Baseline
+    if ($dir -and (Test-Path -LiteralPath $dir)) {
+        $hdr = @('# 主窗口控件存在性基线（page|id|class）。由 _t-layout-rects.ps1 自动生成。',
+                 '# 用途：MISSING_CONTROLS=0 需要它作真值。删/加控件后请重新生成并 review diff。')
+        ($hdr + ($observed.Keys | Sort-Object)) | Set-Content -LiteralPath $Baseline -Encoding UTF8
+        Emit "BASELINE_AUTO_CREATED=$($observed.Count)"
+    } else {
+        Emit "BASELINE_NOT_FOUND"
+    }
+}
+
 Emit "DONE"

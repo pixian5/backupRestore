@@ -90,9 +90,13 @@ fi
 #     越界 → 5、按钮压到 20px → 5、详情框改回 112px → 5、按钮宽 0 → ZERO_SIZE=5。
 #     TEXT_OVERFLOW 用「行数 × 行距(14px)」而不是 tmHeight(12px)：按 12 算会
 #     得出「9 行只要 108px 装得下」，而屏幕上最后一行明明被切成半截。
+#   ★ 2026-10-26 v4：再加 MISSING_CONTROLS，真值来自 control-baseline.txt
+#     （page|id|class，148 条，随仓库入库）。几何判据看不见「少了东西」——
+#     不重叠、不越界、不溢出，只是界面比原来少一个控件。变异验证：基线多一条
+#     → MISSING_CONTROLS=1；基线少一条 → BASELINE_STALE=1。
 run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '五个页签的几何判据（不重叠/不越界/不截断/不塌缩）' \
     'OVERLAP_COUNT=0' 'OUTSIDE_COUNT=0' 'TEXT_CLIPPED=0' 'TEXT_OVERFLOW=0' 'ZERO_SIZE=0' \
-    'PAGES_CHECKED=5' 'CLIENT_W='
+    'MISSING_CONTROLS=0' 'PAGES_CHECKED=5' 'CLIENT_W='
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志」→ 日志清单窗口' LOGS_WINDOW_FOUND
 run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'

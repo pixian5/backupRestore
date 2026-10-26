@@ -158,3 +158,4 @@ echo ">> 交付包：dist/$NAME.zip（$(ls -la "$OUT" | awk '{print $5}') 字节
 unzip -l "$OUT" | sed -n '4,24p'
 echo ">> 主程序 SHA256：$(shasum -a 256 "$PKG/BackupRestore.exe" | awk '{print $1}')"
 echo ">> 对应提交：$COMMIT"
+echo ">> 下一步：./tools/release/release-check.sh ${VERSION}   # 10 条判据，全绿才算可发布"
