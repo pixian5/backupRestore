@@ -144,7 +144,7 @@ Windows 里 prepare：校验 → 保存 BCD 快照 → 注入独立 WinRE 载荷
 
 1. **找码**：日志里 `grep -a "[BR-"`（PowerShell: `Select-String -Pattern '\[BR-'`），
    或命令行报错行 `error:` 后的方括号前缀；`--json` 则直接看 `error_code` 字段。
-2. **查码**：对照 [`ERROR-CODES.md`](./ERROR-CODES.md)（213 条，中英双语）。**码是契约，不会变**，
+2. **查码**：对照 [`ERROR-CODES.md`](./ERROR-CODES.md)（214 条中英双语 + 3 个结构性码，形如 `BR-IO-001`）。**码是契约，不会变**，
    报障时报码即可精确定位。
 3. **命令行用法错误**（如参数写错）**故意不带码**——英文原文即标识；带码的才是运行期失败。
 

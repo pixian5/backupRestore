@@ -183,7 +183,7 @@ Every runtime failure message carries a **stable error code**, formatted `[BR-do
 1. **Find the code**: `grep -a "[BR-"` in the log (PowerShell: `Select-String -Pattern '\[BR-'`), or
    read the bracketed prefix after `error:` on the command line; with `--json` just read the
    `error_code` field.
-2. **Look it up** in [`ERROR-CODES.md`](./ERROR-CODES.md) (213 codes, Chinese and English).
+2. **Look it up** in [`ERROR-CODES.md`](./ERROR-CODES.md) (214 bilingual codes plus 3 structural ones such as `BR-IO-001`).
    **Codes are a contract and never change** — quoting the code alone is enough to locate the fault.
 3. **Command-line usage errors** (wrong arguments, etc.) are **deliberately codeless** — the English
    text identifies them; only runtime failures carry codes.
