@@ -18,9 +18,15 @@
 //! 必须仍能被 `wim-info` 正常解析。
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+// 这三个只在 `#[cfg(windows)]` 的函数里用到：不加门控的话，本机 `cargo test`
+// 会报「未使用的导入」——而删掉它们又会打断 Windows 构建。
+#[cfg(windows)]
+use std::fs;
+#[cfg(windows)]
+use std::path::Path;
+#[cfg(windows)]
 use backuprestore_core::TaskError;
 
 /// 一个索引的展示信息（sidecar 缺失时字段为 None，不致命）。

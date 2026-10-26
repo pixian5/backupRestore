@@ -94,7 +94,7 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     // 在同一目录留下了 boot-entry.json，末段再次调用会命中"复用已有条目"分支
     // 直接返回 Ok，entry-fields 注入点根本不执行。必须先清掉簿记与本任务载荷，
     // 让 create_entry 走全新创建路径。
-    fs::remove_file(dir.join(ENTRY_RECORD))?;
+    fs::remove_file(dir.join(crate::boot_record::ENTRY_RECORD))?;
     let staging_root2 = crate::boot_cleanup::staging_volume_root(&volume)?;
     crate::boot_cleanup::remove_staging(&staging_root2, &task_id)?;
     crate::recovery_fault::configure(Some("acceptance:entry-fields:error"), &dir);

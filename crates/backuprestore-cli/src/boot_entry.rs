@@ -35,7 +35,7 @@
 //!    条目」也必须按 GUID 定位——硬编码盘符的代码在盘符重排后必然找错对象。
 
 use crate::error_code::ErrCode;
-use backuprestore_core::{TaskError, VolumeIdentity, read_json, write_json_atomic};
+use backuprestore_core::{TaskError, VolumeIdentity};
 use std::fs;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -46,69 +46,14 @@ use crate::windows_prepare::ensure_volume_mounted;
 
 /// 镜像卷上存放载荷 RE 的子目录名（不占卷根，避免与用户文件混在一起）。
 use crate::boot_cleanup::RE_STAGING_DIR;
-/// 任务目录里记录「本次自建启动项」的簿记文件名。
-const ENTRY_RECORD: &str = "boot-entry.json";
+/// 正式/半成品簿记的**定义**在跨平台的 `boot_record` 里（那边才跑得到单测），
+/// 这里只再导出，保持 `boot_entry::ReBootEntry` / `boot_entry::ENTRY_RECORD`
+/// 这些既有调用点与故障测试里 `use super::*` 的写法不变。
+pub use crate::boot_record::ReBootEntry;
 
 const BOOTMGR: &str = "{bootmgr}";
 /// 目标系统自建条目在 BCD 里的描述前缀（便于人工排查与清理）。
 const ENTRY_DESCRIPTION: &str = "BackupRestore task RE";
-
-/// 一条「自建启动项」的完整簿记：GUID、载荷位置、载荷哈希。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReBootEntry {
-    /// 本条目所属任务的 ID。载荷目录按任务隔离后，续跑与清理都必须凭它定位
-    /// 自己那份载荷；**刻意不给默认值**，旧格式簿记会在反序列化时直接报错，
-    /// 而不是静默退回到以前所有任务共用的 `BackupRestoreRE\Winre.wim`。
-    pub task_id: String,
-    /// 我们创建的 osloader 条目 GUID（带花括号）。
-    pub loader_guid: String,
-    /// 我们创建的设备选项对象 GUID（带花括号）。
-    pub devopts_guid: String,
-    /// 载荷 WIM 所在的卷身份（WinRE/桌面都用它按 GUID 解析盘符，绝不硬编码字母）。
-    pub wim_volume: VolumeIdentity,
-    /// 载荷 WIM 的绝对路径，形如 `F:\BackupRestoreRE\<任务ID>\Winre.wim`。
-    pub wim_path: String,
-    /// 载荷 WIM 的 SHA-256（重武装前必须复核，防止被改动/截断）。
-    pub wim_sha256: String,
-    /// 记录的创建时间（RFC3339）。
-    pub created: String,
-}
-
-impl ReBootEntry {
-    fn record_path(task_dir: &Path) -> PathBuf {
-        task_dir.join(ENTRY_RECORD)
-    }
-
-    /// 读取任务的启动项簿记；没有记录（旧任务 / 尚未建条目）返回 `None`。
-    pub fn read(task_dir: &Path) -> Result<Option<Self>, TaskError> {
-        let path = Self::record_path(task_dir);
-        if !path.is_file() {
-            return Ok(None);
-        }
-        read_json(path).map(Some)
-    }
-
-    pub(crate) fn write(&self, task_dir: &Path) -> Result<(), TaskError> {
-        write_json_atomic(Self::record_path(task_dir), self)
-    }
-
-    /// 转成半成品簿记，供统一补偿按精确 GUID 清理。
-    ///
-    /// 类型刻意不同（`boot_record::ResidueRecord` 而非本类型）：正式簿记会被
-    /// "复用已有条目"分支消费，半成品不会；让这个区别在编译期就成立。
-    /// 该模块是跨平台的，所以这些簿记语义的单测在 macOS 上也会跑。
-    pub(crate) fn to_residue(&self) -> crate::boot_record::ResidueRecord {
-        crate::boot_record::ResidueRecord {
-            task_id: self.task_id.clone(),
-            loader_guid: self.loader_guid.clone(),
-            devopts_guid: self.devopts_guid.clone(),
-            wim_volume: self.wim_volume.clone(),
-            wim_path: self.wim_path.clone(),
-            created: self.created.clone(),
-        }
-    }
-}
 
 /// 只读操作（`/enum`、`/export` 等）：必须捕获输出，所以用管道。
 #[cfg(windows)]

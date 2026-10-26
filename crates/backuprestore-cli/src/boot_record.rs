@@ -1,10 +1,15 @@
-//! 半成品启动项簿记：**跨平台**，因此它的单测在 macOS 上也会跑。
+//! 启动项簿记：**跨平台**，因此它的单测在 macOS 上也会跑。
+//!
+//! 两类记录都在这里：
+//! - 正式簿记 `ReBootEntry`（`boot-entry.json`）——2026-10-26 从 `boot_entry` 搬来，
+//!   它只做「纯数据 + 文件 I/O」，留在 `#[cfg(windows)]` 里等于磁盘格式零覆盖。
+//! - 半成品簿记 `ResidueRecord`（`boot-entry-residue.json`）——见下。
 //!
 //! ## 为什么单独一个模块
 //!
 //! `boot_entry` 整个是 `#[cfg(windows)]`，里面的单测在 macOS 上一次都不编译。
 //! 2026-09-29 `ramdisk=` 值畸形就是这么漏过去的（那段教训记在 `boot_entry` 的模块注释里）。
-//! 半成品簿记是**纯数据 + 文件 I/O**，不碰任何 Windows API，所以放这里并配齐单测。
+//! 簿记是**纯数据 + 文件 I/O**，不碰任何 Windows API，所以放这里并配齐单测。
 //!
 //! ## 它解决什么问题（问题 11）
 //!
@@ -75,6 +80,72 @@ impl ResidueRecord {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+/// 任务目录里记录「本次自建启动项」的簿记文件名。
+pub(crate) const ENTRY_RECORD: &str = "boot-entry.json";
+
+/// 一条「自建启动项」的完整簿记：GUID、载荷位置、载荷哈希。
+///
+/// 2026-10-26 从 `boot_entry`（整个 `#[cfg(windows)]`）搬到这里：它只是纯数据 +
+/// 文件 I/O，不碰任何 Windows API，留在那边等于「磁盘格式与读取语义零覆盖」。
+/// **`boot-entry.json` 的字段名是契约**——仓库外的任务目录里躺着历史版本写下的
+/// 文件，改一个字段名，续跑与清理就再也读不到 loader GUID（表现是「任务看着
+/// 已准备、却找不到自己的启动项」，只能重建）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReBootEntry {
+    /// 本条目所属任务的 ID。载荷目录按任务隔离后，续跑与清理都必须凭它定位
+    /// 自己那份载荷；**刻意不给默认值**，旧格式簿记会在反序列化时直接报错，
+    /// 而不是静默退回到以前所有任务共用的 `BackupRestoreRE\Winre.wim`。
+    pub task_id: String,
+    /// 我们创建的 osloader 条目 GUID（带花括号）。
+    pub loader_guid: String,
+    /// 我们创建的设备选项对象 GUID（带花括号）。
+    pub devopts_guid: String,
+    /// 载荷 WIM 所在的卷身份（WinRE/桌面都用它按 GUID 解析盘符，绝不硬编码字母）。
+    pub wim_volume: VolumeIdentity,
+    /// 载荷 WIM 的绝对路径，形如 `F:\BackupRestoreRE\<任务ID>\Winre.wim`。
+    pub wim_path: String,
+    /// 载荷 WIM 的 SHA-256（重武装前必须复核，防止被改动/截断）。
+    pub wim_sha256: String,
+    /// 记录的创建时间（RFC3339）。
+    pub created: String,
+}
+
+impl ReBootEntry {
+    fn record_path(task_dir: &Path) -> PathBuf {
+        task_dir.join(ENTRY_RECORD)
+    }
+
+    /// 读取任务的启动项簿记；没有记录（旧任务 / 尚未建条目）返回 `None`。
+    pub fn read(task_dir: &Path) -> Result<Option<Self>, TaskError> {
+        let path = Self::record_path(task_dir);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        read_json(path).map(Some)
+    }
+
+    pub(crate) fn write(&self, task_dir: &Path) -> Result<(), TaskError> {
+        write_json_atomic(Self::record_path(task_dir), self)
+    }
+
+    /// 转成半成品簿记，供统一补偿按精确 GUID 清理。
+    ///
+    /// 类型刻意不同（`ResidueRecord` 而非本类型）：正式簿记会被
+    /// "复用已有条目"分支消费，半成品不会；让这个区别在编译期就成立。
+    /// 也刻意**不带 `wim_sha256`**：补偿只按 GUID 删对象，不需要校验载荷。
+    pub(crate) fn to_residue(&self) -> ResidueRecord {
+        ResidueRecord {
+            task_id: self.task_id.clone(),
+            loader_guid: self.loader_guid.clone(),
+            devopts_guid: self.devopts_guid.clone(),
+            wim_volume: self.wim_volume.clone(),
+            wim_path: self.wim_path.clone(),
+            created: self.created.clone(),
         }
     }
 }
@@ -190,5 +261,113 @@ mod tests {
         let dir = temp_dir("absent");
         assert!(ResidueRecord::read(&dir).unwrap().is_none());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn live_record() -> ReBootEntry {
+        ReBootEntry {
+            task_id: TASK_ID.to_string(),
+            loader_guid: LOADER.to_string(),
+            devopts_guid: DEVOPTS.to_string(),
+            wim_volume: VolumeIdentity::new("disk", "partition"),
+            wim_path: format!(r"F:\BackupRestoreRE\{TASK_ID}\Winre.wim"),
+            wim_sha256: "a".repeat(64),
+            created: "2026-10-10T00:00:00Z".to_string(),
+        }
+    }
+
+    fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("簿记必须序列化成对象")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// **磁盘格式是契约**：仓库外的任务目录里躺着历史版本写下的 `boot-entry.json`，
+    /// 改一个键名，续跑与清理就再也读不到 loader GUID（表现是「任务看着已准备、
+    /// 却找不到自己的启动项」，只能重建条目）。
+    ///
+    /// 所以这里断言**逐字键名**，而不是"能 round-trip"——round-trip 对自己写自己读
+    /// 永远成立，改了列名照样绿。
+    #[test]
+    fn live_record_keeps_the_on_disk_field_names_older_versions_wrote() {
+        assert_eq!(ENTRY_RECORD, "boot-entry.json", "文件名同样是契约");
+        let keys = sorted_keys(&serde_json::to_value(live_record()).unwrap());
+        assert_eq!(
+            keys,
+            [
+                "created",
+                "devoptsGuid",
+                "loaderGuid",
+                "taskId",
+                "wimPath",
+                "wimSha256",
+                "wimVolume",
+            ]
+        );
+    }
+
+    /// 读写闭合 + **绝不串到半成品簿记的文件**：两个文件混用会让"复用已有条目"
+    /// 分支拿到字段不全的记录（反向也一样，补偿会以为正式条目有问题）。
+    #[test]
+    fn live_record_round_trips_and_never_touches_the_residue_file() {
+        let dir = temp_dir("live-round-trip");
+        assert!(
+            ReBootEntry::read(&dir).unwrap().is_none(),
+            "还没建条目时读取必须是 None，不是错误"
+        );
+        let original = live_record();
+        original.write(&dir).unwrap();
+        assert_eq!(ReBootEntry::read(&dir).unwrap().as_ref(), Some(&original));
+        assert!(dir.join(ENTRY_RECORD).is_file());
+        assert!(
+            !dir.join(RESIDUE_RECORD).exists(),
+            "写正式簿记绝不能顺带造出半成品簿记"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 缺 `task_id` 的旧格式簿记必须报错。空任务 ID 会让按任务隔离的载荷定位
+    /// 退化成卷根——清理时可能删到别的任务的载荷。
+    #[test]
+    fn live_record_rejects_a_missing_task_id() {
+        let dir = temp_dir("live-task-id");
+        let mut value = serde_json::to_value(live_record()).unwrap();
+        value.as_object_mut().unwrap().remove("taskId");
+        fs::write(
+            dir.join(ENTRY_RECORD),
+            serde_json::to_vec_pretty(&value).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            ReBootEntry::read(&dir).is_err(),
+            "缺 task_id 的正式簿记必须报错"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 转半成品簿记时**所有定位字段都要带走**（补偿靠精确 GUID 删对象），
+    /// 只刻意丢 `wim_sha256`。两个结构体的键名必须一致，否则补偿读自己写的
+    /// 文件会失败——它们是两份独立定义，这类漂移编译期抓不到。
+    #[test]
+    fn live_record_to_residue_keeps_every_locator_and_only_drops_the_hash() {
+        let live = live_record();
+        let residue = live.to_residue();
+        assert_eq!(residue.task_id, live.task_id);
+        assert_eq!(residue.loader_guid, live.loader_guid);
+        assert_eq!(residue.devopts_guid, live.devopts_guid);
+        assert_eq!(residue.wim_volume, live.wim_volume);
+        assert_eq!(residue.wim_path, live.wim_path);
+        assert_eq!(residue.created, live.created);
+
+        let live_keys: Vec<String> = sorted_keys(&serde_json::to_value(&live).unwrap())
+            .into_iter()
+            .filter(|key| key != "wimSha256")
+            .collect();
+        let residue_keys = sorted_keys(&serde_json::to_value(&residue).unwrap());
+        assert_eq!(live_keys, residue_keys, "两份簿记的键名漂移了");
     }
 }
