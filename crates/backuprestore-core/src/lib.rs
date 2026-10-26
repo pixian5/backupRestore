@@ -2585,6 +2585,132 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// 事务里的身份必须与**目录 id**、且事务内 `task`/`status` 两半必须自洽。
+    ///
+    /// 这段只有断电残留的事务文件才会走到——正常流程 `commit_state` 写出来的两份
+    /// 永远自洽，所以它在重构里最容易被"顺手简化掉"（看着像不可能成立的分支）。
+    /// 四种不一致各验一次，并且断言**错误码**而不是文案：码是契约，文案会翻译。
+    #[test]
+    fn state_transaction_rejects_identity_mismatch() {
+        for mismatch in ["status_task_id", "task_id", "operation", "stage"] {
+            let root = std::env::temp_dir().join(format!("br-state-ident-{}", Uuid::new_v4()));
+            let store = TaskStore::new(&root);
+            let task = backup_task();
+            store.create(&task).unwrap();
+            let journal = store
+                .task_dir(&task.task_id)
+                .unwrap()
+                .join("state-transaction.json");
+
+            let mut moved = task.clone();
+            let mut status = moved.transition(Stage::RecoveryStarted).unwrap();
+            match mismatch {
+                "status_task_id" => status.task_id = Uuid::new_v4().to_string(),
+                // 任务与状态**一起**换 id，这样只剩「与目录 id 对不上」这一条触发，
+                // 否则两半同时报错、分不清是哪一条守住的。
+                "task_id" => {
+                    let other = Uuid::new_v4().to_string();
+                    moved.task_id.clone_from(&other);
+                    status.task_id.clone_from(&other);
+                }
+                "operation" => status.operation = Operation::RestoreExisting,
+                _ => status.stage = Stage::Prepared,
+            }
+            write_json_atomic(&journal, &serde_json::json!({"task":moved,"status":status})).unwrap();
+
+            let error = store.load(&task.task_id).unwrap_err();
+            assert_eq!(error.code(), Some("BR-CORE-073"), "{mismatch}: {error}");
+            // 拒绝之后必须把现场留在原地，不能顺手删事务文件——否则证据没了，
+            // 用户再打开任务只会看到一个"莫名其妙停在旧阶段"的任务。
+            assert!(journal.exists(), "{mismatch}: 报错时不得删掉事务文件");
+            assert_eq!(
+                store.load(&task.task_id).map(|loaded| loaded.status).ok(),
+                None,
+                "{mismatch}: 事务仍在时不能悄悄忽略它继续读"
+            );
+            assert_eq!(read_json::<Task>(store.task_path(&task.task_id).unwrap()).unwrap(), task);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// 事务只能沿阶段图往前推。断电残留的事务若要求从 `Prepared` 一步到 `Success`，
+    /// 重放必须拒绝——否则一次文件损坏就能让任务"跳过全部步骤"变成已完成。
+    #[test]
+    fn state_transaction_rejects_an_illegal_stage_jump() {
+        let root = std::env::temp_dir().join(format!("br-state-jump-{}", Uuid::new_v4()));
+        let store = TaskStore::new(&root);
+        let task = backup_task(); // 盘上停在 Prepared
+        store.create(&task).unwrap();
+        let journal = store
+            .task_dir(&task.task_id)
+            .unwrap()
+            .join("state-transaction.json");
+
+        let mut jumped = task.clone();
+        jumped.status = Stage::Success;
+        let status = StatusRecord {
+            task_id: jumped.task_id.clone(),
+            operation: jumped.operation,
+            stage: Stage::Success,
+            progress: 100,
+            updated: Utc::now(),
+            error_code: None,
+            error: None,
+        };
+        write_json_atomic(&journal, &serde_json::json!({"task":jumped,"status":status})).unwrap();
+
+        let error = store.load(&task.task_id).unwrap_err();
+        assert_eq!(error.code(), Some("BR-CORE-074"), "{error}");
+        // 盘上两个视图都不能被这次非法重放改写。
+        assert_eq!(read_json::<Task>(store.task_path(&task.task_id).unwrap()).unwrap(), task);
+        let visible: StatusRecord = read_json(store.status_path(&task.task_id).unwrap()).unwrap();
+        assert_eq!(visible.stage, Stage::Prepared);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 盘符重排必须被**容忍**：WinRE 挂载后盘符会变，事务里记的盘符与盘上不同是正常事，
+    /// 不属于身份篡改。`replay_state_transaction` 里那段把五个 `drive_letter` 归零的
+    /// 循环就是为此而存在——谁把它当"多余代码"删掉，这条用例立刻红。
+    ///
+    /// 两个方向都验：盘上没有盘符→事务里有，以及两边都有但不同。
+    #[test]
+    fn state_transaction_tolerates_drive_letter_reassignment() {
+        for disk_letter in [None, Some('G')] {
+            let root = std::env::temp_dir().join(format!("br-state-letter-{}", Uuid::new_v4()));
+            let store = TaskStore::new(&root);
+            let mut task = backup_task();
+            if let Some(letter) = disk_letter {
+                // 盘上视图带着旧盘符：还原到另一台机器/重新挂载后完全可能。
+                task.source.as_mut().unwrap().drive_letter = Some(letter);
+                task.workspace_volume.as_mut().unwrap().drive_letter = Some(letter);
+                task.destination.as_mut().unwrap().volume.drive_letter = Some(letter);
+            }
+            store.create(&task).unwrap();
+            let journal = store
+                .task_dir(&task.task_id)
+                .unwrap()
+                .join("state-transaction.json");
+
+            let mut moved = task.clone();
+            let status = moved.transition(Stage::RecoveryStarted).unwrap();
+            moved.source.as_mut().unwrap().drive_letter = Some('F');
+            moved.workspace_volume.as_mut().unwrap().drive_letter = Some('H');
+            moved.destination.as_mut().unwrap().volume.drive_letter = Some('W');
+            write_json_atomic(&journal, &serde_json::json!({"task":moved,"status":status})).unwrap();
+
+            let loaded = store.load(&task.task_id).expect("盘符变化不该被当成身份篡改");
+            assert_eq!(loaded.status, Stage::RecoveryStarted);
+            assert_eq!(loaded.source.as_ref().unwrap().drive_letter, Some('F'));
+            assert_eq!(loaded.workspace_volume.as_ref().unwrap().drive_letter, Some('H'));
+            assert_eq!(
+                loaded.destination.as_ref().unwrap().volume.drive_letter,
+                Some('W')
+            );
+            assert!(!journal.exists(), "重放成功后事务文件必须清掉");
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn incomplete_tasks_lists_valid_pending_tasks_and_ignores_terminal_tasks() {
         let root = std::env::temp_dir().join(format!("br-incomplete-{}", Uuid::new_v4()));
