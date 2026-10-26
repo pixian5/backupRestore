@@ -95,6 +95,9 @@ mod failure_receipt;
 /// 「最近任务状态」回执：解析 `status.json` 并把阶段 / 进度 / 错误码 / 失败原因
 /// 变成界面行。**无条件编译**（纯 JSON 与字符串逻辑），本机单测覆盖全部分支。
 mod status_receipt;
+/// 任务与证据管理：把 `<运行目录>\tasks` 读成界面行（排序、坏记录表述、详情文本）。
+/// **无条件编译**（纯逻辑，不碰 Win32），因此 mac 上能单测全部分支。
+mod task_admin;
 #[cfg(windows)]
 mod native_gui;
 /// 在线任务本轮工作目录的选址：统一日志根（`log_root`）优先、`%TEMP%` 兜底。
