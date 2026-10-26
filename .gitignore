@@ -101,6 +101,7 @@ tools/win-clicker/_*.b64
 !tools/win-clicker/_t-view-logs.ps1
 !tools/win-clicker/_t-image-admin.ps1
 !tools/win-clicker/_t-refresh-status.ps1
+!tools/win-clicker/_t-task-admin-layout.ps1
 pe-assets/
 pe-debug-winpeshl.ini
 pe-debug.cmd

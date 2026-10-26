@@ -44,7 +44,10 @@ param(
     [string]$Out = 'H:\brwork\gui-layout-rects.txt',
     # 控件存在性基线的真值来源。不用「解析 native_gui.rs」:那依赖仓库路径、
     # 且删了控件却忘了删脚本时两边一起错。基线文件可 diff、可 review。
-    [string]$Baseline = '\\Mac\Home\code\backupRestore\tools\win-clicker\control-baseline.txt'
+    [string]$Baseline = '\\Mac\Home\code\backupRestore\tools\win-clicker\control-baseline.txt',
+    # 目标窗口类名。默认主窗口；独立窗口（如任务与证据）用它的类名。
+    # 非主窗口没有页签，只对当前快照查一遍，故 PAGES_CHECKED 会是 1。
+    [string]$WindowClass = 'BackupRestoreNativeGui'
 )
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -151,7 +154,7 @@ $NAMES = @{
 }
 
 $script:main = [IntPtr]::Zero
-$cbMain = [Lay+EnumCb]{ param($h,$l) if ([Lay]::Cls($h) -eq 'BackupRestoreNativeGui') { $script:main = $h; return $false }; return $true }
+$cbMain = [Lay+EnumCb]{ param($h,$l) if ([Lay]::Cls($h) -eq $WindowClass) { $script:main = $h; return $false }; return $true }
 [void][Lay]::EnumWindows($cbMain, [IntPtr]::Zero)
 $main = $script:main
 if ($main -eq [IntPtr]::Zero) {
@@ -200,10 +203,16 @@ function Get-ChildRects([IntPtr]$parent) {
 }
 
 # 五个入口（2026-10-26 用户要求移除「探测」，第六个 tab 已删）
-$tabs = @(
-    @(1101,'backup'), @(1102,'restore_c'), @(1105,'restore_nonC'),
-    @(1106,'secondary'), @(1104,'install_pe')
-)
+$isMainWindow = ($WindowClass -eq 'BackupRestoreNativeGui')
+if ($isMainWindow) {
+    $tabs = @(
+        @(1101,'backup'), @(1102,'restore_c'), @(1105,'restore_nonC'),
+        @(1106,'secondary'), @(1104,'install_pe')
+    )
+} else {
+    # 独立窗口没有页签：tabId=0 表示「不切换，直接快照」。
+    $tabs = @(@(0, $WindowClass))
+}
 
 $observed = @{}
 $totalOverlaps = 0
@@ -218,13 +227,15 @@ try {
     foreach ($t in $tabs) {
         $tabId = [int]$t[0]
         $tabName = [string]$t[1]
-        $tabHwnd = Find-ChildById $main $tabId
-        if ($tabHwnd -eq [IntPtr]::Zero) {
-            Emit "PAGE $tabName TAB_NOT_FOUND"
-            continue
+        if ($tabId -ne 0) {
+            $tabHwnd = Find-ChildById $main $tabId
+            if ($tabHwnd -eq [IntPtr]::Zero) {
+                Emit "PAGE $tabName TAB_NOT_FOUND"
+                continue
+            }
+            [void][Lay]::PostMessageW($tabHwnd, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+            Start-Sleep -Milliseconds 500
         }
-        [void][Lay]::PostMessageW($tabHwnd, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
-        Start-Sleep -Milliseconds 500
 
         $snap = Get-ChildRects $main
         if ($first) { Emit "CLIENT_W=$($snap.W) CLIENT_H=$($snap.H)"; $first = $false }
