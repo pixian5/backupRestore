@@ -189,7 +189,7 @@ git config core.hooksPath tools/git-hooks   # 一次性安装（per-clone）
 | 路径 | 内容 |
 |---|---|
 | `crates/` | 产品源码（Rust，唯一产品语言） |
-| `docs/` | 流程、开发进度、操作记录及历史方案，索引见 `docs/README.md` |
+| `docs/` | 流程、开发进度、操作记录及历史方案，索引见 `文档索引.md` |
 | `tools/win-clicker/` | 测试脚手架：操控虚拟机键鼠的自动化通道（PowerShell，不进产品） |
 | `tools/release/pack-dist.sh` | 打可分发的 Windows ARM64 交付包到 `dist/`（`dist/` 已 gitignore）。**只认虚拟机内原生构建产物** `artifacts/windows/…`（mac 交叉编译产物不得作为发布版），补齐 wimlib 两文件与手册、生成 `README.txt` 与 `SHA256SUMS.txt`；`--local` 仅供本地看包结构。详见 [交付包收口](./docs/20261026-0849-交付包收口dist追上2.6.57-deepseek-4.1-flash.md) |
 | `build-win.sh` | macOS 交叉构建（**已废止为发布路径**，仅限本地 `cargo check`；构建唯一入口是虚拟机内 `windows/build-windows.ps1 -Deploy`） |
