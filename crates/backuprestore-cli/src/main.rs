@@ -92,6 +92,9 @@ mod gui_text;
 /// **无条件编译**——`Io`/`Json` 这类失败的码只存在字段里，界面必须能看到；
 /// 纯字符串逻辑，本机单测即可覆盖全部规则。
 mod failure_receipt;
+/// 「最近任务状态」回执：解析 `status.json` 并把阶段 / 进度 / 错误码 / 失败原因
+/// 变成界面行。**无条件编译**（纯 JSON 与字符串逻辑），本机单测覆盖全部分支。
+mod status_receipt;
 #[cfg(windows)]
 mod native_gui;
 /// 在线任务本轮工作目录的选址：统一日志根（`log_root`）优先、`%TEMP%` 兜底。
@@ -1545,7 +1548,9 @@ fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), Task
                 &crate::i18n::msg_tpl("recovery_failed_log_write", &[&error.to_string(), &log_error.to_string()]),
             );
         }
-        if let Err(write_error) = store.write_recovery_error(&task, error.to_string()) {
+        if let Err(write_error) =
+            store.write_recovery_error_coded(&task, error.code(), error.to_string())
+        {
             let _ = append_log(
                 &log,
                 &crate::i18n::msg_tpl(
@@ -2539,7 +2544,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
         };
         // C: 可能已经被擦除；回滚旧 BCD 不会还原系统文件，并可能移除续跑对象。
         // 保留当前阶段与外部载荷，停止本次执行，故障解除后从同一阶段重试。
-        let persisted = store.write_recovery_error(&task, error.to_string());
+        let persisted = store.write_recovery_error_coded(&task, error.code(), error.to_string());
         let _ = append_log(
             &log,
             &format!(

@@ -1241,7 +1241,14 @@ fn prepare_task(
     let _ = fs::remove_file(&bootstrap_bcd);
     if let Err(error) = result {
         if task_dir.exists() {
-            let _ = store.write_failure(&mut task, 1, error.to_string());
+            // 把稳定错误码一起落盘：Io/Json/InvalidTransition 的 Display 故意不带码，
+            // 只有 error.code() 拿得到（界面「刷新任务状态」据此显示）。
+            let _ = store.write_failure_coded(
+                &mut task,
+                error.code(),
+                error.to_string(),
+                Some(1),
+            );
             let _ = append_log(&prepare_log, &format!("Preparation failed: {error}"));
         }
         return Err(error);

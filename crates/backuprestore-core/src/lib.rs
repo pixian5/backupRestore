@@ -710,8 +710,18 @@ pub struct StatusRecord {
     pub stage: Stage,
     pub progress: u8,
     pub updated: DateTime<Utc>,
+    /// 遗留整数字段（1/2/123…）：**没有任何消费方**，且不同调用点传的同一数字
+    /// 含义并不相同，界面显示它只会误导用户去查一张对不上的表。保留仅为兼容
+    /// 既有 status.json 的读取，新代码一律写 `error_code_text`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<i32>,
+    /// 稳定错误码 `BR-域-序号`（例如 `BR-PE-039`）。
+    /// 为什么单开一个字段：`write_failure` 的整型 `code` 装不下它，而
+    /// `TaskError::Io` / `Json` / `InvalidTransition` 这三类的 `Display`
+    /// **故意不带码**（文案是 OS 本地化串或 serde 原文），码只存在于这里。
+    /// `Option` + `skip_serializing_if` → 旧 status.json 读进来是 `None`，不受影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -945,6 +955,7 @@ impl Task {
             progress: default_progress(next),
             updated: Utc::now(),
             error_code: None,
+            error_code_text: None,
             error: None,
         })
     }
@@ -1298,6 +1309,7 @@ impl TaskStore {
             progress: 0,
             updated: Utc::now(),
             error_code: None,
+            error_code_text: None,
             error: None,
         };
         write_json_atomic(self.status_path(&task.task_id)?, &status)?;
@@ -1406,11 +1418,33 @@ impl TaskStore {
         self.commit_state(task, &status)?;
         Ok(status)
     }
+    /// 标记终态失败。**不带稳定错误码**（`error_code_text` 为 `None`）。
+    ///
+    /// 保留 `code: i32` 只是为了让既有调用点不动：这个整数没有消费方、
+    /// 也不参与界面显示（详见 `StatusRecord::error_code` 的注释）。
+    /// 凡手上有 `TaskError` 的调用点，请改用 [`Self::write_failure_coded`]
+    /// 把 `error.code()` 一起落盘——否则 `Io` / `Json` / `InvalidTransition`
+    /// 这三类失败在界面上永远看不到码。
     pub fn write_failure(
         &self,
         task: &mut Task,
         code: i32,
         error: impl Into<String>,
+    ) -> Result<StatusRecord, TaskError> {
+        self.write_failure_coded(task, None, error, Some(code))
+    }
+
+    /// 标记终态失败，并落盘稳定错误码 `BR-域-序号`。
+    ///
+    /// 用于「失败原因里看不到码」的三类错误：`Io` / `Json` / `InvalidTransition`
+    /// 的 `Display` 故意不带前缀，码只在 `TaskError::code()` 里。
+    /// 传 `None` 表示这确实是个无码失败（用户主动放弃等），**不伪造码**。
+    pub fn write_failure_coded(
+        &self,
+        task: &mut Task,
+        code_text: Option<&str>,
+        error: impl Into<String>,
+        legacy_code: Option<i32>,
     ) -> Result<StatusRecord, TaskError> {
         if !task.status.can_transition_to(Stage::Failed) {
             return Err(TaskError::coded("BR-CORE-057", format!(
@@ -1425,17 +1459,28 @@ impl TaskStore {
             stage: Stage::Failed,
             progress: 0,
             updated: Utc::now(),
-            error_code: Some(code),
+            error_code: legacy_code,
+            error_code_text: code_text.map(str::to_owned),
             error: Some(error.into()),
         };
         self.commit_state(task, &status)?;
         Ok(status)
     }
 
-    /// 保留可续跑阶段和所有恢复材料；错误信息不等于任务终结。
+    /// 保留可续跑阶段和所有恢复材料；错误信息不等于任务终结。**不带稳定错误码**。
     pub fn write_recovery_error(
         &self,
         task: &Task,
+        error: impl Into<String>,
+    ) -> Result<StatusRecord, TaskError> {
+        self.write_recovery_error_coded(task, None, error)
+    }
+
+    /// 同上，并落盘稳定错误码 `BR-域-序号`（见 [`Self::write_failure_coded`]）。
+    pub fn write_recovery_error_coded(
+        &self,
+        task: &Task,
+        code_text: Option<&str>,
         error: impl Into<String>,
     ) -> Result<StatusRecord, TaskError> {
         if !task.status.is_incomplete() {
@@ -1448,6 +1493,7 @@ impl TaskStore {
             progress: default_progress(task.status),
             updated: Utc::now(),
             error_code: Some(1),
+            error_code_text: code_text.map(str::to_owned),
             error: Some(error.into()),
         };
         self.commit_state(task, &status)?;
@@ -2444,6 +2490,88 @@ mod tests {
     }
 
     #[test]
+    fn write_failure_coded_persists_the_stable_code() {
+        // 稳定错误码必须能进 status.json：界面「刷新任务状态」据此显示
+        // `[BR-域-序号]`，而 `Io`/`Json` 这类失败的码不在文案里。
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("br-coded-{suffix}"));
+        let store = TaskStore::new(&root);
+        let mut task = backup_task();
+        store.create(&task).unwrap();
+        store
+            .write_failure_coded(&mut task, Some("BR-IO-001"), "磁盘已满", Some(1))
+            .unwrap();
+        let status: StatusRecord = read_json(store.status_path(&task.task_id).unwrap()).unwrap();
+        assert_eq!(status.error_code_text.as_deref(), Some("BR-IO-001"));
+        assert_eq!(status.error.as_deref(), Some("磁盘已满"));
+        assert_eq!(status.stage, Stage::Failed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_failure_without_code_stays_code_free() {
+        // 无码失败（用户主动放弃）不得凭空造码——界面会显示「无稳定错误码」。
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("br-nocode-{suffix}"));
+        let store = TaskStore::new(&root);
+        let mut task = backup_task();
+        store.create(&task).unwrap();
+        store.write_failure(&mut task, 2, "用户主动放弃").unwrap();
+        let status: StatusRecord = read_json(store.status_path(&task.task_id).unwrap()).unwrap();
+        assert_eq!(status.error_code_text, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_status_json_without_code_text_still_parses() {
+        // ★ 旧 status.json 没有 error_code_text 字段：必须照样读得进来，
+        // 否则历史任务会在 `parse_status` 处整体失败（读状态是排查的第一步）。
+        // 原文抄自实机 `H:\brwork\tasks`：camelCase 键名 + kebab-case 阶段。
+        let legacy = r#"{
+            "taskId": "0f7f2b1e-1111-2222-3333-444455556666",
+            "operation": "backup",
+            "stage": "failed",
+            "progress": 0,
+            "updated": "2026-10-20T01:02:03Z",
+            "errorCode": 1,
+            "error": "镜像不存在"
+        }"#;
+        let status: StatusRecord = serde_json::from_str(legacy).unwrap();
+        assert_eq!(status.error_code_text, None);
+        assert_eq!(status.error.as_deref(), Some("镜像不存在"));
+        assert_eq!(status.error_code, Some(1));
+    }
+
+    #[test]
+    fn recovery_error_coded_keeps_stage_and_carries_code() {
+        // 可重试失败：阶段不变（还要续跑），但码要落盘。
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("br-recov-{suffix}"));
+        let store = TaskStore::new(&root);
+        let mut task = backup_task();
+        store.create(&task).unwrap();
+        store
+            .write_transition(&mut task, Stage::BootRequested)
+            .unwrap();
+        store
+            .write_recovery_error_coded(&task, Some("BR-IMG-008"), "DISM 超时")
+            .unwrap();
+        let status: StatusRecord = read_json(store.status_path(&task.task_id).unwrap()).unwrap();
+        assert_eq!(status.stage, Stage::BootRequested, "可重试错误不得改阶段");
+        assert_eq!(status.error_code_text.as_deref(), Some("BR-IMG-008"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn recovery_complete_can_transition_to_failed_so_cleanup_failures_can_close_the_task() {
         // 【2026-10-18 缺陷修复 H2】`RecoveryComplete` 现在有 `(…, Failed)` 出边。
         // 缺这条边时，STEP 4 清理阶段失败 → `write_failure` 被状态机拒 → 任务
@@ -2655,6 +2783,7 @@ mod tests {
             progress: 100,
             updated: Utc::now(),
             error_code: None,
+            error_code_text: None,
             error: None,
         };
         write_json_atomic(&journal, &serde_json::json!({"task":jumped,"status":status})).unwrap();

@@ -22,6 +22,7 @@ use crate::text_parsing::{
     json_text, parse_wim_images, quote_argument,
 };
 use crate::error_code::ErrCode;
+use crate::status_receipt::StatusOutcome;
 use backuprestore_core::PROGRAM_VERSION;
 
 /// 「程序设置」模态对话框（2026-10-26 从本文件拆出，见子模块头部注释）。
@@ -3343,7 +3344,11 @@ unsafe fn refresh_task_status(state: &State) {
             "正在读取最近任务状态…"
         },
     );
-    let text = match std::env::current_exe()
+    // ① 先读 last-task.json：它给出任务身份与**日志文件在哪**。
+    let mut lines: Vec<String> = Vec::new();
+    let mut status_path: Option<PathBuf> = None;
+    let english = language == Language::English;
+    match std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|dir| dir.join("last-task.json")))
         .filter(|path| path.is_file())
@@ -3356,31 +3361,102 @@ unsafe fn refresh_task_status(state: &State) {
                 let task_root = json_text(&report, "taskRoot");
                 let prepare_log = json_text(&report, "prepareLog");
                 let recovery_log = json_text(&report, "recoveryLog");
-                format!(
-                    "任务 ID：{task_id}\n操作：{operation}\n任务目录：{task_root}\n准备日志：{prepare_log}\n恢复日志：{recovery_log}"
-                )
+                // `statusJson` 是准备阶段就写好的绝对路径；老版本没有该字段时
+                // 按任务目录兜底（status.json 恒在任务目录里）。
+                let configured = json_text(&report, "statusJson");
+                status_path = if !configured.is_empty() {
+                    Some(PathBuf::from(configured))
+                } else if task_root.is_empty() {
+                    None
+                } else {
+                    Some(Path::new(&task_root).join("status.json"))
+                };
+                let sep = if english { ": " } else { "：" };
+                for (key, value) in [
+                    (status_field_label(language, "task_id"), task_id),
+                    (status_field_label(language, "operation_field"), operation),
+                    (status_field_label(language, "task_root"), task_root),
+                    (status_field_label(language, "prepare_log"), prepare_log),
+                    (status_field_label(language, "recovery_log"), recovery_log),
+                ] {
+                    lines.push(format!("{key}{sep}{value}"));
+                }
             }
-            Err(error) => format!("读取任务状态失败：{error}"),
+            Err(error) => lines.push(format!(
+                "{}{error}",
+                if english {
+                    "Task record read failed: "
+                } else {
+                    "读取任务记录失败："
+                }
+            )),
         },
-        None => "尚未找到最近任务记录。".to_string(),
+        None => lines.push(if english {
+            "No recent task record found.".to_string()
+        } else {
+            "尚未找到最近任务记录。".to_string()
+        }),
+    }
+
+    // ② 再读 status.json：这里才是「成功还是失败、为什么失败」。
+    //    ★ 四种结局必须分开表述——「读不到」与「读出来是失败」是两件事，
+    //    混成一句「状态不可用」会让排查无法定位是哪一侧坏了。
+    let outcome = match status_path.as_deref() {
+        Some(path) if path.is_file() => match fs::read_to_string(path) {
+            Err(error) => StatusOutcome::Unreadable(error.to_string()),
+            Ok(text) => match crate::status_receipt::parse_status(&text) {
+                Ok(snapshot) => StatusOutcome::Ok(snapshot),
+                Err(error) => StatusOutcome::Malformed(error),
+            },
+        },
+        // 路径没配置、或文件还没生成（任务尚未进入恢复环境）。
+        _ => StatusOutcome::Missing,
     };
-    let text = if language == Language::English {
-        text.replace("任务 ID：", "Task ID: ")
-            .replace("操作：", "Operation: ")
-            .replace("任务目录：", "Task root: ")
-            .replace("准备日志：", "Prepare log: ")
-            .replace("恢复日志：", "Recovery log: ")
-            .replace("状态：", "Status: ")
-            .replace(
-                "状态：status.json 不可读或尚未生成",
-                "Status: status.json is unavailable",
-            )
-            .replace("读取任务状态失败：", "Task status read failed: ")
-    } else {
-        text
+    let (outcome_name, code_field, error_len) = match &outcome {
+        StatusOutcome::Ok(status) => (
+            "ok",
+            status.error_code_text.clone().unwrap_or_default(),
+            status.error.as_ref().map(String::len).unwrap_or(0),
+        ),
+        StatusOutcome::Missing => ("missing", String::new(), 0),
+        StatusOutcome::Unreadable(_) => ("unreadable", String::new(), 0),
+        StatusOutcome::Malformed(_) => ("malformed", String::new(), 0),
     };
-    set_text(state.controls.status, &text);
-    append_gui_log(state, "GUI action completed: refresh latest task status");
+    match &outcome {
+        StatusOutcome::Ok(status) => {
+            lines.extend(crate::status_receipt::render_status_lines(status, language))
+        }
+        other => lines.push(crate::status_receipt::render_outcome_line(other, language)),
+    }
+    set_text(state.controls.status, &lines.join("\n"));
+    // 结构化日志行：自动化判据只认这三个字段，不解析中文文案。
+    append_gui_log(
+        state,
+        &format!(
+            "GUI action completed: refresh latest task status; status_outcome={} code={} error_len={} lines={}",
+            outcome_name,
+            if code_field.is_empty() { "none" } else { &code_field },
+            error_len,
+            lines.len()
+        ),
+    );
+}
+
+/// 「刷新任务状态」里那几个字段名（随界面语言切换）。
+fn status_field_label(language: Language, key: &str) -> &'static str {
+    match (language, key) {
+        (Language::Chinese, "task_id") => "任务 ID",
+        (Language::Chinese, "operation_field") => "操作",
+        (Language::Chinese, "task_root") => "任务目录",
+        (Language::Chinese, "prepare_log") => "准备日志",
+        (Language::Chinese, "recovery_log") => "恢复日志",
+        (_, "task_id") => "Task ID",
+        (_, "operation_field") => "Operation",
+        (_, "task_root") => "Task root",
+        (_, "prepare_log") => "Prepare log",
+        (_, "recovery_log") => "Recovery log",
+        _ => "",
+    }
 }
 
 fn discover_drives() -> Vec<DriveInfo> {

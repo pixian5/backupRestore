@@ -97,6 +97,16 @@ fi
 run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '五个页签的几何判据（不重叠/不越界/不截断/不塌缩）' \
     'OVERLAP_COUNT=0' 'OUTSIDE_COUNT=0' 'TEXT_CLIPPED=0' 'TEXT_OVERFLOW=0' 'ZERO_SIZE=0' \
     'MISSING_CONTROLS=0' 'PAGES_CHECKED=5' 'CLIENT_W='
+# ★ 状态回执用例（2026-10-26 v2.6.64 补）：「刷新任务状态」此前**从不读 status.json**，
+#   恢复环境里失败的任务回到 Windows 后界面连「失败」二字都没有。这里把四种结局
+#   全部在实机上走一遍：带码失败 / 失败无原因 / 文件缺失 / 解析失败，并断言
+#   状态框里真的出现了错误码与失败原因（ASCII 判据）。
+#   副作用：运行期间会把 H:\brwork\last-task.json 临时换成测试版并在结尾还原，
+#   脚本用 RESTORED=1 自证（还原失败会让这条判据变红，而不是静默留下脏数据）。
+run_case _t-refresh-status.ps1 'H:\brwork\refresh-status-check.txt' '「刷新任务状态」四种结局（错误码 / 未记录原因 / 缺失 / 解析失败）' \
+    'CASE_RESULT=S1_OK_WITH_CODE=PASS' 'CASE_RESULT=S2_OK_NO_REASON=PASS' \
+    'CASE_RESULT=S3_MISSING_FILE=PASS' 'CASE_RESULT=S4_MALFORMED=PASS' \
+    'RESTORED=1' 'DONE'
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志」→ 日志清单窗口' LOGS_WINDOW_FOUND
 run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'
