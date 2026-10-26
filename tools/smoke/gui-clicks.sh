@@ -40,17 +40,20 @@ run_case() {
     echo "-- ${label}"
     prlctl exec "$VM" cmd /d /c "echo ${UNC_BODY}\\${body}>${HOOK}" >/dev/null 2>&1
     prlctl exec "$VM" cmd /d /c "powershell -NoProfile -ExecutionPolicy Bypass -Command \"iex (Get-Content -Raw -Encoding UTF8 ${UNC_LAUNCH})\"" >/dev/null 2>&1
-    # 子进程没有 stdout，结果只能从文件读；给它 7 秒写完。
+    # 子进程没有 stdout，结果只能从文件读。先给 7 秒起跑，再按 DONE 轮询。
     sleep 7
     # ★ 通道会偶发返回空（不是文件为空）。不重试的话，一次抽风就被记成一条
     #   红判据——2026-10-26 实测：probe-entry-check.txt 里明明是
     #   "after: probe_checked=1"，这里读回空串，于是报了 FAIL。
     #   重试到非空为止；真的读不到就报 READ_EMPTY，与「判据不满足」区分开。
+    # ★ 2026-10-27 v2：原来固定 sleep 7 秒就读，会读到**写了一半**的文件
+    #   （用例后面几行还没落盘），断言少几行就变假红——「任务与证据」窗口
+    #   用例第一次接进来时正是这个毛病。改成轮询到 DONE 或超时 20 秒。
     local text attempt
-    for attempt in 1 2 3 4 5; do
+    for attempt in $(seq 1 10); do
         text="$(prlctl exec "$VM" cmd /d /c "type ${out}" 2>/dev/null)"
-        [ -n "$(printf '%s' "$text" | tr -d '[:space:]')" ] && break
-        sleep 1
+        if printf '%s' "$text" | tr -d '\r' | grep -qx 'DONE'; then break; fi
+        sleep 2
     done
     if [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ]; then
         echo "   FAIL  [READ_EMPTY after ${attempt} attempts: ${out}]"
@@ -110,6 +113,18 @@ run_case _t-refresh-status.ps1 'H:\brwork\refresh-status-check.txt' '「刷新�
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志」→ 日志清单窗口' LOGS_WINDOW_FOUND
 run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'
+# ★ 「任务与证据」窗口（2026-10-27 v2.6.67 补）：S2 当时只有「窗口出现 + 项数=50」
+#   一条判据，布局一条没验；本轮第一次真跑几何，立刻抓到 4 个控件被裁 4px
+#   （CreateWindowEx 的 width/height 是整窗尺寸、不是客户区）。三层判据：
+#     ① 几何 OVERLAP/OUTSIDE/ZERO_SIZE 全 0（修前 OUTSIDE=4，判据两侧都红绿过）
+#     ② 存在性：与签入的 control-baseline-taskadmin.txt 双向比对
+#        （变异：基线多一条 → MISSING=1；少一条 → STALE=1；改 class → CLASS_MISMATCH=1）
+#     ③ T1 项数 = 磁盘任务目录数（两条独立代码路径，不是自洽）
+#   窗口是模态的，脚本结尾自己 WM_CLOSE，否则后面所有用例都会被挡住。
+run_case _t-task-admin-layout.ps1 'H:\brwork\task-admin-layout-driver.txt' '「任务与证据」窗口：几何 + 控件基线 + 项数对账' \
+    'WINDOW=1' 'OVERLAP_COUNT=0' 'OUTSIDE_COUNT=0' 'ZERO_SIZE=0' \
+    'MISSING_CONTROLS=0' 'BASELINE_STALE=0' 'CLASS_MISMATCH=0' \
+    'T1_ITEMS_MATCH_DIRS=1' 'CLOSED=1' 'DONE'
 
 echo ""
 echo "结果：PASS=${pass} FAIL=${fail}"

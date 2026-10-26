@@ -1,0 +1,19 @@
+# 「任务与证据」窗口（BackupRestoreTaskAdmin）的控件存在性基线。
+# 与主窗口的 control-baseline.txt 分开：两份窗口、两套页面概念，混在一起会让
+# 「页签」这个字段失去意义。
+#
+# 格式：id|class
+# 用途：MISSING_CONTROLS=0 需要它作真值。删/加控件后必须重新生成并 review diff。
+# ★ 判据两个方向都要验：
+#     - 基线有、窗口没有 → MISSING_CONTROLS（控件丢了）
+#     - 窗口有、基线没有 → BASELINE_STALE（基线过期，等于判据在放水）
+# 生成方式：跑 tools/smoke/run-body.sh _t-task-admin-layout.ps1，把 `RECT id=…`
+# 那段按 class 抄成 id|class 并 review。
+1400|STATIC
+1401|COMBOBOX
+1402|EDIT
+1403|BUTTON
+1404|BUTTON
+1405|BUTTON
+1406|BUTTON
+1407|STATIC

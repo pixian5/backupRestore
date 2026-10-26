@@ -102,6 +102,9 @@ tools/win-clicker/_*.b64
 !tools/win-clicker/_t-image-admin.ps1
 !tools/win-clicker/_t-refresh-status.ps1
 !tools/win-clicker/_t-task-admin-layout.ps1
+# 「为什么看不见窗口」的常备探针：打会话/窗口站/桌面/顶层窗口数，
+# 让 GUI_NOT_FOUND 能分清「通道不对」与「窗口真没有」（2026-10-27 白查两小时的产物）。
+!tools/win-clicker/_diag-enum-ctx.ps1
 pe-assets/
 pe-debug-winpeshl.ini
 pe-debug.cmd

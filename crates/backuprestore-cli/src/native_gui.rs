@@ -424,6 +424,9 @@ unsafe extern "system" {
     fn ShowWindow(hwnd: Hwnd, command: i32) -> i32;
     fn MoveWindow(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32, repaint: i32) -> i32;
     fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> i32;
+    // 由「目标客户区」反推「整窗尺寸」：CreateWindowExW 的 width/height 是含
+    // 边框与标题栏的整窗尺寸，直接传客户区尺寸会让客户区小一圈（2.6.67 的缺陷）。
+    fn AdjustWindowRectEx(rect: *mut Rect, style: u32, menu: i32, ex_style: u32) -> i32;
     fn TranslateMessage(message: *const Msg) -> i32;
     fn PeekMessageW(message: *mut Msg, hwnd: Hwnd, min: u32, max: u32, remove: u32) -> i32;
     fn IsWindow(hwnd: Hwnd) -> i32;
@@ -9213,9 +9216,26 @@ unsafe fn show_task_admin(parent: Hwnd, language: Language, root: &Path) {
         });
     }
 
-    // 客户区 720×480：标题栏另算，故 CreateWindowExW 的 height 是客户区高度。
-    let width = 720;
-    let height = 480;
+    // ★ 2.6.67 修缺陷：CreateWindowExW 的 width/height 是**整窗**尺寸（含边框与
+    //   标题栏），不是客户区——上一版注释把这点写反了，于是客户区实测只有
+    //   704×441，而控件是按 720×480 摆的：下拉框/详情框/关闭按钮/提示条右边界
+    //   到 708 > 704，被裁掉 4 px；提示条 y 到 448 > 441，纵向也被裁 7 px。
+    //   这类缺陷肉眼在小屏上很难分辨（差 4 px），是几何判据抓出来的。
+    //   正解：先用 AdjustWindowRectEx 由目标客户区反推整窗尺寸。
+    const CLIENT_W: i32 = 720;
+    const CLIENT_H: i32 = 480;
+    let style = WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
+    let mut frame = Rect {
+        left: 0,
+        top: 0,
+        right: CLIENT_W,
+        bottom: CLIENT_H,
+    };
+    unsafe {
+        AdjustWindowRectEx(&mut frame, style, 0, 0);
+    }
+    let width = frame.right - frame.left;
+    let height = frame.bottom - frame.top;
     let screen_width = GetSystemMetrics(SM_CXSCREEN).max(800);
     let screen_height = GetSystemMetrics(SM_CYSCREEN).max(600);
     let title = wide(match language {
@@ -9226,7 +9246,7 @@ unsafe fn show_task_admin(parent: Hwnd, language: Language, root: &Path) {
         0,
         class_name.as_ptr(),
         title.as_ptr(),
-        WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        style,
         ((screen_width - width) / 2).max(0),
         ((screen_height - height) / 2).max(0),
         width,

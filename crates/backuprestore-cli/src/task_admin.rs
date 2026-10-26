@@ -164,13 +164,20 @@ pub(crate) fn combo_label(index: usize, row: &TaskRow, language: Language) -> St
         .with_timezone(&chrono::Local)
         .format("%m-%d %H:%M")
         .to_string();
-    format!(
+    let base = format!(
         "#{} {} {} {}",
         index + 1,
         short,
         operation_label(language, row.operation),
         stage
-    )
+    );
+    // ★ 2.6.67：失败任务在下拉列表里直接带稳定错误码。用户在列表里就能分清
+    //   「磁盘满」和「镜像不存在」，不必逐条点开详情；同时这也让 error_code()
+    //   有了生产调用点（此前只有测试用它，release 构建报 dead_code）。
+    match row.error_code() {
+        Some(code) => format!("{base} {code}"),
+        None => base,
+    }
 }
 
 /// 坏记录的下拉行：仍然可选中（用户要看目录路径去人工处理），但内容明确标注缺陷。
@@ -423,5 +430,32 @@ mod tests {
         // 英文界面下不能混进中文。
         let english = combo_label(0, &row, Language::English);
         assert!(english.contains("restore") && english.contains("success"), "{english}");
+    }
+
+    #[test]
+    fn combo_label_appends_code_only_for_failures() {
+        // 2.6.67：失败任务在下拉里直接带码；成功任务不能凭空多出一段。
+        let failed = parse_row(
+            &task_json("k1", "backup"),
+            &status_json(
+                "k1",
+                "failed",
+                0,
+                r#","errorCodeText":"BR-PE-039","error":"镜像文件不存在""#,
+            ),
+            r"H:\brwork\tasks\k1",
+        )
+        .unwrap();
+        let label = combo_label(0, &failed, Language::Chinese);
+        assert!(label.ends_with(" BR-PE-039"), "{label}");
+
+        let ok = parse_row(
+            &task_json("k2", "backup"),
+            &status_json("k2", "success", 100, ""),
+            r"H:\brwork\tasks\k2",
+        )
+        .unwrap();
+        let ok_label = combo_label(0, &ok, Language::Chinese);
+        assert!(!ok_label.contains("BR-"), "{ok_label}");
     }
 }
