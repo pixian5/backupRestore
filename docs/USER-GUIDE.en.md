@@ -1,6 +1,6 @@
 # BackupRestore User Guide (English)
 
-> **Applies to: v2.6.53 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
+> **Applies to: v2.6.58 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
 > intentionally named evergreen file). It describes end-user visible behaviour; development and
 > acceptance details live in the dated files under `docs/`, and the error-code lookup lives in
 > [`ERROR-CODES.md`](./ERROR-CODES.md).
@@ -45,7 +45,7 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 ### 3.1 Layout
 
-Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.53`):
+Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.58`):
 
 - **Operation mode** (a row of radio entries): `Backup` / `Restore system to C:` /
   `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE` / `Inspect`
@@ -98,6 +98,16 @@ confirm the setup is wired correctly.
    - **System volume**: reboots into the recovery environment, captures offline, then returns to
      Windows automatically.
 6. On success the task record and logs stay under `H:\brwork` (see §7).
+
+> **Space pre-check (runs when the task is created, writes nothing):** the free space on the
+> **volume holding the image** is inspected first.
+> Below "source volume used ÷ 20 (at least 1 GiB)" → the task is rejected with `BR-IMG-008` and
+> **not a single byte of image data is written**;
+> below the conservative estimate (`Compression` = 70% of the source usage, `No compression` = 105%)
+> → **only a log warning, no rejection**.
+> Why the estimate is not a gate: the WIM ratio swings between 13% and 100% depending on content
+> (measured ~13% for a system drive with `Compression`, close to 100% for a data volume full of
+> already-compressed media), so gating on it would reject backups that would actually fit.
 
 ### 3.5 Restore
 
@@ -193,6 +203,7 @@ Quick reference for common failures:
 | Symptom / code | Meaning | What to do |
 |---|---|---|
 | Target too small (`BR-PE-048`) | The target volume cannot hold the expanded image | Use a larger target, or enable formatting and retry |
+| Image volume too small (`BR-IMG-008`) | Pre-check before backup: free space on the image volume is below "source used ÷ 20 (at least 1 GiB)" | Use a larger image volume or free space first; **no image data was written this run** |
 | File in use (log category "in use") | A program on the target holds a file | Close the program and retry; rare inside the recovery environment |
 | Corrupt image (log category "corrupt image" + `BR-APL-001/004`) | The image file itself is damaged; **no** automatic fallback | Use another image; never treat a broken image as a backup |
 | DISM timeout (log category "timeout") | DISM stalled past the limit | The program falls back to wimlib automatically; tune `dism_timeout_secs` in Settings |
@@ -233,6 +244,21 @@ own line.)
 Prefer not to memorise paths: the top-bar `View logs...` lists the **20 most recently modified** log
 files under the log root (the current run's log comes first); select one and click "Open in Notepad",
 or click "Open folder" to browse in Explorer.
+
+### 7.3 Structured verdict lines (for automation and bug reports)
+
+The log also carries a few **plain-ASCII, fixed-format, language-independent** verdict lines. Scripts
+read them; humans can grep them to locate a problem fast:
+
+| Prefix | Where | What it tells you |
+|---|---|---|
+| `RESTORE_SELFCHECK target= serial_before= serial_after= ntoskrnl=` | Restore finalisation (three places: recovery-environment wrap-up, re-entry into the Windows volume, data volume) | Whether the target serial changed and whether the kernel file exists. **This line is the hard evidence of success**, more trustworthy than "progress 100%" |
+| `CAPTURE_HEARTBEAT elapsed_secs= image_bytes= phase=` | Offline capture of a system volume, one line every 30 seconds | The image is still growing, therefore work is happening |
+| `CAPTURE_STALL elapsed_secs= image_bytes= silent_secs=` | The image has not grown for 10 minutes during capture | **Not a failure**: DISM pre-scans the whole volume before writing, so zero bytes at the start is normal (measured: a 8.7 GB subtree pre-scanned for 100 s; a whole volume can take minutes) |
+| `CAPTURE_SUMMARY` | Written once when capture ends | The totals for that capture |
+
+Do not kill the process just because you see `CAPTURE_STALL`: it only records, it never intervenes.
+Real timeouts are handled by `dism_timeout_secs` in Settings.
 
 ---
 
