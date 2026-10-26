@@ -191,3 +191,6 @@ context/
 memory/
 messages/
 main.rs
+
+# 哨兵状态文件（本机临时，不入库）
+.br-sentinel/
