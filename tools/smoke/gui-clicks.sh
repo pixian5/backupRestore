@@ -88,8 +88,8 @@ fi
 #     每页几何不同——只查一页等于只验了 1/6。PAGES_CHECKED=6 证明六页都真走过。
 run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '全部页签两两不重叠（几何判据，全量枚举）' \
     'OVERLAP_COUNT=0' 'PAGES_CHECKED=6' 'CLIENT_W='
-run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志…」→ 日志清单窗口' LOGS_WINDOW_FOUND
-run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理…」→ 镜像清单窗口（零副作用）' \
+run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志」→ 日志清单窗口' LOGS_WINDOW_FOUND
+run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'
 run_case _t-probe-entry.ps1 'H:\brwork\probe-entry-check.txt'  '第六入口「探测」→ 选中且无关字段隐藏' 'after: probe_checked=1'
 

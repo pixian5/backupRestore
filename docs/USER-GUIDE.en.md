@@ -1,6 +1,6 @@
 # BackupRestore User Guide (English)
 
-> **Applies to: v2.6.58 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
+> **Applies to: v2.6.60 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
 > intentionally named evergreen file). It describes end-user visible behaviour; development and
 > acceptance details live in the dated files under `docs/`, and the error-code lookup lives in
 > [`ERROR-CODES.md`](./ERROR-CODES.md).
@@ -45,17 +45,17 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 ### 3.1 Layout
 
-Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.58`):
+Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.60`):
 
 - **Operation mode** (a row of radio entries): `Backup` / `Restore system to C:` /
   `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE` / `Inspect`
-- **Top-bar buttons**: `View logs...` (lists the most recently modified log files; open one in
-  Notepad or open the log folder), `Backup files...` (lists the WIMs and indexes on the image
-  volume; delete the oldest indexes and keep only the latest N), `Cancel pending reboot...`
-  (abandon a task that is waiting for a reboot), `Settings...`, `Language` (Chinese/English,
+- **Top-bar buttons**: `View logs` (lists the most recently modified log files; open one in
+  Notepad or open the log folder), `Backup files…` (lists the WIMs and indexes on the image
+  volume; delete the oldest indexes and keep only the latest N), `Cancel pending reboot`
+  (abandon a task that is waiting for a reboot), `Settings…`, `Language` (Chinese/English,
   remembered across restarts)
 - **Main area** changes with the entry and usually holds: source volume dropdown, image path
-  (`Browse...` to pick), compression, image name, keep latest N, the `Format target volume`
+  (`Browse…` to pick), compression, image name, keep latest N, the `Format target volume`
   checkbox (restore entries), `Read image` (parses the selected .wim and fills in its indexes)
 - **Bottom buttons**: `Refresh environment` (re-detect Windows, recovery environment and volume
   identities — **click it first on a fresh start**), `Read image`, `Create task`,
@@ -131,7 +131,7 @@ entry points at the restored system, and the recovery environment registration i
 - Inside the recovery environment you can press `P` to pause/resume, `B` to roll back the boot
   configuration data, and `L` / `M` / `K` to view logs (there are buttons as well as shortcuts);
   the program waits for the current step to reach a boundary before closing a window.
-- Top-bar `Cancel pending reboot...`: abandon a task that is "waiting for the reboot to continue"
+- Top-bar `Cancel pending reboot`: abandon a task that is "waiting for the reboot to continue"
   (all evidence is kept; only the one-shot boot entry is cleared).
 - Unattended, once failures reach the threshold (default 3), the program cleans up and reboots back
   into Windows — it never leaves the machine inside the recovery environment.
@@ -218,7 +218,7 @@ time window from `H:\brwork\logs`.**
 
 ## 7. Settings and logs
 
-### 7.1 Settings (`Settings...` button → writes `H:\brwork\BackupRestore.settings.ini`)
+### 7.1 Settings (`Settings…` button → writes `H:\brwork\BackupRestore.settings.ini`)
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -241,7 +241,7 @@ own line.)
 | Recovery environment main log | `Recovery.log` next to the image (e.g. `H:\BRImages\Recovery.log`) |
 | GUI action audit | `H:\brwork\logs\gui.log` (every click is recorded; look here first when troubleshooting) |
 
-Prefer not to memorise paths: the top-bar `View logs...` lists the **20 most recently modified** log
+Prefer not to memorise paths: the top-bar `View logs` lists the **20 most recently modified** log
 files under the log root (the current run's log comes first); select one and click "Open in Notepad",
 or click "Open folder" to browse in Explorer.
 

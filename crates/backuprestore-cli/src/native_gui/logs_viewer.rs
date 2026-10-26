@@ -1,4 +1,4 @@
-//! 「查看日志…」窗口（2026-10-26 从 `native_gui.rs` 拆出）。
+//! 「查看日志」窗口（2026-10-26 从 `native_gui.rs` 拆出）。
 //!
 //! 子模块而不是顶层模块：它要用父模块一整套私有 Win32 类型/常量/辅助函数
 //! （`use super::*`），做成顶层就得把它们全提成 `pub(crate)`。
@@ -22,7 +22,7 @@ static LOGS_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex
 /// 清单最多显示多少条。再多是噪音：排障要的是本轮日志，不是全部历史。
 const LOGS_LIST_LIMIT: usize = 20;
 
-/// 顶栏「查看日志…」：报障第一步就是「日志给我」。此前只有完成对话框里的一行
+/// 顶栏「查看日志」：报障第一步就是「日志给我」。此前只有完成对话框里的一行
 /// 路径，用户得自己在资源管理器里翻「动作/会话」两层目录找本轮日志——这里直接
 /// 列出最近修改的日志文件，本轮排最前。
 pub(super) unsafe fn open_logs_viewer(state: &mut State) {

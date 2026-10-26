@@ -232,9 +232,11 @@ pub(crate) fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "verify_hash") => "严格对比哈希（默认仅对比大小）",
         (Language::Chinese, "language") => "语言",
         (Language::Chinese, "settings") => "设置…",
-        (Language::Chinese, "cancel_pending") => "取消待重启任务…",
+        // ★ 省略号只给「点下去还要收集参数」的按钮（Windows 约定）。
+        //   下面两个只弹展示/确认框，不收集任何信息，故**不带**省略号（2026-10-26 规范化）。
+        (Language::Chinese, "cancel_pending") => "取消待重启任务",
         (Language::Chinese, "image_admin") => "备份文件管理…",
-        (Language::Chinese, "view_logs") => "查看日志…",
+        (Language::Chinese, "view_logs") => "查看日志",
         (Language::Chinese, "refresh") => "刷新环境",
         (Language::Chinese, "read_image") => "读取镜像",
         (Language::Chinese, "browse") => "浏览…",
@@ -312,10 +314,12 @@ pub(crate) fn ui_text(language: Language, key: &str) -> &'static str {
         (Language::English, "keep") => "Keep latest N",
         (Language::English, "verify_hash") => "Verify hash (default: size only)",
         (Language::English, "language") => "Language",
-        (Language::English, "settings") => "Settings...",
-        (Language::English, "cancel_pending") => "Cancel pending reboot...",
-        (Language::English, "image_admin") => "Backup files...",
-        (Language::English, "view_logs") => "View logs...",
+        // 省略号统一用单字符 U+2026（与中文一致）；此前四个用 "..." 而 browse 用 "…"，
+        // 同一排两套写法是可见的不一致。
+        (Language::English, "settings") => "Settings…",
+        (Language::English, "cancel_pending") => "Cancel pending reboot",
+        (Language::English, "image_admin") => "Backup files…",
+        (Language::English, "view_logs") => "View logs",
         (Language::English, "refresh") => "Refresh environment",
         (Language::English, "read_image") => "Read image",
         (Language::English, "browse") => "Browse…",

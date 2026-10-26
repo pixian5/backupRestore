@@ -129,7 +129,7 @@ const ID_LANGUAGE: usize = 1005;
 const ID_BROWSE_IMAGE: usize = 1006;
 /// 顶栏「设置…」按钮：打开程序设置窗口（当前只有「恢复环境失败处理」一项）。
 const ID_SETTINGS: usize = 1007;
-/// 顶栏「取消待重启任务…」按钮：把「上次没跑完、每次启动都想重启机器」的任务
+/// 顶栏「取消待重启任务」按钮：把「上次没跑完、每次启动都想重启机器」的任务
 /// 交回给用户处置（继续 / 放弃）。此前 GUI 完全没有这个出口（2026-10-17
 /// 第二轮核查，逃生 A/D）。
 const ID_CANCEL_PENDING: usize = 1008;
@@ -160,7 +160,7 @@ const ID_IMAGE_ADMIN_DELETE: usize = 3204;
 const ID_IMAGE_ADMIN_OPEN_FOLDER: usize = 3205;
 const ID_IMAGE_ADMIN_CLOSE: usize = 3206;
 const ID_IMAGE_ADMIN_HINT: usize = 3207;
-/// 顶栏「查看日志…」按钮（P1-a：报障第一步「日志给我」不该让用户自己翻目录）。
+/// 顶栏「查看日志」按钮（P1-a：报障第一步「日志给我」不该让用户自己翻目录）。
 const ID_VIEW_LOGS: usize = 1010;
 /// 日志查看窗口的控件（独立 ID 段 3300+）。
 const ID_LOGS_COMBO: usize = 3300;
@@ -1398,13 +1398,13 @@ unsafe fn set_operation_visibility(state: &State) {
     set_child_visible(ID_PE_DIR_BROWSE as i32, pe_visible && pe_mode_ram);
 }
 
-/// 顶栏操作按钮（查看日志… / 备份文件管理… / 取消待重启任务… / 设置… / 语言）
+/// 顶栏操作按钮（查看日志 / 备份文件管理… / 取消待重启任务 / 设置… / 语言）
 /// 独立成一行，放在客户区顶部这条原本空着的窄带里。
 ///
 /// ★ 2026-10-26 修缺陷：此前这 5 个控件与「操作模式」的 6 个入口**同在 y=60**，
 /// 两组横向总宽约 90+650(入口) + 4 按钮+语言约 750 = 远超任何窗口宽度，于是
 /// 顶栏按钮被画在入口按钮上面。实机 GetWindowRect 量到 **6 对重叠**，最严重的是
-/// 「新增非 C 盘第二系统」被「查看日志…」盖掉 107×24 px（占该按钮宽度 71%）。
+/// 「新增非 C 盘第二系统」被「查看日志」盖掉 107×24 px（占该按钮宽度 71%）。
 /// 当时的注释写着「最小窗口 1020 宽下两者不重叠」，而它只对「入口排到 ~741、
 /// 语言栏从右边算起」成立——没算后来加进来的四个顶栏按钮。教训：两排控件共用
 /// 一个 y 时，必须按**最坏宽度**（最小窗口 + 最长语言）核算，不能只看各自的起点。
@@ -1421,7 +1421,11 @@ unsafe fn layout_operation(state: &State) {
     let client_width = (rect.right - rect.left).max(1020);
     let field_x = 180;
     let field_width = (client_width - field_x - 24).max(700);
-    let details_height = 112;
+    // 详情框高度必须容得下**实际行数**，否则最后一行被边框切一半（2026-10-26 实测：
+    // 112 px 装 9 行 SimSun 9pt，行高 tmHeight 12 + extLead 2 = 14，需 126 px）。
+    // 9 行 = 1 行用途说明 + 1 空行 + 7 行设备详情（`drive_details`）；130 留 4 px 余量。
+    // ★ 加行数（比如再补一个字段）就要同步这里，否则又是一次「最后一行看不到」。
+    let details_height = 130;
     let row_gap = 8;
     // 行可见性：源卷行仅「备份」显示（A/B/C 隐藏——C 源恒为当前系统盘，
     // v2.6.13 起从 C 页移除），通道单选行仅 B/C 显示。隐藏的行不占位，
@@ -1464,7 +1468,7 @@ unsafe fn layout_operation(state: &State) {
         0
     };
     let status_y = last_details_y + 16 + pe_extra_y;
-    let image_y = status_y + 84;
+    let image_y = status_y + 146;
     let secondary_y = image_y + 34;
     // C（还原系统到非 C 盘）与「新增第二系统」的 verify_hash 复选框在
     // secondary_y+32（底缘 +56）——按钮行必须让过它，留 8px 间隙。
@@ -1485,7 +1489,7 @@ unsafe fn layout_operation(state: &State) {
     } else if image_visible {
         image_y + 40
     } else {
-        status_y + 84
+        status_y + 146
     };
 
     let reposition = |hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32| {
@@ -1522,7 +1526,7 @@ unsafe fn layout_operation(state: &State) {
         settings_w,
         24,
     );
-    // 「取消待重启任务…」在「设置…」左侧，同排右对齐。
+    // 「取消待重启任务」在「设置…」左侧，同排右对齐。
     // 2026-10-17 教训：这个按钮最初漏了这条重排，停留在创建坐标 760，把语言
     // 标签和 combo 压掉半个 —— 顶栏三个右对齐控件必须一起进 layout_operation。
     let cancel_w = 150;
@@ -1534,7 +1538,7 @@ unsafe fn layout_operation(state: &State) {
         cancel_w,
         24,
     );
-    // 「备份文件管理…」在「取消待重启任务…」左侧，同排右对齐（同一链条，
+    // 「备份文件管理…」在「取消待重启任务」左侧，同排右对齐（同一链条，
     // 漏了重排就会压在邻接控件上——2026-10-17 的教训对每个新顶栏按钮都成立）。
     let image_admin_w = 140;
     let image_admin_x = cancel_x - 8 - image_admin_w;
@@ -1545,7 +1549,7 @@ unsafe fn layout_operation(state: &State) {
         image_admin_w,
         24,
     );
-    // 「查看日志…」在同一链条的最左端（同一个教训：新顶栏按钮必须进这条重排链）。
+    // 「查看日志」在同一链条的最左端（同一个教训：新顶栏按钮必须进这条重排链）。
     let view_logs_w = 120;
     reposition(
         GetDlgItem(state.root, ID_VIEW_LOGS as i32),
@@ -1631,7 +1635,12 @@ unsafe fn layout_operation(state: &State) {
         let format_row_y = if channel_visible { format_y } else { channel_y };
         reposition(format_hwnd, field_x, format_row_y, 460, 22);
     }
-    reposition(state.controls.status, 20, status_y, client_width - 40, 64);
+    // ★ 高度必须按**整行**取整（行高 = SimSun 9pt 的 tmHeight 12 + extLead 2 = 14）。
+    // 126 = 9 行整：backup(8 行) / probe(6) / restore(9) 的提示都完整可见，更长的
+    // （PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。此前 64px 只够 4.5 行，
+    // 第 5 行被边框切成半截，看着像控件坏了（2026-10-26 实测）。
+    let status_height = 126;
+    reposition(state.controls.status, 20, status_y, client_width - 40, status_height);
 
     // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
     // 行2 硬盘启动单选；行3 PE 启动项名称（两种模式通用）
@@ -2185,7 +2194,7 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
         .unwrap_or_else(|| "?".to_string());
     if language == Language::English {
         format!(
-            "{}: {}\nFile system: {}\nWindows installation: {}\nTotal: {} | Free: {}\nDisk/partition: {}/{}\nPartition type: {}\nVolume GUID: {}",
+            "{}: {}\nFile system: {}\r\nWindows installation: {}\r\nTotal: {} | Free: {}\r\nDisk/partition: {}/{}\r\nPartition type: {}\r\nVolume GUID: {}",
             drive.letter,
             if drive.label.is_empty() {
                 "no label"
@@ -2207,7 +2216,7 @@ fn drive_details(drive: &DriveInfo, language: Language) -> String {
         )
     } else {
         format!(
-            "{}: {}\n文件系统：{}\nWindows 安装：{}\n总容量：{} | 可用：{}\n磁盘/分区：{}/{}\n分区类型：{}\n卷 GUID：{}",
+            "{}: {}\n文件系统：{}\r\nWindows 安装：{}\r\n总容量：{} | 可用：{}\r\n磁盘/分区：{}/{}\r\n分区类型：{}\r\n卷 GUID：{}",
             drive.letter,
             if drive.label.is_empty() {
                 "无卷标"
@@ -3061,7 +3070,7 @@ use choice_dialogs::{ask_invalid_image_path, ask_system_drive_handler, CHOICE_GE
 mod image_admin_window;
 use image_admin_window::open_image_admin;
 
-// 「查看日志…」窗口（2026-10-26 拆出，见子模块头部注释）。
+// 「查看日志」窗口（2026-10-26 拆出，见子模块头部注释）。
 // 子模块而不是顶层模块：它要用这里一整套私有 Win32 类型/常量/辅助函数，
 // 做成顶层就得把它们全提成 `pub(crate)`。
 mod logs_viewer;
@@ -7115,7 +7124,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 250,
                 800,
-                70,
+                130,
                 ID_SOURCE_DETAILS,
             ),
             target_details: create_control(
@@ -7126,7 +7135,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 360,
                 800,
-                70,
+                130,
                 ID_TARGET_DETAILS,
             ),
             verify_hash: create_control(
@@ -7148,7 +7157,7 @@ unsafe extern "system" fn window_proc(
                 20,
                 440,
                 960,
-                90,
+                126,
                 ID_STATUS,
             ),
         };
@@ -7237,7 +7246,7 @@ unsafe extern "system" fn window_proc(
         create_control(
             hwnd,
             "BUTTON",
-            "查看日志…",
+            "查看日志",
             WS_TABSTOP,
             // 初始坐标按最小客户宽 1020：在「备份文件管理…」(353-493) 左侧，
             // 227-347。layout_operation 按实际客户宽动态重排到它左边。
@@ -7252,7 +7261,7 @@ unsafe extern "system" fn window_proc(
             "BUTTON",
             "备份文件管理…",
             WS_TABSTOP,
-            // 初始坐标按最小客户宽 1020：在「取消待重启任务…」(503-653) 左侧，
+            // 初始坐标按最小客户宽 1020：在「取消待重启任务」(503-653) 左侧，
             // 353-493。layout_operation 按实际客户宽动态重排到它左边。
             353,
             TOP_BAR_Y,
@@ -7263,7 +7272,7 @@ unsafe extern "system" fn window_proc(
         create_control(
             hwnd,
             "BUTTON",
-            "取消待重启任务…",
+            "取消待重启任务",
             WS_TABSTOP,
             // 初始坐标按最小客户宽 1020：在「设置…」(661-751) 左侧，
             // 503-653。layout_operation 按实际客户宽动态重排到「设置…」左边。
@@ -9255,7 +9264,7 @@ unsafe fn ask_pending_resume(pending: &super::PendingResume) -> PendingResumeCho
          停在：{:?}\n\n\
          是   = 立即重启，继续这个任务\n\
          否 / 取消 / 直接关窗 = 本次不重启（任务与启动项都保留，以后再处理）\n\
-         想放弃这个任务：进主窗口，用顶栏「取消待重启任务…」\n\n\
+         想放弃这个任务：进主窗口，用顶栏「取消待重启任务」\n\n\
          Detected an unfinished recovery task.\n\
          Yes = reboot now and continue it; No / Cancel / closing the box = not this time \
          (task and boot entry are kept). To abandon it, use the top-bar \
@@ -9296,7 +9305,7 @@ unsafe fn message_box_standalone(text: &str, title: &str, flags: u32) -> i32 {
     )
 }
 
-/// 顶栏「取消待重启任务…」：GUI 里唯一一个「让机器别再重启」的出口。
+/// 顶栏「取消待重启任务」：GUI 里唯一一个「让机器别再重启」的出口。
 ///
 /// 复用 `abandon-task` 那条已经实机验收过的收口路径，不另写清理逻辑；
 /// 目标卷已擦除时它会拒绝，那正是既定的安全边界，如实转达给用户。
