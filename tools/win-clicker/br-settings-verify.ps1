@@ -70,7 +70,10 @@ function IniLine() {
     $p = "H:\brwork\BackupRestore.settings.ini"
     if (Test-Path -LiteralPath $p) {
         W "INI:"
-        Get-Content -LiteralPath $p | ForEach-Object { W ("  " + $_) }
+        # -Encoding UTF8 mandatory: the default ANSI decode merges lines when a
+        # UTF-8 char ending in a GBK-lead-looking byte precedes a newline
+        # (2026-10-26: full-width `）` swallowed the following \n).
+        Get-Content -LiteralPath $p -Encoding UTF8 | ForEach-Object { W ("  " + $_) }
     } else { W "INI: MISSING" }
 }
 

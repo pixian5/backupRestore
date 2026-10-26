@@ -217,8 +217,10 @@ pub(crate) fn save_to_dir(secs: u32, executable_dir: &Path) -> std::io::Result<(
         .filter(|line| line.trim().split_once('=').map(|(key, _)| key.trim()) != Some(SETTINGS_KEY))
         .collect();
     // 首次写入时补一行说明，让手工编辑的用户知道这行是什么。
+    // 与 `failure_policy` 共用同一份文本常量：两个写入方各写一份字面量，
+    // 迟早会漂成两种说明（甚至只在一个地方改）。
     if kept.is_empty() {
-        kept.push("# BackupRestore 程序设置（本文件由程序自动生成，可手工编辑）");
+        kept.push(crate::failure_policy::SETTINGS_HEADER);
     }
     // 先取出整行再 trim，避免"临时 String 的借用随语句结束而失效"。
     let line = settings_line(secs);

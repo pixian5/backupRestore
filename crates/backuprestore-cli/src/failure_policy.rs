@@ -758,17 +758,28 @@ impl FailurePolicy {
         fs::create_dir_all(executable_dir)?;
         let path = Self::settings_path(executable_dir);
         let existing = fs::read_to_string(&path).unwrap_or_default();
-        let mut kept: Vec<&str> = existing
+        // 不再 `mut`：这里只收集"别人的行"，自己的行统一在下面新拼的 `lines` 里。
+        let kept: Vec<&str> = existing
             .lines()
             .filter(|line| {
                 let trimmed = line.trim();
-                // 【2026-10-18 缺陷修复 L7】注释行必须**先**整行排除。
-                // 此前只按 `split_once('=')` 取 key 过滤，而三条注释里都含 `=`
-                // （`1..=20`、「 = 」、`（0 = …）`）→ 注释行被当成普通行留下，
-                // 下面又 `kept.extend` 追加三行新注释：每次保存多 3 行，
-                // 设置文件线性膨胀。
-                if trimmed.starts_with('#') || trimmed.starts_with(';') {
+                if trimmed.is_empty() {
                     return false;
+                }
+                if trimmed.starts_with('#') || trimmed.starts_with(';') {
+                    // 【2026-10-18 缺陷修复 L7】自己的三条注释必须**先**整行排除。
+                    // 此前只按 `split_once('=')` 取 key 过滤，而三条注释里都含 `=`
+                    // （`1..=20`、「 = 」、`（0 = …）`）→ 注释行被当成普通行留下，
+                    // 下面又 `kept.extend` 追加三行新注释：每次保存多 3 行，
+                    // 设置文件线性膨胀。
+                    //
+                    // 【2026-10-26 缺陷修复】但**只能**丢自己这三条与文件头。
+                    // 无差别丢掉全部注释会顺手删掉别人的东西：文件头（它只在
+                    // `kept.is_empty()` 时才补，于是一旦文件里还有 `dism_timeout_secs`，
+                    // 用户每保存一次设置、文件的头一行就永久消失一次），以及
+                    // `dism_timeout` 将来若给自己那行加的说明注释。共享文件的注释
+                    // 属于写它的那个模块，别的写入方没资格删。
+                    return !(trimmed == SETTINGS_HEADER || is_own_settings_comment(trimmed));
                 }
                 let key = trimmed.split_once('=').map(|(key, _)| key.trim());
                 key != Some(SETTINGS_THRESHOLD_KEY)
@@ -776,9 +787,6 @@ impl FailurePolicy {
                     && key != Some(SETTINGS_PAUSE_MAX_WAIT_KEY)
             })
             .collect();
-        if kept.is_empty() {
-            kept.push("# BackupRestore 程序设置（本文件由程序自动生成，可手工编辑）");
-        }
         // 先各自成行再 push：`&format!(...)` 的临时 String 会随语句结束而失效，
         // 不能直接塞进 `Vec<&str>`。
         let threshold_comment = format!(
@@ -790,7 +798,12 @@ impl FailurePolicy {
         let threshold_line = format!("{SETTINGS_THRESHOLD_KEY}={}", self.threshold);
         let action_line = format!("{SETTINGS_ACTION_KEY}={}", self.action.env_name());
         let pause_wait_line = format!("{SETTINGS_PAUSE_MAX_WAIT_KEY}={}", self.pause_max_wait_secs);
-        kept.extend([
+        // 文件头**无条件**写在第一行（上面已把旧的同文本行滤掉，所以不会重复）。
+        // 此前只在 `kept` 为空时才补，等于"文件一旦非空就永远没有头"。
+        let mut lines: Vec<&str> = Vec::with_capacity(kept.len() + 7);
+        lines.push(SETTINGS_HEADER);
+        lines.extend(kept);
+        lines.extend([
             threshold_comment.as_str(),
             action_comment.as_str(),
             pause_wait_comment.as_str(),
@@ -798,7 +811,7 @@ impl FailurePolicy {
             action_line.as_str(),
             pause_wait_line.as_str(),
         ]);
-        let mut text = kept.join("\n");
+        let mut text = lines.join("\n");
         text.push('\n');
         // 【2026-10-18 缺陷修复 L8】原子落盘（tmp + rename）。
         // 此前 `fs::write` 直写：写到一半被杀（断电/强杀）会留下截断的设置文件，
@@ -821,6 +834,25 @@ impl FailurePolicy {
 pub(crate) const SETTINGS_THRESHOLD_KEY: &str = "failure_threshold";
 pub(crate) const SETTINGS_ACTION_KEY: &str = "failure_action";
 pub(crate) const SETTINGS_PAUSE_MAX_WAIT_KEY: &str = "failure_pause_max_wait_secs";
+
+/// 设置文件的第一行。两个写入方（本模块与 `dism_timeout`）共用同一份文本，
+/// 否则「谁先写谁的头」会随调用顺序漂移、还可能写成两种不同的说明。
+pub(crate) const SETTINGS_HEADER: &str =
+    "# BackupRestore 程序设置（本文件由程序自动生成，可手工编辑）";
+
+/// 本模块**拥有**的注释行前缀。合并写时只准替换/删除自己这几条。
+const OWN_SETTINGS_COMMENTS: [&str; 3] = [
+    "# failure_threshold:",
+    "# failure_action:",
+    "# failure_pause_max_wait_secs:",
+];
+
+/// 这行注释是不是本模块自己写的（可以整行重写）。
+fn is_own_settings_comment(trimmed: &str) -> bool {
+    OWN_SETTINGS_COMMENTS
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
 
 /// 【2026-10-17 修复】暂停总上限的进程环境变量名。
 ///
@@ -1493,6 +1525,61 @@ mod tests {
         // 坏文件 → 默认（不能因为设置坏了让 GUI 起不来）
         fs::write(FailurePolicy::settings_path(&dir), "garbage\n===\n").expect("write");
         assert_eq!(FailurePolicy::load_from_dir(&dir), FailurePolicy::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 共享设置文件的**注释归属**：别人的注释不能被顺手删掉，文件头恰好一行。
+    ///
+    /// 2026-10-26 实机回归：`save_to_dir` 为了修「注释每次保存多 3 行」的膨胀，
+    /// 无差别过滤掉了**全部**注释行；而文件头又只在 `kept.is_empty()` 时才补。
+    /// 结果：只要文件里还有 `dism_timeout_secs`（几乎必然），用户每打开一次设置
+    /// 窗口并保存，文件的头一行就永久消失一次。`dism_timeout` 将来若给自己那行
+    /// 加说明注释，也会被静默删掉——这正是「共享文件被非属主整段重写」的老毛病。
+    #[test]
+    fn save_to_dir_preserves_foreign_comments_and_writes_the_header_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "backuprestore-failure-policy-comments-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        let path = FailurePolicy::settings_path(&dir);
+        let foreign = "# dism_timeout_secs: the other writer's explanation";
+        fs::write(
+            &path,
+            format!(
+                "{SETTINGS_HEADER}\n{foreign}\n\
+                 # failure_threshold: a stale range note\n\
+                 {SETTINGS_THRESHOLD_KEY}=11\n\
+                 {SETTINGS_ACTION_KEY}=pause\n\
+                 {SETTINGS_PAUSE_MAX_WAIT_KEY}=5\n\
+                 dism_timeout_secs=600\n"
+            ),
+        )
+        .expect("write");
+
+        let policy = FailurePolicy::new(4, FailureAction::AutoEscape).expect("valid");
+        policy.save_to_dir(&dir).expect("save");
+        let once = fs::read_to_string(&path).expect("read");
+        // 自己的注释与三个键被重写成本次的策略。
+        assert!(once.contains("# failure_threshold: 恢复环境连续失败多少次后触发处理"));
+        assert!(once.contains(&format!("{SETTINGS_THRESHOLD_KEY}=4")), "{once}");
+        assert!(once.contains(&format!("{SETTINGS_ACTION_KEY}=auto-escape")), "{once}");
+        assert!(once.contains(&format!("{SETTINGS_PAUSE_MAX_WAIT_KEY}=0")), "{once}");
+        // 过期的自己那条注释不留。
+        assert!(!once.contains("a stale range note"), "{once}");
+        // 别人的注释、别人的键，原样都在。
+        assert!(once.contains(foreign), "{once}");
+        assert!(once.contains("dism_timeout_secs=600"), "{once}");
+        // 文件头恰好一行，且在首行。
+        assert_eq!(once.matches(SETTINGS_HEADER).count(), 1, "{once}");
+        assert!(once.starts_with(SETTINGS_HEADER), "{once}");
+
+        // 再存一次必须**逐字节相同**：这是 2026-10-18 那次膨胀缺陷的守卫。
+        policy.save_to_dir(&dir).expect("save again");
+        let twice = fs::read_to_string(&path).expect("read");
+        assert_eq!(once, twice, "repeated saves must be idempotent");
+
         let _ = fs::remove_dir_all(&dir);
     }
 
