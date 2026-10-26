@@ -1,6 +1,6 @@
 # BackupRestore User Guide (English)
 
-> **Applies to: v2.6.62 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
+> **Applies to: v2.6.67 (2026-10-27).** This is a **living document** (like `ERROR-CODES.md`, an
 > intentionally named evergreen file). It describes end-user visible behaviour; development and
 > acceptance details live in the dated files under `docs/`, and the error-code lookup lives in
 > [`ERROR-CODES.md`](./ERROR-CODES.md).
@@ -44,7 +44,7 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 ### 3.1 Layout
 
-Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.62`):
+Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.67`):
 
 - **Operation mode** (a row of radio entries): `Backup` / `Restore system to C:` /
   `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE`
@@ -58,7 +58,7 @@ Main window after start (the title bar shows the version, e.g. `BackupRestore - 
   checkbox (restore entries), `Read image` (parses the selected .wim and fills in its indexes)
 - **Bottom buttons**: `Refresh environment` (re-detect Windows, recovery environment and volume
   identities — **click it first on a fresh start**), `Read image`, `Create task`,
-  `Refresh task status`
+  `Refresh task status` (refreshes the status line, then opens the Tasks & evidence window — see §3.7)
 - Every entry has an explanation block underneath stating what it reads, what it writes and whether
   it reboots — **read it before acting**.
 
@@ -141,6 +141,28 @@ entry points at the restored system, and the recovery environment registration i
   (all evidence is kept; only the one-shot boot entry is cleared).
 - Unattended, once failures reach the threshold (default 3), the program cleans up and reboots back
   into Windows — it never leaves the machine inside the recovery environment.
+
+### 3.7 The "Tasks & evidence" window (why did a past task fail?)
+
+Clicking `Refresh task status` first refreshes the status line and then opens a **720×480 task list
+window** (since v2.6.66):
+
+- **Dropdown**: every task under `H:\brwork\tasks\`, one per line, formatted
+  `#index MM-DD HH:MM operation stage`. **Failed tasks carry the error code at the end**, e.g.
+  `#12 10-27 01:15 restore system failed BR-PE-039`;
+- **Detail pane** (read-only): stage, error code, **failure reason**, target volume, image and
+  timestamps of the selected task. A failure that recorded **no reason** says so explicitly
+  instead of leaving a blank;
+- **`Reload list`**: rescan the directory (the list does not auto-refresh while a task runs);
+- **`Clean work tree`**: removes only temporary work-tree directories — **`task.json`,
+  `status.json` and the logs are always kept**; evidence is a product promise. The button is
+  disabled for incomplete tasks (a resumable task must not be cleaned);
+- **`Open task folder`**: opens the current task's directory in Explorer;
+- **`Close`**: returns to the main window, which stays fully usable.
+
+> Broken record directories (missing/unparsable `task.json`/`status.json`, or two `taskId`s that
+> disagree) are still listed, marked "broken record" with the directory path — one bad directory
+> never blocks the whole list.
 
 ---
 
