@@ -34,7 +34,7 @@
 
 | 手段 | SYSTEM（`prlctl exec` 默认身份） | 未提权用户（`--current-user`） |
 | --- | --- | --- |
-| `bcdedit /export <普通路径>` | ✅ **成功**（实测 651,264 字节完整件，`/store <文件> /enum {bootmgr}` 离线可读、可回导） | ❌ 拒绝访问（连 `bcdedit /enum {bootmgr} /v` 只读都被拒，且与目标路径访问控制列表无关） |
+| `bcdedit /export <普通路径>` | ✅ **成功**（实测 651,264 字节完整件，`/store <文件> /enum {bootmgr}` 离线可读；**回导已实测可恢复并重启正常引导，见下方条目**） | ❌ 拒绝访问（连 `bcdedit /enum {bootmgr} /v` 只读都被拒，且与目标路径访问控制列表无关） |
 | `copy` ESP 原文件 `S:\EFI\Microsoft\Boot\BCD` | ❌「另一个程序正在使用」（内核独占） | ❌ 拒绝访问 |
 
 - **优先级：`/export` 首选（提权即可）→ 抄 `{bootmgr}` 的 default/displayorder/resumeobject 三行兜底（只能手抄、无完整性校验）→ ESP 原文件永远拷不走，别再试**——20261015-0708 [✅ 实测矩阵]
@@ -44,6 +44,17 @@
   非提权只读 `/enum {bootmgr} /v` → 也 `RC=FAIL`。
   ★ **字节数会变**（10-15 是 651,264、本次 503,808）——BCD 存储大小随条目数增减，**不要拿字节数当判据**，
   判据是「文件非空 + `/store` 能枚举出 `{bootmgr}` 的关键项」。—— 20261026-2045 [✅]
+- **回导整链实测（2026-10-26 21:00，这才是备份算不算数的证明）**：导出 A（503,808 B）→ `bcdedit /timeout 3` →
+  `bcdedit /import A` → `timeout` 回到 **10** → `prlctl restart` → **系统正常引导、GUI 自启**；
+  `/enum all /v` 与基线比：对象数 **548 = 548**，**非固件对象零差异**。—— 20261026-2100 [✅]
+  - ⚠️ **退出码不可靠**：同一条 `/import` 有一次报非 0（`if errorlevel 1` 判 FAIL），但 `timeout` 已正确回到 10，
+    再跑两次都是 `RCEXIT=0`。→ **判据 = 值是否真的回来**，退出码只作参考。
+  - ⚠️ **跨重启不能拿整份 `/enum all` 相等当判据**：重启后仍有 7 个对象「不同」，全部是固件自己的——
+    `{fwbootmgr}`（`{a5a30fa2-…}`）的 `displayorder` 顺序 + 6 个固件设备条目的 `description`（UEFI 每次开机重排，
+    连 `UEFI Virtual DVD-ROM` / `UEFI Shell` / `No OS found` 的先后都变了）。判据须**排除 `{fwbootmgr}` 段**。
+  - ★ `bcdedit` 的标签**中英混排**：对象标识那行标签是「标识符」（中文，ASCII 过滤后只剩 GUID），
+    而 `displayorder` / `timeout` / `default` / `resumeobject` 保持英文 → **不能用 `findstr "identifier"` 数对象**，
+    数 `^-{10,}$` 分隔线（本次 548 条）或按 GUID 行。
 
 ## 5. 启动配置数据手术规则
 
