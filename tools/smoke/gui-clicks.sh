@@ -43,8 +43,22 @@ run_case() {
     prlctl exec "$VM" cmd /d /c "powershell -NoProfile -ExecutionPolicy Bypass -Command \"iex (Get-Content -Raw -Encoding UTF8 ${UNC_LAUNCH})\"" >/dev/null 2>&1
     # 子进程没有 stdout，结果只能从文件读；给它 7 秒写完。
     sleep 7
-    local text ok
-    text="$(prlctl exec "$VM" cmd /d /c "type ${out}" 2>/dev/null)"
+    # ★ 通道会偶发返回空（不是文件为空）。不重试的话，一次抽风就被记成一条
+    #   红判据——2026-10-26 实测：probe-entry-check.txt 里明明是
+    #   "after: probe_checked=1"，这里读回空串，于是报了 FAIL。
+    #   重试到非空为止；真的读不到就报 READ_EMPTY，与「判据不满足」区分开。
+    local text attempt
+    for attempt in 1 2 3 4 5; do
+        text="$(prlctl exec "$VM" cmd /d /c "type ${out}" 2>/dev/null)"
+        [ -n "$(printf '%s' "$text" | tr -d '[:space:]')" ] && break
+        sleep 1
+    done
+    if [ -z "$(printf '%s' "$text" | tr -d '[:space:]')" ]; then
+        echo "   FAIL  [READ_EMPTY after ${attempt} attempts: ${out}]"
+        fail=$((fail + 1))
+        return
+    fi
+    local ok
     ok=1
     for expect in "$@"; do
         if printf '%s' "$text" | grep -qaF "$expect"; then
