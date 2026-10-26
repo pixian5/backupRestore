@@ -71,6 +71,23 @@ function Write-Utf8($path, $text) {
   [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+# v2.6.66: ID_REFRESH_TASK now ALSO opens the modal "Tasks & evidence" window.
+# A modal window left open blocks every later case - and to a user it looks hung.
+# So each click is followed by: assert the window exists with a filled combo box,
+# then close it via WM_CLOSE (0x0010) and wait until it is really gone.
+function Find-TaskAdmin {
+  return (Find-Win 'BackupRestoreTaskAdmin')
+}
+function Close-TaskAdmin {
+  $w = Find-TaskAdmin
+  if ($w -eq [IntPtr]::Zero) { return }
+  [void][RS]::PostMessageW($w, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+  for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 100
+    if ((Find-TaskAdmin) -eq [IntPtr]::Zero) { return }
+  }
+}
+
 # --- last-task.json: back up the real one, restore it no matter how we exit ---------
 $hadLast = Test-Path $lastTask
 if ($hadLast) { Copy-Item $lastTask $lastTaskBak -Force }
@@ -134,6 +151,19 @@ try {
 
     [void][RS]::PostMessageW($btn, [RS]::BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
     Start-Sleep -Milliseconds 1200
+    # 入口接线判据：窗口必须出现，且下拉框里有任务项（tasks 目录当前非空）。
+    $taskWin = Find-TaskAdmin
+    $windowOk = ($taskWin -ne [IntPtr]::Zero)
+    $items = -1
+    if ($windowOk) {
+      $combo = [RS]::GetDlgItem($taskWin, 1401)
+      if ($combo -ne [IntPtr]::Zero) {
+        $items = [int]([RS]::SendMessageW($combo, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero)).ToInt64()
+      }
+    }
+    Say ("  TASK_WINDOW=" + [int]$windowOk + " COMBO_ITEMS=" + $items)
+    Close-TaskAdmin
+    $taskOk = ($windowOk -and ($items -gt 0))
     $t = [RS]::Txt($status)
     $lenRaw = [RS]::SendMessageW($status, [RS]::WM_GETTEXTLENGTH, [IntPtr]::Zero, [IntPtr]::Zero)
     $lines = (($t -replace "`r", "") -split "`n").Count
@@ -168,13 +198,15 @@ try {
     $flagOk = $true
     if ($c.needCode -ne '') { $flagOk = $flagOk -and $t.Contains($c.needCode) -and $t.Contains($c.needText) }
     if ($c.needCp -ne 0) { $flagOk = $flagOk -and $t.Contains([string][char]$c.needCp) }
-    $caseOk = ($outcomeOk -and $codeOk -and $flagOk)
+    $caseOk = ($outcomeOk -and $codeOk -and $flagOk -and $taskOk)
     Say ("CASE_RESULT=" + $c.name + "=" + $(if ($caseOk) { 'PASS' } else { 'FAIL' }) +
          " outcome=" + $logOutcome + "/" + $c.expectOutcome +
          " code=" + $logCode + "/" + $c.expectCode +
          " flags=" + [int]$flagOk)
   }
 } finally {
+  # 异常退出也不能把模态窗口留着——它会让整个程序看起来卡死。
+  Close-TaskAdmin
   # Restore the real last-task.json and remove the scratch status file.
   if ($hadLast -and (Test-Path $lastTaskBak)) { Copy-Item $lastTaskBak $lastTask -Force; Remove-Item $lastTaskBak -Force }
   if (Test-Path $statusFile) { Remove-Item $statusFile -Force }
