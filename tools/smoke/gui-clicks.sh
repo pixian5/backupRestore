@@ -79,6 +79,15 @@ if ! gui_alive; then
     exit 2
 fi
 
+# ★ 布局判据（2026-10-26 补）：此前所有用例都只问「控件存在吗 / 点得动吗」，
+#   没有一条问「两个控件是不是占了同一块像素」。于是「操作模式」6 个入口与顶栏
+#   4 个按钮同处 y=60 这个缺陷活了很久——用户一眼看到的是第二排按钮压在入口上面。
+#   OVERLAP_COUNT=0 是唯一能自动抓住这类问题的判据。
+#   ★ 2026-10-26 v2：判据从「手挑 15 个控件、只看当前页」升级为
+#     「枚举全部直接子窗口、六个页签各查一遍」。隐藏行会把别的行顶上去，
+#     每页几何不同——只查一页等于只验了 1/6。PAGES_CHECKED=6 证明六页都真走过。
+run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '全部页签两两不重叠（几何判据，全量枚举）' \
+    'OVERLAP_COUNT=0' 'PAGES_CHECKED=6' 'CLIENT_W='
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志…」→ 日志清单窗口' LOGS_WINDOW_FOUND
 run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理…」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'

@@ -1398,6 +1398,18 @@ unsafe fn set_operation_visibility(state: &State) {
     set_child_visible(ID_PE_DIR_BROWSE as i32, pe_visible && pe_mode_ram);
 }
 
+/// 顶栏操作按钮（查看日志… / 备份文件管理… / 取消待重启任务… / 设置… / 语言）
+/// 独立成一行，放在客户区顶部这条原本空着的窄带里。
+///
+/// ★ 2026-10-26 修缺陷：此前这 5 个控件与「操作模式」的 6 个入口**同在 y=60**，
+/// 两组横向总宽约 90+650(入口) + 4 按钮+语言约 750 = 远超任何窗口宽度，于是
+/// 顶栏按钮被画在入口按钮上面。实机 GetWindowRect 量到 **6 对重叠**，最严重的是
+/// 「新增非 C 盘第二系统」被「查看日志…」盖掉 107×24 px（占该按钮宽度 71%）。
+/// 当时的注释写着「最小窗口 1020 宽下两者不重叠」，而它只对「入口排到 ~741、
+/// 语言栏从右边算起」成立——没算后来加进来的四个顶栏按钮。教训：两排控件共用
+/// 一个 y 时，必须按**最坏宽度**（最小窗口 + 最长语言）核算，不能只看各自的起点。
+const TOP_BAR_Y: i32 = 18;
+
 unsafe fn layout_operation(state: &State) {
     let mut rect = Rect {
         left: 0,
@@ -1489,14 +1501,14 @@ unsafe fn layout_operation(state: &State) {
     reposition(
         GetDlgItem(state.root, ID_LANGUAGE_LABEL as i32),
         client_width - 20 - lang_total,
-        67,
+        TOP_BAR_Y + 7,
         55,
         18,
     );
     reposition(
         state.controls.language,
         client_width - 20 - lang_combo_w,
-        60,
+        TOP_BAR_Y,
         lang_combo_w,
         300,
     );
@@ -1506,7 +1518,7 @@ unsafe fn layout_operation(state: &State) {
     reposition(
         GetDlgItem(state.root, ID_SETTINGS as i32),
         settings_x,
-        60,
+        TOP_BAR_Y,
         settings_w,
         24,
     );
@@ -1518,7 +1530,7 @@ unsafe fn layout_operation(state: &State) {
     reposition(
         GetDlgItem(state.root, ID_CANCEL_PENDING as i32),
         cancel_x,
-        60,
+        TOP_BAR_Y,
         cancel_w,
         24,
     );
@@ -1529,7 +1541,7 @@ unsafe fn layout_operation(state: &State) {
     reposition(
         GetDlgItem(state.root, ID_IMAGE_ADMIN as i32),
         image_admin_x,
-        60,
+        TOP_BAR_Y,
         image_admin_w,
         24,
     );
@@ -1538,7 +1550,7 @@ unsafe fn layout_operation(state: &State) {
     reposition(
         GetDlgItem(state.root, ID_VIEW_LOGS as i32),
         image_admin_x - 8 - view_logs_w,
-        60,
+        TOP_BAR_Y,
         view_logs_w,
         24,
     );
@@ -6926,7 +6938,7 @@ unsafe extern "system" fn window_proc(
                 // 语言栏靠右显示：初始坐标按最小客户宽 1020 右对齐
                 //（combo 右缘 = 1020-20），layout_operation 会按实际宽度动态重排。
                 820,
-                60,
+                TOP_BAR_Y,
                 180,
                 300,
                 ID_LANGUAGE,
@@ -6939,8 +6951,9 @@ unsafe extern "system" fn window_proc(
                     // WS_GROUP 标记「操作模式」单选组的起点：方向键只在这 5
                     // 个之间切换，不会跳到下方 PE 启动方式/通道那一组。
                     // 布局：入口名用用户拍板的全称（长短不一），按钮不等宽、
-                    // 间距 3px，从 x=90 排到 ~741；语言栏靠右（layout_operation
-                    // 动态右对齐），最小窗口 1020 宽下两者不重叠。
+                    // 间距 3px，从 x=90 排到 ~741。★ 顶栏按钮与语言栏**不在这一行**
+                    // （2026-10-26 起独立到 TOP_BAR_Y）：此前两者共用 y=60，而
+                    // 741 + 顶栏四个按钮 + 语言栏远超窗口宽度，实机量到 6 对重叠。
                     WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_GROUP,
                     90,
                     60,
@@ -7216,7 +7229,7 @@ unsafe extern "system" fn window_proc(
             // 初始坐标按最小客户宽 1020 右对齐（在语言栏左侧）；
             // layout_operation 按实际客户宽动态重排。
             661,
-            60,
+            TOP_BAR_Y,
             90,
             24,
             ID_SETTINGS,
@@ -7229,7 +7242,7 @@ unsafe extern "system" fn window_proc(
             // 初始坐标按最小客户宽 1020：在「备份文件管理…」(353-493) 左侧，
             // 227-347。layout_operation 按实际客户宽动态重排到它左边。
             227,
-            60,
+            TOP_BAR_Y,
             120,
             24,
             ID_VIEW_LOGS,
@@ -7242,7 +7255,7 @@ unsafe extern "system" fn window_proc(
             // 初始坐标按最小客户宽 1020：在「取消待重启任务…」(503-653) 左侧，
             // 353-493。layout_operation 按实际客户宽动态重排到它左边。
             353,
-            60,
+            TOP_BAR_Y,
             140,
             24,
             ID_IMAGE_ADMIN,
@@ -7255,7 +7268,7 @@ unsafe extern "system" fn window_proc(
             // 初始坐标按最小客户宽 1020：在「设置…」(661-751) 左侧，
             // 503-653。layout_operation 按实际客户宽动态重排到「设置…」左边。
             503,
-            60,
+            TOP_BAR_Y,
             150,
             24,
             ID_CANCEL_PENDING,
