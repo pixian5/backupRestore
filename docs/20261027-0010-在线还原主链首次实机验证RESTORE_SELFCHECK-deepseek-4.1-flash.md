@@ -120,4 +120,5 @@ online … --image-path H:\BRImages\NOT-EXIST-000423.wim --json
   三态；本轮是**第一次跑真实还原链路**，PASS 分支实机成立。
 
 不升版本：本轮**未改任何源代码**，纯验证与记录。
-清理：测试卷 `T:\brtest-data` 已删；镜像 `H:\BRImages\brtest-000423.wim` 留作证据。
+清理（**测试盘用后即删**，项目既有约定）：测试数据 `T:\brtest-data`、测试镜像 `H:\BRImages\brtest-000423.wim`、以及**测试卷本身**全部删除——`T:` 对应 disk0 part5（5 GB，Basic/NTFS），已 `delete partition`，5 GB 回到未分配；同磁盘其余分区（p4 = C: 249 GB 系统盘等）完好。
+证据不依赖现场：**日志才是持久证据**——`H:\brwork\logs\BackupRestore-restore-928-1793030688738868800\Online.log`；本文件与 `git log b96cbbc` 记录了结论与判据。
