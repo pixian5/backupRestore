@@ -7508,24 +7508,31 @@ unsafe extern "system" fn window_proc(
             if let Some(result) = result {
                 KillTimer(state.root, 9002);
                 // 弹窗期间继续保持忙状态，避免模态消息循环重入创建任务。
+                // ★ 失败回执统一带稳定码（2.6.63）：`Coded` 变体的 Display 自带
+                // `[BR-…]`，但 `Io`/`Json`/`InvalidTransition` 三类**故意不加前缀**
+                // （文案是 OS 本地化串或 serde 原文），它们的码只存在
+                // `result.error_code` 里。2.6.51 专门把码带出来给 `--json`，界面
+                // 却一直没消费——于是「磁盘满 / 句柄占用」这类最该查码的失败，
+                // 用户在弹窗和状态栏里一个码都看不到。
+                // `with_code` 幂等：已有码的原样返回，不会叠两个。
+                let receipt =
+                    crate::failure_receipt::with_code(&result.detail, result.error_code);
                 append_gui_log(
                     state,
-                    &format!(
-                        "online completed: success={}\n{}",
-                        result.success, result.detail
-                    ),
+                    &format!("online completed: success={}\n{receipt}", result.success),
                 );
-                set_text(
-                    state.controls.status,
-                    if result.success {
-                        "在线任务已完成并通过校验"
-                    } else {
-                        "在线任务失败，请检查日志；不要将部分产物视为成功"
-                    },
-                );
+                let status_text = if result.success {
+                    "在线任务已完成并通过校验".to_string()
+                } else {
+                    crate::failure_receipt::with_code(
+                        "在线任务失败，请检查日志；不要将部分产物视为成功",
+                        result.error_code,
+                    )
+                };
+                set_text(state.controls.status, &status_text);
                 show_message(
                     state.root,
-                    &result.detail,
+                    &receipt,
                     if result.success {
                         "执行完成"
                     } else {
