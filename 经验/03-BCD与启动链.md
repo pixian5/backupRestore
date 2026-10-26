@@ -39,6 +39,11 @@
 
 - **优先级：`/export` 首选（提权即可）→ 抄 `{bootmgr}` 的 default/displayorder/resumeobject 三行兜底（只能手抄、无完整性校验）→ ESP 原文件永远拷不走，别再试**——20261015-0708 [✅ 实测矩阵]
 - 本项目常态就是 SYSTEM 通道（`prlctl exec`），**"在线态 /export 不可用"是旧记载**（当年用了未提权会话）——AGENTS.md 已改口径 [✅]
+- **2026-10-26 20:57 复验（同一结论，新的数字）**：提权 `/export` → `RC=OK`、**503,808 字节**、`/store … /enum {bootmgr} /v` 读到
+  `default` / `resumeobject` / `displayorder` / `timeout 10`；非提权 `/export` → `RC=FAIL` 且**文件从未创建**；
+  非提权只读 `/enum {bootmgr} /v` → 也 `RC=FAIL`。
+  ★ **字节数会变**（10-15 是 651,264、本次 503,808）——BCD 存储大小随条目数增减，**不要拿字节数当判据**，
+  判据是「文件非空 + `/store` 能枚举出 `{bootmgr}` 的关键项」。—— 20261026-2045 [✅]
 
 ## 5. 启动配置数据手术规则
 

@@ -199,16 +199,18 @@ git config core.hooksPath tools/git-hooks   # 一次性安装（per-clone）
 | `target/` | Rust 构建产物（8G+，不入库） |
 | `.test-artifacts/` | 测试证据与一次性探针（5G+，已 gitignore） |
 | `VERSION` | 当前版本号 |
-| `AGENTS.md` | 开发验证硬约束（**改启动项前必须建快照**） |
+| `AGENTS.md` | 开发验证硬约束：**改引导走文件级备份、不拍整机快照**；空间纪律；判据纪律；发布路径唯一 |
 
 ---
 
 ## 五、开发约束（必读）
 
-1. **动启动项前必须建快照**。修改启动配置数据、默认项、一次性启动序列、恢复环境注册或预安装环境部署之前，
-   先创建并核验 Parallels 快照，记录快照 ID、目的和变更范围。快照失败不得继续。详见 `AGENTS.md`。
+1. **改引导不拍整机快照，改用文件级备份**。修改启动配置数据、默认项、一次性启动序列、恢复环境注册或
+   预安装环境部署之前，先 `bcdedit /export <普通路径>` 导出 BCD 存储，并用 `bcdedit /store <文件> /enum {bootmgr}`
+   核验可离线读取；导出失败则手抄 `{bootmgr}` 的 `default`/`displayorder`/`resumeobject` 三项兜底
+   （只能手抄、无完整性校验）。**备份失败不得继续。** 详见 `AGENTS.md` 第二节。
 2. **启动成功 ≠ 备份还原成功**。验证要跑到 DISM 实际完成、启动项修复、回正常 Windows 为止。
-3. **测试只能在可回滚的虚拟机快照里做**，尤其是 `restore-existing` / `create-secondary`。
+3. **会重写卷的测试必须在可回滚的整机快照里做**（`restore-existing` / `create-secondary` 这类，失败代价是整卷丢失）；**只是改引导项的验证走第 1 条的文件级备份，不占快照**。
 4. **大文件下载前先查网络**。热点环境必须逐次取得用户授权。
 5. 每次改动后：本地测试 → Windows ARM64 构建 → 部署 → 核对哈希。
 
