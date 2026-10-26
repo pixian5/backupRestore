@@ -1,6 +1,6 @@
 # BackupRestore User Guide (English)
 
-> **Applies to: v2.6.61 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
+> **Applies to: v2.6.62 (2026-10-26).** This is a **living document** (like `ERROR-CODES.md`, an
 > intentionally named evergreen file). It describes end-user visible behaviour; development and
 > acceptance details live in the dated files under `docs/`, and the error-code lookup lives in
 > [`ERROR-CODES.md`](./ERROR-CODES.md).
@@ -44,7 +44,7 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 ### 3.1 Layout
 
-Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.61`):
+Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.62`):
 
 - **Operation mode** (a row of radio entries): `Backup` / `Restore system to C:` /
   `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE`

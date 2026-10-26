@@ -1415,11 +1415,14 @@ unsafe fn layout_operation(state: &State) {
     let client_width = (rect.right - rect.left).max(1020);
     let field_x = 180;
     let field_width = (client_width - field_x - 24).max(700);
-    // 详情框高度必须容得下**实际行数**，否则最后一行被边框切一半（2026-10-26 实测：
-    // 112 px 装 9 行 SimSun 9pt，行高 tmHeight 12 + extLead 2 = 14，需 126 px）。
-    // 9 行 = 1 行用途说明 + 1 空行 + 7 行设备详情（`drive_details`）；130 留 4 px 余量。
-    // ★ 加行数（比如再补一个字段）就要同步这里，否则又是一次「最后一行看不到」。
-    let details_height = 130;
+    // ★ 高度按「**最坏行数 × 行距**」算，不能按某一页的行数算。
+    // 行距 = SimSun 9pt 的 tmHeight 12 + tmExternalLeading 2 = **14 px**（2026-10-26 实测：
+    // 按 tmHeight 12 算会得出「9 行只要 108 px、装得下」，而屏幕上最后一行被切成半截）。
+    // 最坏情况 = 「还原数据到非 C 盘」页的目标卷详情 **10 行**（该页设备详情有一行
+    // 954 px > 可用 950 px，软换行多出一行）→ 需 140 px；EM_GETRECT 实测文本区比控件
+    // 高少 4 px（上下边框各 2）→ 148 留 8 px 余量。其余页 9 行（=126 px）都在其内。
+    // ★ 往 `drive_details` 加字段就要同步这里，否则又是一次「最后一行看不到」。
+    let details_height = 148;
     let row_gap = 8;
     // 行可见性：源卷行仅「备份」显示（A/B/C 隐藏——C 源恒为当前系统盘，
     // v2.6.13 起从 C 页移除），通道单选行仅 B/C 显示。隐藏的行不占位，
@@ -1462,7 +1465,7 @@ unsafe fn layout_operation(state: &State) {
         0
     };
     let status_y = last_details_y + 16 + pe_extra_y;
-    let image_y = status_y + 146;
+    let image_y = status_y + 168;
     let secondary_y = image_y + 34;
     // C（还原系统到非 C 盘）与「新增第二系统」的 verify_hash 复选框在
     // secondary_y+32（底缘 +56）——按钮行必须让过它，留 8px 间隙。
@@ -1483,7 +1486,7 @@ unsafe fn layout_operation(state: &State) {
     } else if image_visible {
         image_y + 40
     } else {
-        status_y + 146
+        status_y + 168
     };
 
     let reposition = |hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32| {
@@ -1629,11 +1632,12 @@ unsafe fn layout_operation(state: &State) {
         let format_row_y = if channel_visible { format_y } else { channel_y };
         reposition(format_hwnd, field_x, format_row_y, 460, 22);
     }
-    // ★ 高度必须按**整行**取整（行高 = SimSun 9pt 的 tmHeight 12 + extLead 2 = 14）。
-    // 126 = 9 行整：backup(8 行) / restore(9) 的提示都完整可见，更长的
-    // （PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。此前 64px 只够 4.5 行，
-    // 第 5 行被边框切成半截，看着像控件坏了（2026-10-26 实测）。
-    let status_height = 126;
+    // ★ 同样按「最坏行数 × 行距 14 px」，并且**以实测可用高度反推**：
+    // 提示文案最长 9 行（restore 页）→ 126 px；实测该控件 EM_GETRECT 的文本区
+    // 比控件高度少 14 px（148 → availH 134），故 148 之后余量 8 px。
+    // 更长的内容（PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。
+    // 此前 64 px 只够 4.2 行，第 5 行被切成半截。
+    let status_height = 148;
     reposition(state.controls.status, 20, status_y, client_width - 40, status_height);
 
     // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
@@ -7104,7 +7108,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 250,
                 800,
-                130,
+                148,
                 ID_SOURCE_DETAILS,
             ),
             target_details: create_control(
@@ -7115,7 +7119,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 360,
                 800,
-                130,
+                148,
                 ID_TARGET_DETAILS,
             ),
             verify_hash: create_control(
@@ -7137,7 +7141,7 @@ unsafe extern "system" fn window_proc(
                 20,
                 440,
                 960,
-                126,
+                148,
                 ID_STATUS,
             ),
         };

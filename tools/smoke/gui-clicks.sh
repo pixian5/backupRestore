@@ -83,10 +83,16 @@ fi
 #   4 个按钮同处 y=60 这个缺陷活了很久——用户一眼看到的是第二排按钮压在入口上面。
 #   OVERLAP_COUNT=0 是唯一能自动抓住这类问题的判据。
 #   ★ 2026-10-26 v2：判据从「手挑 15 个控件、只看当前页」升级为
-#     「枚举全部直接子窗口、六个页签各查一遍」。隐藏行会把别的行顶上去，
-#     每页几何不同——只查一页等于只验了 1/6。PAGES_CHECKED=6 证明六页都真走过。
-run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '全部页签两两不重叠（几何判据，全量枚举）' \
-    'OVERLAP_COUNT=0' 'PAGES_CHECKED=5' 'CLIENT_W='
+#     「枚举全部直接子窗口、每个页签各查一遍」。隐藏行会把别的行顶上去，
+#     每页几何不同——只查一页等于只验了 1/5。PAGES_CHECKED=5 证明每页都真走过。
+#   ★ 2026-10-26 v3：再加四条——不越界(OUTSIDE_COUNT)、不截断(TEXT_CLIPPED)、
+#     装得下(TEXT_OVERFLOW)、不塌缩(ZERO_SIZE)。前三条各自做过变异验证：
+#     越界 → 5、按钮压到 20px → 5、详情框改回 112px → 5、按钮宽 0 → ZERO_SIZE=5。
+#     TEXT_OVERFLOW 用「行数 × 行距(14px)」而不是 tmHeight(12px)：按 12 算会
+#     得出「9 行只要 108px 装得下」，而屏幕上最后一行明明被切成半截。
+run_case _t-layout-rects.ps1 'H:\brwork\gui-layout-rects.txt' '五个页签的几何判据（不重叠/不越界/不截断/不塌缩）' \
+    'OVERLAP_COUNT=0' 'OUTSIDE_COUNT=0' 'TEXT_CLIPPED=0' 'TEXT_OVERFLOW=0' 'ZERO_SIZE=0' \
+    'PAGES_CHECKED=5' 'CLIENT_W='
 run_case _t-view-logs.ps1   'H:\brwork\logs-viewer-check.txt'  '顶栏「查看日志」→ 日志清单窗口' LOGS_WINDOW_FOUND
 run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份文件管理」→ 镜像清单窗口（零副作用）' \
     IMAGE_ADMIN_WINDOW_FOUND 'combo_matches_disk=1' 'hint_nonempty=1' 'detail_filled=1' 'closed=1'
