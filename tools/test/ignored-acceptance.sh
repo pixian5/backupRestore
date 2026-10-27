@@ -84,7 +84,26 @@ if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
 # ---------- 前置：编译（用户会话，因为 X: 只在用户会话里可见）----------
 say "STEP 1/4 编译 Windows 测试目标（用户会话，源码在 X:）"
 vm_user "del /f /q $BUILD_LOG" >/dev/null 2>&1
-vm_user "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" >/dev/null 2>&1
+# ★ 同 run_one：约 1/8 的 `prlctl exec` 调用根本不执行命令（2026-10-27 实测，
+#   编译这步也中过——日志连创建都没有，白等 300 秒然后判「编译未完成」）。
+#   发完立刻查日志是否诞生，没诞生就重发。
+build_launched=""
+for _ in 1 2 3; do
+    vm_user "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" >/dev/null 2>&1
+    build_probe=0
+    build_launched=""
+    while [ $build_probe -lt 20 ]; do
+        sleep 3; build_probe=$((build_probe + 3))
+        build_launched=$(vm "if exist $BUILD_LOG (echo 1)")
+        [ -n "$build_launched" ] && break
+    done
+    [ -n "$build_launched" ] && break
+    say "  RELAUNCH: build command did not run, retrying"
+done
+if [ -z "$build_launched" ]; then
+    say "ERROR: 编译命令始终没有被 VM 执行（仪器故障，不是编译失败）。这不是「测试通过」。"
+    exit 2
+fi
 
 # ★ 循环里把结果**存下来复用**，不要在循环外再读一次：
 #   2026-10-27 实测出现过「循环里读到 Finished → 循环外重读为空 → 判成编译失败」

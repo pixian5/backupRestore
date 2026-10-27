@@ -1008,6 +1008,22 @@ mod tests {
         let letters = unsafe { GetLogicalDrives() };
         assert_ne!(letters, 0, "必须能枚举盘符");
         assert_eq!(letters & (1 << (b'V' - b'A')), 0, "V: 已占用，绝不覆盖");
+        // 自愈：上一轮（或任何历史遗留）可能留着一条指向已销毁分区的 `\DosDevices\V:`。
+        // `GetLogicalDrives` 看不见它，所以上面那条断言查不出来；留着它，本轮结束后
+        // 机器上的幽灵盘符就永远多一个。开跑前先清掉（失败也不阻塞：下面的
+        // `assign letter=V` 仍会成功，收尾那条 reg query 断言会把问题暴露出来）。
+        let _ = windows_command::run_program(
+            "reg.exe",
+            &[
+                "delete".into(),
+                "HKLM\\SYSTEM\\MountedDevices".into(),
+                "/v".into(),
+                "\\DosDevices\\V:".into(),
+                "/f".into(),
+            ],
+            None,
+            30_000,
+        );
         let dir = std::env::temp_dir().join(format!(
             "br-pe-v212-{}-{}",
             std::process::id(),
@@ -1069,10 +1085,17 @@ mod tests {
 
     fn teardown_disposable_vhd_fixture(mut fx: DisposableVhdFixture) {
         let detach = fx.dir.join("detach.txt");
+        // ★ 2026-10-27 真缺陷（用户机器上反复弹「V:\ 无法访问」的真凶）：
+        //   `detach vdisk` 只摘掉**运行时链接**，`\DosDevices\V:` 这条**持久**记录
+        //   仍留在 `HKLM\SYSTEM\MountedDevices`，指向一个已经随 VHD 一起消失的分区。
+        //   于是每跑一次这条用例就给机器新增一个幽灵 V:（实测门禁三轮，V: 记录
+        //   的分区 GUID 每轮都不同，都是已销毁的 VHD 分区）。而 `GetLogicalDrives`
+        //   **看不见**幽灵，所以下面那条老断言恒绿——「判据看不到它」不等于没有。
+        //   修法：先 `remove letter=V` 撤掉持久指派，再 detach。
         fs::write(
             &detach,
             format!(
-                "select vdisk file=\"{}\"\r\ndetach vdisk\r\n",
+                "select vdisk file=\"{}\"\r\nselect partition 1\r\nremove letter=V\r\ndetach vdisk\r\n",
                 fx.vhd.display()
             ),
         )
@@ -1087,6 +1110,25 @@ mod tests {
             .is_success()
         );
         assert_eq!(unsafe { GetLogicalDrives() } & (1 << (b'V' - b'A')), 0);
+        // 判据升级：直接查注册表里那条持久记录还在不在。查不到才算真干净——
+        // 这条断言是唯一能看见「幽灵盘符」的读数（`fsutil` / `mountvol` /
+        // `GetLogicalDrives` 全都看不见它）。变异：把上面的 `remove letter=V`
+        // 删掉，本断言立刻变红。
+        let ghost = windows_command::run_program(
+            "reg.exe",
+            &[
+                "query".into(),
+                "HKLM\\SYSTEM\\MountedDevices".into(),
+                "/v".into(),
+                "\\DosDevices\\V:".into(),
+            ],
+            Some(&fx.log),
+            30_000,
+        );
+        assert!(
+            !ghost.is_success(),
+            "V: 的持久盘符记录必须随夹具一起消失（detach 不会删它）"
+        );
         if let Some(guard) = fx.guard.take() {
             std::mem::forget(guard);
         }
