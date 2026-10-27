@@ -135,10 +135,21 @@ fi
 # ---------- 跑 ----------
 # 判据只看结构化字段：`test result: ok. 1 passed` / `test result: FAILED`。
 run_one() {
-    local name=$1 filter=$2 cwd=$3
+    local name=$1 filter=$2 cwd=$3 envs=$4
     local log_win="$BIN_DIR\\$name.log"
     vm "del /f /q $log_win" >/dev/null 2>&1
-    vm "cd /d $cwd && (\"$BIN_WIN\" --ignored --nocapture $filter > $log_win 2>&1) & echo LAUNCHED" >/dev/null 2>&1
+    # ★ 把 env 前提**真的交给被测进程**。上一版只在宿主检查变量存在就放行，
+    #   却不把它们传给 VM 里的测试二进制 —— 测试读不到变量会 panic，
+    #   而症状看起来像「产品坏了」。`set` 与测试在同一条 cmd 会话，子进程继承。
+    #   判据纪律：检查了前提，就必须把前提交给被测对象。
+    local prefix="" kv val
+    for kv in $envs; do
+        eval "val=\${$kv}"
+        # ★ 必须写成 `set "K=V"`：cmd 的 `set K=V &` 会把 `&` 前那个空格
+        #   算进值里，于是 ACK 变成 "…secondary "（尾随空格）→ 断言不等。
+        prefix="$prefix set \"$kv=$val\" &"
+    done
+    vm "$prefix cd /d $cwd && (\"$BIN_WIN\" --ignored --nocapture $filter > $log_win 2>&1) & echo LAUNCHED" >/dev/null 2>&1
 
     local w=0 out=""
     while [ $w -lt 180 ]; do
@@ -167,7 +178,10 @@ env_missing() {
     local missing=""
     for v in "$@"; do
         [ -z "$v" ] && continue
-        if [ -z "$(vm "if defined $v (echo 1)")" ]; then missing="$missing $v"; fi
+        # ★ 查**宿主**，不查 VM：真正的传递由 run_one 的 `set` 前缀完成。
+        #   上一版查 VM 内 `if defined`，而 run_one 又不传 —— 两头都没打通，
+        #   于是「宿主配了变量也永远 SKIP」，5 条 env 用例从来没真跑过。
+        if [ -z "${!v}" ]; then missing="$missing $v"; fi
     done
     printf '%s' "$missing"
 }
@@ -215,8 +229,13 @@ for row in "${CASES[@]}"; do
 
     case "$kind" in
         pe)
+            # ★ 2026-10-27 实测：RE 里**没有 Parallels Tools**，`prlctl exec`
+            #   通道不存在（连 `echo` 都返回空），自动化无法在 PE 内启动测试
+            #   二进制。可以进 RE（产品 prepare 机制已验证），但要在 RE 内
+            #   执行命令只能靠「命令提示符」+ 键盘注入，不在本门禁能力内。
+            #   手工举证步骤见 docs/20261027-2245-解锁剩余 ignore 用例-*.md。
             SKIP=$((SKIP + 1))
-            say "CASE=$name=SKIP reason=requires_windows_pe_or_re"
+            say "CASE=$name=SKIP reason=requires_windows_pe_manual_in_re"
             continue
             ;;
         env)
@@ -241,7 +260,7 @@ for row in "${CASES[@]}"; do
 
     RAN=$((RAN + 1))
     say "RUN $name (filter=$filter)"
-    if run_one "$name" "$filter" "$cwd"; then
+    if run_one "$name" "$filter" "$cwd" "$arg"; then
         PASS=$((PASS + 1)); say "CASE=$name=PASS"
     else
         FAIL=$((FAIL + 1)); say "CASE=$name=FAIL"
