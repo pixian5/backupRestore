@@ -3099,8 +3099,9 @@ fn ensure_backup_image_capacity(
         _ => return Ok(()),
     };
     let used = source_total.saturating_sub(source_free);
-    let floor = backuprestore_core::backup_space_floor(used);
-    if available < floor {
+    // 判定与阈值都来自 core 的同一对纯函数（与在线通道共用），这里不写不等式——
+    // 抄两遍就没法给「拦下」写判据（见 backup_space_shortfall 的注释）。
+    if let Some(floor) = backuprestore_core::backup_space_shortfall(available, used) {
         return Err(crate::errc_with(
             ErrCode::BackupSpaceInsufficient,
             &[

@@ -1006,6 +1006,21 @@ pub fn backup_space_floor(source_used_bytes: u64) -> u64 {
     (source_used_bytes / 20).max(MIN_FLOOR)
 }
 
+/// 硬闸的**判定**本身：`Some(下限)` = 拦下（可用空间不足，附需要多少）；`None` = 放行。
+///
+/// 为什么把它抽成函数：判定原来在两条链（`windows_prepare` 的离线准备、
+/// `online_operation` 的在线捕获）里各自写了一遍 `if free < floor`。
+/// 同一个不等式抄两遍，就没法写「拦下」的判据——2026-10-27 之前
+/// `BR-IMG-008` **只验过「不误拦」（可用空间够时放过），从未构造过「拦下」**：
+/// 一个只在一边实现的守卫，测试只能测到它那一半。
+///
+/// 边界语义写死在这里：`available == floor` 放行（`<` 而非 `<=`），
+/// 与文档「低于硬闸才拒绝」一致。
+pub fn backup_space_shortfall(available_bytes: u64, source_used_bytes: u64) -> Option<u64> {
+    let floor = backup_space_floor(source_used_bytes);
+    (available_bytes < floor).then_some(floor)
+}
+
 /// 新索引大小的保守估计（字节），**只用于日志警告，永不用于拒绝**。
 ///
 /// `none` 时 WIM 与源已用量基本 1:1（略高：文件头与目录结构）；`fast` 取 0.7，
@@ -2068,6 +2083,35 @@ mod tests {
         assert!(backup_space_floor(249 * GIB) < 32 * GIB);
         // 单调不减。
         assert!(backup_space_floor(100 * GIB) <= backup_space_floor(200 * GIB));
+    }
+
+    #[test]
+    fn backup_space_gate_blocks_below_floor_and_allows_at_floor() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // 【2026-10-27】`BR-IMG-008` 此前只验过「不误拦」，**从未构造过「拦下」**：
+        // 判定（`free < floor`）在两条链里各写一遍，测试只能测到阈值本身。
+        // 抽成 `backup_space_shortfall` 后，这里把「拦下」这个产品承诺变成判据。
+
+        // ① 拦下：可用比下限少 1 字节 → 必须报，且回报的正是那个下限。
+        assert_eq!(backup_space_shortfall(GIB - 1, 0), Some(GIB));
+        assert_eq!(backup_space_shortfall(0, 100 * GIB), Some(100 * GIB / 20));
+
+        // ② 边界：恰好等于下限 → 放行（文档写的是「低于硬闸才拒绝」，是 `<` 不是 `<=`）。
+        assert_eq!(backup_space_shortfall(GIB, 0), None);
+        assert_eq!(
+            backup_space_shortfall(100 * GIB / 20, 100 * GIB),
+            None
+        );
+
+        // ③ 充裕：远高于下限 → 放行。
+        assert_eq!(backup_space_shortfall(200 * GIB, 100 * GIB), None);
+
+        // ④ 与阈值函数必须是同一套语义（两条链共用，不允许各算一套）。
+        for used in [0u64, GIB, 10 * GIB, 249 * GIB, 4096 * GIB] {
+            let floor = backup_space_floor(used);
+            assert_eq!(backup_space_shortfall(floor - 1, used), Some(floor), "used={used}");
+            assert_eq!(backup_space_shortfall(floor, used), None, "used={used}");
+        }
     }
 
     #[test]

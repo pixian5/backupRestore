@@ -1306,8 +1306,8 @@ pub(crate) fn capture(
     {
         match crate::windows_prepare::disk_free_space(letter) {
             Ok((_, free)) => {
-                let floor = backuprestore_core::backup_space_floor(used);
-                if free < floor {
+                // 判定与阈值共用 core 的同一对纯函数（与离线准备链一致）。
+                if let Some(floor) = backuprestore_core::backup_space_shortfall(free, used) {
                     return Err(crate::errc_with(
                         ErrCode::BackupSpaceInsufficient,
                         &[
