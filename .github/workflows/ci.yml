@@ -14,6 +14,12 @@ name: CI
 #       runner 上没有；改为在 **windows-latest 原生**跑测试与类型检查，
 #       覆盖的是同一批 cfg(windows) 代码，且能真跑起来（比交叉编译更强）。
 #
+# ★ 工具链**固定**在仓库根的 rust-toolchain.toml（当前 1.98.1），CI 里显式装同一个
+#   版本并断言两者一致。第一次跑 CI 就吃了不固定的亏：runner 的 stable 已到 1.99，
+#   新增的 clippy `single_element_loop` 把 core 里一处**故意写成单元素循环**的列表
+#   判成 error（`-D warnings` 直接失败），而本机 1.98 不认识这条 lint——于是
+#   「pre-push 全绿、CI 红」。升级工具链应当是主动动作，不是随 runner 漂移。
+#
 # 覆盖对照（本机 pre-push 6 步 → 云端）：
 #   1 单测            → gate: cargo test --workspace
 #   2 core clippy     → gate: clippy -p core -D warnings
@@ -45,12 +51,25 @@ jobs:
 
       # 依赖全是纯 Rust（chrono/serde/sha2/thiserror/uuid），无平台特定 crate，
       # 所以 ubuntu 上能完整编译「非 Windows 那一半」——与 mac 开发机等价且便宜。
-      - name: 安装 Rust 工具链
-        uses: dtolnay/rust-toolchain@stable
+      - name: 安装 Rust 工具链（固定版本，见 rust-toolchain.toml）
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      # 版本漂移必须红：否则又会出现「本机绿、CI 红」的错位。
+      - name: 0/4 工具链与 rust-toolchain.toml 一致
+        run: |
+          want="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          got="$(rustc --version | awk '{print $2}')"
+          echo "rust-toolchain.toml=$want runner=$got"
+          if [ -z "$want" ]; then echo "::error::读不到 rust-toolchain.toml 的 channel"; exit 2; fi
+          if [ "$want" != "$got" ]; then
+            echo "::error::工具链漂移：rust-toolchain.toml 要 $want，runner 实际 $got"
+            exit 1
+          fi
 
       - name: 1/4 cargo test --workspace
         run: cargo test --workspace
@@ -85,9 +104,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Rust 工具链（含 ARM64 Windows 目标）
-        uses: dtolnay/rust-toolchain@stable
+      - name: 安装 Rust 工具链（固定版本 + ARM64 Windows 目标）
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           targets: aarch64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2

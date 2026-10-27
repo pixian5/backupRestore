@@ -1020,31 +1020,74 @@ mod tests {
 
     /// D4：独立恢复分区上的恢复对象（设备路径写法）必须能通过校验，
     /// 指向别的分区则必须被拒。非 Windows 构建下设备号无法核对，一律拒绝。
+    ///
+    /// ★ 2026-10-27 改写：**不再硬编码 `harddisk0\\partition6`**。
+    /// 那条断言只有在「本机真的存在 disk0 的 partition6」时才有意义——开发机有
+    /// 独立恢复分区，GitHub 的 Windows runner 没有，于是 CI 第一次跑就红
+    /// （`CreateFileW` 打不开不存在的卷 → 报错 → 「必须通过」的断言失败）。
+    /// 现在用**本机系统卷的真实设备路径**构造规格：任何 Windows 机器上都成立，
+    /// 而且比原来更强——它验的是「真设备 → 真分区号」这条链路，而不是一个
+    /// 恰好对得上的常量。
     #[test]
     fn recovery_object_accepts_only_the_registered_partition() {
-        let device_bcd = format!(
-            "identifier {OS}\ndevice partition=P:\nosdevice partition=P:\npath \\Windows\\system32\\winload.efi\nrecoverysequence {RE}\nrecoveryenabled Yes\n\nidentifier {RE}\ndevice ramdisk=[\\Device\\HarddiskVolume6]\\Recovery\\WindowsRE\\Winre.wim,{RD}\nosdevice ramdisk=[\\Device\\HarddiskVolume6]\\Recovery\\WindowsRE\\Winre.wim,{RD}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n\nidentifier {RD}\nramdisksdidevice partition=\\Device\\HarddiskVolume6\nramdisksdipath \\Recovery\\WindowsRE\\boot.sdi\n"
-        );
-        let independent = RecoveryPayload {
-            location: r"\\?\globalroot\device\harddisk0\partition6\recovery\windowsre".into(),
-            disk: 0,
-            partition: 6,
-            letter: None,
-        };
-        // 设备路径写法：只能在 Windows 上真正解析设备号。
-        let outcome = verify_recovery_object(&device_bcd, RE, &independent);
-        if cfg!(windows) {
-            assert!(outcome.is_ok(), "{outcome:?}");
-        } else {
-            assert!(outcome.is_err(), "非 Windows 不得凭设备路径放行");
-        }
-        // 盘符写法在独立分区没有盘符时必须拒绝（不能拿目标盘符顶替）。
-        assert!(verify_recovery_object(&bcd(), RE, &independent).is_err());
-        // 同分区场景：盘符写法照旧通过。
+        // 盘符写法：同分区通过 / 别的盘符拒绝（跨平台部分）。
         let same = RecoveryPayload::at_location(LOC, 'P');
         assert!(verify_recovery_object(&bcd(), RE, &same).is_ok());
-        // 盘符指向别的分区仍然拒绝。
         assert!(verify_recovery_object(&bcd(), RE, &RecoveryPayload::at_location(LOC, 'Q')).is_err());
+
+        #[cfg(not(windows))]
+        {
+            // 非 Windows：设备号无法核对，一律拒绝（不得凭设备路径放行）。
+            let device_bcd = format!(
+                "identifier {OS}\ndevice partition=P:\nosdevice partition=P:\npath \\Windows\\system32\\winload.efi\nrecoverysequence {RE}\nrecoveryenabled Yes\n\nidentifier {RE}\ndevice ramdisk=[\\Device\\HarddiskVolume6]\\Recovery\\WindowsRE\\Winre.wim,{RD}\nosdevice ramdisk=[\\Device\\HarddiskVolume6]\\Recovery\\WindowsRE\\Winre.wim,{RD}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n\nidentifier {RD}\nramdisksdidevice partition=\\Device\\HarddiskVolume6\nramdisksdipath \\Recovery\\WindowsRE\\boot.sdi\n"
+            );
+            let independent = RecoveryPayload {
+                location: r"\\?\globalroot\device\harddisk0\partition6\recovery\windowsre".into(),
+                disk: 0,
+                partition: 6,
+                letter: None,
+            };
+            assert!(
+                verify_recovery_object(&device_bcd, RE, &independent).is_err(),
+                "非 Windows 不得凭设备路径放行"
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            // 用本机系统卷的真实设备路径：任何 Windows 机器上都存在。
+            let system = std::env::var("SystemDrive").expect("SystemDrive 必须存在");
+            let drive = system.chars().next().expect("SystemDrive 至少一字符");
+            let live = crate::windows_prepare::volume_identity(drive).expect("系统卷身份可读");
+            let device = crate::boot_entry::dos_device_of(drive).expect("NT 设备路径可查");
+            let disk = live.disk_number.expect("系统卷应有盘号");
+            let partition = live.partition_number.expect("系统卷应有分区号");
+            let device_bcd = format!(
+                "identifier {OS}\ndevice partition=P:\nosdevice partition=P:\npath \\Windows\\system32\\winload.efi\nrecoverysequence {RE}\nrecoveryenabled Yes\n\nidentifier {RE}\ndevice ramdisk=[{device}]\\Recovery\\WindowsRE\\Winre.wim,{RD}\nosdevice ramdisk=[{device}]\\Recovery\\WindowsRE\\Winre.wim,{RD}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n\nidentifier {RD}\nramdisksdidevice partition={device}\nramdisksdipath \\Recovery\\WindowsRE\\boot.sdi\n"
+            );
+            let real = RecoveryPayload {
+                location: format!(r"\\?\globalroot{device}\recovery\windowsre"),
+                disk,
+                partition,
+                letter: None,
+            };
+            // 正向：真实设备 + 真实分区号 → 必须通过（这条现在在任何机器上都能验）。
+            let outcome = verify_recovery_object(&device_bcd, RE, &real);
+            assert!(outcome.is_ok(), "真实设备路径应当通过：{outcome:?}（device={device} disk={disk} part={partition}）");
+            // 反向：同一台真实设备，但规格声称的分区号不对 → 必须拒（靠真链路而非常量）。
+            let wrong = RecoveryPayload {
+                location: real.location.clone(),
+                disk,
+                partition: partition.wrapping_add(1),
+                letter: None,
+            };
+            assert!(
+                verify_recovery_object(&device_bcd, RE, &wrong).is_err(),
+                "设备路径指向真实分区、但规格声称的分区号不符时必须拒绝"
+            );
+            // 独立分区没有盘符时，盘符写法必须拒绝（不能拿目标盘符顶替）。
+            assert!(verify_recovery_object(&bcd(), RE, &real).is_err());
+        }
     }
 
     /// 【2026-10-19 实机缺陷修复】设备路径的两种大小写写法都必须路由到

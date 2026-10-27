@@ -1787,7 +1787,12 @@ pub fn build_capture_exclusions(source_root: &Path, self_exe_dir: Option<&Path>)
     //
     // ★ 只在**确认它是重解析点**时才排除。数据卷上万一真有一个叫这个名字的普通
     //   目录，无脑排除会静默丢掉用户数据——排除表的错误是"少备份"，不报错。
-    for junction in ["Documents and Settings"] {
+    //
+    // 写成具名常量而不是内联数组字面量：这个列表预期会增长（每发现一个根级
+    // 自引用联接点就加一条），内联单元素字面量在 clippy 1.99 起会触发
+    // `single_element_loop`，而 1.98 又不认识这条 lint——具名常量两种工具链都干净。
+    const ROOT_JUNCTIONS: &[&str] = &["Documents and Settings"];
+    for junction in ROOT_JUNCTIONS {
         if is_reparse_point(&source_root.join(junction)) {
             lines.push(format!("\\{junction}"));
         }

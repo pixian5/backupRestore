@@ -233,7 +233,7 @@ fn any_usable_winre_template(log: &Path) -> Result<(String, String), TaskError> 
 /// 只对系统卷生效；数据卷必须写设备路径形式才能被 bootmgr 加载。bcdedit 对两种
 /// 写入的显示都规范化成 `[X:]`，所以差别只在存储层、回读看不出来。
 #[cfg(windows)]
-fn dos_device_of(letter: char) -> Result<String, TaskError> {
+pub(crate) fn dos_device_of(letter: char) -> Result<String, TaskError> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn QueryDosDeviceW(device_name: *const u16, target_path: *mut u16, max: u32) -> u32;

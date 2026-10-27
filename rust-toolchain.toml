@@ -1,0 +1,15 @@
+# 工具链固定（2026-10-27 加）：本地门禁与 CI 必须用同一个编译器。
+#
+# 为什么固定：CI 用 `stable` 会跟着 runner 自动升级，而本机不升——于是出现
+# 「pre-push 全绿、CI 红」的错位。第一次跑 CI 就撞上了：clippy 1.99 新增
+# `single_element_loop`，把 core 里一处**故意写成单元素循环**的列表判成 error
+# （`-D warnings` 下直接失败），而本机 1.98 根本不认识这条 lint。
+# 升级应当是**主动动作**：改这个文件 + 本地 `rustup update` + 处理新 lint，
+# 三件事一起提交。CI 里有一道断言核对 runner 的 rustc 与本文件一致。
+[toolchain]
+channel = "1.98.1"
+components = ["clippy"]
+# 交叉编译 Windows 目标要这一份 rust-std。写在这里而不是靠人记得 `rustup target add`：
+# 换了工具链版本（或换机器）时，缺 target 的表现是「can't find crate for `core`」，
+# 与代码无关，很容易被误判成代码坏了（2026-10-27 加固定工具链时当场踩到）。
+targets = ["aarch64-pc-windows-msvc"]
