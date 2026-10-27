@@ -63,6 +63,7 @@ CASES=(
   "secondary_mapping_rejections|secondary_mapping_rejections|none|"
   "secondary_registry_map|offline_secondary_mapping|env|BR_SECONDARY_MAPPING_ACK BR_SECONDARY_MAPPING_LETTER BR_SECONDARY_MAPPING_GUID BR_SECONDARY_MAPPING_LOG"
   "winre_offline_reg|offline_registration_on_test_partition|env|BR_WINRE_TEST_ACK BR_WINRE_TEST_TARGET BR_WINRE_TEST_PRIMARY BR_WINRE_TEST_GUID BR_WINRE_TEST_EFI BR_WINRE_TEST_LOG"
+  "secondary_menu_repair_rejections|secondary_menu_repair_rejections|none|"
   "secondary_menu_repair|secondary_menu_repair_native|env|BR_ACCEPTANCE_SNAPSHOT BR_ACCEPTANCE_ROOT BR_ACCEPTANCE_TASK BR_ACCEPTANCE_EFI BR_ACCEPTANCE_SECONDARY"
   "boot_entry_fault|missing_payload_conflict_and_cleanup_retry|env|BR_ACCEPTANCE_SNAPSHOT BR_ACCEPTANCE_ROOT"
   "boot_failure_rollback|boot_failure_rollback_in_pe|pe|"

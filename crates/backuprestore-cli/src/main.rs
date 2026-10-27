@@ -5000,7 +5000,20 @@ fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, Ta
         append_log(log, &text)?;
     }
     if !output.status.success() {
-        return Err(err(&format!("{program} failed with {}", output.status)));
+        // 【2026-10-27】这里原来用无码 `err()`：同一类失败（外部命令非零退出）
+        // 在 `run_logged` 那条路径上带 `BR-APL-009`，在这里却不带码——`--json`
+        // 的 errorCode 恒为 null，用户拿不到可查询的稳定标识。发现路径：
+        // `secondary_menu_repair_rejections` 断言「拒绝路径的失败必须带码」直接变红。
+        // 现在两条路径同码同结构：程序名 + 退出状态 + 输出尾部（在内存里，不重读文件）。
+        return Err(errc_with(
+            ErrCode::ProgramFailedNamed,
+            &[
+                program,
+                &format!("{}", output.status),
+                &crate::text_parsing::LOG_TAIL_MAX_BYTES.to_string(),
+                crate::text_parsing::tail_of_text(&text, crate::text_parsing::LOG_TAIL_MAX_BYTES),
+            ],
+        ));
     }
     Ok(text)
 }
@@ -5673,7 +5686,14 @@ fn run_command(program: &str, args: Vec<String>) -> Result<(), TaskError> {
     if status.success() {
         Ok(())
     } else {
-        Err(err(&format!("{program} failed with {status}")))
+        // 【2026-10-27】与 `capture_logged` 同批修正：外部命令非零退出必须带码。
+        // 这里是**直通**通道（子进程输出直接给用户，不捕获），所以用不含输出尾部的
+        // `BR-APL-010`（`BR-PE-039`/`BR-APL-009` 的模板都带一个尾部槽，硬塞空串
+        // 会在文案与 --json 里留一个裸换行）。
+        Err(errc_with(
+            ErrCode::ProgramExitNonZero,
+            &[program, &format!("{status}")],
+        ))
     }
 }
 
@@ -5684,6 +5704,29 @@ mod tests {
         parse_boot_manager_state, parse_recover_options, split_workspace_root_rel,
         stage_resumable_after_interruption,
     };
+
+    #[test]
+    fn dispatch_failure_carries_its_code_even_without_json() {
+        // 「码是契约」要追到出口：`run-command` 直通通道的程序失败必须带码，
+        // 否则 `--json` 的 errorCode 恒为 null（2026-10-27 由
+        // `secondary_menu_repair_rejections` 的断言逼出来的同类缺陷）。
+        //
+        // 刻意用 `sh -c 'exit 3'` 而不是 Windows 专有程序：本项目最贵的教训之一是
+        // **`#[cfg(windows)]` 里的测试在 mac 上是零信息**（编译器根本不打开那个文件）。
+        // 这个用例在两侧都能跑，才真正守得住。
+        let error = super::run_command("sh", vec!["-c".to_string(), "exit 3".to_string()])
+            .expect_err("非零退出必须报错");
+        assert_eq!(error.code(), Some("BR-APL-010"), "{error}");
+        assert!(
+            error.to_string().starts_with("[BR-APL-010]"),
+            "Display 必须带码前缀：{error}"
+        );
+        // 直通通道没有输出尾部可附；模板带尾部槽时塞空串会留下裸换行。
+        assert!(
+            !error.to_string().ends_with('\n'),
+            "文案不该以换行结尾：{error:?}"
+        );
+    }
 
     #[test]
     fn recovery_boot_menu_gate_matches_finalize_routing() {
@@ -5739,8 +5782,52 @@ mod tests {
         );
     }
 
+    /// **只读拒绝路径**（2026-10-27 新增）。
+    ///
+    /// `preserve_primary_boot_manager` 第一件事是 `bcdedit /store <EFI>\EFI\Microsoft\Boot\BCD
+    /// /enum all /v`：**读不到存储就返回，一个字节都不写**。而原用例
+    /// `secondary_menu_repair_native` 要真实第二系统任务 + 已挂载 ESP + 快照，
+    /// 环境一删就「永远不跑」——偏偏它是**改启动菜单**，最该有常态护栏。
+    /// 这里只验「BCD 存储不可读时拒绝且不写」：不需要 ESP、不需要快照、不需要第二系统。
     #[cfg(windows)]
     #[test]
+    #[ignore = "需要 Windows 管理员（只读拒绝路径：BCD 存储不存在时必须拒绝且不写）"]
+    fn secondary_menu_repair_rejections() {
+        let tmp = std::env::temp_dir().join(format!(
+            "br-menu-reject-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let log = tmp.join("menu-reject.log");
+        let previous = super::BcdBootManagerState {
+            default: "{aaaaaaaa-0000-0000-0000-000000000001}".to_string(),
+            display_order: vec!["{aaaaaaaa-0000-0000-0000-000000000001}".to_string()],
+            resume_object: None,
+            loader_resume_objects: Vec::new(),
+        };
+        let secondary = "{aaaaaaaa-0000-0000-0000-000000000002}";
+        let error = super::preserve_primary_boot_manager(&tmp, &previous, secondary, &log)
+            .expect_err("BCD 存储不存在时必须拒绝");
+        // 契约：失败必须带**稳定且确定**的码（本项目「码要追到出口」的纪律）。
+        // 2026-10-27 这条断言第一次跑就变红：`capture_logged` 用无码 `err()`，
+        // 与 `run_logged` 的 `BR-APL-009` 不一致。只断言「有码」会漏掉「码不对」，
+        // 所以这里钉死具体码。
+        assert_eq!(error.code(), Some("BR-APL-009"), "外部命令失败的稳定码：{error}");
+        assert!(
+            error.to_string().contains("bcdedit"),
+            "失败文案必须点名是哪个程序：{error}"
+        );
+        // 不得在目标根上创建/改动任何启动相关目录（EFI 目录本身就是「已经动过」的证据）。
+        assert!(
+            !tmp.join("EFI").exists(),
+            "拒绝路径不得创建 EFI 目录：{}",
+            tmp.join("EFI").display()
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[cfg(windows)]
     #[ignore = "需要已完成的第二系统任务、EFI 挂载点及新核验快照；真实修改启动菜单"]
     fn secondary_menu_repair_native() {
         use std::path::PathBuf;

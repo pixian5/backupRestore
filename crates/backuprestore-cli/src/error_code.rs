@@ -356,6 +356,11 @@ error_codes! {
 
     // ── 外部命令失败回执（`main` 的 `run_logged_timeout`）────────────────
     ProgramFailedNamed => ("BR-APL-009", "{0} failed with {1}\n--- 输出尾部（至多 {2} 字节）---\n{3}", "{0} failed with {1}\n--- output tail (at most {2} bytes) ---\n{3}"),
+    // **直通**通道的程序失败：子进程输出直接给用户，没有输出尾部可附。
+    // 与 `ProgramFailedNamed` 分开是因为模板不同：后者末尾有 `{3}` 这一槽，
+    // 直通场景没有文本可传，硬塞空串会在文案与 `--json` 里留下一个裸换行
+    // （2026-10-27 实机：`"[BR-PE-039] cmd.exe exit code: 3\n"`）。
+    ProgramExitNonZero => ("BR-APL-010", "{0} 失败：{1}", "{0} failed: {1}"),
 }
 
 /// 不带占位的错误。

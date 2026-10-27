@@ -408,6 +408,25 @@ pub(crate) fn tail_text(path: &std::path::Path, max_bytes: usize) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// 取**内存中**字符串的尾部至多 `max_bytes` 字节，并且**不切坏 UTF-8**。
+///
+/// 与 [`tail_text`] 的分工：那个从文件读，读不到就返回空串（附不上尾巴不该让
+/// 主错误变形）；这个用于输出**已经在手**的场合（`capture_logged` 走
+/// `Command::output()` 收集完 stdout+stderr）。两者必须都能在 mac 上单测。
+///
+/// 为什么不直接 `&text[text.len() - max..]`：那样会在多字节字符中间切开直接
+/// panic。这里从候选起点往后挪到最近的 char 边界，代价最多 3 字节。
+pub(crate) fn tail_of_text(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut start = text.len() - max_bytes;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 /// Win32 multiline `EDIT` controls only break lines on `\r\n`. A lone `\n` is
 /// stored as an invisible control character, which is how the information
 /// window's report header collapsed into a single unreadable row.
@@ -1463,6 +1482,31 @@ mod tests {
         std::fs::write(&path, [0xE4u8, 0xB8]).unwrap();
         assert_eq!(tail_text(&path, 1), "\u{FFFD}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tail_of_text_keeps_tail_and_never_splits_a_char() {
+        // 短于上限：原样返回。
+        assert_eq!(tail_of_text("short", 64), "short");
+        // 长文本：只留尾部，且包含最后一行。
+        let long: String = (0..500).map(|i| format!("line {i:04}\n")).collect();
+        let tail = tail_of_text(&long, 64);
+        assert!(tail.len() <= 64, "尾部超限：{}", tail.len());
+        assert!(tail.contains("line 0499"), "{tail}");
+        assert!(!tail.contains("line 0000"), "不应包含开头：{tail}");
+        // ★ 关键：截断点落在 3 字节汉字的中间时不许 panic，也不许留下半个字符。
+        //   "错误" = E9 94 99 E8 AF AF，"错" 占 3 字节；取 4 字节 → 起点落在
+        //   第二个字中间 → 必须整体跳过该字（结果只剩 1 个完整汉字）。
+        let chinese = "错误信息";
+        for max in 1..=chinese.len() {
+            let t = tail_of_text(chinese, max);
+            assert!(t.len() <= max, "max={max} 超限：{}", t.len());
+            // 能通过 from_utf8 就说明没有半个字符（&str 本身合法，但起点必须落在边界上）。
+            assert!(chinese.ends_with(t), "max={max} 破坏了尾部语义：{t}");
+        }
+        // "错误信息" 四个汉字各 3 字节：取 4 字节 → 起点 8 落在「信」中间 →
+        // 挪到 9，只剩最后一个字「息」（3 字节 ≤ 4）。
+        assert_eq!(tail_of_text(chinese, 4), "息");
     }
 
     #[test]

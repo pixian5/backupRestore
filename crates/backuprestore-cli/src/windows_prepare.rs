@@ -2154,7 +2154,18 @@ fn run_bcdedit_quiet(arguments: &[String]) -> Result<String, TaskError> {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     if !output.status.success() {
-        return Err(err(&format!("bcdedit failed with {}", output.status)));
+        // 【2026-10-27】同批修正：外部命令失败必须带码（原来是无码 `err()`，
+        // `--json` 的 errorCode 会是 null）。BR-PE-039 = 外部程序失败，与
+        // `capture_logged` / `run_command` 一致；bcdedit 的真实原因在输出里，
+        // 所以附尾部（内存字符串，不重读文件）。
+        return Err(crate::errc_with(
+            ErrCode::ProgramFailed,
+            &[
+                "bcdedit.exe",
+                &format!("{}", output.status),
+                crate::text_parsing::tail_of_text(&text, crate::text_parsing::LOG_TAIL_MAX_BYTES),
+            ],
+        ));
     }
     Ok(text)
 }

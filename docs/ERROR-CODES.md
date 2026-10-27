@@ -34,9 +34,9 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层（共 214 条）
+## CLI 层（共 215 条）
 
-### `BR-APL` — 应用镜像（DISM / wimlib）（9 条）
+### `BR-APL` — 应用镜像（DISM / wimlib）（10 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -49,6 +49,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-APL-007` | `DismApplyFailedWithReason` | DISM apply 失败：{0}\n{1}\n{2} | DISM apply failed: {0}\n{1}\n{2} |
 | `BR-APL-008` | `FallbackAlsoFailed` | DISM apply 失败：{0}\n自动降级 wimlib 重试仍失败：{1}\n{2}\n{3} | DISM apply failed: {0}\nThe automatic wimlib fallback also failed: {1}\n{2}\n{3} |
 | `BR-APL-009` | `ProgramFailedNamed` | {0} failed with {1}\n--- 输出尾部（至多 {2} 字节）---\n{3} | {0} failed with {1}\n--- output tail (at most {2} bytes) ---\n{3} |
+| `BR-APL-010` | `ProgramExitNonZero` | {0} 失败：{1} | {0} failed: {1} |
 
 ### `BR-BOOT` — 引导、BCD、启动菜单（31 条）
 
