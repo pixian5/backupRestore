@@ -181,15 +181,19 @@ env_missing() {
 say "STEP 3/4 核对每条用例都真在测试二进制里（不存在 ≠ SKIP）"
 LIST_WIN="$BIN_DIR\\ignored-tests.list"
 vm "del /f /q $LIST_WIN" >/dev/null 2>&1
-vm "cd /d $BIN_DIR && (\"$BIN_WIN\" --ignored --list > $LIST_WIN 2>&1) & echo LISTED" >/dev/null 2>&1
+# ★ 同步执行，**不要**用 `(... ) & echo` 后台起：`prlctl exec` 返回时会把
+#   子进程一起带走，于是文件常常是空的或只有前几行——实测完整门禁偶发
+#   「取不到 --ignored --list」（单独跑同一条却成功，典型竞争）。
+#   `--list` 是秒级任务，没有异步的必要；真要异步的只有 STEP 4 那些跑
+#   DISM 的用例，那里有 180 秒轮询兜着。
+vm "cd /d $BIN_DIR && \"$BIN_WIN\" --ignored --list > $LIST_WIN 2>&1" >/dev/null 2>&1
 list_text=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    sleep 2
+for _ in 1 2 3 4 5; do
     list_text=$(vm "type $LIST_WIN")
-    # ★ 别看到第一行就 break：`--list` 是边输出边刷新的，早读会只拿到前几条，
-    #   于是后面的用例全被判成「不在二进制里」（第一版就是这样造出 4 条假红）。
-    #   完整标志是 libtest 结尾那行 `N tests, 0 benchmarks`。
+    # 完整标志是 libtest 结尾那行 `N tests, 0 benchmarks`（边输出边刷新，
+    # 看到第一行就 break 会只拿到前几条，造出「用例不存在」的假红）。
     printf '%s' "$list_text" | grep -q "benchmarks" && break
+    sleep 1
 done
 if ! printf '%s' "$list_text" | grep -q "benchmarks"; then
     say "ERROR: 取不到 --ignored --list（仪器故障，不等于用例缺失）。这不是「测试通过」。"

@@ -2817,20 +2817,46 @@ mod replay_probe {
         );
     }
 
+    /// 定位本机 82 MB 原始日志。
+    ///
+    /// ★ 不能用 `env!("CARGO_MANIFEST_DIR")` 单一定位：那是**编译期**路径。
+    ///   门禁（`tools/test/ignored-acceptance.sh`）在 Windows 上从
+    ///   `<root>\crates\backuprestore-cli` 起跑、日志放在 `<root>\.test-artifacts\`，
+    ///   而编译发生在 `X:` —— 拼出来的绝对路径必然不存在，用例会判 FAIL
+    ///   （2026-10-27 实测：改成 CARGO_MANIFEST_DIR 后门禁立刻红）。
+    ///   所以按「环境变量 → 当前目录相对 → 源码树」的顺序找，与旧实现的
+    ///   cwd 语义保持一致。
+    fn locate_full_log() -> std::path::PathBuf {
+        if let Ok(explicit) = std::env::var("BR_WIMLIB_LOG") {
+            return std::path::PathBuf::from(explicit);
+        }
+        let from_cwd = std::path::PathBuf::from("../../.test-artifacts/e2e-brimglog-227.log");
+        if from_cwd.is_file() {
+            return from_cwd;
+        }
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(".test-artifacts")
+            .join("e2e-brimglog-227.log")
+    }
+
     /// 本机全量取证（82 MB 原始日志不入库）：
     /// `cargo test -p backuprestore-cli replay_real_wimlib_log -- --ignored --nocapture`
     ///
     /// 与常态判据共用 `assert_replay`，差异只在输入与规模。
+    /// 可用 `BR_WIMLIB_LOG=<路径>` 指定日志；常态判据不依赖这份日志（夹具已入库）。
     #[test]
     #[ignore = "需要本机 .test-artifacts 里的 82MB 原始恢复日志（全量取证；常态判据见 fixture 版）"]
     fn replay_real_wimlib_log() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join(".test-artifacts")
-            .join("e2e-brimglog-227.log");
-        let raw = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("全量取证需要原始日志：{}：{error}", path.display()));
+        let path = locate_full_log();
+        let raw = std::fs::read(&path).unwrap_or_else(|error| {
+            panic!(
+                "全量取证需要原始日志：{}：{error}（可用 BR_WIMLIB_LOG 指定；\
+                 常态判据不依赖它，见 replay_wimlib_progress_fixture_is_monotone_and_completes）",
+                path.display()
+            )
+        });
         let text = String::from_utf8_lossy(&raw);
         let parsed = assert_replay("full", &text);
         assert!(
