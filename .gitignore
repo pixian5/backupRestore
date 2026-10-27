@@ -27,6 +27,9 @@ mountvol-*.png
 *.vhdx
 *.partial
 *.log
+# 测试夹具例外：从真实日志逐字节抽样的样本，必须入库，否则判据在 CI 上直接消失。
+# （`*.log` 挡的是运行日志；夹具是输入数据，两回事。）
+!crates/backuprestore-cli/tests/fixtures/*.log
 *.tmp
 *.pdb
 *.zip

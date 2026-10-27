@@ -2711,25 +2711,22 @@ Hotfix(s):                 1 Hotfix(s) Installed.
 mod replay_probe {
     use super::*;
 
-    /// 真实日志回放取证（本地专用，默认不跑）：
-    /// `cargo test -p backuprestore-cli replay_real_wimlib_log -- --ignored --nocapture`
+    /// 一次回放的结果：按 apply 分段后的百分比序列 + 解析失败的条数。
+    struct Replay {
+        segments: Vec<Vec<u32>>,
+        /// `parse_wimlib_progress` 命中、但 `classify_log_line` 给不出百分比的条数。
+        /// 单独计数而不是「不 push 就算了」——后者只能靠 `parsed == fragments`
+        /// 间接发现，一旦两边同时漏就是不报错。
+        unparsed: usize,
+    }
+
+    /// 把一份日志文本回放成按 apply 分段的结果。
     ///
-    /// 把 2026-10-23 端到端恢复日志里 wimlib 的每一条进度片段喂进
-    /// `classify_log_line`，按 apply 分段检查：全部解析出百分比、段内单调、
-    /// 每段都走到 100%。日志不在（`.test-artifacts` 不入库）时自动跳过。
-    #[test]
-    #[ignore = "依赖本机 .test-artifacts 里的真实恢复日志，按需手动跑"]
-    fn replay_real_wimlib_log() {
-        let path = std::path::Path::new("../../.test-artifacts/e2e-brimglog-227.log");
-        let Ok(raw) = std::fs::read(path) else {
-            eprintln!("skip: no log");
-            return;
-        };
-        let text = String::from_utf8_lossy(&raw);
-        // 日志跨多次 apply（v2.6.25 与 v2.6.27 两轮），每次 apply 从 0 开始，
-        // 所以单调性要按 apply 分段检查。
+    /// 日志跨多次 apply（同一次还原里 DISM 会 apply 多次），**每次 apply 的进度
+    /// 都从 0 开始**，所以单调性必须按 apply 分段检查——整份日志一起看必然「倒退」。
+    fn replay(text: &str) -> Replay {
         let mut segments: Vec<Vec<u32>> = vec![Vec::new()];
-        let mut fragments = 0usize;
+        let mut unparsed = 0usize;
         for line in text.split(['\n', '\r']) {
             if line.contains("Applying image") {
                 segments.push(Vec::new());
@@ -2738,12 +2735,23 @@ mod replay_probe {
             if parse_wimlib_progress(line).is_none() {
                 continue;
             }
-            fragments += 1;
-            if let Some(percent) = classify_log_line(line).1 {
-                segments.last_mut().unwrap().push(percent);
+            match classify_log_line(line).1 {
+                Some(percent) => segments.last_mut().unwrap().push(percent),
+                None => unparsed += 1,
             }
         }
-        let segments: Vec<Vec<u32>> = segments.into_iter().filter(|s| !s.is_empty()).collect();
+        Replay {
+            segments: segments.into_iter().filter(|s| !s.is_empty()).collect(),
+            unparsed,
+        }
+    }
+
+    /// 三条断言的**唯一实现**，两份输入（入库夹具 / 本机全量日志）共用。
+    ///
+    /// 返回解析出的片段数，供调用方按各自规模设下限——否则「夹具只剩 3 条」
+    /// 也能全绿（判据规模必须自己有闸）。
+    fn assert_replay(label: &str, text: &str) -> usize {
+        let Replay { segments, unparsed } = replay(text);
         let parsed: usize = segments.iter().map(Vec::len).sum();
         let mut regress = 0usize;
         for segment in &segments {
@@ -2756,7 +2764,7 @@ mod replay_probe {
             }
         }
         eprintln!(
-            "apply 段数={} fragments={fragments} parsed={parsed} regress={regress}",
+            "{label}: apply 段数={} parsed={parsed} unparsed={unparsed} regress={regress}",
             segments.len()
         );
         for (index, segment) in segments.iter().enumerate() {
@@ -2767,11 +2775,67 @@ mod replay_probe {
                 segment.last().unwrap()
             );
         }
-        assert_eq!(parsed, fragments, "每条 wimlib 进度片段都必须解析出百分比");
-        assert_eq!(regress, 0, "同一次 apply 内进度条不允许倒退");
+        // ★ 空集必须先拦：一条片段都没有时，下面三条断言全部成立于空集。
+        assert!(
+            !segments.is_empty(),
+            "{label}: 一条 wimlib 进度片段都没有——判据等于没跑，不许算通过"
+        );
+        assert_eq!(unparsed, 0, "{label}: 有 {unparsed} 条片段解析不出百分比");
+        assert_eq!(regress, 0, "{label}: 同一次 apply 内进度条不允许倒退");
         assert!(
             segments.iter().all(|s| *s.last().unwrap() == 100),
-            "每次 apply 都必须走到 100%"
+            "{label}: 每次 apply 都必须走到 100%"
+        );
+        parsed
+    }
+
+    /// **常态判据**（CI 也跑）：回放入库夹具。
+    ///
+    /// ★ 2026-10-27 改造。原来只有一份「读本机 `.test-artifacts` 的 82 MB 原始日志」的
+    ///   用例，且日志不在时直接 `return` —— 于是**判据静默消失却仍显示通过**：
+    ///   CI 上恒绿零信息，本机清一次 `.test-artifacts` 也就永久没了。
+    ///   现在夹具入库（`tools/test/extract-wimlib-fixture.py` 从原始日志逐字节抽样：
+    ///   2 个 apply 段、每阶段 30 条、共约 9 KB），**夹具缺失直接 panic**。
+    #[test]
+    fn replay_wimlib_progress_fixture_is_monotone_and_completes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("wimlib-progress-227.log");
+        let raw = std::fs::read(&path).unwrap_or_else(|error| {
+            panic!(
+                "夹具必须入库（缺失 = 判据消失，不是跳过）：{}：{error}",
+                path.display()
+            )
+        });
+        let text = String::from_utf8_lossy(&raw);
+        let parsed = assert_replay("fixture", &text);
+        // 规模闸：抽稀到几乎没内容时，三条断言会变得很容易满足。
+        assert!(
+            parsed >= 100,
+            "夹具覆盖不足（只有 {parsed} 条片段）：重新跑 tools/test/extract-wimlib-fixture.py"
+        );
+    }
+
+    /// 本机全量取证（82 MB 原始日志不入库）：
+    /// `cargo test -p backuprestore-cli replay_real_wimlib_log -- --ignored --nocapture`
+    ///
+    /// 与常态判据共用 `assert_replay`，差异只在输入与规模。
+    #[test]
+    #[ignore = "需要本机 .test-artifacts 里的 82MB 原始恢复日志（全量取证；常态判据见 fixture 版）"]
+    fn replay_real_wimlib_log() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(".test-artifacts")
+            .join("e2e-brimglog-227.log");
+        let raw = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("全量取证需要原始日志：{}：{error}", path.display()));
+        let text = String::from_utf8_lossy(&raw);
+        let parsed = assert_replay("full", &text);
+        assert!(
+            parsed >= 2_000,
+            "全量日志应有数千条片段，实际只有 {parsed}"
         );
     }
 }
