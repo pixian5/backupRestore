@@ -154,7 +154,25 @@ run_one() {
         #   算进值里，于是 ACK 变成 "…secondary "（尾随空格）→ 断言不等。
         prefix="$prefix set \"$kv=$val\" &"
     done
-    vm "$prefix cd /d $cwd && (\"$BIN_WIN\" --ignored --nocapture $filter > $log_win 2>&1) & echo LAUNCHED" >/dev/null 2>&1
+    # ★ 先确认「命令真的发出去了」（2026-10-27 实测）：约 1/8 的 `prlctl exec`
+    #   调用**根本没执行**（日志文件连创建都没有，两次门禁分别落在
+    #   secondary_mapping_rejections 与 secondary_menu_repair 上，而同一条用例
+    #   手工重跑都是 0.01s / 1.8s 全绿）。认不出这一点，就只能干等 180 秒超时
+    #   然后把「仪器没工作」误判成 FAIL。所以发完立刻查日志是否诞生，没诞生就重发。
+    local attempt=0 launched=""
+    while [ $attempt -lt 3 ]; do
+        attempt=$((attempt + 1))
+        vm "$prefix cd /d $cwd && (\"$BIN_WIN\" --ignored --nocapture $filter > $log_win 2>&1) & echo LAUNCHED" >/dev/null 2>&1
+        local a=0
+        launched=""
+        while [ $a -lt 16 ]; do
+            sleep 2; a=$((a + 2))
+            launched=$(vm "if exist $log_win (echo 1)")
+            [ -n "$launched" ] && break
+        done
+        [ -n "$launched" ] && break
+        say "  RELAUNCH=$attempt (prlctl exec did not run the command)"
+    done
 
     local w=0 out=""
     while [ $w -lt 180 ]; do
@@ -162,6 +180,16 @@ run_one() {
         out=$(vm "findstr /c:\"test result:\" $log_win")
         if [ -n "$out" ]; then break; fi
     done
+    # ★ 短任务不能只靠后台（2026-10-27 实测）：`prlctl exec` 返回时会把 `(...) &`
+    #   起的子进程一起带走 —— 0.01s 就跑完的用例，日志文件**根本没被创建**
+    #   （`secondary_mapping_rejections` 在门禁里判 FAIL，手工重跑 0.01s 全绿）。
+    #   后台没拿到结果就**同步再跑一次**取真值；同步也没有才判失败。
+    #   注意：这只是「仪器没读到」的补救，不是把失败改判成通过——判据仍是那一行。
+    if [ -z "$out" ]; then
+        say "  RETRY_SYNC=background_run_produced_no_log"
+        vm "$prefix cd /d $cwd && \"$BIN_WIN\" --ignored --nocapture $filter > $log_win 2>&1" >/dev/null 2>&1
+        out=$(vm "findstr /c:\"test result:\" $log_win")
+    fi
     local full
     full=$(vm "type $log_win")
     if [ -z "$out" ]; then

@@ -24,7 +24,15 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     let original = store.task_dir(&task.task_id)?;
     let task_id = task.task_id.clone();
     let dir = root.join("boot-fault-fixture");
-    fs::create_dir(&dir)?;
+    // ★ 夹具自愈（2026-10-27 首次真跑就撞上）：上一轮失败/中断会在同一目录留下
+    //   `boot-fault-fixture`（里面有 `boot-entry.json` 簿记），`create_dir` 直接
+    //   ERROR_ALREADY_EXISTS(183) —— 整条用例因为「上次没跑完」而永久跑不了。
+    //   更隐蔽的是残留簿记还会让下面的 `create_entry` 命中「复用已有条目」分支，
+    //   注入点根本不执行（问题 11 那段注释讲的正是这个坑）。所以整目录删掉重建。
+    if dir.try_exists()? {
+        fs::remove_dir_all(&dir)?;
+    }
+    fs::create_dir_all(&dir)?;
     let log = dir.join("boot-fault.log");
     let volume = task
         .workspace_volume
@@ -32,6 +40,14 @@ fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     // 前置条件仍按整个暂存父目录判断"卷上没有任何恢复载荷"；载荷按任务隔离后，
     // 本夹具自己的那一份落在 BackupRestoreRE\<任务ID>\ 下。
     let staging_root = crate::boot_cleanup::staging_volume_root(&volume)?;
+    // 同一条自愈逻辑：上一轮留下的**本任务**载荷同样会触发下面的「禁止覆盖」，
+    // 先按任务隔离地清掉（只删本任务的，别的任务载荷仍在 → 守卫照旧拦得住）。
+    if staging_root
+        .join(crate::boot_cleanup::RE_STAGING_DIR)
+        .try_exists()?
+    {
+        crate::boot_cleanup::remove_staging(&staging_root, &task_id)?;
+    }
     if staging_root
         .join(crate::boot_cleanup::RE_STAGING_DIR)
         .try_exists()?
