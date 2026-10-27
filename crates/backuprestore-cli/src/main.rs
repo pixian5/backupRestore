@@ -5828,6 +5828,7 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
     #[ignore = "需要已完成的第二系统任务、EFI 挂载点及新核验快照；真实修改启动菜单"]
     fn secondary_menu_repair_native() {
         use std::path::PathBuf;

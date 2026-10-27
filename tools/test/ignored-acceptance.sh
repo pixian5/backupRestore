@@ -82,7 +82,7 @@ ONLY=""
 if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
 
 # ---------- 前置：编译（用户会话，因为 X: 只在用户会话里可见）----------
-say "STEP 1/3 编译 Windows 测试目标（用户会话，源码在 X:）"
+say "STEP 1/4 编译 Windows 测试目标（用户会话，源码在 X:）"
 vm_user "del /f /q $BUILD_LOG" >/dev/null 2>&1
 vm_user "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" >/dev/null 2>&1
 
@@ -118,7 +118,7 @@ if [ -z "$(vm "if exist $BIN_WIN (echo 1)")" ]; then
 fi
 
 # ---------- #3 的 fixture：复刻 ../../.test-artifacts 两级结构 ----------
-say "STEP 2/3 准备 wimlib 日志回放夹具（仅首次，85MB 一次）"
+say "STEP 2/4 准备 wimlib 日志回放夹具（仅首次，85MB 一次）"
 if [ -z "$(vm "if exist $REPLAY_LOG (echo 1)")" ]; then
     vm "if not exist $REPLAY_ROOT\\.test-artifacts mkdir $REPLAY_ROOT\\.test-artifacts" >/dev/null 2>&1
     vm "if not exist $REPLAY_CWD mkdir $REPLAY_CWD" >/dev/null 2>&1
@@ -172,11 +172,42 @@ env_missing() {
     printf '%s' "$missing"
 }
 
-say "STEP 3/3 逐条运行"
+# ---------- 用例存在性：缺用例不能被 SKIP 掩盖 ----------
+# ★ 2026-10-27 血泪：往测试模块里插新用例时，用「`#[ignore] fn X` 到函数体」当锚点，
+#   把原用例的 `#[cfg(windows)] #[test]` 抢给了新函数 —— 原用例**不再是测试**。
+#   而门禁在「环境变量缺失」那一步就 SKIP 了，永远不会发现它根本不在这份二进制里。
+#   所以：跑之前先 `--ignored --list` 拿真值，任何一条 filter 不在列表里 = FAIL
+#   （这是缺陷，不是环境缺失；也不许记成 SKIP）。
+say "STEP 3/4 核对每条用例都真在测试二进制里（不存在 ≠ SKIP）"
+LIST_WIN="$BIN_DIR\\ignored-tests.list"
+vm "del /f /q $LIST_WIN" >/dev/null 2>&1
+vm "cd /d $BIN_DIR && (\"$BIN_WIN\" --ignored --list > $LIST_WIN 2>&1) & echo LISTED" >/dev/null 2>&1
+list_text=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2
+    list_text=$(vm "type $LIST_WIN")
+    # ★ 别看到第一行就 break：`--list` 是边输出边刷新的，早读会只拿到前几条，
+    #   于是后面的用例全被判成「不在二进制里」（第一版就是这样造出 4 条假红）。
+    #   完整标志是 libtest 结尾那行 `N tests, 0 benchmarks`。
+    printf '%s' "$list_text" | grep -q "benchmarks" && break
+done
+if ! printf '%s' "$list_text" | grep -q "benchmarks"; then
+    say "ERROR: 取不到 --ignored --list（仪器故障，不等于用例缺失）。这不是「测试通过」。"
+    exit 2
+fi
+say "STEP 4/4 逐条运行"
 PASS=0; FAIL=0; SKIP=0; RAN=0
 for row in "${CASES[@]}"; do
     IFS='|' read -r name filter kind arg <<<"$row"
     if [ -n "$ONLY" ] && [ "$ONLY" != "$name" ]; then continue; fi
+
+    # 用例必须真在这份二进制里：`--ignored --list` 打印 `tests::<函数名>: test`。
+    # 缺了就是缺陷（被删、或丢了 #[test]），不能因为「环境变量没配」而记成 SKIP。
+    if ! printf '%s\n' "$list_text" | grep -F -- "$filter" | grep -q ": test"; then
+        FAIL=$((FAIL + 1))
+        say "CASE=$name=FAIL reason=test_not_in_binary(filter=$filter)"
+        continue
+    fi
 
     case "$kind" in
         pe)
