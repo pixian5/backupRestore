@@ -163,7 +163,38 @@ fn usage() -> ! {
     std::process::exit(2)
 }
 
+/// 关掉「设备未就绪 / 无法访问」这类**系统**弹窗（2026-10-27）。
+///
+/// ★ 事故：机器上一个残留盘符 `V:`（`HKLM\SYSTEM\MountedDevices` 里的
+/// `\DosDevices\V:`，指向的分区早已删除）让 Windows 在任何人碰到 `V:` 时弹出
+/// 「V:\\ 无法访问。设备未就绪。」。只要进程不设 `SEM_FAILCRITICALERRORS`，
+/// 一次 `GetFileAttributesW("V:\\")` 就足以弹一次框——弹的是谁的框，用户只看到
+/// 「又是这个程序」。
+///
+/// 这里设的是**进程**错误模式，之后派生的线程与子进程都继承，因此全进程（含
+/// GUI）从此只拿到错误码、不再弹框。
+///
+/// 不设 `SEM_NOGPFAULTERRORBOX` / `SEM_NOALIGNMENTFAULTEXCEPT`：那两个是关掉
+/// **崩溃报告**，会把真正的程序缺陷藏起来。本函数只关「设备/文件不在」这类
+/// 环境噪音，崩溃照样要报。
+#[cfg(windows)]
+fn suppress_system_error_dialogs() {
+    const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+    const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
+    unsafe {
+        unsafe extern "system" {
+            fn GetErrorMode() -> u32;
+            fn SetErrorMode(mode: u32) -> u32;
+        }
+        let current = GetErrorMode();
+        SetErrorMode(current | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+    }
+}
+
 fn main() {
+    // 必须最先做：之后任何一次落盘/探测都不该再弹系统框。
+    #[cfg(windows)]
+    suppress_system_error_dialogs();
     // 必须最先做：`session_log::append` 之后的每一次落盘都要知道该不该镜像。
     // PE / WinRE 里主日志落在内存盘 `X:` 上，重启即丢（2026-10-17 第二轮核查
     // 日志缺口 1/2），镜像是唯一能跨重启活下来的那一份。

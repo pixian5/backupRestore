@@ -1554,9 +1554,12 @@ fn prepare_payload(
     // 走统一补偿（此刻 bootsequence 已武装，绝不能留一个"可能读不到载荷"的
     // 一次性启动给下次开机）。
     let flush_before_reboot = (|| -> Result<(), TaskError> {
-        let staging = crate::windows_prepare::ensure_volume_mounted(&boot_entry.wim_volume, 'R', log)?;
+        // 租约：刷完缓存这两个盘符就没用了，紧接着是 `shutdown /r`；
+        // 不留它们，避免下一次准备又撞上上一次留下的常驻盘符。
+        let (staging, _lease_staging) =
+            ensure_volume_mounted_leased(&boot_entry.wim_volume, 'R', log)?;
         flush_volume(staging, "载荷卷", log)?;
-        let esp_letter = ensure_volume_mounted(&efi, 'S', log)?;
+        let (esp_letter, _lease_esp) = ensure_volume_mounted_leased(&efi, 'S', log)?;
         flush_volume(esp_letter, "ESP/BCD", log)?;
         Ok(())
     })();
@@ -3819,13 +3822,88 @@ fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskErr
         .unwrap_or_else(|| err("unable to mount the volume GUID on an available drive letter")))
 }
 
+/// 撤销一次临时挂载（`mountvol <letter>: /D`）。
+///
+/// 失败只记日志：撤不掉最坏是留一个盘符，不能反过来把正在跑的任务打断。
+pub(crate) fn release_mounted_letter(letter: char, log: &Path) {
+    let output = Command::new("mountvol.exe")
+        .args([format!("{letter}:"), "/D".to_string()])
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let outcome = match &output {
+        Ok(run) if run.status.success() => "released".to_string(),
+        Ok(run) => format!("mountvol /D exited with {}", run.status),
+        Err(error) => format!("mountvol /D failed to start: {error}"),
+    };
+    let _ = append_log(
+        log,
+        &format!("released temporary drive letter {letter}: ({outcome})"),
+    );
+}
+
+/// 「本次调用亲手挂上去」的盘符，离开作用域自动撤销。
+///
+/// ★ 为什么必须存在（2026-10-27 实机事故）：`mountvol <letter>: <卷>` 与 diskpart
+///   `assign letter=` 写的都是 **持久**记录（`HKLM\SYSTEM\MountedDevices`）。用完不撤，
+///   盘符就永久留在系统里；等那个分区后来被删掉，记录还在，Windows 会为这个并不存在
+///   的卷反复弹「V:\\ 无法访问。设备未就绪。」——本机一次性查出 6 个这样的幽灵
+///   （B/G/I/Q/V/Z，`\DosDevices\*` 指向的分区 GUID 在所有磁盘上都已不存在）。
+///
+/// 只有**新分配**的盘符才进租约：卷本来就有盘符时（`mounted_letter_for_identity`
+/// 或 `identity.drive_letter` 命中）撤掉会把用户正在用的盘符弄丢。
+pub(crate) struct MountLease {
+    letter: Option<char>,
+    log: PathBuf,
+}
+
+impl MountLease {
+    fn new(letter: char, created: bool, log: &Path) -> Self {
+        Self {
+            letter: created.then_some(letter),
+            log: log.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for MountLease {
+    fn drop(&mut self) {
+        if let Some(letter) = self.letter {
+            release_mounted_letter(letter, &self.log);
+        }
+    }
+}
+
 /// Reused by the normal-Windows boot-resume path so that resumption can reach
 /// the registered WinRE file even when it lives on a hidden recovery partition.
+///
+/// 盘符**不会**自动撤销。调用方若只是临时读一下，请用
+/// [`ensure_volume_mounted_leased`]——它会在作用域结束时把盘符还回去。
 pub(crate) fn ensure_volume_mounted(
     identity: &VolumeIdentity,
     preferred: char,
-    _log: &Path,
+    log: &Path,
 ) -> Result<char, TaskError> {
+    Ok(ensure_volume_mounted_tracked(identity, preferred, log)?.0)
+}
+
+/// 同 [`ensure_volume_mounted`]，但随租约返回：本次若新分配了盘符，
+/// 租约离开作用域时自动 `mountvol /D` 撤销。
+pub(crate) fn ensure_volume_mounted_leased(
+    identity: &VolumeIdentity,
+    preferred: char,
+    log: &Path,
+) -> Result<(char, MountLease), TaskError> {
+    let (letter, created) = ensure_volume_mounted_tracked(identity, preferred, log)?;
+    Ok((letter, MountLease::new(letter, created, log)))
+}
+
+/// 返回 `(盘符, 本次是否新分配)`。
+fn ensure_volume_mounted_tracked(
+    identity: &VolumeIdentity,
+    preferred: char,
+    _log: &Path,
+) -> Result<(char, bool), TaskError> {
     if let Some(letter) = identity.drive_letter {
         // 保存的盘符只是提示，跨启动后可能已经属于另一分区。
         if let Ok(actual) = volume_identity(letter)
@@ -3833,14 +3911,14 @@ pub(crate) fn ensure_volume_mounted(
             && identity.partition_offset == actual.partition_offset
             && identity.partition_size == actual.partition_size
         {
-            return Ok(letter);
+            return Ok((letter, false));
         }
     }
     // Prefer reusing a mount point that already exists. The registered WinRE
     // very often lives on the OS partition, which Windows already exposes, so
     // this is both the common case and the cheapest one.
     if let Some(letter) = mounted_letter_for_identity(identity) {
-        return Ok(letter);
+        return Ok((letter, false));
     }
     // Attach the volume by its GUID path. This is the only strategy that works
     // for identities without numeric disk/partition coordinates (imported or
@@ -3849,7 +3927,7 @@ pub(crate) fn ensure_volume_mounted(
     if !identity.volume_guid.trim().is_empty()
         && let Ok(letter) = mount_volume_guid(&identity.volume_guid, preferred)
     {
-        return Ok(letter);
+        return Ok((letter, true));
     }
     let disk = identity.disk_number.ok_or_else(|| {
         err("volume has no disk number and could not be matched by GUID or an existing mount point")
@@ -3873,9 +3951,11 @@ pub(crate) fn ensure_volume_mounted(
     {
         return Err(err("mounted volume identity does not match task"));
     }
-    mounted
+    // diskpart `assign letter=` 同样是持久写入，所以这里也算「本次新分配」。
+    let letter = mounted
         .drive_letter
-        .ok_or_else(|| err("mounted volume has no drive letter"))
+        .ok_or_else(|| err("mounted volume has no drive letter"))?;
+    Ok((letter, true))
 }
 
 fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {

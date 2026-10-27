@@ -226,7 +226,9 @@ fn uuid_shard() -> String {
 #[cfg(windows)]
 fn existing_boot_menu_names(log: &Path) -> Option<String> {
     let esp = crate::windows_prepare::esp_identity_without_drive_letter().ok()?;
-    let letter = crate::windows_prepare::ensure_volume_mounted(&esp, 'S', log).ok()?;
+    // 租约：盘符只在本次 `bcdedit /store` 读取期间需要，读完立即还回系统。
+    let (letter, _lease) =
+        crate::windows_prepare::ensure_volume_mounted_leased(&esp, 'S', log).ok()?;
     let store = format!("{letter}:\\EFI\\Microsoft\\Boot\\BCD");
     crate::capture_logged(
         "bcdedit.exe",
@@ -822,6 +824,9 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
     // 里显示成 `device partition=\Device\HarddiskVolume4`，按盘符去查必然查不到，
     // 于是被误判成"没有条目"，apply 就会覆盖掉用户给它起的名字。
     let mut mounted = Vec::new();
+    // 与 `mounted` 同生命周期：盘符租约活到本函数结束（`leases` 先于 `mounted`
+    // 析构，但两者都只在函数末尾才释放，候选卷的读取全在它们存活期间完成）。
+    let mut leases: Vec<crate::windows_prepare::MountLease> = Vec::new();
     let paths = crate::windows_prepare::native_volume_paths()?;
     for path in paths {
         let identity = match crate::windows_prepare::volume_identity_at_path(&path, path.clone()) {
@@ -879,10 +884,14 @@ fn discover(target: &VolumeIdentity, log: &Path) -> Result<BootMenuPlan, TaskErr
             )?;
             continue;
         }
-        let letter = crate::windows_prepare::ensure_volume_mounted(&identity, 'U', log)?;
+        // 租约：这里的盘符只在**本函数内**用于读候选卷，用完必须还回去，
+        // 否则它会被写进 MountedDevices 变成常驻幽灵（见 MountLease 注释）。
+        let (letter, lease) =
+            crate::windows_prepare::ensure_volume_mounted_leased(&identity, 'U', log)?;
         let actual = crate::windows_prepare::volume_identity(letter)?;
         let volume = crate::pe_safety::rebind_after_boot(&identity, &actual, false)?;
         mounted.push((letter, volume, path.clone()));
+        leases.push(lease);
     }
     // 所有候选卷都挂好盘符之后才读 BCD，这样 bcdedit 报的是 `partition=X:`
     // 而不是 \Device\HarddiskVolumeN，既有条目才查得到。
@@ -1005,12 +1014,21 @@ pub(crate) fn apply(
     // 重新取当前盘符。用 prepare 时记的旧盘符去找 loader，会一个都找不到——
     // 这正是 2026-10-12 在线路径接入后第四步必败的根因。
     let mut plan = plan.clone();
+    // ★ 盘符租约必须活到本函数结束：下面 `bcdedit` 写 loader、`{letter}:\Windows`
+    // 探测都还要用。同时它**不能**活出本函数——`plan` 是本地克隆，这里的盘符
+    // 不会被写回调用方的方案，留着只会新增一个常驻盘符（在线路径是唯一会把它
+    // 写进真实系统 MountedDevices 的地方，幽灵 V: 就是这么来的）。
+    let mut leases: Vec<crate::windows_prepare::MountLease> = Vec::new();
     for entry in &mut plan.entries {
-        let letter =
-            crate::windows_prepare::ensure_volume_mounted(&entry.volume, entry.drive_letter, log)?;
+        let (letter, lease) = crate::windows_prepare::ensure_volume_mounted_leased(
+            &entry.volume,
+            entry.drive_letter,
+            log,
+        )?;
         let actual = crate::windows_prepare::volume_identity(letter)?;
         entry.volume = crate::pe_safety::rebind_after_boot(&entry.volume, &actual, false)?;
         entry.drive_letter = letter;
+        leases.push(lease);
     }
     let store = esp
         .join("EFI\\Microsoft\\Boot\\BCD")

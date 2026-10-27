@@ -65,7 +65,7 @@ CASES=(
   "winre_offline_reg|offline_registration_on_test_partition|env|BR_WINRE_TEST_ACK BR_WINRE_TEST_TARGET BR_WINRE_TEST_PRIMARY BR_WINRE_TEST_GUID BR_WINRE_TEST_EFI BR_WINRE_TEST_LOG"
   "secondary_menu_repair_rejections|secondary_menu_repair_rejections|none|"
   "secondary_menu_repair|secondary_menu_repair_native|env|BR_ACCEPTANCE_SNAPSHOT BR_ACCEPTANCE_ROOT BR_ACCEPTANCE_TASK BR_ACCEPTANCE_EFI BR_ACCEPTANCE_SECONDARY"
-  "boot_entry_fault|missing_payload_conflict_and_cleanup_retry|env|BR_ACCEPTANCE_SNAPSHOT BR_ACCEPTANCE_ROOT"
+  "boot_entry_fault|missing_payload_conflict_and_cleanup_retry|env|BR_ACCEPTANCE_SNAPSHOT BR_BOOT_FAULT_ROOT"
   "boot_failure_rollback|boot_failure_rollback_in_pe|pe|"
 )
 
@@ -86,10 +86,15 @@ say "STEP 1/4 编译 Windows 测试目标（用户会话，源码在 X:）"
 vm_user "del /f /q $BUILD_LOG" >/dev/null 2>&1
 vm_user "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" >/dev/null 2>&1
 
+# ★ 循环里把结果**存下来复用**，不要在循环外再读一次：
+#   2026-10-27 实测出现过「循环里读到 Finished → 循环外重读为空 → 判成编译失败」
+#   （同一文件两次读取结果不同，机制未查清）。读一次、判一次。
+finished=""
 waited=0
 while [ $waited -lt 300 ]; do
     sleep 5; waited=$((waited + 5))
-    if [ -n "$(vm "findstr /c:\"Finished\" $BUILD_LOG")" ]; then break; fi
+    finished=$(vm "findstr /c:\"Finished\" $BUILD_LOG")
+    [ -n "$finished" ] && break
 done
 
 # 判据分离：编译是否成功看 build log 的 `Finished`；产物路径**不解析日志**，
@@ -97,7 +102,7 @@ done
 # ★ 不用正则抓日志里的括号路径：zsh 的 echo 会把 `\b` 当退格解释、BSD sed 对
 #   行尾空白处理不一，两种都会静默取空——本轮为此白等过一个 300 秒超时。
 exe_win=""
-if [ -n "$(vm "findstr /c:\"Finished\" $BUILD_LOG")" ]; then
+if [ -n "$finished" ]; then
     exe_name=$(vm "dir /b /o-d $TARGET_WIN\\debug\\deps\\backuprestore_cli-*.exe" | head -1)
     if [ -n "$exe_name" ]; then
         exe_win="$TARGET_WIN\\debug\\deps\\$exe_name"
@@ -181,7 +186,10 @@ env_missing() {
         # ★ 查**宿主**，不查 VM：真正的传递由 run_one 的 `set` 前缀完成。
         #   上一版查 VM 内 `if defined`，而 run_one 又不传 —— 两头都没打通，
         #   于是「宿主配了变量也永远 SKIP」，5 条 env 用例从来没真跑过。
-        if [ -z "${!v}" ]; then missing="$missing $v"; fi
+        # 用 `${!v:-}`：脚本是 `set -u`，对**未定义**变量的 `${!v}` 会直接
+        # unbound error 退出（实测：跑到 winre_offline_reg 时整个门禁中断，
+        # 看起来像「跑到一半没了」而不是「这条 SKIP」）。
+        if [ -z "${!v:-}" ]; then missing="$missing $v"; fi
     done
     printf '%s' "$missing"
 }

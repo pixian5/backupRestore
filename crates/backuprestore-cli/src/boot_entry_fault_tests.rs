@@ -6,8 +6,12 @@ use super::*;
 fn missing_payload_conflict_and_cleanup_retry() -> Result<(), TaskError> {
     let proof = std::env::var("BR_ACCEPTANCE_SNAPSHOT").map_err(|_| crate::err("缺少新快照"))?;
     crate::text_parsing::require_guid(&proof, "acceptance snapshot").map_err(|e| crate::err(&e))?;
-    let root =
-        PathBuf::from(std::env::var("BR_ACCEPTANCE_ROOT").map_err(|_| crate::err("缺少夹具目录"))?);
+    // ★ 独立变量名（2026-10-27）：本用例要求 `tasks/` 下**只有 1 个任务**，而
+    //   `secondary_menu_repair_native` 需要另一个 root（里面是 create-secondary 任务）。
+    //   两条用例曾共用 `BR_ACCEPTANCE_ROOT`，同一轮门禁里必然有一条读到对方的夹具而 FAIL。
+    let root = PathBuf::from(
+        std::env::var("BR_BOOT_FAULT_ROOT").map_err(|_| crate::err("缺少夹具目录"))?,
+    );
     let store = backuprestore_core::TaskStore::new(&root);
     let ids: Vec<_> = fs::read_dir(root.join("tasks"))?.collect::<Result<_, _>>()?;
     if ids.len() != 1 {
