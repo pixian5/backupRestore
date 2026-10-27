@@ -51,10 +51,16 @@ say() { printf '%s\n' "$*"; }
 # ---------- 用例表 ----------
 # 每行：名字|filter|前提种类|前提参数
 #   前提种类 none = 只需管理员；env = 需要一组环境变量；pe = 只能在 PE/RE 内跑
+#
+# ★ 2026-10-27 新增 secondary_mapping_rejections：原来只验「改配置」的成功路径，
+#   需要真实第二系统分区（F: 已删）→ 永远 SKIP。它前面那三道守卫（身份不符 /
+#   目标是当前系统盘 / 缺 hive）**纯拒绝、一个字节不写**，在现有机器上就能常态化跑。
+#   这才是「最该自动化」的部分：改配置能不能成功，比「不该写的时候有没有写」次要得多。
 CASES=(
   "no_write_on_reject|reject_without_write|none|"
   "online_capture_indexes|online_capture_append_keep|none|"
   "wimlib_log_replay|replay_real_wimlib_log|none|"
+  "secondary_mapping_rejections|secondary_mapping_rejections|none|"
   "secondary_registry_map|offline_secondary_mapping|env|BR_SECONDARY_MAPPING_ACK BR_SECONDARY_MAPPING_LETTER BR_SECONDARY_MAPPING_GUID BR_SECONDARY_MAPPING_LOG"
   "winre_offline_reg|offline_registration_on_test_partition|env|BR_WINRE_TEST_ACK BR_WINRE_TEST_TARGET BR_WINRE_TEST_PRIMARY BR_WINRE_TEST_GUID BR_WINRE_TEST_EFI BR_WINRE_TEST_LOG"
   "secondary_menu_repair|secondary_menu_repair_native|env|BR_ACCEPTANCE_SNAPSHOT BR_ACCEPTANCE_ROOT BR_ACCEPTANCE_TASK BR_ACCEPTANCE_EFI BR_ACCEPTANCE_SECONDARY"
