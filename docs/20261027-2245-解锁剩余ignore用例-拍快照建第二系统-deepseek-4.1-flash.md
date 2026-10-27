@@ -168,3 +168,46 @@ H:\br-ignored\cli-tests.exe --ignored --nocapture offline_registration_on_test_p
 ```
 
 （`disposable_vhd_boot_failure_rollback_in_pe` 同法，filter 换成函数名；它自建 128 MiB VHD 到 V:。）
+
+* * *
+
+## 补记：门禁最终跑通（2026-10-27 23:5x）
+
+拍完快照、建好第二系统后，完整门禁三连跑：
+
+| 轮次 | 结果 | 说明 |
+| --- | --- | --- |
+| 1 | `pass=6 fail=2 skip=2` | 两条 FAIL，见下 |
+| 2 | `pass=7 fail=1 skip=2` | `boot_entry_fault` 转绿 |
+| 3 | **`pass=8 fail=0 skip=2`** | 全绿 |
+
+### 两条 FAIL 各自的真因（都不是产品缺陷）
+
+1. **`boot_entry_fault` = 夹具不自愈。**
+   `H:\br-accept\boot-fault-fixture` 是上一轮留下的，`fs::create_dir` 直接
+   `ERROR_ALREADY_EXISTS(183)`。更隐蔽的第二层：残留的 `boot-entry.json` 会让
+   `create_entry` 命中「复用已有条目」分支，注入点根本不执行——正是该用例里
+   「问题 11」注释已经写明的那个坑，只是它自己没自愈。
+   改：开头整目录删掉重建，并按任务隔离清掉上一轮的本任务载荷再过「禁止覆盖」守卫
+   （守卫本身不动：别的任务载荷仍在时照样拦）。修后 **188s / 194s 两次全绿**。
+
+   ★ 教训：**「用例第一次真跑」和「用例存在」是两件事**。这条用例此前一直是
+   `SKIP reason=missing_env`，环境配齐后第一次执行就暴露了它从来没被跑过。
+
+2. **`secondary_mapping_rejections` / `secondary_menu_repair` 轮流红一次 = 仪器问题。**
+   共同特征是**日志文件根本没被创建**，而同一条用例手工重跑是 `0.01s` / `1.8s` 全绿。
+   真因：约 **1/8** 的 `prlctl exec` 调用**根本没执行**命令（不是失败，是没跑）。
+   认不出这一点，就只能干等 180 秒超时，把「仪器没工作」误判成 FAIL。
+   改：发完命令立刻查日志是否诞生，没诞生就重发（最多 3 次，`RELAUNCH=n` 自证）；
+   仍没有再同步跑一次取真值。**判据仍是那一行 `test result`，没有把失败改判成通过。**
+
+   ★ 这跟本仓库已有的坑是同一个形状（「短任务别用 `(...) &` 后台起」），
+   之前只在 `--list` 那一步修过，跑到 STEP 4 就又踩了一次。
+
+### 剩余 2 条 SKIP（真实原因，不是忘了配）
+
+- `winre_offline_reg`：需要一个**一次性测试分区**并明确 ACK（`BR_WINRE_TEST_*`），
+  本机没有 → 有意为之地不跑。
+- `boot_failure_rollback`：**RE 内没有 Parallels Tools**，`prlctl exec` 通道不存在，
+  自动化无法在 PE 内启动测试二进制。可进 RE（产品 prepare 机制已验证），但要在 RE 内
+  执行命令只能靠「命令提示符 + 键盘注入」，不在本门禁能力内 → 只能手工。
