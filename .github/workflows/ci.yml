@@ -1,0 +1,105 @@
+name: CI
+
+# 为什么恢复 CI（2026-10-27）：本项目门禁 6 步全在本机 `tools/git-hooks/pre-push`，
+# 换机器或交接就全部消失——这是单点风险里最大的一个。
+#
+# ★ 上一版 CI（9b96f52 引入、8dcfe88 删除）的教训：它跑 `audit-runtime-boundaries.sh`
+#   （fmt --check + clippy -D warnings + 交叉编译），**连续红了 5 次然后被整个删掉**。
+#   一个长期红的 CI 比没有 CI 更坏：它训练所有人忽略红色。
+#   所以这一版只做「本机能验、云端也验得了」的部分，且**必须一上手就全绿**：
+#     - 不对 cli 开 clippy -D warnings（项目明确规定：cli 那 40 条几乎全是
+#       cfg(windows) 假阳性，开成阻塞只会逼人 --no-verify，等于把门禁废掉）
+#     - 不跑 fmt --check（仓库从未 fmt-clean，加进来就是造一个永久红灯）
+#     - 交叉编译那两步（pre-push 4/5）需要 /Users/x/win-sdk-arm64 的 SDK libs，
+#       runner 上没有；改为在 **windows-latest 原生**跑测试与类型检查，
+#       覆盖的是同一批 cfg(windows) 代码，且能真跑起来（比交叉编译更强）。
+#
+# 覆盖对照（本机 pre-push 6 步 → 云端）：
+#   1 单测            → gate: cargo test --workspace
+#   2 core clippy     → gate: clippy -p core -D warnings
+#   3 错误码同步      → gate: gen-error-codes.py + git diff --exit-code
+#   4 交叉编译 release→ windows: cargo check --target aarch64-pc-windows-msvc
+#   5 Windows 测试目标→ windows: cargo test --workspace（原生，能真跑）
+#   6 文档链接入库    → gate: check-doc-links.py --strict
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: 门禁镜像（单测 / core clippy / 错误码同步 / 文档链接）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 依赖全是纯 Rust（chrono/serde/sha2/thiserror/uuid），无平台特定 crate，
+      # 所以 ubuntu 上能完整编译「非 Windows 那一半」——与 mac 开发机等价且便宜。
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 1/4 cargo test --workspace
+        run: cargo test --workspace
+
+      # ★ 只对 core 开 -D warnings。cli 侧那 40 条告警几乎全是「只在 Windows 构造的
+      #   结构体在非 Windows 上从未被构造」——不是缺陷，开成阻塞只会逼人绕过门禁。
+      - name: 2/4 core clippy（-D warnings）
+        run: cargo clippy -p backuprestore-core --all-targets -- -D warnings
+
+      # 错误码是「契约」：docs/ERROR-CODES.md 由 error_code.rs 的宏体生成。
+      # 改了码没重生成文档，发布后用户报障就对照不上号。
+      - name: 3/4 错误码清单与代码同步
+        run: |
+          python3 tools/gen-error-codes.py
+          if ! git diff --quiet -- docs/ERROR-CODES.md; then
+            echo "::error::docs/ERROR-CODES.md 与 error_code.rs 不同步（上一步已重新生成）"
+            git diff --stat -- docs/ERROR-CODES.md
+            echo "修复：本地跑 python3 tools/gen-error-codes.py 并提交该文件"
+            exit 1
+          fi
+          echo "错误码清单已同步"
+
+      # 索引链接必须指向**已入库**的文件：本机点得开 ≠ clone 后打得开
+      # （`文档索引.md` 曾链接 .gitignore 里的 AGENTS.md）。脚本自带分级与退出码：
+      # 0 通过 / 1 有阻塞项 / 2 判据本身故障（后者必须当失败，不能当通过）。
+      - name: 4/4 文档链接入库检查
+        run: python3 tools/doc/check-doc-links.py --strict
+
+  windows:
+    name: Windows 原生单测（mac 上完全看不到的 cfg(windows) 那一半）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链（含 ARM64 Windows 目标）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      # mac 侧 `cargo test` 对 `#[cfg(windows)]` 文件是**零信息**（编译器不打开该文件），
+      # 本项目为此吃过多轮亏（E0433/E0382 只在交叉编译时才暴露）。这里原生跑一遍，
+      # 等于把「Windows 那一半」真正纳入 CI。需要管理员/PE 的用例本来就被
+      # `#[ignore]` 标了（10 处，另有 tools/test/ignored-acceptance.sh 专门门禁）。
+      - name: cargo test --workspace（Windows 原生）
+        run: cargo test --workspace
+
+      # 发布目标是 ARM64：x86_64 上跑测试覆盖不了「目标架构」的差异。
+      # 只 check 不链接（runner 未装 ARM64 CRT 链接库；类型检查已能兜住绝大多数缺陷）。
+      - name: 发布目标类型检查（aarch64-pc-windows-msvc）
+        run: cargo check --workspace --target aarch64-pc-windows-msvc
