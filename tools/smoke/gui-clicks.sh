@@ -132,12 +132,21 @@ run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份�
 #        WM_COMMAND(1401, CBN_SELCHANGE)；
 #     ③ 跨进程改文字必须 `SetWindowTextW`，自己拼 SendMessageW(WM_SETTEXT) 不生效，
 #        于是「量尺寸」量的是旧文字（零态标签 156px > 80px 的真缺陷就是这么发现的）。
+# ★ T4（清理工作树的确认框是真闸门）要处理**模态窗口里再开一个模态框**：
+#   点 1404 → `#32770` → 点 IDNO 验证「什么都没删」→ 再点一次 → 点 IDYES 验证
+#   「工作树删了、task.json/status.json 还在」。每次点完轮询框是否消失，最后 WM_CLOSE
+#   兜底，`DIALOG_LEFT=0` 证明没把框留在屏幕上（留着等于程序卡死）。
+#   两轮变异：第一轮改成点「是」→ CANCEL_GUARDS 变 0；把「保留」判据取反 → KEEPS 变 0。
+# ★ 夹具名必须**是 UUID**：`cleanup_task_artifacts` 走 `task_dir()` 会校验
+#   `[BR-CORE-035] task_id is not a UUID`，第一版用可读名字「9999-fixture-failed」
+#   在界面上能显示，清理却直接报错。改用 GUID + 标记文件做残留自愈。
 run_case _t-task-admin-layout.ps1 'H:\brwork\task-admin-layout-driver.txt' '「任务与证据」窗口：几何 + 文本 + 基线 + T1/T2/T3/T5' \
     'WINDOW=1' 'OVERLAP_COUNT=0' 'OUTSIDE_COUNT=0' 'ZERO_SIZE=0' \
     'TEXT_CLIPPED=0' 'TEXT_OVERFLOW=0' \
     'MISSING_CONTROLS=0' 'BASELINE_STALE=0' 'CLASS_MISMATCH=0' \
     'EMPTY_LABEL_FITS=1' 'LABEL_FORMAT_SHORT=1' \
     'T1_ITEMS_MATCH_DIRS=1' 'T3_LIST_COMPLETE_WITH_BAD=1' 'T2_FAILED_DETAIL_SHOWS_CODE=1' \
+    'T4_CANCEL_GUARDS=1' 'T4_CLEANUP_KEEPS_EVIDENCE=1' 'T4_HINT_SHOWN=1' 'DIALOG_LEFT=0' \
     'CLOSED=1' 'MAIN_ALIVE=1' 'FIXTURES_REMOVED=1' 'DONE'
 
 echo ""

@@ -74,6 +74,8 @@ public class RS3 {
   [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern bool GetTextExtentPoint32W(IntPtr dc, string s, int c, out SIZE sz);
   [DllImport("gdi32.dll")] public static extern bool GetTextMetricsW(IntPtr dc, out TM tm);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int idx);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
   // ★ 跨进程改控件文字必须用 SetWindowTextW(本进程字符串由系统封送)。
   //   2026-10-27 实测：自己拼 SendMessageW(WM_SETTEXT, ptr) 从另一个进程发**不生效**
   //   （回读长度仍是旧值 7），于是「量尺寸」量的是旧文字——仪器自欺的典型。
@@ -131,7 +133,8 @@ public class RS3 {
 '@ } catch {
   # 类型没建起来 → 后面每一条判据都是假的。这是「仪器坏了」，退出码 4 与
   # 「窗口不存在（1/3）」分开，避免把仪器故障训练成红判据。
-  Say ("ADDTYPE_ERROR_RS3=" + $_.Exception.Message)
+  Say ("ADDTYPE_ERROR_RS3=" + ($_.ToString() -replace "[\r\n]+", " | "))
+  if ($_.Exception.InnerException) { Say ("ADDTYPE_INNER=" + ($_.Exception.InnerException.Message -replace "[\r\n]+", " | ")) }
   Say "DONE"
   exit 4
 }
@@ -146,6 +149,45 @@ function Find-Win($cls) {
   [void][RS3]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:hit
 }
+# ── 确认框（#32770）与按钮点击 ────────────────────────────────────────────
+# 「清理工作树」会弹 MB_YESNO，等于在**模态窗口里再开一个模态框**；不处理就会把
+# 整个程序（和后续所有用例）锁死。所以每次点完都要轮询它是否消失，最后用
+# WM_CLOSE 兜底（MessageBox 收到关闭请求 = 取消），绝不留一个框在屏幕上。
+# 回调里引用外层变量必须走 $script:（委托从原生回调时跑在新作用域，本文件 §1 已栽过）。
+$script:guiPid = 0
+function Find-Dialog {
+  $script:dlgHit = [IntPtr]::Zero
+  if ($script:guiPid -eq 0) { return [IntPtr]::Zero }
+  $cb = [RS3+EnumCb]{ param($h,$l)
+    if ([RS3]::Cls($h) -eq '#32770' -and [RS3]::IsWindowVisible($h)) {
+      $pp = [uint32]0
+      [void][RS3]::GetWindowThreadProcessId($h, [ref]$pp)
+      if ($pp -eq [uint32]$script:guiPid) { $script:dlgHit = $h; return $false }
+    }
+    return $true
+  }
+  [void][RS3]::EnumWindows($cb, [IntPtr]::Zero)
+  return $script:dlgHit
+}
+# 返回：1=点完自然消失；2=只在兜底关窗后消失；3=仍在；0=根本没有框
+function Click-DialogButton($id) {
+  $dlg = Find-Dialog
+  if ($dlg -eq [IntPtr]::Zero) { return 0 }
+  $b = [RS3]::GetDlgItem($dlg, $id)
+  if ($b -eq [IntPtr]::Zero) { Say ("  DIALOG_NO_BUTTON id=" + $id); return 0 }
+  [void][RS3]::PostMessageW($b, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+  for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 100
+    if ((Find-Dialog) -eq [IntPtr]::Zero) { return 1 }
+  }
+  [void][RS3]::PostMessageW($dlg, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE = 取消
+  for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Milliseconds 100
+    if ((Find-Dialog) -eq [IntPtr]::Zero) { return 2 }
+  }
+  return 3
+}
+
 $gui = Find-Win 'BackupRestoreNativeGui'if ($gui -eq [IntPtr]::Zero) {
   # 先自证读数侧，再谈「找不到」。
   Say-Ctx
@@ -157,6 +199,7 @@ $gui = Find-Win 'BackupRestoreNativeGui'if ($gui -eq [IntPtr]::Zero) {
   Say ("VERDICT=" + $verdict)
   Say "DONE"; exit 1
 }
+$script:guiPid = (Get-Process BackupRestore -ErrorAction SilentlyContinue | Select-Object -First 1).Id
 $btn = [RS3]::GetDlgItem($gui, 1004)
 if ($btn -eq [IntPtr]::Zero) { Say "REFRESH_BUTTON_NULL"; Say "DONE"; exit 2 }
 
@@ -166,17 +209,27 @@ if ($btn -eq [IntPtr]::Zero) { Say "REFRESH_BUTTON_NULL"; Say "DONE"; exit 2 }
 # 自带夹具后 T2/T3 每次都有对象可测；跑完删掉，被试的是产品代码而不是现场运气。
 # 夹具形状从**磁盘上已有任务**复制再改字段，避免手写 serde 必填字段
 # （`Task` 的 created/bootOnce/status/bootPlan.mode 少一个就 `missing field`）。
-$FIX_FAIL = '9999-fixture-failed'
-$FIX_BAD  = '9998-fixture-badstatus'
+# ★ 任务目录名必须是 **UUID**：`cleanup_task_artifacts` 走 `task_dir()`，
+#   那里会校验 `[BR-CORE-035] task_id is not a UUID`（第一版用
+#   「9999-fixture-failed」这种可读名字，界面能显示、清理却直接报错）。
+#   于是每次运行生成新 GUID，并用一个标记文件做「上次崩在中途」的自愈。
+$FIX_MARK = '.br-fixture-marker'
+$FIX_FAIL = [guid]::NewGuid().ToString()
+$FIX_BAD  = [guid]::NewGuid().ToString()
 $fixtureMade = @()
 $exePath = (Get-Process BackupRestore -ErrorAction SilentlyContinue | Select-Object -First 1).Path
 $tasksRoot = ''
 if ($exePath) { $tasksRoot = Join-Path (Split-Path -Parent $exePath) 'tasks' }
 function Remove-Fixtures {
+  if (-not $tasksRoot) { return }
   foreach ($n in @($FIX_FAIL, $FIX_BAD)) {
-    if ($tasksRoot) {
-      $p = Join-Path $tasksRoot $n
-      if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
+    $p = Join-Path $tasksRoot $n
+    if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  # 上次运行如果在建完夹具后崩了，GUID 名字已经对不上，靠标记文件扫干净。
+  foreach ($d in (Get-ChildItem -LiteralPath $tasksRoot -Directory -ErrorAction SilentlyContinue)) {
+    if (Test-Path -LiteralPath (Join-Path $d.FullName $FIX_MARK)) {
+      Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
 }
@@ -203,12 +256,18 @@ if ($tasksRoot -and (Test-Path -LiteralPath $tasksRoot)) {
       try {
         $dst = Join-Path $tasksRoot $spec.N
         New-Item -ItemType Directory -Path $dst -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $dst $FIX_MARK), 'created by _t-task-admin-layout.ps1')
         $task = Get-Content -LiteralPath (Join-Path $srcDir.FullName 'task.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         $task.taskId = $spec.N
+        # ★ core 的 cleanup_task_artifacts 有三道守卫：未完成禁止清理、
+        #   `status.stage` 必须等于 `task.status`、`mount` 必须为空。
+        #   夹具从真任务复制出来的 `task.status` 是 success，只改 status.json 的话
+        #   清理会报 BR-CORE-059——所以两边必须一起改。
+        if (-not $spec.Bad) { $task.status = 'failed' }
         Write-Json (Join-Path $dst 'task.json') $task
         if ($spec.Bad) {
           # 坏记录：状态文件根本不是 JSON。产品应把它标成「记录损坏」而不是整窗打不开。
-          Set-Content -LiteralPath (Join-Path $dst 'status.json') -Value '{ "taskId": "9998-fixture-badstatus", "stage": ' -Encoding UTF8
+          Set-Content -LiteralPath (Join-Path $dst 'status.json') -Value ('{ "taskId": "' + $spec.N + '", "stage": ') -Encoding UTF8
         } else {
           $st = Get-Content -LiteralPath (Join-Path $srcDir.FullName 'status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
           $st.taskId = $spec.N
@@ -226,6 +285,15 @@ if ($tasksRoot -and (Test-Path -LiteralPath $tasksRoot)) {
           }
           $st.updated = $now       # 最新 → 排序落在第一项，选中位置可预期
           Write-Json (Join-Path $dst 'status.json') $st
+        }
+        if (-not $spec.Bad) {
+          # 工作树：清理白名单是 mount/stage/original/payload，且 **mount 非空会报
+          # BR-CORE-060（还有挂载残留）**，所以只堆 stage 与 payload，mount 干脆不建。
+          foreach ($wt in @('stage', 'payload')) {
+            $wd = Join-Path $dst $wt
+            New-Item -ItemType Directory -Path $wd -Force | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $wd 'leftover.bin'), 'x')
+          }
         }
         $fixtureMade += $spec.N
       } catch {
@@ -485,6 +553,62 @@ if ($exe -and $dirCount -gt 0) {
   }
 }
 Say ("T2_FAILED_DETAIL_SHOWS_CODE=" + $T2)
+
+# ── 行为 T4：清理工作树的**确认框是真闸门**，且证据必须留着 ────────────────
+# 两轮：
+#   ① 点「否」→ 工作树一个字节都不许少（证明确认框不是装饰）；
+#   ② 点「是」→ stage/payload 被删，但 task.json / status.json **必须还在**
+#      （「证据是产品承诺」是文档里写明的一条，这里把它变成判据）。
+# 说明：`cleanup_task_artifacts` 有三道守卫——未完成禁止清理、`status.stage` 必须
+# 等于 `task.status`、`mount` 非空报 BR-CORE-060。夹具已按此构造。
+$T4Cancel = 0; $T4Yes = 0; $T4Hint = 0
+if ($foundAt -ge 0 -and $tasksRoot) {
+  $fxDir = Join-Path $tasksRoot $wantId
+  $btnClean = [RS3]::GetDlgItem($win, 1404)
+  $enabled = [int]([RS3]::IsWindowEnabled($btnClean))
+  Say ("T4_CLEANUP_ENABLED=" + $enabled)
+  if ($enabled -eq 1) {
+    # ---- 第一轮：点「否」----
+    [void][RS3]::PostMessageW($btnClean, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+    Start-Sleep -Milliseconds 600
+    $r1 = Click-DialogButton 7   # IDNO
+    Start-Sleep -Milliseconds 300
+    $stageStill = [int](Test-Path -LiteralPath (Join-Path $fxDir 'stage'))
+    Say ("T4_CANCEL_DIALOG_RESULT=" + $r1 + " T4_CANCEL_STAGE_KEPT=" + $stageStill)
+    $T4Cancel = [int]($r1 -ge 1 -and $stageStill -eq 1)
+    # ---- 第二轮：点「是」----
+    [void][RS3]::PostMessageW($btnClean, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 600
+    $r2 = Click-DialogButton 6   # IDYES
+    Start-Sleep -Milliseconds 800
+    $stageGone = [int](-not (Test-Path -LiteralPath (Join-Path $fxDir 'stage')))
+    $payloadGone = [int](-not (Test-Path -LiteralPath (Join-Path $fxDir 'payload')))
+    $taskKept = [int](Test-Path -LiteralPath (Join-Path $fxDir 'task.json'))
+    $statusKept = [int](Test-Path -LiteralPath (Join-Path $fxDir 'status.json'))
+    $hint = [RS3]::TextOf([IntPtr]([RS3]::GetDlgItem($win, 1407)))
+    Say ("T4_YES_DIALOG_RESULT=" + $r2 + " STAGE_GONE=" + $stageGone + " PAYLOAD_GONE=" + $payloadGone)
+    Say ("T4_TASKJSON_KEPT=" + $taskKept + " T4_STATUSJSON_KEPT=" + $statusKept + " T4_HINT_LEN=" + $hint.Length)
+    Say ("T4_HINT=" + ($hint -replace "[\r\n]+", " | "))
+    $T4Hint = [int]($hint.Length -gt 0)
+    $T4Yes = [int]($stageGone -eq 1 -and $payloadGone -eq 1 -and $taskKept -eq 1 -and $statusKept -eq 1)
+  }
+} else {
+  Say "T4_SKIP=no_fixture"
+}
+Say ("T4_CANCEL_GUARDS=" + $T4Cancel)
+Say ("T4_CLEANUP_KEEPS_EVIDENCE=" + $T4Yes)
+Say ("T4_HINT_SHOWN=" + $T4Hint)
+# 兜底：万一确认框还挂在屏幕上，先把程序救回来（模态框留着等于程序卡死）。
+# ★ 先取到变量再判断：在方法参数位置上直接写函数调用，一旦函数返回的不是
+#   「单个 IntPtr」，绑定失败会让这一句整条跳过（本轮实测 DIALOG_LEFT 那行凭空消失，
+#   而后面的行照常输出——最难查的那种「少一行」）。
+$dlgLeft = Find-Dialog
+if ($dlgLeft -ne [IntPtr]::Zero) {
+  [void][RS3]::PostMessageW($dlgLeft, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+  Start-Sleep -Milliseconds 300
+  $dlgLeft = Find-Dialog
+}
+Say ("DIALOG_LEFT=" + [int]($dlgLeft -ne [IntPtr]::Zero))
 # Close it: a modal window left up blocks the whole app for the user.
 [void][RS3]::PostMessageW($win, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
 for ($i = 0; $i -lt 40; $i++) {
