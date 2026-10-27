@@ -8918,13 +8918,26 @@ unsafe fn task_admin_reload(hwnd: Hwnd) {
         }
     }
     if let Some(label) = task_admin_control(hwnd, ID_TASK_LABEL) {
+        // ★ 2.6.68 修缺陷：零任务态原来写「任务：0 个（尚无任务记录）」，几何判据实测
+        //   文字宽 **156 px** 而标签框只有 **80 px** → 被裁掉一半。这个状态只在
+        //   「全新安装 / 清空任务」时出现，平时跑判据永远测不到（当时 tasks 里有 50 条）。
+        //   改法：标签只报数字（最宽「任务：50 个」= 66 px，稳），说明挪到 696 px 的提示条。
         let text = match (language, count) {
-            (Language::Chinese, 0) => "任务：0 个（尚无任务记录）".to_string(),
             (Language::Chinese, total) => format!("任务：{total} 个"),
-            (Language::English, 0) => "Tasks: none".to_string(),
             (Language::English, total) => format!("Tasks: {total}"),
         };
         set_text(label, &text);
+        if count == 0 {
+            task_admin_set_hint(
+                hwnd,
+                match language {
+                    Language::Chinese => "尚无任务记录：先在主窗口创建任务，再回到这里查看。",
+                    Language::English => {
+                        "No tasks yet: create one in the main window, then come back."
+                    }
+                },
+            );
+        }
     }
     task_admin_show_detail(hwnd);
 }

@@ -121,10 +121,24 @@ run_case _t-image-admin.ps1 'H:\brwork\image-admin-check.txt'  '顶栏「备份�
 #        （变异：基线多一条 → MISSING=1；少一条 → STALE=1；改 class → CLASS_MISMATCH=1）
 #     ③ T1 项数 = 磁盘任务目录数（两条独立代码路径，不是自洽）
 #   窗口是模态的，脚本结尾自己 WM_CLOSE，否则后面所有用例都会被挡住。
-run_case _t-task-admin-layout.ps1 'H:\brwork\task-admin-layout-driver.txt' '「任务与证据」窗口：几何 + 控件基线 + 项数对账' \
+# ★ 2026-10-27 第二批：T2/T3/T5 与文本层也进来了，且**自带夹具**——
+#   第一次跑 T2 得到 `T2_NO_FAILED_TASK=1`：50 个历史任务都没错误码，
+#   于是「详情能显示码」这条**因为没有可测对象而恒绿**（空集通过）。
+#   现在每次建「一个失败任务 + 一个坏记录」两个夹具，跑完删掉（FIXTURES_REMOVED=1 自证）。
+#   三个新坑（都已记进 经验/05 §13）：
+#     ① PS 5.1 `Set-Content -Encoding UTF8` 写 BOM → serde_json 报
+#        `expected value at line 1 column 1`，夹具被判成「记录损坏」；
+#     ② `CB_SETCURSEL` **不发送** `CBN_SELCHANGE`，只改选中详情不更新 → 要补发
+#        WM_COMMAND(1401, CBN_SELCHANGE)；
+#     ③ 跨进程改文字必须 `SetWindowTextW`，自己拼 SendMessageW(WM_SETTEXT) 不生效，
+#        于是「量尺寸」量的是旧文字（零态标签 156px > 80px 的真缺陷就是这么发现的）。
+run_case _t-task-admin-layout.ps1 'H:\brwork\task-admin-layout-driver.txt' '「任务与证据」窗口：几何 + 文本 + 基线 + T1/T2/T3/T5' \
     'WINDOW=1' 'OVERLAP_COUNT=0' 'OUTSIDE_COUNT=0' 'ZERO_SIZE=0' \
+    'TEXT_CLIPPED=0' 'TEXT_OVERFLOW=0' \
     'MISSING_CONTROLS=0' 'BASELINE_STALE=0' 'CLASS_MISMATCH=0' \
-    'T1_ITEMS_MATCH_DIRS=1' 'CLOSED=1' 'DONE'
+    'EMPTY_LABEL_FITS=1' 'LABEL_FORMAT_SHORT=1' \
+    'T1_ITEMS_MATCH_DIRS=1' 'T3_LIST_COMPLETE_WITH_BAD=1' 'T2_FAILED_DETAIL_SHOWS_CODE=1' \
+    'CLOSED=1' 'MAIN_ALIVE=1' 'FIXTURES_REMOVED=1' 'DONE'
 
 echo ""
 echo "结果：PASS=${pass} FAIL=${fail}"
