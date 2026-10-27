@@ -1,12 +1,14 @@
 # BackupRestore
 
+[![CI](https://github.com/pixian5/backupRestore/actions/workflows/ci.yml/badge.svg)](https://github.com/pixian5/backupRestore/actions/workflows/ci.yml)
+
 Windows 一键系统备份还原工具（**开发测试版**）。
 
 当前系统卷选择「进入 Windows 恢复环境」后，程序准备独立恢复镜像副本与任务启动项 → 重启进入恢复环境 →
 自动拉起 `Recovery.exe` 离线捕获/应用镜像 → 系统还原时修复引导 → 清理临时启动配置 → 重启回 Windows。
 非当前系统卷由界面在线执行；预装预安装环境是另一条简化路径，能力差异见完整流程文档。
 
-当前版本 **2.6.63**。每一版的改动与验收判据，见 [`文档索引.md`](./文档索引.md) 顶部「当前与权威」。
+当前版本 **2.6.69**。每一版的改动与验收判据，见 [`文档索引.md`](./文档索引.md) 顶部「当前与权威」。
 
 > **接手开发请先读** [`docs/20261026-2245-接手AI交接说明-v2.6.63-deepseek-4.1-flash.md`](docs/20261026-2245-接手AI交接说明-v2.6.63-deepseek-4.1-flash.md)：
 > 现状快照、五分钟上手、环境地图、构建部署唯一路径、验收四件事、10 条硬约束、未完成项、高频坑。
@@ -157,11 +159,20 @@ cargo test --manifest-path X:\Cargo.toml -p backuprestore-cli
 git config core.hooksPath tools/git-hooks   # 一次性安装（per-clone）
 ```
 
-安装后每次 `git push` 自动跑：`cargo test --workspace` + `./build-win.sh` 交叉编译
-（后者专抓「`cargo test` 绿 ≠ 构建过」那类 `cfg(windows)` 缺陷）。失败即拒绝 push；
-`git push --no-verify` 可强行跳过。选本地钩子而非 GitHub Actions 的理由：依赖已在本机
-缓存、零外网流量，且开发提交就在 mac 宿主。发布级门禁（构建+部署+冒烟）是
+安装后每次 `git push` 自动跑 6 步：`cargo test --workspace`、core clippy `-D warnings`、
+错误码清单同步、`./build-win.sh` 交叉编译、Windows **测试**目标编译、文档链接入库检查。
+失败即拒绝 push；`git push --no-verify` 可强行跳过。发布级门禁（构建+部署+冒烟）是
 `tools/smoke/deploy-and-smoke.sh`，按需手动跑。
+
+云端另有 GitHub Actions（`.github/workflows/ci.yml`，徽章见文首），覆盖同样的 4 步
+（不依赖本机 Windows SDK 的那部分），并在 **windows-latest 原生**跑一遍全部
+`cfg(windows)` 单测——这是 mac 上完全看不见的一半。分工：本地钩子负责「推之前 30 秒
+就知道」，CI 负责「换机器/交接后判据仍然存在」。
+
+工具链固定在仓库根的 `rust-toolchain.toml`（当前 1.98.1，含 `aarch64-pc-windows-msvc`）。
+CI 会断言 runner 的版本与它一致，漂移即红——升级工具链要改这个文件、本地
+`rustup update`、处理新出现的 lint，三件事一起提交（2026-10-27 第一次跑 CI 就吃了
+「runner 已升到 1.99、本机还是 1.98」的亏）。
 
 ### macOS 侧（已废止为发布路径，仅限本地快速类型检查）
 
