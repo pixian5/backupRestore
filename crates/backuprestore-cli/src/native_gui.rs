@@ -3654,11 +3654,11 @@ unsafe fn read_image(state: &mut State) {
             );
             state.wim_images.clear();
             set_wim_items(state);
-            let diagnostic = if images_text.len() > 4096 {
-                format!("{}…", &images_text[..4096])
-            } else {
-                images_text
-            };
+            // ★ 按**字符**截断（H-GUI-1，2026-10-28 修）：这里原来是
+            //   `&images_text[..4096]`，而 WIM 的 `ImageName` 几乎都是中文，
+            //   4096 落在字符中间就 panic —— 而且这段代码本身就在「解析失败」的
+            //   诊断路径上，于是「诊断代码成为崩溃源」。窗口过程 panic = 进程 abort。
+            let diagnostic = crate::text_parsing::truncate_chars(&images_text, 4096);
             set_text(
                 state.controls.status,
                 &if language == Language::English {

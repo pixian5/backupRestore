@@ -678,14 +678,38 @@ pub(crate) fn extract_timestamp_hms(line: &str) -> Option<String> {
             return Some(local.format("%H:%M:%S").to_string());
         }
         // 尝试匹配尾部的 HH:MM:SS（例如 "2026-09-30 16:18:08" 或 "16:18:08"）
-        if inside.len() >= 8 {
-            let tail = &inside[inside.len() - 8..];
+        // ★ 必须按**字符**数定位，不能按字节（H-GUI-2，2026-10-28 修）：
+        //   旧写法 `inside.len() - 8` 是字节偏移，日志行里一旦有中文
+        //   （步骤名、"执行 08:18:08" 之类），偏移就落进某个字符中间 →
+        //   `&inside[22..]` 直接 panic（实测：`inside '八' (bytes 21..24)`）。
+        //   而 GUI 窗口过程 panic = 整个进程 abort，用户看到的是「程序突然没了」。
+        //   `char_indices().rev().nth(7)` 同时解决两件事：不足 8 个字符返回 None（跳过），
+        //   够 8 个字符时给出**字符边界**的字节下标。
+        if let Some((start, _)) = inside.char_indices().rev().nth(7) {
+            let tail = &inside[start..];
             if tail.chars().filter(|c| *c == ':').count() == 2 {
                 return Some(tail.to_string());
             }
         }
     }
     None
+}
+
+/// 按**字符**（不是字节）截断，超长时补一个省略号。
+///
+/// ★ 为什么需要它（H-GUI-1，2026-10-28 修）：WIM 索引 JSON 解析失败的诊断分支
+///   曾写 `&images_text[..4096]`——而 `ImageName` 几乎都是中文，4096 只要落在
+///   某个字符中间就 panic（`byte index is not a char boundary`）。
+///   最讽刺的是这段代码**本身就在错误处理路径上**（解析失败才走它），
+///   于是「诊断代码自己成了崩溃源」：用户看到的是「解析失败后程序直接消失」。
+///   凡是「给人看的截断」，一律按字符算。
+pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated: String = value.chars().take(max_chars).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// 从一段日志文本里算出步骤进度。
@@ -2863,5 +2887,47 @@ mod replay_probe {
             parsed >= 2_000,
             "全量日志应有数千条片段，实际只有 {parsed}"
         );
+    }
+}
+
+/// 多字节安全回归（H-GUI-1 / H-GUI-2）。
+///
+/// 背景：这两处都曾是**按字节**切片 `&s[..n]`。只要字符串里有中文（日志步骤名、
+/// WIM 的 `ImageName` 几乎都是中文），n 就可能落在字符中间 → `char boundary` panic。
+/// 而 GUI 的窗口过程一 panic 就是整个进程 abort，用户看到的是「程序突然没了」。
+#[cfg(test)]
+mod multibyte_safety {
+    use super::*;
+
+    /// inside 是 10 个三字节汉字（30 字节），`30-8=22` 落在第 8 个字符的中间
+    /// → 旧实现 `&inside[22..]` 直接 panic。日志行出现中文就会炸。
+    #[test]
+    fn timestamp_extraction_survives_multibyte_tail() {
+        assert_eq!(extract_timestamp_hms("[一二三四五六七八九十]"), None);
+    }
+
+    /// 正向：中/英文前缀 + 尾部 `HH:MM:SS` 都要照常取到（不能为了不 panic 就放弃解析）。
+    #[test]
+    fn timestamp_extraction_keeps_cjk_prefix() {
+        assert_eq!(
+            extract_timestamp_hms("[执行 08:18:08]").as_deref(),
+            Some("08:18:08")
+        );
+        assert_eq!(
+            extract_timestamp_hms("[2026-09-30 16:18:08]").as_deref(),
+            Some("16:18:08")
+        );
+    }
+
+    /// H-GUI-1：截断必须按**字符**算。8 个汉字是 24 字节，按字节取 4 会切在
+    /// 字符中间；按字符取 4 才是「备份还原」+ 省略号。
+    #[test]
+    fn truncate_counts_chars_not_bytes() {
+        assert_eq!(truncate_chars("备份还原镜像文件", 4), "备份还原…");
+        // 没超长时原样返回，且**不加**省略号（否则用户以为内容被截了）
+        assert_eq!(truncate_chars("备份还原镜像文件", 20), "备份还原镜像文件");
+        // 恰好等于上限：不加省略号
+        assert_eq!(truncate_chars("abcd", 4), "abcd");
+        assert_eq!(truncate_chars("", 4), "");
     }
 }
