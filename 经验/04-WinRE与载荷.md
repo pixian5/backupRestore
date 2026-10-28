@@ -157,3 +157,39 @@
 - **实测结果**：新项 `{8d7e209c…}`「BR PE secboot」（`winpe yes`/`detecthal yes`）→ 重启 55 秒进
   「恢复桌面 v2.6.76」→ Tab×5+Enter 返回 Windows，`default` 自动归位、`secureboot` 仍 `True`。
 - 遗留：BCD 里会累积等价项（本机三条都指向 `T:`），清理属于改引导，**交给用户决定**。
+
+## 11. 安全启动下的真实系统备份：两轮全过（2026-10-29 03:0x / 03:5x 实测）
+
+- **路径**：产品里备份 C: → 弹窗「需要进入恢复环境处理」选「进入 PE（推荐）」→ 重启进 PE →
+  PE 启动时自动领取 ESP 上的请求（`S:\BackupRestore\pe-requests\<id>.json`）并执行 →
+  完成后自动重启回 Windows。**备份源是 C:、镜像落 H:**，全程不碰 T: 上的 PE 自身。
+- **★ 请求队列在 ESP，不在镜像旁**：镜像旁的 `.br-pe-<GUI进程号-纳秒>` 目录是 PE 侧执行时才
+  建的（`runtime.json` 的 `stage`、`operation.log` 都在里面），且 PE 侧会**重写** `request.json`
+  （所以它的修改时间会刷新，别用它判断请求创建时间）。手动清挂起请求要去 ESP 删。
+- **判据（三层，别只信一层）**：① `runtime.json` 的 `stage=success`；
+  ② `operation.log` 的 `DISM 结果：退出码 0` + `状态：success`；
+  ③ 客体侧 `certutil -hashfile` 对**发布后的镜像文件**算 SHA-256，与日志/元数据三处一致。
+  索引元数据里的 `programVersion` 能反证当轮 PE 载荷版本（实测分别记到 2.6.76 / 2.6.77）。
+- 收尾状态：BCD 无 bootsequence 残留、`default` 归位、重启后 `Confirm-SecureBootUEFI=True`。
+  详见 `docs/20261029-0410-安全启动下真实系统备份实测通过-2.6.76与2.6.77两轮-Step-5-Preview.md`。
+- **环境怪象（非产品缺陷）**：PE 会话期间客体时钟比真实时间**快约 16 小时**（两轮皆然，
+  会话内自洽；回 Windows 后自动恢复）。PE 写的文件 NTFS 修改时间带此偏移，引用客体时间戳要小心。
+
+## 12. 2.6.77 界面修复目验通过；「PE 链后台 cmd」补在哪（2026-10-29 04:0x 实测）
+
+- **PE 侧执行体是 `pe_operation::execute()`**（`execute_pending` 领取后调它）：先建暂存目录、
+  写 `request.json` → **`launch_background_console()`** → spawn 进度窗 → 跑备份/还原。
+  「PE 里也要有后台 cmd」就补在 spawn 之前；`launch_background_console` 同时改成幂等
+  （`OnceLock`），防止恢复环境链与 PE 链同进程开出两个窗。
+- **进度窗布局（`recovery_progress::layout_controls`）**：标题区 76px（两行不折被压）、
+  底部 5 按钮独占一行右对齐、4 步骤固定 5 行且最多半高、日志区吃满全宽。目验截图见
+  `.test-artifacts/secboot-pe/19..21-pe-progress-2677*.png`。
+- **备份态底部只有 4 个按钮是设计行为**：「启动菜单」按钮仅在第二阶段完成候选系统探测后
+  才显示（`boot_menu` 有值才 `SW_SHOW`），备份无候选会话故隐藏——别误判成丢按钮。
+- **★ 想 cheap 地触发 PE 链？此路不通**：备份分流逻辑是「源卷 == 当前活动系统卷」才走离线 PE
+  （`needs_offline = affected == system`），小数据卷备份永远走在线路；而「离线还原到数据卷」
+  虽也能排队 PE 任务，**但目标不能是 T:**——PE 是从 T: 平面启动的（`winpe=Yes` 无 ramdisk），
+  还原目标 = PE 自己的运行卷，冲突。唯一干净触发就是真实 C: 备份。
+- **★ 动 T: 之前先确认没有指向它的 bootsequence**：本轮先把 T: 格式化再设一次性启动序列，
+  重启时 T: 上无系统可启 → VM 直接停机不弹窗。恢复法：开机回 Windows 后
+  `dism /Apply-Image /Index:1 /ApplyDir:T:\` 把镜像铺回去（BCD 项不用动）。
