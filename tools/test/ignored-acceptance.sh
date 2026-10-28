@@ -48,6 +48,32 @@ vm_user() {
 
 say() { printf '%s\n' "$*"; }
 
+# ---------- 发一条 VM 命令并确认它**真的跑了** ----------
+# ★ 2026-10-27/28 实测：约 1/8 的 `prlctl exec` 调用**根本不执行**命令（不是失败，
+#   是没跑）。症状很有欺骗性——日志/结果文件连创建都没有，而脚本会一直等到超时，
+#   再把「仪器没工作」误判成 FAIL。重启后的几十秒里这个比例明显更高（VM 忙）。
+#   所以凡是「发出去 → 等它产出某个文件」的步骤，一律走这里。
+# 参数：$1 通道(vm|vm_user)  $2 命令  $3 探测命令(输出非空=已生效)  $4 单次最多等秒数(默认30)
+# 返回：0 = 已生效（同时把探测输出打到 stdout）；1 = 重试 3 次仍未生效
+vm_launch_verified() {
+    local channel=$1 cmd=$2 probe=$3 limit=${4:-30}
+    local i=0 a got
+    while [ $i -lt 3 ]; do
+        i=$((i + 1))
+        $channel "$cmd" >/dev/null 2>&1
+        a=0; got=""
+        while [ $a -lt "$limit" ]; do
+            sleep 2; a=$((a + 2))
+            got=$(vm "$probe")
+            [ -n "$got" ] && break
+        done
+        if [ -n "$got" ]; then printf '%s' "$got"; return 0; fi
+        say "  RELAUNCH=$i (command did not register)"
+    done
+    say "  RELAUNCH=exhausted"
+    return 1
+}
+
 # ---------- 用例表 ----------
 # 每行：名字|filter|前提种类|前提参数
 #   前提种类 none = 只需管理员；env = 需要一组环境变量；pe = 只能在 PE/RE 内跑
@@ -84,23 +110,9 @@ if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
 # ---------- 前置：编译（用户会话，因为 X: 只在用户会话里可见）----------
 say "STEP 1/4 编译 Windows 测试目标（用户会话，源码在 X:）"
 vm_user "del /f /q $BUILD_LOG" >/dev/null 2>&1
-# ★ 同 run_one：约 1/8 的 `prlctl exec` 调用根本不执行命令（2026-10-27 实测，
-#   编译这步也中过——日志连创建都没有，白等 300 秒然后判「编译未完成」）。
-#   发完立刻查日志是否诞生，没诞生就重发。
-build_launched=""
-for _ in 1 2 3; do
-    vm_user "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" >/dev/null 2>&1
-    build_probe=0
-    build_launched=""
-    while [ $build_probe -lt 20 ]; do
-        sleep 3; build_probe=$((build_probe + 3))
-        build_launched=$(vm "if exist $BUILD_LOG (echo 1)")
-        [ -n "$build_launched" ] && break
-    done
-    [ -n "$build_launched" ] && break
-    say "  RELAUNCH: build command did not run, retrying"
-done
-if [ -z "$build_launched" ]; then
+if ! vm_launch_verified vm_user \
+        "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" \
+        "if exist $BUILD_LOG (echo 1)" 60 >/dev/null; then
     say "ERROR: 编译命令始终没有被 VM 执行（仪器故障，不是编译失败）。这不是「测试通过」。"
     exit 2
 fi
@@ -135,8 +147,10 @@ fi
 say "  BUILT=$exe_win"
 
 vm "if not exist $BIN_DIR mkdir $BIN_DIR" >/dev/null 2>&1
-vm "copy /y \"$exe_win\" $BIN_WIN" >/dev/null 2>&1
-if [ -z "$(vm "if exist $BIN_WIN (echo 1)")" ]; then
+# ★ 同 STEP 1 / run_one：核对动作本身也会被 `prlctl exec` 偶发「不执行」打中
+#   （2026-10-28 实测：文件明明已经复制过去了，`if exist` 却返回空 → 判「复制失败」）。
+if ! vm_launch_verified vm "copy /y \"$exe_win\" $BIN_WIN" \
+        "if exist $BIN_WIN (echo 1)" 10 >/dev/null; then
     say "ERROR: 复制测试二进制到 $BIN_WIN 失败（这不是「测试通过」）。"
     exit 2
 fi
@@ -255,7 +269,11 @@ vm "del /f /q $LIST_WIN" >/dev/null 2>&1
 #   「取不到 --ignored --list」（单独跑同一条却成功，典型竞争）。
 #   `--list` 是秒级任务，没有异步的必要；真要异步的只有 STEP 4 那些跑
 #   DISM 的用例，那里有 180 秒轮询兜着。
-vm "cd /d $BIN_DIR && \"$BIN_WIN\" --ignored --list > $LIST_WIN 2>&1" >/dev/null 2>&1
+if ! vm_launch_verified vm "cd /d $BIN_DIR && \"$BIN_WIN\" --ignored --list > $LIST_WIN 2>&1" \
+        "findstr /c:\"benchmarks\" $LIST_WIN" 30 >/dev/null; then
+    say "ERROR: 取不到 --ignored --list（仪器故障，不等于用例缺失）。这不是「测试通过」。"
+    exit 2
+fi
 list_text=""
 for _ in 1 2 3 4 5; do
     list_text=$(vm "type $LIST_WIN")
