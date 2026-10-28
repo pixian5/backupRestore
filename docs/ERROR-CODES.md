@@ -34,7 +34,7 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层（共 215 条）
+## CLI 层（共 216 条）
 
 ### `BR-APL` — 应用镜像（DISM / wimlib）（10 条）
 
@@ -170,7 +170,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-PE-057` | `BootStateChangedAfterPrecheck` | 预检后引导状态发生变化，停止引导写入 | Boot state changed after preflight; stopping boot writes |
 | `BR-PE-058` | `SecondaryMenuOrderInvalid` | 第二系统默认项或菜单顺序不符合约定，拒绝报成功 | The secondary-system default entry or menu order violates the contract; refusing to report success |
 
-### `BR-RE` — 恢复环境注册 / WinRE 关联（46 条）
+### `BR-RE` — 恢复环境注册 / WinRE 关联（47 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -220,6 +220,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-RE-044` | `BcdNoRecoverySequence` | BCD 未报告系统恢复关联（recoverysequence） | The BCD reports no system recovery association (recoverysequence) |
 | `BR-RE-045` | `BcdRecoveryNoDevice` | BCD 恢复对象未报告 device | The BCD recovery object reports no device |
 | `BR-RE-046` | `BcdRecoveryRamdiskUnrecognized` | BCD 恢复对象的 ramdisk 卷形态无法识别 | The ramdisk volume form of the BCD recovery object is unrecognized |
+| `BR-RE-047` | `WinreComponentsMissing` | 目标卷缺少恢复环境注册组件（{0}），无法注册恢复环境；系统虽可启动，但日后无法从恢复环境检修，按裁定拒绝继续 | The target volume lacks a recovery component ({0}); refusing to continue |
 
 ### `BR-TSK` — 任务、状态机、续跑（34 条）
 

@@ -15,21 +15,18 @@ use backuprestore_core::TaskError;
 #[path = "winre_registration_fault_tests.rs"]
 mod fault_tests;
 
-/// 注册前置检查结论：`Proceed` 正常注册；`Skip` 按裁定降级跳过。
-#[derive(Debug, PartialEq, Eq)]
-enum Preflight {
-    Proceed,
-    Skip(String),
-}
-
-/// 注册结局，供调用方在任务日志里如实收尾。
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum RegistrationOutcome {
-    /// 已完整注册并回读通过。
-    Registered,
-    /// 按裁定降级跳过；原因已由 preflight 写入任务日志。
-    Skipped(String),
-}
+// 【2026-10-28 用户裁定：取消「降级跳过」】
+//
+// 此前这里有两个「假装成功」的类型：`Preflight::{Proceed,Skip}` 与
+// `RegistrationOutcome::{Registered,Skipped}`。缺 `reagentc.exe` / `config\SYSTEM`
+// 时走 `Skip` → 任务**报成功**，但新系统根本没有恢复环境。
+//
+// 用户 2026-10-28 明确裁定：**要「任务失败并说明原因」**，不要「成功但残废」。
+// 理由很实在：用户看到「还原成功」就会以为以后能进恢复环境检修，而真出事时进不去——
+// 这比当场失败危险得多。
+//
+// 所以 `Preflight` 与 `RegistrationOutcome` 两个枚举整体删除：本模块只表达
+// 「注册成功」或「带错误码失败」两态，不再有第三种「跳过了但算成功」。
 
 #[derive(Debug, PartialEq, Eq)]
 struct Info {
@@ -386,7 +383,7 @@ fn verify_recovery_object(
 }
 
 trait Backend {
-    fn preflight(&mut self) -> Result<Preflight, TaskError>;
+    fn preflight(&mut self) -> Result<(), TaskError>;
     fn info(&mut self) -> Result<Info, TaskError>;
     fn reset_clone(&mut self, _info: &Info) -> Result<bool, TaskError> {
         Ok(false)
@@ -400,13 +397,11 @@ trait Backend {
     }
 }
 
-fn run(backend: &mut impl Backend) -> Result<RegistrationOutcome, TaskError> {
-    // 缺注册组件：降级跳过（用户 2026-10-16 裁定）。此刻尚未做任何注册写入，
-    // 跳过是干净的；checkpoint 让故障追踪链能看到这个决策点。
-    if let Preflight::Skip(reason) = backend.preflight()? {
-        backend.checkpoint("registration-skipped")?;
-        return Ok(RegistrationOutcome::Skipped(reason));
-    }
+fn run(backend: &mut impl Backend) -> Result<(), TaskError> {
+    // 前置检查只有两种结局：通过，或**带错误码失败**（2026-10-28 用户裁定）。
+    // 此前这里还有「缺组件 → 跳过」的分支，会让任务报成功却没有恢复环境；
+    // 现在组件缺失在 `preflight` 内部就直接返回 `BR-RE-047`，不会走到任何注册写入。
+    backend.preflight()?;
     let mut before = backend.info()?;
     if backend.reset_clone(&before)? {
         before = backend.info()?;
@@ -426,7 +421,7 @@ fn run(backend: &mut impl Backend) -> Result<RegistrationOutcome, TaskError> {
     }
     let after = backend.info()?;
     backend.verify(&after)?;
-    Ok(RegistrationOutcome::Registered)
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -435,7 +430,7 @@ pub(crate) fn repair(
     efi: &std::path::Path,
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
-) -> Result<RegistrationOutcome, TaskError> {
+) -> Result<(), TaskError> {
     repair_with_mode(target, efi, expected, log, false)
 }
 
@@ -446,7 +441,7 @@ pub(crate) fn repair_secondary(
     efi: &std::path::Path,
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
-) -> Result<RegistrationOutcome, TaskError> {
+) -> Result<(), TaskError> {
     repair_with_mode(target, efi, expected, log, true)
 }
 
@@ -457,7 +452,7 @@ fn repair_with_mode(
     expected: &backuprestore_core::VolumeIdentity,
     log: &std::path::Path,
     independent: bool,
-) -> Result<RegistrationOutcome, TaskError> {
+) -> Result<(), TaskError> {
     use crate::{append_log, capture_logged, pe_safety, windows_prepare as wp};
     use std::{fs, path::Path};
     struct WindowsBackend<'a> {
@@ -549,7 +544,7 @@ fn repair_with_mode(
         fn checkpoint(&self, point: &str) -> Result<(), TaskError> {
             crate::recovery_fault::checkpoint(point, self.log)
         }
-        fn preflight(&mut self) -> Result<Preflight, TaskError> {
+        fn preflight(&mut self) -> Result<(), TaskError> {
             // 离线注册要求「纯恢复环境」，但恢复环境有两种形态，二者都合法：
             //   · WinRE —— 有 Control\MiniNT 键（纯恢复环境专属标记）；
             //   · WinPE —— 无 MiniNT，但有 wpeutil.exe（PE 自带工具）。
@@ -604,12 +599,15 @@ fn repair_with_mode(
                 ),
             ] {
                 if !pe_safety::probe_file(self.target, &parts)? {
-                    let reason = format!(
-                        "目标卷缺少恢复环境注册组件（{name}），按裁定跳过恢复环境注册；\
-                         系统可正常启动，但不含恢复环境（日后无法从恢复环境检修该系统）"
-                    );
-                    append_log(self.log, &format!("WinRE registration skipped: {reason}"))?;
-                    return Ok(Preflight::Skip(reason));
+                    // 【2026-10-28 用户裁定】缺组件**必须失败并说明原因**，不再「跳过算成功」。
+                    // 失败点在这里（run() 最前面），不会走到任何注册写入；
+                    // 而且擦除前的 `check_image` 已用同一判据做了镜像侧预检，
+                    // 正常路径下更早就会拦住（见 pe_operation::check_image）。
+                    append_log(
+                        self.log,
+                        &format!("WinRE registration refused: target lacks {name}"),
+                    )?;
+                    return Err(crate::errc_with(ErrCode::WinreComponentsMissing, &[name]));
                 }
             }
             self.loader = pe_safety::target_loader(&self.bcd(false)?, self.letter)?;
@@ -669,7 +667,7 @@ fn repair_with_mode(
                     self.letter, self.loader, self.location
                 ),
             )?;
-            Ok(Preflight::Proceed)
+            Ok(())
         }
         fn info(&mut self) -> Result<Info, TaskError> {
             let windows = self.target.join("Windows");
@@ -1238,7 +1236,9 @@ mod tests {
         enabled: bool,
         false_success: bool,
         cloned: bool,
-        skip: bool,
+        /// 故障替身：模拟「目标卷缺恢复组件」。★ 2026-10-28 起它必须导致**失败**
+        /// （`BR-RE-047`），不再有「跳过算成功」这条路。
+        missing_components: bool,
     }
     impl Fake {
         fn step(&mut self, name: &'static str) -> Result<(), TaskError> {
@@ -1251,12 +1251,15 @@ mod tests {
         }
     }
     impl Backend for Fake {
-        fn preflight(&mut self) -> Result<Preflight, TaskError> {
+        fn preflight(&mut self) -> Result<(), TaskError> {
             self.step("preflight")?;
-            if self.skip {
-                return Ok(Preflight::Skip("故障替身：组件缺失".into()));
+            if self.missing_components {
+                return Err(crate::errc_with(
+                    ErrCode::WinreComponentsMissing,
+                    &["故障替身 reagentc.exe"],
+                ));
             }
-            Ok(Preflight::Proceed)
+            Ok(())
         }
         fn info(&mut self) -> Result<Info, TaskError> {
             self.step("info")?;
@@ -1304,7 +1307,7 @@ mod tests {
                 enabled: false,
                 false_success: false,
                 cloned: false,
-                skip: false,
+                missing_components: false,
             };
             assert!(run(&mut fake).is_err());
             assert_eq!(fake.calls.last(), Some(&fail));
@@ -1315,7 +1318,7 @@ mod tests {
             enabled: false,
             false_success: true,
             cloned: false,
-            skip: false,
+            missing_components: false,
         };
         assert!(run(&mut fake).is_err());
         let mut fake = Fake {
@@ -1326,21 +1329,31 @@ mod tests {
         assert!(run(&mut fake).is_err());
         assert_eq!(fake.calls.last(), Some(&"reconnect"));
     }
-    /// 用户 2026-10-16 裁定（原 P5）：目标缺注册组件时降级跳过而非任务失败。
-    /// 降级必须①报成功②带回跳过原因③不触碰任何注册写入步骤。
+    /// 用户 2026-10-28 裁定（**取代** 2026-10-16 的「降级跳过」）：
+    /// 目标缺注册组件时必须**失败并说明原因**，不能「报成功但没有恢复环境」。
+    ///
+    /// 三条不可退让的性质：
+    /// ① 返回 Err（不是 Ok）；② 错误码是 `BR-RE-047`（码是契约，界面/日志靠它定位）；
+    /// ③ **一次注册写入都不许发生**（calls 只有 preflight）——失败必须干净。
     #[test]
-    fn registration_degrades_when_components_missing() {
+    fn registration_fails_when_components_missing() {
         let mut fake = Fake {
             calls: Vec::new(),
             fail: "",
             enabled: false,
             false_success: false,
             cloned: false,
-            skip: true,
+            missing_components: true,
         };
-        assert_eq!(
-            run(&mut fake).unwrap(),
-            RegistrationOutcome::Skipped("故障替身：组件缺失".into())
+        let error = run(&mut fake).expect_err("缺组件必须失败，而不是『跳过算成功』");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("BR-RE-047"),
+            "错误码必须可定位，实际：{rendered}"
+        );
+        assert!(
+            rendered.contains("reagentc.exe") || rendered.contains("故障替身"),
+            "说明原因必须带上是哪个组件，实际：{rendered}"
         );
         assert_eq!(fake.calls, ["preflight"]);
     }
@@ -1352,7 +1365,7 @@ mod tests {
             enabled: false,
             false_success: false,
             cloned: false,
-            skip: false,
+            missing_components: false,
         };
         run(&mut fake).unwrap();
         assert_eq!(
@@ -1376,7 +1389,7 @@ mod tests {
                 enabled: true,
                 false_success: false,
                 cloned: true,
-                skip: false,
+                missing_components: false,
             };
             let result = run(&mut fake);
             if fail.is_empty() {

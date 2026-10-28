@@ -255,6 +255,12 @@ error_codes! {
     BcdNoRecoverySequence => ("BR-RE-044", "BCD 未报告系统恢复关联（recoverysequence）", "The BCD reports no system recovery association (recoverysequence)"),
     BcdRecoveryNoDevice => ("BR-RE-045", "BCD 恢复对象未报告 device", "The BCD recovery object reports no device"),
     BcdRecoveryRamdiskUnrecognized => ("BR-RE-046", "BCD 恢复对象的 ramdisk 卷形态无法识别", "The ramdisk volume form of the BCD recovery object is unrecognized"),
+    /// 目标卷缺少恢复环境注册组件。
+    ///
+    /// 【2026-10-28 用户裁定】此前这种情况会「降级跳过」——任务报成功，但新系统
+    /// 根本没有恢复环境。用户明确要求改为失败：看到「还原成功」却进不去恢复环境，
+    /// 比当场失败危险得多。
+    WinreComponentsMissing => ("BR-RE-047", "目标卷缺少恢复环境注册组件（{0}），无法注册恢复环境；系统虽可启动，但日后无法从恢复环境检修，按裁定拒绝继续", "The target volume lacks a recovery component ({0}); refusing to continue"),
 
     // ── 应用镜像（`online_operation`）────────────────────────────────────
     DismApplyFailedOnline => ("BR-APL-001", "DISM failed: {0}\n--- 输出尾部（至多 {1} 字节）---\n{2}", "DISM failed: {0}\n--- output tail (at most {1} bytes) ---\n{2}"),

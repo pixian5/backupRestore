@@ -897,20 +897,16 @@ impl RestoreBackend for Engine {
                 return Err(crate::errc(ErrCode::SecondaryMenuOrderInvalid));
             }
         }
-        match crate::winre_registration::repair(
+        // 【2026-10-28】`repair` 现在只有「成功」或「带码失败」两态，不再有
+        // 「降级跳过」这一成功分支（用户裁定：缺恢复环境组件必须失败并说明原因）。
+        crate::winre_registration::repair(
             &std::path::PathBuf::from(format!("{target_letter}:\\")),
             &std::path::PathBuf::from(format!("{esp_letter}:\\")),
             &target,
             &log,
-        )? {
-            crate::winre_registration::RegistrationOutcome::Registered => {
-                self.log(crate::i18n::msg("pe_boot_verified"))
-            }
-            // 降级（用户 2026-10-16 裁定，原 P5）：跳过原因已由 preflight 写入
-            // 任务日志，结尾再复述一次——最终结果必须明确告知，不静默跳过。
-            crate::winre_registration::RegistrationOutcome::Skipped(reason) => self
-                .log(&crate::i18n::msg_tpl("re_registration_degraded", &[reason.as_str()])),
-        }
+        )?;
+        // 末表达式即返回值：`boot()` 需要 `Result<(), TaskError>`。
+        self.log(crate::i18n::msg("pe_boot_verified"))
     }
 }
 
