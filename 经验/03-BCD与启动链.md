@@ -9,6 +9,12 @@
   - 设备路径形式 `ramdisk=[\Device\HarddiskVolumeN]\…,{devopts}` 在系统卷与数据卷**都能引导**。
   —— 20261014-0003（单变量矩阵 A/B/C 定论）[✅]
 - `bcdedit /enum` **把两种形态都规范化显示成 `ramdisk=[X:]`**——存储层差异回读不可见，这是历史上误判"根因是卷"的直接原因 —— 20261014-0003/2115 [✅]
+- ★★ **`/enum` 的 ramdisk 显示是「渲染」，三态都要会读**（2026-10-28 单变量实测：建临时 OSLOADER 条目写 `ramdisk=[T:]\…`，然后 `mountvol T: /D` 摘盘符、再挂回，**全程不改 BCD**）：
+  写 `[T:]` → 显示 `[T:]`；摘掉 T: → 显示 **`[\Device\HarddiskVolume7]`**；挂回 → 又变 `[T:]`。⇒
+  ① `[X:]` **对写入形式零区分力**（写盘符形式也会被渲染成设备路径）；
+  ② `[\Device\HarddiskVolumeN]` = 卷存在但当前无盘符；
+  ③ `[unknown]` = **悬空引用**（本机 4 处是 09-13 分区重排前遗留的 `description=Windows Recovery Environment` 条目 `{472f272f}`/`{6b230bda}`，其 devopts `{472f2730}`/`{6b230bdb}` 连 `/enum {GUID}` 都枚举不到）。
+  ★ 因此「盘符形式 vs 设备路径形式」**只能靠行为（引导成败）判定，回读一律无效** —— 20261028-2328 [✅ 实测往返]
 - 代码落点：`boot_entry.rs` `dos_device_of()` 用 `QueryDosDeviceW` 转设备路径，**失败即拒绝写盘符形式**（不静默退化）；返回值必须以首个 NUL 截断（否则报 `nul byte found in provided data`）；写入点写 `ramdisk=[\Device\HarddiskVolumeN]<卷内路径>,{devopts}` + `ramdisksdidevice partition=\Device\HarddiskVolumeN`，回读期望值仍用盘符形式（恰好一致）—— 20261014-0003/2115 [✅ 源码]
 - **载荷留在镜像卷**（`windows_prepare.rs` `re_staging.volume = image_volume`）；2.4.5「搬去 C:」已回退（污染 C:，且 `restore-existing` 格式化目标会抹掉自己的续跑载荷和 boot.sdi）—— 20261014-0003/2356 [✅]
 - ramdisk 形态细节：`]` **紧跟卷闭合、结尾没有第二个 `]`**（`ramdisk=[F:]\path,{opts}`）；`{ramdiskoptions}`（`{ae5534e0-…}`）与真实恢复环境条目用的设备选项对象不是一回事，且 `/enum all` 不列出它 —— 20260929-1300/20261011-2350 [✅/⚠️]
