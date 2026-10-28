@@ -9,6 +9,7 @@
 - 载荷目录 `BackupRestoreRE\<task-id>\Winre.wim` **按任务 ID 隔离**（历史上所有任务共用一目录，准备第二个任务覆盖第一个载荷导致 rearm 哈希不符放弃续跑）；清理只删本任务子目录 + `prune_empty_parent` —— 20261010-1030 [✅]
 - `BackupRestoreRE` 只是相对"运行时选定的镜像卷"的目录名，**代码没写死任何卷符**（注释里的 `F:\` 仅举例）—— 20261013-2356 [✅]
 - **静态 CRT 是硬要求**：恢复环境/预安装环境/精简 Windows 无 VCRUNTIME140/UCRT，动态 CRT 产物进程创建即被加载器终止，症状=**零输出、零副作用、无日志无弹窗**，退出码 `4294967418`=`0xC0000135`=STATUS_DLL_NOT_FOUND；三步判断法：看退出码→解析预安装环境导入表→加 `+crt-static` 重构建比对 —— 20260925-0207 [✅]
+- **`winpeshl.ini` 有三种形态，字节级已钉死（2026-10-28 实测）**：① **官方母本** `C:\Users\Public\winre-src\Winre.wim` = **53 B** `[LaunchApp]` + `AppPath=X:\sources\recovery\recenv.exe`（CRLF）；② **注册位 / 注入件** = **99 B** `[LaunchApps]` + `%SYSTEMROOT%\System32\Recovery.exe,recover-env …RecoveryTask.env`（**LF**，与 `EXPECTED_WINRE_SHELL` 逐字节相同）；③ **PE 镜像**（正确件）= `windows/winpe-winpeshl.ini` → `Recovery.exe,--pe-desktop`。★ 推论：**「注入件与注册位 winpeshl.ini 同哈希」是预期而不是异常**（注册位本身早就注入过），真正的「原版」是 53 B 那个；PE 的 shell 属于**镜像构建**职责（`poc/build-backuprestore-pe.ps1:80/87-90` 拷模板并校验），产品安装链路只注入 `Recovery.exe`，**不写 shell 也不算漏** —— 20261028-2328 [✅]
 - Windows servicing 会**静默替换注册 Winre.wim**（当天部署的载荷被累积更新冲掉为官方原版）→ 注册恢复环境不是可靠载荷宿主；这也是本项目载荷放任务自有启动配置数据条目的原因 —— 20260927-2015 [✅]
 - "返回 Windows"（exit_pe_to_windows）只恢复/设置启动配置数据默认项、清一次性启动并重启，**不还原原始 Winre.wim** —— 20260925-1940 [✅]
 
@@ -28,6 +29,7 @@
 - **恢复环境内没有 reagentc.exe**，操作注册位必须全路径调离线目标操作系统自带的 `<目标>:\Windows\System32\reagentc.exe` —— 20261014-1216 [✅]
 - 恢复环境窗口只有约 20 秒，宿主侧截图来不及也不必；**日志证据链比截图更强** —— 20261014-0200 [✅]
 - 恢复环境日志分工：主日志在**镜像同目录** `H:\BRImages\Recovery.log`（追加式、含历史 run，排障第一站）；任务目录有 `prepare.log` / `Recovery-early.log`（只到挂载）/ `status.json`；`C:\BackupRestore-Recovery-early.log` 是历史累积别当唯一来源 —— 20261014-0200/1216 [✅]
+- ★★ **判「RE 到底起没起来」用持久化日志镜像，不要用画面**：`session_log.rs` 会把 RE/PE 内所有日志再写一份到**第一个可写的持久化卷**的 `<卷根>\BackupRestore-logs\<pid>-<纳秒>\`（`session.log`/`BackupRestore-escape.log`/`Recovery-early.log`/`Recovery.log`）。**三态判据**：目录不存在 = RE 没起来（查引导链）；只有 init/escape = 起来了但极早期退出（看 `consecutive_failures`）；有 `STEP n/4` = 真在干活（问题在任务不在引导）。★ 这条是 2026-10-17 才有的机制，**10-13 的 2215 轮没有它**，所以那轮把「RE 失败后 auto-escape 清理并重启回 Windows」误读成了「引导回落」—— 两种因果在外部完全同形（闪回桌面 + payload 目录被清）—— 20261028-2328 [✅]
 - 判"是不是新通道"的终态指纹：旧通道 `WinRE cleanup completed`，新通道 `Boot entry cleaned` / `new boot channel: BCD objects removed` / `staging directory \\?\Volume{…}\BackupRestoreRE removed and verified` —— 20260930-0030 [✅]
 - 探针纪律：`probe` 成功 ≠ 备份还原成功（只证明准备链+入口+清理）；Capture/Apply/格式化/BCDBoot/第二系统启动必须各自单独留证；`prepare --no-reboot` 不是无副作用预览（已建启动配置数据对象、已拷贝/挂载镜像，只是不 arm 不重启）—— 20260925-0025/20260930-1925 [✅]
 - 探针/错注入方法：`--test-efi-drive`（隔离 EFI 临时挂载）与 `--test-fault`（`identity-env-mismatch`/`bcdboot-failure`/`power-loss-*`）仅开发命令行暴露；`--test-fault none` 不被接受；持续型故障（acceptance:apply:error）在恢复环境内**无法解除**（无 Tools 写不了 fault-released）→ 改用 `error-once` —— 20260819-impl-notes/20261010-1910 [✅]
