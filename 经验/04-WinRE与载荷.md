@@ -127,8 +127,8 @@
   （实测 `Valid / CN=Microsoft Windows`）；WIM 本身与我们的 `Recovery.exe`（用户态）**不在检查范围**。
 - **手工铺 PE 代替 GUI 安装（本轮用的办法）**：`format T: /q` → `dism /Apply-Image /ImageFile:<新镜像>
   /Index:1 /ApplyDir:T:\`（18 s）→ 沿用上一轮留下的 `BR-PE-DISK` BCD 项。
-  ⚠️ 这是**快捷通道**，不覆盖产品「安装 PE」按钮里的格式化 + `bcdboot` 写引导 + 建项，
-  报告里必须注明「安装流程本身未在安全启动下验证」。
+  ⚠️ 这是**快捷通道**。（**2026-10-29 02:56 已补验**：产品自己的安装流程在安全启动下同样跑通，
+  见下一节；★ 同时订正一个错误认知 —— 装 PE **不跑 `bcdboot`**、不碰 ESP。）
 - **归位手法（PE 里没有 `prlctl exec`）**：`prlctl send-key-event --scancode 15`（Tab）×5 → 焦点落到
   第 5 张卡片「返回 Windows」（拍图确认虚线框）→ `--scancode 28`（Enter）。
 - **PE 里的日志落在 `T:\`**：`T:\exit-pe.log`（「返回 Windows」的现查过程全在里面）；
@@ -138,3 +138,22 @@
 - 取证图在 `.test-artifacts/secboot-pe/`（已 gitignore）：`01-after-reboot-50s.png` /
   `02-still-there-125s.png` / `03-focus-check.png` / `05-back-to-windows.png`。
 
+
+## 10. 产品「安装 PE」在安全启动下也跑通（2026-10-29 02:56 实测）
+
+- **它到底做了什么**（读 `native_gui.rs::install_pe_harddisk` + 实测确认）：
+  **① 镜像启动配置预检（只警告）→ ② `diskpart` 格式化目标分区并回读卷序列号验证
+  → ③ `dism /Apply-Image /Index:1 /ApplyDir:<盘>:\` → ④ `bcdedit /create` + 8 条 `/set` + `displayorder`。**
+  **不跑 `bcdboot`、不碰 ESP** —— 所以它在安全启动下几乎不可能被挡。
+- **怎么自动化**：GUI 测试钩子 `C:\br-test.json`
+  （`{"tab":"pe","mode":"disk","image":"<PE 镜像>","pe_name":"…","target_volume":"T","auto_install":true}`）
+  + `BackupRestore.exe --test-hook`，用 `tools/win-clicker/br-s1.sh br-pe-install-secboot.ps1` 在**会话 1 提权**跑。
+  钩子只是「把控件设成用户点完的状态 + 自动按是」，调的是同一批函数。
+- **★ 坑 1：目标分区里只要有 Windows 目录就一律被拦**
+  （`GUI action blocked: target partition contains a Windows installation`）。
+  所以「装过一次 PE 的 T:」再装必须先 `format T: /q`，否则会误判成「安全启动把安装挡住了」。
+- **★ 坑 2：硬盘启动方式下「PE 目录」输入框不参与落盘** ——
+  `/ApplyDir:<盘>:\` 铺分区根，那个框是内存盘方式用的；装完是 `T:\Windows\…`、BCD 里 `systemroot \Windows`。
+- **实测结果**：新项 `{8d7e209c…}`「BR PE secboot」（`winpe yes`/`detecthal yes`）→ 重启 55 秒进
+  「恢复桌面 v2.6.76」→ Tab×5+Enter 返回 Windows，`default` 自动归位、`secureboot` 仍 `True`。
+- 遗留：BCD 里会累积等价项（本机三条都指向 `T:`），清理属于改引导，**交给用户决定**。
