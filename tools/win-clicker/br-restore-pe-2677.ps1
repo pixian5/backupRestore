@@ -1,10 +1,20 @@
-# br-restore-pe-2677.ps1 -- 用「离线还原到数据卷 + 选 PE」触发 PE 侧执行链
+# ★★★ 此路不通，勿直接运行（2026-10-29 04:00 实测结论）★★★
+# 「离线还原到数据卷」确实能排队 PE 任务并重启进 PE，但**还原目标不能是 T:**——
+# PE 是从 T: 平面启动的（BCD 项 winpe=Yes、无 ramdisk），「格式化并还原到 T:」等于
+# 格式化正在运行的系统卷，冲突。而且先把 T: 格式化再让 bootsequence 指向它，
+# 重启时 T: 上无系统可启 → VM 直接停机、不弹窗（恢复法见 经验/04 §12：
+# 开机回 Windows 后 dism /Apply-Image 铺回去）。
+# 想验证 PE 侧 execute()（进度窗 + 后台 cmd），请用真实系统备份：
+#   ./br-s1.sh br-backup-secboot-2677.ps1
+# 本文件保留只为记录「离线还原路由本身是通的」（钩子到 schedule_pe_task 全过，
+# 见 gui.log：offline data restore choice: 1 → bootsequence set → auto reboot）。
+# br-restore-pe-2677.ps1 -- 【已废弃】用「离线还原到数据卷 + 选 PE」触发 PE 侧执行链
 # 目的：让 PE 里的 execute() 真跑一次，目验 2.6.77 的两处修复：
 #   a) 进度窗布局：阶段标题不被进度条压住、底部 5 按钮独占一行、步骤列表变矮、日志区变大
 #   b) 后台 cmd：进度窗出现之前先弹出「最大化 + 在后台」的命令提示符（用户反馈 PE 链此前没有）
 # 镜像用刚构建的 2.6.77 PE 镜像本身（412 MB）；还原完成后 T: 上就是新版 PE，终态干净。
 # system_drive_choice=1 直接选 PE，跳过弹窗；auto_install 自动确认并直接创建任务。
-# 用法：./br-s1.sh br-restore-pe-2677.ps1
+# 用法：【废弃，见顶部警告】./br-s1.sh br-restore-pe-2677.ps1
 $ErrorActionPreference = 'Continue'
 $lines = New-Object System.Collections.ArrayList
 function W($s) { [void]$lines.Add($s) }
