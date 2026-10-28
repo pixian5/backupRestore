@@ -83,6 +83,7 @@
 - v2.5.8 已落地：`BootMenuPlan.default_policy: DefaultPolicy`（PointAtRestoreTarget/PreserveCurrentDefault）+ `set_default_policy` 唯一写入入口 + apply 唯一决策点 + 全分支日志；在线通道结构上固定 PreserveCurrentDefault（活动系统盘被顶部拒绝）—— 20261015-0725/commit 4b64c94 [✅]
 - A 场景 bcdboot 不带 `/d`；C 场景四道防线保 default：bcdboot `/d /addlast` + `assert_boot_default_preserved`（bcdboot 后立即回读+自愈）+ `preserve_primary_boot_manager` + apply 的 `selected.contains(&previous.default)` —— 20261015-0725 [✅]
 - S3/S5 待用户裁定：previous.default 不在 selected 时应报错拒绝而非 WARN；RestoreExisting 到非活动 Windows 卷且用户未起名时菜单项硬编码「本次还原的 Windows」（应读镜像索引名预填+撞名追加时间戳）—— 20261015-0725 [⚠️ 未实施]
+- ★★ **PE 桌面「返回 Windows」会把 default 写成**悬空 GUID**（2026-10-29 实测）**：`exit_pe_to_windows`（`native_gui.rs:7967`）从 ESP 上读 `S:\pe-exit-guid.txt` 当目标 GUID，再 `bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {bootmgr} default "<guid>"`。★ 该文件是**部署/测试时一次性写下**的，之后**没有任何机制会刷新它**：本机那份写于 2026-09-26 09:21（`{a8bafbae-…}`），而真实 Windows 项早已是 `{a6273652-…}` → default 指向**不存在的对象**。机器还能进 Windows 靠的是 bootmgr 回落到 `displayorder` 第一项——是运气，不是设计。判据：`bcdedit /enum {guid}` 返回空**不能**当「不存在」（本地化空文案 + 退出码 0 的老坑），要用 `bcdedit /enum all` 全文 grep：某 GUID **只出现在 `default` 那一行**、没有任何对象以它为 identifier = 悬空。修法：`bcdedit /set {bootmgr} default <真实 Windows GUID>`，并用真实 GUID 重写 `S:\pe-exit-guid.txt`。根因是「信任一个永不校验的外部标记文件」，与「注入件哈希陈旧」同一类病 —— 20261029-0020 [✅ 实测]
 
 ## 7. 两个真实 bug 史（错误签名对照，防再归错因）
 

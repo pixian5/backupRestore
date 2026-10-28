@@ -1225,6 +1225,25 @@ fn prepare_task(
     //   还要按它读注册的 WinRE。显式延到进程结束（有边界：收尾统一撤销 + 崩溃兜底）。
     let (recovery_letter, lease_recovery) =
         ensure_volume_mounted_leased(&recovery, 'R', &prepare_log)?;
+    // ★★ 复核结论（2026-10-28 深夜，见
+    //    docs/20261028-2330-…-PE镜像重出与旧件归因实证 的「#138」一节）：
+    //    下面这行 `hold_for_process()` 在本机是**空转**——不是它多余，而是因为
+    //    `ensure_workspace_capacity`（:1094）在它之前就硬要求恢复卷**已有盘符**，
+    //    而那个盘符是 `recovery_identity()`（:979 → `identity_from_diskpart` 的
+    //    `diskpart assign letter=`）**提前分配**的。于是 `ensure_volume_mounted_leased`
+    //    一定走「复用既有盘符」分支 → `created=false` → 租约 `letter=None`。
+    //
+    //    ⚠️ 这**不是类型级恒真**，只是「:979 到 :1226 之间恢复卷一直有盘符」这个
+    //       环境前提：若恢复卷在这段里丢了盘符，函数会退到 GUID/diskpart 分支并
+    //       真的新分配一个（`created=true`）。所以这里只能放**调试期**断言——
+    //       release 下编译掉，生产行为一字不变；一旦报警，说明前提变了、要去查
+    //       `identity_from_diskpart`，而不是来删这条断言。
+    //    真正需要租约兜底的「无租约分配」在 `identity_from_diskpart` 里（#138 待观测）。
+    debug_assert!(
+        lease_recovery.owns_no_letter(),
+        "recovery lease unexpectedly owns {recovery_letter}: the recovery volume lost its \
+         drive letter between the workspace capacity check and the lease point"
+    );
     lease_recovery.hold_for_process();
     let re_staging = ReStaging {
         volume: image_volume.clone(),
@@ -3857,6 +3876,17 @@ impl MountLease {
             register_lease(letter, &lease.log);
         }
         lease
+    }
+
+    /// 仅调试断言用：本租约是否为空。
+    ///
+    /// 空 = 本次**没有**新分配盘符（复用了既有盘符），`hold_for_process()` 与
+    /// `Drop` 都不会动盘符。
+    /// ★ 这里**不能**加 `#[cfg(debug_assertions)]`：`debug_assert!` 展开成
+    ///   `if cfg!(debug_assertions) { assert!(…) }`，条件表达式在 release 下
+    ///   照样要过类型检查——加了 cfg 就会 `E0599 method not found`（当场踩到）。
+    pub(crate) fn owns_no_letter(&self) -> bool {
+        self.letter.is_none()
     }
 
     /// 显式声明：这个盘符要活到**本进程结束**。
