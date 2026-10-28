@@ -92,3 +92,28 @@
 - **`/enable` 会换掉恢复启动项的 GUID**（本轮 `{27468cac…}` → `{35457f54…}`），内容等价
   （`ramdisk=[C:]\Recovery\WindowsRE\Winre.wim` + `winpe Yes` + `path \windows\system32\winload.efi`）。
   事后对比 `bcdedit` 时别把这当成谁写坏了；`recoverysequence` 跟着新 GUID 走即可。
+
+## 8. PE 镜像换装：包是普通目录、验证得自己挂起来看（2026-10-29 v2.6.76 确立）
+
+- **★ PE 里的程序是「烤进镜像」的**：`poc/build-backuprestore-pe.ps1` 把包目录里的
+  `BackupRestore.exe` / `Recovery.exe` / 两个 `VCRUNTIME140*.dll` / `winpe-winpeshl.ini`→`winpeshl.ini`
+  拷进挂载好的 ADK `winpe.wim`，卸载提交后导出成 `pe-boot.wim`。
+  **代码更新后不重出镜像 = 下次重测还是在测旧行为**（历史上唯一的症状是 PE 桌面上的版本号偏低，
+  静态检查看不出来）。
+- **★ 想换版本不必在虚拟机里重跑 cargo**：包就是一个七文件目录
+  （两份 exe、两个 runtime dll、`VERSION`、`winpe-winpeshl.ini`、`build-manifest.json`），
+  而构建脚本挑包只看「`package\` 下修改时间最新的 `BackupRestore-windows-arm64-*` 目录里有没有 `Recovery.exe`」。
+  所以复制上一版目录 → 换两份 exe（用已部署到 `H:\brwork` 的件）→ 改 `VERSION` 与清单里的
+  `version`/`binarySha256`，产出与脚本自己生成的同构，且修改时间自然最新。
+- **★ 构建脚本的验证段只查「文件在不在」**（12 个路径 + 壳文件逐字比对），**不查那两个 exe 是哪个版本**。
+  拿上一版包跑它照样打印成功 —— 这是「报告通过但什么都没验」的典型形态。
+  真判据：**只读挂载导出的 WIM**（`dism /Mount-Image … /ReadOnly`），对
+  `Windows\System32\Recovery.exe` 与 `BackupRestore.exe` 算 SHA-256，与包里的 `binarySha256` 比。
+- **构建前先把上一份镜像改名留底**：脚本开头会 `Remove-Item` 输出文件，失败即无回退件。
+- **`pe-assets/pe-boot.sdi` 的旧日期是假象**：它与 `copype` 现生成的 `media\boot\boot.sdi`
+  **逐字节相同**（`cd2c00ce027687ce4a8bdc967f26a8ab82f651c9becd703658ba282ec49702bd`）——
+  ADK 通用引导盘映像，不随 PE 内容变化，不必每次回写。
+- **`pe-assets/` 不在版本控制里**（`git ls-files pe-assets/` 为空），镜像件只有本机磁盘一份，
+  按哈希命名留底（`pe-boot.old-<日期>-<哈希前 8 位>.wim`）比按版本号命名可靠 ——
+  按版本号命名会撒谎（本轮那份 `c0bd17ea…` 其实不含它名字里那个版本的载荷）。
+
