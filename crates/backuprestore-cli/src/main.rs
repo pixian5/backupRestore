@@ -4473,6 +4473,20 @@ fn interrupt_after_stage_if_requested(
     // fault cannot fire forever when the resumed stage is re-entered.
     let marker = log.with_file_name(format!(".fault-{fault}.triggered"));
     if marker.is_file() {
+        // ★ 被陈旧标记抑制时**必须大声说出来**（2026-10-28）。
+        //   标记是「一次性」语义，挂在任务目录里防止重启后无限重放同一故障。
+        //   但目录会被复用（验收夹具就是固定 task id），于是上一轮的标记会把
+        //   这一轮的注入吃掉 —— 用例照样绿，其实什么都没验。
+        //   静默地不注入是本项目最贵的坑之一（「报告通过但什么都没验」），
+        //   所以这里留一条**可被 grep 的痕迹**：injection=suppressed_by_stale_marker。
+        let _ = append_log(
+            log,
+            &format!(
+                "TEST_FAULT={fault} injection=suppressed_by_stale_marker marker={}; \
+                 an earlier run left this marker, so NO fault was injected this time",
+                marker.display()
+            ),
+        );
         return;
     }
     if fs::write(&marker, format!("stage={stage:?}\n")).is_err() {

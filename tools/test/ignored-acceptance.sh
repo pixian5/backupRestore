@@ -201,6 +201,39 @@ else
     say "  FIXTURE_LOG=present"
 fi
 
+# ---------- 清掉陈旧的故障注入标记（2026-10-28）----------
+# 故障注入靠**任务目录**里的一次性标记 `.fault-<名字>.triggered` 防止重启后无限重放。
+# 但验收夹具是**固定 task id**、目录反复复用：上一轮留下的标记会把这一轮的注入吃掉
+# —— 用例照样绿，其实什么都没验（本项目最贵的坑：「报告通过但什么都没验」）。
+#
+# 两道保险：① 这里跑前清掉；② 产品侧「被陈旧标记抑制时**大声记日志**」，不再静默。
+#
+# ★ 判据必须能区分「真的 0 个标记」与「扫描命令没跑」（`prlctl exec` 约 1/8 不执行）：
+#   所以命令尾部加 `__END__` 哨兵，**连哨兵都没有就是仪器故障**，不能当成「0 个」。
+marker_cleared=0
+for marker_root in "$BR_ACCEPTANCE_ROOT" "$BR_BOOT_FAULT_ROOT"; do
+    [ -n "$marker_root" ] || continue
+    scan=$(vm "dir /b /s \"$marker_root\\tasks\\.fault-*.triggered\" 2>nul & echo __END__")
+    if ! printf '%s' "$scan" | grep -q '__END__'; then
+        say "  ERROR=fault_marker_scan_unreadable root=$marker_root（仪器故障，不是「没有标记」）"
+        exit 2
+    fi
+    before=$(printf '%s\n' "$scan" | grep -v '__END__' | grep -c . || true)
+    [ -n "$before" ] || before=0
+    if [ "$before" -gt 0 ]; then
+        vm "del /f /q /s \"$marker_root\\tasks\\.fault-*.triggered\" >nul 2>&1" >/dev/null 2>&1
+        marker_cleared=$((marker_cleared + before))
+    fi
+    rescan=$(vm "dir /b /s \"$marker_root\\tasks\\.fault-*.triggered\" 2>nul & echo __END__")
+    left=$(printf '%s\n' "$rescan" | grep -v '__END__' | grep -c . || true)
+    [ -n "$left" ] || left=0
+    if [ "$left" -gt 0 ]; then
+        say "  ERROR=stale_fault_marker_not_removed root=$marker_root remaining=$left"
+        exit 2
+    fi
+done
+say "  FAULT_MARKERS_CLEARED=$marker_cleared"
+
 # ---------- 跑 ----------
 # 判据只看结构化字段：`test result: ok. 1 passed` / `test result: FAILED`。
 run_one() {
