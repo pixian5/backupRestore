@@ -74,6 +74,21 @@ vm_launch_verified() {
     return 1
 }
 
+# 读一个**输出可能合法地为空**的查询（`dir` 查产物、`findstr` 查标记…）。
+# ★ 这类查询没法只用「空不空」判断好坏：空可能是「真没有」，也可能是「命令没跑」
+#   ——2026-10-28 实测就栽在这里：产物明明在（手工 `dir` 立刻列出来），门禁里那一次
+#   `vm "dir /b /o-d …"` 返回空，于是判「编译未完成」。重试 3 次仍空才当成「真没有」。
+vm_read() {
+    local i=0 out=""
+    while [ $i -lt 3 ]; do
+        i=$((i + 1))
+        out=$(vm "$1")
+        [ -n "$out" ] && break
+        sleep 2
+    done
+    printf '%s' "$out"
+}
+
 # ---------- 用例表 ----------
 # 每行：名字|filter|前提种类|前提参数
 #   前提种类 none = 只需管理员；env = 需要一组环境变量；pe = 只能在 PE/RE 内跑
@@ -107,8 +122,24 @@ fi
 ONLY=""
 if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
 
+# ---------- 前置 0：测试 VM 的「防弹窗基线」----------
+# ★ 2026-10-28：`PersistBrowsers=0` + 两条 AutoPlay 策略是**掐掉「位置不可用 /
+#   无法访问 V:\」弹窗**的唯一手段（真因 = explorer 登录时还原上次的文件夹窗口，
+#   而该值不存在时 Windows 默认就是开）。它们只存在于当前这台 VM 的注册表里——
+#   重建/换机就会丢，弹窗必然复发（用户已经报过两次）。
+#   ★ 这里只**检查**，不静默修改机器状态：改环境要显式敲 `tools/vm/baseline.sh ensure`。
+say "STEP 0/5 检查测试 VM 基线（防弹窗：登录不还原窗口 + 关自动播放）"
+bl_out=$(tools/vm/baseline.sh check 2>&1); bl_rc=$?
+printf '%s\n' "$bl_out" | sed 's/^/  /'
+case "$bl_rc" in
+    0) : ;;
+    3) say "  BASELINE_SKIP=vm_not_running（VM 没跑，后面本来也跑不了）" ;;
+    1) say "ERROR: 基线不成立，弹窗会复发。修复：tools/vm/baseline.sh ensure"; exit 2 ;;
+    *) say "ERROR: 基线判据自身故障（rc=$bl_rc）——这不是「通过」"; exit 2 ;;
+esac
+
 # ---------- 前置：编译（用户会话，因为 X: 只在用户会话里可见）----------
-say "STEP 1/4 编译 Windows 测试目标（用户会话，源码在 X:）"
+say "STEP 1/5 编译 Windows 测试目标（用户会话，源码在 X:）"
 vm_user "del /f /q $BUILD_LOG" >/dev/null 2>&1
 if ! vm_launch_verified vm_user \
         "cd /d $SRC_WIN && (cargo test -p backuprestore-cli --no-run --target-dir $TARGET_WIN > $BUILD_LOG 2>&1) & echo LAUNCHED" \
@@ -134,7 +165,7 @@ done
 #   行尾空白处理不一，两种都会静默取空——本轮为此白等过一个 300 秒超时。
 exe_win=""
 if [ -n "$finished" ]; then
-    exe_name=$(vm "dir /b /o-d $TARGET_WIN\\debug\\deps\\backuprestore_cli-*.exe" | head -1)
+    exe_name=$(vm_read "dir /b /o-d $TARGET_WIN\\debug\\deps\\backuprestore_cli-*.exe" | head -1)
     if [ -n "$exe_name" ]; then
         exe_win="$TARGET_WIN\\debug\\deps\\$exe_name"
     fi
@@ -156,7 +187,7 @@ if ! vm_launch_verified vm "copy /y \"$exe_win\" $BIN_WIN" \
 fi
 
 # ---------- #3 的 fixture：复刻 ../../.test-artifacts 两级结构 ----------
-say "STEP 2/4 准备 wimlib 日志回放夹具（仅首次，85MB 一次）"
+say "STEP 2/5 准备 wimlib 日志回放夹具（仅首次，85MB 一次）"
 if [ -z "$(vm "if exist $REPLAY_LOG (echo 1)")" ]; then
     vm "if not exist $REPLAY_ROOT\\.test-artifacts mkdir $REPLAY_ROOT\\.test-artifacts" >/dev/null 2>&1
     vm "if not exist $REPLAY_CWD mkdir $REPLAY_CWD" >/dev/null 2>&1
@@ -261,7 +292,7 @@ env_missing() {
 #   而门禁在「环境变量缺失」那一步就 SKIP 了，永远不会发现它根本不在这份二进制里。
 #   所以：跑之前先 `--ignored --list` 拿真值，任何一条 filter 不在列表里 = FAIL
 #   （这是缺陷，不是环境缺失；也不许记成 SKIP）。
-say "STEP 3/4 核对每条用例都真在测试二进制里（不存在 ≠ SKIP）"
+say "STEP 3/5 核对每条用例都真在测试二进制里（不存在 ≠ SKIP）"
 LIST_WIN="$BIN_DIR\\ignored-tests.list"
 vm "del /f /q $LIST_WIN" >/dev/null 2>&1
 # ★ 同步执行，**不要**用 `(... ) & echo` 后台起：`prlctl exec` 返回时会把
@@ -286,7 +317,7 @@ if ! printf '%s' "$list_text" | grep -q "benchmarks"; then
     say "ERROR: 取不到 --ignored --list（仪器故障，不等于用例缺失）。这不是「测试通过」。"
     exit 2
 fi
-say "STEP 4/4 逐条运行"
+say "STEP 4/5 逐条运行"
 PASS=0; FAIL=0; SKIP=0; RAN=0
 for row in "${CASES[@]}"; do
     IFS='|' read -r name filter kind arg <<<"$row"
