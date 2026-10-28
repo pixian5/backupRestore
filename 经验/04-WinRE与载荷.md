@@ -117,3 +117,24 @@
   按哈希命名留底（`pe-boot.old-<日期>-<哈希前 8 位>.wim`）比按版本号命名可靠 ——
   按版本号命名会撒谎（本轮那份 `c0bd17ea…` 其实不含它名字里那个版本的载荷）。
 
+## 9. 安全启动开着也能起 PE（2026-10-29 实测，正面证据）
+
+- **结论**：本机把虚拟机安全启动真正打开后（见 `经验/02 §13`），把 2.6.76 镜像铺到 `T:`、
+  `bcdedit /set {bootmgr} default {78489a62…}`、重启 → **50 秒进「BackupRestore 恢复桌面 v2.6.76」**，
+  底栏 `BackupRestore v2.6.76 | WinPE`；**驻留 84 秒无自重启**；点「返回 Windows」正常回 Windows
+  并把默认项改回真 Windows 项。⇒ **PE 的启动链在安全启动下是被放行的**（此前一直是推断）。
+- **为什么能过**：链上被检查的只有微软签名的那些 —— ESP 的 `bootmgfw.efi`、`T:\Windows\system32\winload.efi`
+  （实测 `Valid / CN=Microsoft Windows`）；WIM 本身与我们的 `Recovery.exe`（用户态）**不在检查范围**。
+- **手工铺 PE 代替 GUI 安装（本轮用的办法）**：`format T: /q` → `dism /Apply-Image /ImageFile:<新镜像>
+  /Index:1 /ApplyDir:T:\`（18 s）→ 沿用上一轮留下的 `BR-PE-DISK` BCD 项。
+  ⚠️ 这是**快捷通道**，不覆盖产品「安装 PE」按钮里的格式化 + `bcdboot` 写引导 + 建项，
+  报告里必须注明「安装流程本身未在安全启动下验证」。
+- **归位手法（PE 里没有 `prlctl exec`）**：`prlctl send-key-event --scancode 15`（Tab）×5 → 焦点落到
+  第 5 张卡片「返回 Windows」（拍图确认虚线框）→ `--scancode 28`（Enter）。
+- **PE 里的日志落在 `T:\`**：`T:\exit-pe.log`（「返回 Windows」的现查过程全在里面）；
+  `T:\Windows\System32\winpeshl.log` 可能是 0 字节 —— **判「起没起」以截图为准，别拿这个 0 字节下结论**。
+- **排查提示**：`exit-pe.log` 里第一块 FAT 卷会报 `BCD file NOT found`（那不是 ESP），
+  第二块（`d08d796f…`）才找到 BCD —— 看到 `BCD file NOT found` 别急着当故障。
+- 取证图在 `.test-artifacts/secboot-pe/`（已 gitignore）：`01-after-reboot-50s.png` /
+  `02-still-there-125s.png` / `03-focus-check.png` / `05-back-to-windows.png`。
+
