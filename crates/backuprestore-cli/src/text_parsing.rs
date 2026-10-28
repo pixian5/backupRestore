@@ -1737,6 +1737,55 @@ pub(crate) fn require_identifier(value: &str, what: &str) -> Result<String, Stri
     require_guid(trimmed, what)
 }
 
+// ---------- 盘符时间线（纯逻辑；Windows 侧由 `letter_trace` 调用）----------
+//
+// 2026-10-29 用户裁决「盘符这件事要观测，把事实钉死」之后的落点：判断逻辑
+// 全在这里，`letter_trace.rs` 只负责采样和写文件——这样单测在本机就能跑，
+// 不必为了验一段字符串格式去开虚拟机。
+
+/// `GetLogicalDrives()` 的位图 → 已挂载的盘符，只取 `C..=Z`。
+///
+/// 位 0 是 A、位 1 是 B：A/B 是软驱位，现代机器上没有，出现也只会是残留映射，
+/// 与「恢复卷被谁挂了盘符」这个问题无关，所以直接不纳入时间线。
+pub(crate) fn letters_in_mask(mask: u32) -> Vec<char> {
+    ('C'..='Z')
+        .filter(|letter| mask & (1u32 << (u32::from(*letter as u8) - u32::from(b'A'))) != 0)
+        .collect()
+}
+
+/// 两次采样之间的盘符变化；**没变就返回 `None`**（调用方据此不写日志）。
+///
+/// 输出只含 ASCII：`t+1200ms +R now=CDERST` / `t+900ms -R now=CDEST` /
+/// `t+1500ms +V -T now=CDEVS`。进 `prlctl` 的串一律 ASCII 是本项目铁律，
+/// 这里的输出会被整段 cat 回来排障。
+pub(crate) fn letter_delta_line(elapsed_ms: u64, before: &[char], after: &[char]) -> Option<String> {
+    let added: String = after
+        .iter()
+        .filter(|letter| !before.contains(letter))
+        .copied()
+        .collect();
+    let removed: String = before
+        .iter()
+        .filter(|letter| !after.contains(letter))
+        .copied()
+        .collect();
+    if added.is_empty() && removed.is_empty() {
+        return None;
+    }
+    let mut line = format!("t+{elapsed_ms}ms");
+    if !added.is_empty() {
+        line.push_str(&format!(" +{added}"));
+    }
+    if !removed.is_empty() {
+        line.push_str(&format!(" -{removed}"));
+    }
+    line.push_str(&format!(
+        " now={}",
+        after.iter().collect::<String>()
+    ));
+    Some(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3372,5 +3421,57 @@ mod pe_shell_and_loader {
     fn ramdisk_entries_are_not_candidates() {
         let ramdisk_only = "Windows Boot Loader\nidentifier {bbbbbbbb-1111-1111-1111-111111111111}\ndevice ramdisk=[C:]\\Recovery\\WindowsRE\\Winre.wim,{cccccccc-1111-1111-1111-111111111111}\npath \\windows\\system32\\winload.efi\n";
         assert_eq!(pick_windows_loader(ramdisk_only, |_| true), None);
+    }
+}
+
+/// 盘符时间线的纯逻辑：位图解析 + 变化描述。
+///
+/// 为什么单独一个 mod：这两条判据决定「时间线里到底记了什么」，写错了
+/// 整份证据就是废纸（少记一个盘符 → 结论「没泄漏」；多记 → 追一个不存在的幽灵）。
+#[cfg(test)]
+mod drive_letter_timeline {
+    use super::*;
+
+    /// 位图 → 盘符：只认 C..Z，A/B 不进时间线。
+    #[test]
+    fn bitmask_maps_to_letters_and_skips_floppy_slots() {
+        // A + C + D + Z
+        let mask = 0b1 | (1 << 2) | (1 << 3) | (1 << 25);
+        assert_eq!(letters_in_mask(mask), vec!['C', 'D', 'Z']);
+        assert!(letters_in_mask(0b11).is_empty());
+        assert_eq!(letters_in_mask(0), Vec::<char>::new());
+    }
+
+    /// 没变化必须返回 None——否则采样器每 200 ms 写一行，日志被灌满，
+    /// 真正的那一次变化反而淹在里面。
+    #[test]
+    fn identical_snapshots_produce_no_line() {
+        assert_eq!(letter_delta_line(200, &['C', 'D'], &['C', 'D']), None);
+        assert_eq!(letter_delta_line(400, &[], &[]), None);
+    }
+
+    /// 新增、消失、同时发生三种情形，格式固定且全 ASCII。
+    #[test]
+    fn delta_line_reports_added_and_removed_letters() {
+        assert_eq!(
+            letter_delta_line(1200, &['C', 'D'], &['C', 'D', 'R']).as_deref(),
+            Some("t+1200ms +R now=CDR")
+        );
+        assert_eq!(
+            letter_delta_line(900, &['C', 'D', 'T'], &['C', 'D']).as_deref(),
+            Some("t+900ms -T now=CD")
+        );
+        assert_eq!(
+            letter_delta_line(1500, &['C', 'T'], &['C', 'V']).as_deref(),
+            Some("t+1500ms +V -T now=CV")
+        );
+    }
+
+    /// 判据只认 ASCII：这条日志要整段 `type` 回来看，混进一个非 ASCII 就会
+    /// 在 `prlctl exec` 里变成乱码（项目里已踩过 iconv「Illegal byte sequence」）。
+    #[test]
+    fn timeline_lines_stay_ascii() {
+        let line = letter_delta_line(7, &['C'], &['C', 'R', 'V']).unwrap();
+        assert!(line.is_ascii(), "non-ascii timeline line: {line}");
     }
 }

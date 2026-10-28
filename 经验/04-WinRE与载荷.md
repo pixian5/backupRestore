@@ -70,3 +70,25 @@
 - **★ `abandon-task` / `resume` / `recover` 的 root 参数都是「工作区根」**，不是 `…\tasks`：`TaskStore::task_dir` = `root.join("tasks").join(id)`，传 `H:\brwork\tasks` 会拼成 `H:\brwork\tasks\tasks\<id>` 而报错。正确：`abandon-task H:\brwork <id>` —— 20261022-0655 [✅]
 - **一次性启动项不武装也能进自定义恢复环境**，走 `resume` 即可；`--no-reboot` 只是「不自动重启」，它**同时不武装 bootsequence**（日志明示 `Task prepared with --no-reboot; registered WinRE unchanged`），所以必须再 `resume` 或手工 `bcdedit /bootsequence` —— 20261022-0655 [✅]
 - **恢复环境里的盘符映射与 Windows 侧完全不同**：本轮预安装环境内 `WORKSPACE=E:` / `IMAGE=C:` / `TARGET=F:` / `EFI=Z:`，日志里出现的 `E:\brwork\tasks\…` 就是 Windows 侧的 `H:\brwork\tasks\…`，**别当成两个任务**。恢复环境主日志也因此落在「镜像同目录」（预安装环境的 `C:\BRImages` = Windows 的 `H:\BRImages`）—— 20261022-0655 [✅]
+
+## 7. 「恢复卷的盘符从哪来」——实测答案是「本来就有」（2026-10-29 v2.6.76 确立）
+
+- **★ 本机 WinRE 注册在 OS 分区**（`reagentc /info` → `harddisk0\partition4\Recovery\WindowsRE`，
+  分区 4 = C:），因此 `recovery_identity()` 解析出的恢复卷**就是 C:**，
+  `identity_from_diskpart()` 在「复用已挂载分区」那一轮就命中，**从不执行 `diskpart assign letter=`**。
+  盘符时间线实证：`REUSE C: disk 0 partition 4 (already mounted; no assignment)`，全程零挂载、零撤销。
+  → 2026-10-28 那条「恢复卷的盘符是 identity_from_diskpart 提前分配的」推断**在本机不成立**，
+  代码注释已按实测订正（`windows_prepare.rs` 租约断言上方）。详见 `docs/20261029-0138-…`。
+- **★ `reagentc /setreimage /path <新位置>` 不是「照你说的搬」**：实测三次
+  （有/无 `C:\Recovery\WindowsRE` 副本、目标分区空/满），`/setreimage` 都会老实打印
+  「目录已设为 …\partition5\…」，但随后的 `/enable` **一律回落 `partition4`**。
+  原因：Win11 26100 的 WinRE 不接受 840 MB 的恢复分区（分区 5 就是这个尺寸，label `WINRE`）。
+  想造「WinRE 在无盘符恢复分区」的 OEM 布局，必须先把分区做到 ≥1 GB。
+- **★ `/setreimage` 只在 RE 处于 Disabled 时才被采纳**；RE 已 Enabled 时它返回成功但什么也不改。
+  正确顺序：`/disable` → `/setreimage /path …` → `/enable`（顺序错就白做）。
+- **`/disable` + `/enable` 是「搬运」不是复制**：Winre.wim 的大小与时间戳都不变
+  （712,111,529 B / 2026-09-27 20:13 往返后一致），`C:\Windows\System32\Recovery\` 里不留副本。
+  代价很小，所以做实验时不必先备份这个 679 MB 的件。
+- **`/enable` 会换掉恢复启动项的 GUID**（本轮 `{27468cac…}` → `{35457f54…}`），内容等价
+  （`ramdisk=[C:]\Recovery\WindowsRE\Winre.wim` + `winpe Yes` + `path \windows\system32\winload.efi`）。
+  事后对比 `bcdedit` 时别把这当成谁写坏了；`recoverysequence` 跟着新 GUID 走即可。

@@ -140,6 +140,10 @@ mod text_parsing;
 mod progress_text;
 #[cfg(windows)]
 mod windows_command;
+/// 盘符时间线（谁挂的、什么时候、有没有被收回）。纯判据在 `text_parsing`，
+/// 本模块只做采样与落盘，因此与 `windows_prepare` 同门控。
+#[cfg(windows)]
+mod letter_trace;
 #[cfg(windows)]
 mod windows_prepare;
 /// wimlib 覆盖式应用通道（任务 #110，2026-10-22 用户裁定「换 wimlib」；
@@ -490,6 +494,10 @@ fn main() {
         crate::windows_prepare::release_process_leases(
             &crate::log_root::logs_dir().join("mount-leases.log"),
         );
+        // 时间线补一行 EXIT：把「进程退出那一刻还剩哪些盘符」钉在文件里，
+        // 事后判「有没有泄漏」拿它跟进程外的现状对照，不必靠回忆。
+        #[cfg(windows)]
+        crate::letter_trace::finish();
         eprintln!("error: {error}");
         std::process::exit(1);
     }
@@ -501,6 +509,9 @@ fn main() {
     crate::windows_prepare::release_process_leases(
         &crate::log_root::logs_dir().join("mount-leases.log"),
     );
+    // 退出前把盘符现状写进时间线（见 `letter_trace` 的模块注释）。
+    #[cfg(windows)]
+    crate::letter_trace::finish();
 }
 
 #[cfg(windows)]

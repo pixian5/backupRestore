@@ -936,6 +936,11 @@ fn prepare_task(
     target: VolumeIdentity,
     options: PrepareOptions,
 ) -> Result<(), TaskError> {
+    // ★ 盘符时间线的起点必须在这里，早于任何身份探测：恢复卷的盘符是
+    //   `recovery_identity()`（下面第 979 行那段之后）跑 `diskpart assign letter=`
+    //   现挂的，晚一步开就正好漏掉要观测的那一次。设 `BACKUPRESTORE_LETTER_TRACE_MS`
+    //   （如 200）才启采样线程；不设时只记「谁挂的、谁撤的」。
+    crate::letter_trace::start(crate::log_root::logs_dir().join("drive-letter-trace.log"));
     assert_environment(options.source_drive)?;
     let source = volume_identity(options.source_drive)?;
     require_windows_volume(&source, "source")?;
@@ -1225,20 +1230,29 @@ fn prepare_task(
     //   还要按它读注册的 WinRE。显式延到进程结束（有边界：收尾统一撤销 + 崩溃兜底）。
     let (recovery_letter, lease_recovery) =
         ensure_volume_mounted_leased(&recovery, 'R', &prepare_log)?;
-    // ★★ 复核结论（2026-10-28 深夜，见
-    //    docs/20261028-2330-…-PE镜像重出与旧件归因实证 的「#138」一节）：
-    //    下面这行 `hold_for_process()` 在本机是**空转**——不是它多余，而是因为
-    //    `ensure_workspace_capacity`（:1094）在它之前就硬要求恢复卷**已有盘符**，
-    //    而那个盘符是 `recovery_identity()`（:979 → `identity_from_diskpart` 的
-    //    `diskpart assign letter=`）**提前分配**的。于是 `ensure_volume_mounted_leased`
-    //    一定走「复用既有盘符」分支 → `created=false` → 租约 `letter=None`。
+    // ★★ 复核结论（2026-10-28 深夜 + 2026-10-29 实机观测，见
+    //    docs/20261029-0215-…-盘符观测-… 与 `letter_trace` 模块注释）：
+    //    下面这行 `hold_for_process()` 在本机是**空转**，原因是：恢复卷本身就有盘符，
+    //    `ensure_volume_mounted_leased` 一定走「复用既有盘符」分支 → `created=false`
+    //    → 租约 `letter=None`。
+    //
+    //    2026-10-29 的实机时间线把「那个盘符哪来的」钉死了，答案和当初的推断不同：
+    //      - 本机 WinRE 注册在 `harddisk0\partition4`，也就是 **OS 分区（C:）**，
+    //        所以 `recovery_identity()` 解析出的恢复卷就是 C:，`identity_from_diskpart`
+    //        在「复用已挂载分区」那一轮就命中 C:，**从不执行 `diskpart assign letter=`**；
+    //      - 时间线实证：`REUSE C: disk 0 partition 4 (already mounted; no assignment)`，
+    //        全程零挂载、零撤销。
+    //    也就是说「准备期临时分配了一个 R:」在**本机这个布局下不存在**。它只在
+    //    「WinRE 落在无盘符的专用恢复分区」时才会发生（本机分区 5 只有 840 MB，
+    //    Win11 26100 的 reagentc 不接受，实测三次都坚持放回 partition4）。
     //
     //    ⚠️ 这**不是类型级恒真**，只是「:979 到 :1226 之间恢复卷一直有盘符」这个
-    //       环境前提：若恢复卷在这段里丢了盘符，函数会退到 GUID/diskpart 分支并
-    //       真的新分配一个（`created=true`）。所以这里只能放**调试期**断言——
-    //       release 下编译掉，生产行为一字不变；一旦报警，说明前提变了、要去查
-    //       `identity_from_diskpart`，而不是来删这条断言。
-    //    真正需要租约兜底的「无租约分配」在 `identity_from_diskpart` 里（#138 待观测）。
+    //       环境前提。所以这里只能放**调试期**断言——release 下编译掉，生产行为一字
+    //       不变；一旦报警，说明前提变了、要去查 `identity_from_diskpart`，而不是来
+    //       删这条断言。
+    //    另外：`identity_from_diskpart` 里那条 `diskpart assign letter=` 确实**没有
+    //    租约**（它写的是持久的 MountedDevices），在 OEM 布局上是真实的泄漏风险，
+    //    只是本机走不到。要不要给它补租约，等有 OEM 布局的机器再说。
     debug_assert!(
         lease_recovery.owns_no_letter(),
         "recovery lease unexpectedly owns {recovery_letter}: the recovery volume lost its \
@@ -3591,6 +3605,11 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             )));
             continue;
         }
+        // 时间线：ESP 这次挂载是**临时**的（下面立刻 `/D` 撤掉），而且要躲开
+        // 「`/S` 退出码骗人」那类噪声——所以这里记的是「`/L` 已确认挂上」这个事实。
+        crate::letter_trace::note(&format!(
+            "ASSIGN {letter}: via=mountvol /S (temporary ESP inspection; released immediately)"
+        ));
         let identity = volume_identity(letter);
         let _ = Command::new("mountvol.exe")
             .args([format!("{letter}:"), "/D".to_string()])
@@ -3599,6 +3618,7 @@ fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskErro
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .status();
+        crate::letter_trace::note(&format!("RELEASE {letter}: via=mountvol /D (ESP inspection done)"));
         match identity {
             Ok(mut identity) if identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) => {
                 // The letter was only a temporary mount used to inspect the
@@ -3637,6 +3657,11 @@ fn identity_from_diskpart(
             continue;
         };
         if identity.disk_number == Some(disk) && identity.partition_number == Some(partition) {
+            // 时间线：这次**没有**新分配盘符，用的是既有的。写下来是为了让
+            // 「谁挂的」这条链完整——不然事后只看到 `REUSE`，会以为盘符本来就是它的。
+            crate::letter_trace::note(&format!(
+                "REUSE {letter}: disk {disk} partition {partition} (already mounted; no assignment)"
+            ));
             return Ok(identity);
         }
     }
@@ -3664,6 +3689,13 @@ fn identity_from_diskpart(
                 if identity.disk_number == Some(disk)
                     && identity.partition_number == Some(partition) =>
             {
+                // ★ 这就是那条「无租约的持久挂载」：`diskpart assign letter=` 写的是
+                //   `HKLM\SYSTEM\MountedDevices`，撤不撤由调用方负责，而这里**没有**
+                //   租约。时间线把它钉死——谁、哪个盘符、哪块盘的哪个分区、什么时候。
+                crate::letter_trace::note(&format!(
+                    "ASSIGN {letter}: disk {disk} partition {partition} via=diskpart \
+                     (persistent MountedDevices write; no lease covers it)"
+                ));
                 return Ok(identity);
             }
             Ok(identity) => {
@@ -3816,6 +3848,9 @@ fn mount_volume_guid(volume_guid: &str, preferred: char) -> Result<char, TaskErr
                     .trim_end_matches('\\')
                     .eq_ignore_ascii_case(&mount_target) =>
             {
+                crate::letter_trace::note(&format!(
+                    "ASSIGN {letter}: via=mountvol (volume GUID {mount_target}; leased, will be released)"
+                ));
                 return Ok(letter);
             }
             Ok(actual) => {
@@ -3845,6 +3880,8 @@ pub(crate) fn release_mounted_letter(letter: char, log: &Path) {
         Ok(run) => format!("mountvol /D exited with {}", run.status),
         Err(error) => format!("mountvol /D failed to start: {error}"),
     };
+    // 时间线收口：这是「谁撤的」。撤失败也要记——留一个盘符正是要追的幽灵。
+    crate::letter_trace::note(&format!("RELEASE {letter}: via=mountvol /D ({outcome})"));
     let _ = append_log(
         log,
         &format!("released temporary drive letter {letter}: ({outcome})"),
@@ -3874,6 +3911,9 @@ impl MountLease {
         };
         if let Some(letter) = lease.letter {
             register_lease(letter, &lease.log);
+            crate::letter_trace::note(&format!(
+                "LEASE {letter}: created by this process (released on drop or at process exit)"
+            ));
         }
         lease
     }
@@ -3911,6 +3951,9 @@ impl MountLease {
                 &self.log,
                 &format!("drive letter {letter}: held for the rest of this process"),
             );
+            crate::letter_trace::note(&format!(
+                "HOLD {letter}: kept until process exit (released by release_process_leases)"
+            ));
         }
     }
 }
