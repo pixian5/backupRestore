@@ -435,7 +435,9 @@ impl Engine {
     fn backup(&mut self) -> Result<(), TaskError> {
         self.protect()?;
         self.persist("capture-intent")?;
-        let letter = wp::ensure_volume_mounted(&self.target, 'T', &self.dir.join("operation.log"))?;
+        // 租约活到本函数结束（备份期间一直要用这个盘符），函数返回即撤销。
+        let (letter, _lease_target) =
+            wp::ensure_volume_mounted_leased(&self.target, 'T', &self.dir.join("operation.log"))?;
         // 委托已有候选事务；不删除现有镜像、不就地追加、无十分钟硬时限。
         let params = crate::online_operation::OnlineOpParams {
             operation: "backup".into(),
@@ -564,8 +566,8 @@ impl Engine {
             ));
         }
         if self.intent() == RestoreIntent::DataOverlay {
-            let letter =
-                wp::ensure_volume_mounted(&self.target, 'T', &self.dir.join("operation.log"))?;
+            let (letter, _lease_target) =
+                wp::ensure_volume_mounted_leased(&self.target, 'T', &self.dir.join("operation.log"))?;
             pe_safety::verify_binding(&self.target, &wp::volume_identity(letter)?, true)?;
             if wp::disk_free_space(letter)?.1 < required {
                 return Err(crate::errc(ErrCode::DataOverlaySpaceInsufficient));
@@ -768,8 +770,9 @@ impl RestoreBackend for Engine {
         pe_safety::verify_binding(&esp, &wp::refresh_identity(&esp)?, true)?;
         let target = self.recheck(true)?;
         let log = self.dir.join("operation.log");
-        let esp_letter = wp::ensure_volume_mounted(&esp, 'S', &log)?;
-        let target_letter = wp::ensure_volume_mounted(&target, 'T', &log)?;
+        // 两个租约都活到 boot() 结束：bcdedit / bcdboot 全程要用盘符。
+        let (esp_letter, _lease_esp) = wp::ensure_volume_mounted_leased(&esp, 'S', &log)?;
+        let (target_letter, _lease_target) = wp::ensure_volume_mounted_leased(&target, 'T', &log)?;
         pe_safety::verify_binding(&esp, &wp::volume_identity(esp_letter)?, true)?;
         pe_safety::verify_binding(&target, &wp::volume_identity(target_letter)?, true)?;
         let store = format!("{esp_letter}:\\EFI\\Microsoft\\Boot\\BCD");

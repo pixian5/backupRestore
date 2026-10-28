@@ -42,7 +42,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::windows_prepare::ensure_volume_mounted;
+use crate::windows_prepare::ensure_volume_mounted_leased;
 
 /// 镜像卷上存放载荷 RE 的子目录名（不占卷根，避免与用户文件混在一起）。
 use crate::boot_cleanup::RE_STAGING_DIR;
@@ -270,7 +270,10 @@ pub fn copy_into_staging(
     log: &Path,
 ) -> Result<(String, String), TaskError> {
     let relative = crate::boot_cleanup::staging_relative_dir(task_id)?;
-    let letter = ensure_volume_mounted(wim_volume, 'R', log)?;
+    let (letter, lease) = ensure_volume_mounted_leased(wim_volume, 'R', log)?;
+    // ★ 这个字母会**逸出**：下面返回的绝对路径把 `R:` 拼进去了，调用方之后还要按它
+    //   读写校验。所以显式延到进程结束（有边界：收尾统一撤销 + 崩溃由下次启动按 PID 清）。
+    lease.hold_for_process();
     let dir = PathBuf::from(format!(r"{letter}:\{relative}"));
     fs::create_dir_all(&dir)?;
     let wim_path = dir.join("Winre.wim");
@@ -372,7 +375,8 @@ pub fn create_entry(
         // 显式验收注入点：让字段写入块整体失败，从而走到下面保留对象 + 落半成品
         // 簿记 + 统一补偿的路径。正常任务不配置该值，`checkpoint` 直接返回。
         crate::recovery_fault::checkpoint("entry-fields", log)?;
-        let letter = ensure_volume_mounted(wim_volume, 'R', log)?;
+        // 只在本次 finish() 内用（算设备路径 + 剥前缀），函数结束即撤销。
+        let (letter, _lease_wim) = ensure_volume_mounted_leased(wim_volume, 'R', log)?;
         // 2026-10-13 定案：ramdisk 规格一律写 \Device\HarddiskVolumeN 设备路径形式。
         // 盘符形式只对系统卷生效（数据卷盘符 bootmgr 解析不了，一次性启动被静默
         // 丢弃后回落默认项）；设备路径形式在系统卷与数据卷上都实测可引导。
@@ -598,7 +602,8 @@ pub fn rearm(entry: &ReBootEntry, log: &Path) -> Result<(), TaskError> {
         entry.wim_volume.volume_guid.clone(),
     )?;
     let bound = crate::pe_safety::rebind_after_boot(&entry.wim_volume, &actual, true)?;
-    let letter = ensure_volume_mounted(&bound, 'I', log)?;
+    // 字母只在本函数内用于拼路径 / 校验链，函数结束即撤销。
+    let (letter, _lease_bound) = ensure_volume_mounted_leased(&bound, 'I', log)?;
     crate::pe_safety::verify_binding(
         &bound,
         &crate::windows_prepare::volume_identity(letter)?,

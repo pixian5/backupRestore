@@ -733,7 +733,10 @@ impl BootMenuSession {
             fresh
         };
         for entry in &mut plan.entries {
-            let letter = crate::windows_prepare::ensure_volume_mounted(
+            // ★ 字母会**逸出**：`entry.drive_letter` 随方案写进 `SavedPlan`，之后可能被
+            //   另一个步骤（甚至另一个进程）读。所以显式延到进程结束——不这么做就只能
+            //   二选一：要么留着不管（幽灵盘符），要么现在就撤（方案里的盘符变成悬空提示）。
+            let (letter, lease) = crate::windows_prepare::ensure_volume_mounted_leased(
                 &entry.volume,
                 entry.drive_letter,
                 log,
@@ -741,6 +744,7 @@ impl BootMenuSession {
             let actual = crate::windows_prepare::volume_identity(letter)?;
             entry.volume = crate::pe_safety::rebind_after_boot(&entry.volume, &actual, false)?;
             entry.drive_letter = letter;
+            lease.hold_for_process();
         }
         plan.validate()?;
         backuprestore_core::write_json_atomic(

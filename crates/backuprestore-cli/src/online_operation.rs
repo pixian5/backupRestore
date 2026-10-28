@@ -631,7 +631,9 @@ fn restore_to_windows_volume(
         }
     }
     let esp = crate::windows_prepare::esp_identity_without_drive_letter()?;
-    let esp_letter = crate::windows_prepare::ensure_volume_mounted(&esp, 'S', log_path)?;
+    // 字母只在本函数内用于 BCD 路径，函数结束即撤销。
+    let (esp_letter, _lease_esp) =
+        crate::windows_prepare::ensure_volume_mounted_leased(&esp, 'S', log_path)?;
     crate::pe_safety::verify_binding(
         &esp,
         &crate::windows_prepare::volume_identity(esp_letter)?,
@@ -822,7 +824,9 @@ fn restore_to_windows_volume(
         log_path,
         crate::i18n::msg("ol_step_letter"),
     )?;
-    let target_letter = crate::windows_prepare::ensure_volume_mounted(&after, 'T', log_path)?;
+    // 字母只在本函数内用于重绑注册表，函数结束即撤销。
+    let (target_letter, _lease_target) =
+        crate::windows_prepare::ensure_volume_mounted_leased(&after, 'T', log_path)?;
     crate::pe_safety::verify_binding(
         &after,
         &crate::windows_prepare::volume_identity(target_letter)?,

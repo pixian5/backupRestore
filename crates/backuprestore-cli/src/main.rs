@@ -200,6 +200,13 @@ fn main() {
     // 日志缺口 1/2），镜像是唯一能跨重启活下来的那一份。
     #[cfg(windows)]
     crate::session_log::init();
+    // 崩溃兜底：清理「上次进程被强杀/崩溃、没来得及撤销」的临时盘符。
+    // 只清「登记还在、但登记它的 PID 已经不在了」的——并存的另一个实例（GUI 会派生
+    // CLI 去准备）绝不会被误伤。判活走 OpenProcess，不猜时间戳。
+    #[cfg(windows)]
+    crate::windows_prepare::release_dead_owner_leases(
+        &crate::log_root::logs_dir().join("mount-leases.log"),
+    );
     #[cfg(windows)]
     install_panic_logging();
     // 【2026-10-17 修复】在任何子命令分派与子进程派生之前，把设置文件里的
@@ -478,9 +485,22 @@ fn main() {
     if let Err(error) = result {
         #[cfg(windows)]
         record_launch_error(&error);
+        // 失败收尾也要还盘符：否则「挂上去、出错退出」正好是最容易留下幽灵盘符的路径。
+        #[cfg(windows)]
+        crate::windows_prepare::release_process_leases(
+            &crate::log_root::logs_dir().join("mount-leases.log"),
+        );
         eprintln!("error: {error}");
         std::process::exit(1);
     }
+    // ★ 正常收尾：把 `hold_for_process()` 留下的盘符全部撤销。
+    //   不撤的话，`mountvol <letter>: <卷>` 的**持久**记录会留在 MountedDevices 里，
+    //   等那个分区哪天被删掉，就变成 Windows 反复弹「X:\ 无法访问」的幽灵盘符。
+    //   崩溃/被强杀的路径走不到这里，由下次启动的 PID 清扫兜底。
+    #[cfg(windows)]
+    crate::windows_prepare::release_process_leases(
+        &crate::log_root::logs_dir().join("mount-leases.log"),
+    );
 }
 
 #[cfg(windows)]

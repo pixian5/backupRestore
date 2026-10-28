@@ -28,7 +28,7 @@ fail() {
     exit 1
 }
 
-echo "[pre-push] 1/6 cargo test --workspace（core + 跨平台单测）"
+echo "[pre-push] 1/7 cargo test --workspace（core + 跨平台单测）"
 cargo test --workspace 2>&1 | tail -5 || fail "单测失败（见上方输出）"
 
 # core 是**无条件编译**、mac 上完整可见的一半代码，clippy 在这里零假阳性，
@@ -36,27 +36,27 @@ cargo test --workspace 2>&1 | tail -5 || fail "单测失败（见上方输出）
 # 只在 Windows 构造的结构体在 mac 上"从未被构造"，那不是缺陷）。
 # ★ 不要对 cli 也开 `-D warnings`——会把一堆假阳性变成推送阻塞，最后只能
 #   `--no-verify`，等于把门禁废掉。
-echo "[pre-push] 2/6 cargo clippy -p backuprestore-core -- -D warnings"
+echo "[pre-push] 2/7 cargo clippy -p backuprestore-core -- -D warnings"
 cargo clippy -p backuprestore-core --all-targets -- -D warnings 2>&1 | tail -5 \
     || fail "core 的 clippy 有真实告警（见上方输出）"
 
 # 错误码是「契约」：docs/ERROR-CODES.md 由 error_code.rs 自动生成。改了码没重生成
 # 文档，发布后对照表就是错的。这一步在钩子里重生成一次，脏了就是不同步。
-echo "[pre-push] 3/6 错误码清单与代码同步（docs/ERROR-CODES.md）"
+echo "[pre-push] 3/7 错误码清单与代码同步（docs/ERROR-CODES.md）"
 if [ -f tools/gen-error-codes.py ]; then
     python3 tools/gen-error-codes.py >/dev/null 2>&1 || fail "错误码清单生成失败"
     if ! git diff --quiet -- docs/ERROR-CODES.md; then
         fail "docs/ERROR-CODES.md 与 error_code.rs 不同步（已重新生成，请 git add 后重新提交再推）"
     fi
 else
-    echo "[pre-push] 3/6 未找到 tools/gen-error-codes.py：跳过同步检查。"
+    echo "[pre-push] 3/7 未找到 tools/gen-error-codes.py：跳过同步检查。"
 fi
 
 if [ -x ./build-win.sh ]; then
-    echo "[pre-push] 4/6 ./build-win.sh（Windows ARM64 交叉编译，抓 cfg(windows) 缺陷）"
+    echo "[pre-push] 4/7 ./build-win.sh（Windows ARM64 交叉编译，抓 cfg(windows) 缺陷）"
     ./build-win.sh 2>&1 | tail -3 || fail "交叉编译失败（见上方输出）"
 else
-    echo "[pre-push] 4/6 非 mac 宿主（无 build-win.sh）：跳过交叉编译。"
+    echo "[pre-push] 4/7 非 mac 宿主（无 build-win.sh）：跳过交叉编译。"
     echo "[pre-push]     Windows 侧请自行跑 windows/build-windows.ps1 确认构建。"
 fi
 
@@ -70,20 +70,20 @@ for d in /Users/x/win-sdk-arm64/um/arm64 /Users/x/win-sdk-arm64/ucrt/arm64 /User
     [ -d "$d" ] || sdk_ok=0
 done
 if [ -x "$rll" ] && [ "$sdk_ok" = 1 ]; then
-    echo "[pre-push] 5/6 cargo test --no-run --target aarch64-pc-windows-msvc（编译 Windows 测试目标）"
+    echo "[pre-push] 5/7 cargo test --no-run --target aarch64-pc-windows-msvc（编译 Windows 测试目标）"
     CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER="$rll" \
     RUSTFLAGS="-C target-feature=+crt-static -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/um/arm64 -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/ucrt/arm64 -C link-arg=/LIBPATH:/Users/x/win-sdk-arm64/vc/arm64" \
         cargo test --no-run --target aarch64-pc-windows-msvc -p backuprestore-cli 2>&1 | tail -3 \
         || fail "Windows 测试目标编译失败（cfg(test)+cfg(windows) 的代码，见上方输出）"
 else
-    echo "[pre-push] 5/6 缺 rust-lld 或 Windows SDK libs：跳过 Windows 测试目标编译。"
+    echo "[pre-push] 5/7 缺 rust-lld 或 Windows SDK libs：跳过 Windows 测试目标编译。"
 fi
 
 # 文档链接必须指向**已入库**的文件。本机点得开 ≠ 别人 clone 后打得开：
 # `文档索引.md` 曾链接 `AGENTS.md`，而它在 .gitignore 里——本机校验通过、clone 后 404。
 # 判据分级（见脚本头注释）：导航文件死链 + 任何位置的「未入库」目标 → 阻塞；
 # docs/ 历史归档里的死链只报告（要求历史快照全绿只会逼人篡改历史）。
-echo "[pre-push] 6/6 文档链接入库检查（tools/doc/check-doc-links.py）"
+echo "[pre-push] 6/7 文档链接入库检查（tools/doc/check-doc-links.py）"
 if [ -f tools/doc/check-doc-links.py ]; then
     python3 tools/doc/check-doc-links.py --strict > /tmp/br-doc-links.txt 2>&1
     rc=$?
@@ -98,7 +98,23 @@ if [ -f tools/doc/check-doc-links.py ]; then
         fail "有导航文件死链，或链接到未入库文件（见上方 ISSUE 行）"
     fi
 else
-    echo "[pre-push] 6/6 未找到 tools/doc/check-doc-links.py：跳过。"
+    echo "[pre-push] 6/7 未找到 tools/doc/check-doc-links.py：跳过。"
 fi
 
-echo "[pre-push] OK：单测 / core clippy / 错误码同步 / 交叉编译 / Windows 测试目标编译 / 文档链接入库均通过，放行 push。"
+echo "[pre-push] 7/7 源码静态守卫（挂盘符必须带租约，tools/test/source-guard.sh）"
+if [ -x tools/test/source-guard.sh ]; then
+    guard_out=$(tools/test/source-guard.sh 2>&1)
+    rc=$?
+    printf '%s\n' "$guard_out" | grep -E '^(RESULT|VIOLATION|ERROR|SKIP|HOLD_FOR_PROCESS_COUNT)=' | head -10
+    if [ "$rc" = "2" ]; then
+        printf '%s\n' "$guard_out"
+        fail "守卫自身故障（rc=2）——这不是「通过」，先修判据"
+    elif [ "$rc" != "0" ]; then
+        printf '%s\n' "$guard_out"
+        fail "有人绕开唯一入口直接挂盘符了（见上方 VIOLATION 行）"
+    fi
+else
+    echo "[pre-push] 7/7 未找到 tools/test/source-guard.sh：跳过。"
+fi
+
+echo "[pre-push] OK：单测 / core clippy / 错误码同步 / 交叉编译 / Windows 测试目标编译 / 文档链接入库 / 源码静态守卫均通过，放行 push。"

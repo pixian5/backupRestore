@@ -22,6 +22,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::ptr::null_mut;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -1220,12 +1221,14 @@ fn prepare_task(
     // 不污染 C:，单系统还原格式化目标卷也不会抹掉断电续跑的载荷。
     // 2.4.5 曾把载荷改到系统卷作权宜——那会污染 C: 且 restore-existing 断电后
     // 无法续跑，本轮回退。
+    // ★ 字母会**逸出**：`boot_sdi` 把盘符拼进路径、存在结构体里，后面 prepare_payload
+    //   还要按它读注册的 WinRE。显式延到进程结束（有边界：收尾统一撤销 + 崩溃兜底）。
+    let (recovery_letter, lease_recovery) =
+        ensure_volume_mounted_leased(&recovery, 'R', &prepare_log)?;
+    lease_recovery.hold_for_process();
     let re_staging = ReStaging {
         volume: image_volume.clone(),
-        boot_sdi: PathBuf::from(format!(
-            r"{}:\Recovery\WindowsRE\boot.sdi",
-            ensure_volume_mounted(&recovery, 'R', &prepare_log)?
-        )),
+        boot_sdi: PathBuf::from(format!(r"{recovery_letter}:\Recovery\WindowsRE\boot.sdi")),
     };
     let result = prepare_payload(
         executable_dir,
@@ -1340,7 +1343,8 @@ fn prepare_payload(
     // would correctly reject a stale payload/task pair.
     write_json_atomic(store.task_path(&task.task_id)?, task)?;
 
-    let recovery_letter = ensure_volume_mounted(recovery, 'R', log)?;
+    // 字母只在本函数内用于读注册的 WinRE 文件，函数结束即撤销。
+    let (recovery_letter, _lease_recovery) = ensure_volume_mounted_leased(recovery, 'R', log)?;
     let registered_wim = PathBuf::from(format!(
         r"{}:\Recovery\WindowsRE\Winre.wim",
         recovery_letter
@@ -1580,6 +1584,9 @@ fn prepare_payload(
             "preparation failed at pre-reboot flush: {error}; rolled back (see prepare.log)"
         )));
     }
+    // ★ 请求重启前先把本次进程占的临时盘符全部还回去：`mountvol` 的指派是**持久**记录，
+    //   不还的话它们会跟着重启活下来，等分区哪天被删就变成幽灵盘符。
+    release_process_leases(log);
     if let Err(error) = run_logged("shutdown.exe", &["/r", "/t", "0"], log) {
         // 重启请求失败：别把机器留在「下次开机进任务 RE，但没有人会来跑」的状态。
         // 走与其它准备失败点**同一个**补偿路径（清 bootsequence → 删对象 →
@@ -1621,7 +1628,7 @@ fn efi_bcd_store_path(
     efi: &VolumeIdentity,
     preferred: char,
     log: &Path,
-) -> Result<(PathBuf, Option<char>), TaskError> {
+) -> Result<(PathBuf, Option<MountLease>), TaskError> {
     if let Some(volume) = efi.volume_path() {
         let mut path = PathBuf::from(volume);
         path.push("EFI");
@@ -1634,14 +1641,14 @@ fn efi_bcd_store_path(
         )?;
         return Ok((path, None));
     }
-    let letter = ensure_volume_mounted(efi, preferred, log)?;
+    let (letter, lease) = ensure_volume_mounted_leased(efi, preferred, log)?;
     append_log(
         log,
         &format!("plan A: volume GUID absent; fell back to drive letter {letter}:"),
     )?;
     Ok((
         PathBuf::from(format!(r"{letter}:\EFI\Microsoft\Boot\BCD")),
-        Some(letter),
+        Some(lease),
     ))
 }
 
@@ -2227,7 +2234,8 @@ fn snapshot_raw_bcd(
     log: &Path,
 ) -> Result<String, TaskError> {
     // 方案 A（v1.8.2）：优先 verbatim 卷路径，不分配盘符。
-    let (source, letter) = efi_bcd_store_path(efi, 'S', log)?;
+    // 真挂了盘符时租约活到本函数结束，不再需要手写 `mountvol /D` 收尾。
+    let (source, _lease_efi) = efi_bcd_store_path(efi, 'S', log)?;
     let snapshot = task_dir.join("bcd-before-raw");
     let result = (|| {
         if !source.is_file() {
@@ -2273,15 +2281,6 @@ fn snapshot_raw_bcd(
             Err(error) => Err(error.into()),
         }
     })();
-    if let Some(letter) = letter {
-        let _ = Command::new("mountvol.exe")
-            .args([format!("{letter}:"), "/D".to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
-    }
     result
 }
 
@@ -2382,8 +2381,8 @@ fn rollback_boot_request(
 ) -> Result<(), TaskError> {
     let raw_snapshot = task_dir.join("bcd-before-raw");
     if raw_snapshot.is_file() {
-        // 同上：零盘符优先，读不到卷 GUID 才挂。
-        let (store, letter) = efi_bcd_store_path(efi, 'S', log)?;
+        // 同上：零盘符优先，读不到卷 GUID 才挂；租约活到本函数结束，不需手写 /D。
+        let (store, _lease_efi) = efi_bcd_store_path(efi, 'S', log)?;
         let result = (|| {
             let expected = sha256_file(&raw_snapshot)?;
             match fs::copy(&raw_snapshot, &store) {
@@ -2419,15 +2418,6 @@ fn rollback_boot_request(
             }
             Ok(())
         })();
-        if let Some(letter) = letter {
-            let _ = Command::new("mountvol.exe")
-                .args([format!("{letter}:"), "/D".to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .status();
-        }
         return result;
     }
     // 遗留分支：只有**旧任务**（v2.6.x 之前 prepare、当时 raw 快照被锁而回退到
@@ -3859,9 +3849,38 @@ pub(crate) struct MountLease {
 
 impl MountLease {
     fn new(letter: char, created: bool, log: &Path) -> Self {
-        Self {
+        let lease = Self {
             letter: created.then_some(letter),
             log: log.to_path_buf(),
+        };
+        if let Some(letter) = lease.letter {
+            register_lease(letter, &lease.log);
+        }
+        lease
+    }
+
+    /// 显式声明：这个盘符要活到**本进程结束**。
+    ///
+    /// 给「字母确实会逸出」的调用点用——写进持久化方案、被拼进返回的路径字符串、
+    /// 存进结构体字段。这些地方没法让租约跟着作用域走，但也不能就这么放开不管。
+    ///
+    /// ★ 这是**有边界的**逃生口，不是「不管了」：
+    ///   - 字母进进程级集合，`main()` 收尾统一 `mountvol /D`；
+    ///   - 进程被强杀/崩溃 → 磁盘上的租约登记（带 PID）由**下次启动**按「拥有者已死」
+    ///     精确清理，不会误伤并存实例。
+    ///   ★ 它是可 grep 的：`grep hold_for_process` 就能列出全部「字母会逸出」的地方。
+    pub(crate) fn hold_for_process(mut self) {
+        if let Some(letter) = self.letter.take() {
+            let mut held = process_leases()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !held.contains(&letter) {
+                held.push(letter);
+            }
+            let _ = append_log(
+                &self.log,
+                &format!("drive letter {letter}: held for the rest of this process"),
+            );
         }
     }
 }
@@ -3869,26 +3888,135 @@ impl MountLease {
 impl Drop for MountLease {
     fn drop(&mut self) {
         if let Some(letter) = self.letter {
+            unregister_lease(letter);
             release_mounted_letter(letter, &self.log);
         }
     }
 }
 
-/// Reused by the normal-Windows boot-resume path so that resumption can reach
-/// the registered WinRE file even when it lives on a hidden recovery partition.
-///
-/// 盘符**不会**自动撤销。调用方若只是临时读一下，请用
-/// [`ensure_volume_mounted_leased`]——它会在作用域结束时把盘符还回去。
-pub(crate) fn ensure_volume_mounted(
-    identity: &VolumeIdentity,
-    preferred: char,
-    log: &Path,
-) -> Result<char, TaskError> {
-    Ok(ensure_volume_mounted_tracked(identity, preferred, log)?.0)
+// ---------- 进程级租约集合 + 磁盘登记（崩溃兜底）----------
+//
+// ★ 为什么还要这一层（2026-10-27/28 两轮事故的结论）：
+//   作用域租约解决「正常路径不忘撤」；但进程被 `taskkill /F`、崩溃、断电时，
+//   Drop 不会跑，盘符就永久留下。所以**分配时**在磁盘上登记一行 `<盘符> <PID>`，
+//   正常撤销时划掉；**下次启动**只清理「登记还在但拥有者进程已死」的那些。
+//   用 PID 而不是时间戳，是为了不误伤并存的另一个实例（GUI 会派生 CLI 去准备）。
+
+static PROCESS_LEASES: Mutex<Vec<char>> = Mutex::new(Vec::new());
+
+fn process_leases() -> &'static Mutex<Vec<char>> {
+    &PROCESS_LEASES
 }
 
-/// 同 [`ensure_volume_mounted`]，但随租约返回：本次若新分配了盘符，
-/// 租约离开作用域时自动 `mountvol /D` 撤销。
+fn lease_registry_path() -> Option<PathBuf> {
+    let dir = crate::log_root::logs_dir();
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("mount-leases.txt"))
+}
+
+/// 登记一行 `<letter> <pid>`（尽力而为：登记失败不影响挂载本身）。
+fn register_lease(letter: char, log: &Path) {
+    let Some(path) = lease_registry_path() else {
+        return;
+    };
+    let line = format!("{} {}\n", letter, std::process::id());
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(line.as_bytes()) {
+                let _ = append_log(log, &format!("lease registry append failed: {error}"));
+            }
+        }
+        Err(error) => {
+            let _ = append_log(log, &format!("lease registry open failed: {error}"));
+        }
+    }
+}
+
+/// 划掉本进程登记的那一行（正常撤销时调用）。
+fn unregister_lease(letter: char) {
+    let Some(path) = lease_registry_path() else {
+        return;
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let me = std::process::id().to_string();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            let mut parts = line.split_whitespace();
+            !(parts.next() == Some(&letter.to_string()) && parts.next() == Some(me.as_str()))
+        })
+        .collect();
+    let _ = fs::write(&path, format!("{}\n", kept.join("\n")));
+}
+
+/// 进程收尾：把 `hold_for_process()` 留下的盘符全部撤销。
+pub(crate) fn release_process_leases(log: &Path) {
+    let drained: Vec<char> = {
+        let mut held = process_leases()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *held)
+    };
+    for letter in drained {
+        unregister_lease(letter);
+        release_mounted_letter(letter, log);
+    }
+}
+
+/// 启动时的崩溃兜底：只清理「登记还在、但登记它的进程已经不在了」的盘符。
+///
+/// 判活走 `OpenProcess` + `GetExitCodeProcess`：拿不到句柄（进程不存在）或退出码
+/// 不是 `STILL_ACTIVE` 都算已死。**并存的活实例绝不会被误清**。
+pub(crate) fn release_dead_owner_leases(log: &Path) {
+    let Some(path) = lease_registry_path() else {
+        return;
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let mut alive_lines: Vec<String> = Vec::new();
+    let mut released_any = false;
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let (Some(letter_text), Some(pid_text)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(letter) = letter_text.chars().next() else {
+            continue;
+        };
+        let Ok(pid) = pid_text.parse::<u32>() else {
+            continue;
+        };
+        if pid == std::process::id() || process_still_alive(pid) {
+            alive_lines.push(line.to_string());
+            continue;
+        }
+        release_mounted_letter(letter, log);
+        released_any = true;
+    }
+    if released_any {
+        let _ = append_log(
+            log,
+            "startup sweep: released drive letters whose owner process was gone",
+        );
+    }
+    let _ = fs::write(&path, format!("{}\n", alive_lines.join("\n")));
+}
+
+/// 该 PID 是否仍是活着的进程（委托给 `windows_command`：那里已经声明了同一批
+/// Win32 符号，重复声明会触发 `redeclared with a different signature`）。
+fn process_still_alive(pid: u32) -> bool {
+    crate::windows_command::process_is_alive(pid)
+}
+
+/// 挂载一个卷并把盘符交给调用方，**随租约返回**：本次若新分配了盘符，
+/// 租约离开作用域就 `mountvol /D` 撤销（或 `hold_for_process()` 延到进程结束）。
+///
+/// ★ 这是全库**唯一**的挂载入口（2026-10-28 结构收敛）。原来还有一个不返回租约的
+///   `ensure_volume_mounted`，只要它公开，「挂了不管」就永远可能被写出来——本机
+///   6 条幽灵盘符、测试夹具每次留一条，都是这么来的。约定靠人记不住，改成编译器记。
 pub(crate) fn ensure_volume_mounted_leased(
     identity: &VolumeIdentity,
     preferred: char,

@@ -174,6 +174,26 @@ unsafe extern "system" {
         returned: *mut usize,
     ) -> i32;
     fn DeleteProcThreadAttributeList(list: *mut c_void);
+    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+}
+
+/// 该 PID 是否仍是**活着的**进程。
+///
+/// 用途：崩溃兜底——清理「登记了临时盘符、但owner 已经被强杀/崩溃」的残留。
+/// 判活不猜时间戳：拿不到句柄（进程已不存在）或退出码不是 `STILL_ACTIVE` 都算已死。
+pub(crate) fn process_is_alive(pid: u32) -> bool {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let queried = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        queried != 0 && code == STILL_ACTIVE
+    }
 }
 struct OwnedHandle(Handle);
 impl Drop for OwnedHandle {
