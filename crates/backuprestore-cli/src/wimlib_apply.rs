@@ -221,6 +221,117 @@ pub(crate) fn fallback_after_dism_failure(
     }
 }
 
+/// 从一份 PE 镜像里取出「判定启动配置是否合格」所需的两个事实。
+///
+/// 返回 `(shell 原文, Recovery.exe 是否在镜像里)`；`shell` 为 `None` 表示镜像里
+/// 没有 `Windows/System32/winpeshl.ini`。
+///
+/// 为什么用 wimlib 而不是 DISM：只需要读**一个几百字节的文件**，DISM 得先挂载
+/// 整个镜像（400 MB 起、要临时目录、要清理），代价与收益完全不成比例。
+///
+/// ★ 两个实测坑写死在实现里：
+/// 1. `wimlib-imagex extract` 取**单个文件**时会把它**拍平**到 `--dest-dir` 根下，
+///    不保留中间目录（2026-10-29 实测：文件落在 `<dest>\winpeshl.ini`，而不是
+///    `<dest>\Windows\System32\winpeshl.ini`）。因此两处路径都要找。
+/// 2. 文件不存在时 `extract` 的退出码是 **49**（"The path does not exist in the
+///    WIM image"），而不是 0/1 之类——所以先用 `dir` 判断存在性，再决定要不要
+///    提取，避免把「镜像损坏」误报成「缺这个文件」。
+#[cfg(windows)]
+pub(crate) fn probe_pe_image_shell(
+    executable_dir: &Path,
+    image: &Path,
+    work_dir: &Path,
+    log: &Path,
+) -> Result<(Option<String>, bool), TaskError> {
+    /// 探测是**装前自检**，不是任务主链：卡住就应当放弃探测，而不是跟着卡。
+    const PROBE_TIMEOUT_MS: u32 = 120_000;
+    const SYSTEM32: &str = "/Windows/System32";
+
+    let exe = locate_wimlib(executable_dir)?;
+    std::fs::create_dir_all(work_dir)?;
+
+    let listing = work_dir.join("pe-image-listing.txt");
+    let listing_args = vec![
+        "dir".to_string(),
+        image.display().to_string(),
+        "1".to_string(),
+        format!("--path={SYSTEM32}"),
+    ];
+    let outcome = crate::windows_command::run_program(
+        &exe.to_string_lossy(),
+        &listing_args,
+        Some(&listing),
+        PROBE_TIMEOUT_MS,
+    );
+    crate::append_log(
+        log,
+        &format!(
+            "PE shell probe: wimlib dir exit={outcome} image={}",
+            image.display()
+        ),
+    )?;
+    if !outcome.is_success() {
+        let tail = crate::text_parsing::tail_text(&listing, 2048);
+        return Err(crate::err(&format!(
+            "wimlib dir failed while reading the PE image: {outcome}; {tail}"
+        )));
+    }
+    let entries = std::fs::read(&listing)
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .unwrap_or_default();
+    let has = |name: &str| {
+        entries.lines().any(|line| {
+            let normalized = line.trim().replace('\\', "/").to_ascii_lowercase();
+            normalized.ends_with(&format!("/{}", name.to_ascii_lowercase()))
+        })
+    };
+    let shell_present = has("winpeshl.ini");
+    let recovery_present = has("Recovery.exe");
+    if !shell_present {
+        let _ = std::fs::remove_file(&listing);
+        return Ok((None, recovery_present));
+    }
+
+    let extract_args = vec![
+        "extract".to_string(),
+        image.display().to_string(),
+        "1".to_string(),
+        format!("{SYSTEM32}/winpeshl.ini"),
+        format!("--dest-dir={}", work_dir.display()),
+    ];
+    let outcome = crate::windows_command::run_program(
+        &exe.to_string_lossy(),
+        &extract_args,
+        Some(&listing),
+        PROBE_TIMEOUT_MS,
+    );
+    crate::append_log(
+        log,
+        &format!("PE shell probe: wimlib extract exit={outcome}"),
+    )?;
+    if !outcome.is_success() {
+        let tail = crate::text_parsing::tail_text(&listing, 2048);
+        return Err(crate::err(&format!(
+            "wimlib extract failed while reading winpeshl.ini: {outcome}; {tail}"
+        )));
+    }
+    // 先找拍平后的路径，再找保留目录层级的路径（见上面的坑 1）。
+    let candidates = [
+        work_dir.join("winpeshl.ini"),
+        work_dir.join("Windows").join("System32").join("winpeshl.ini"),
+    ];
+    let shell = candidates
+        .iter()
+        .find(|path| path.is_file())
+        .map(|path| {
+            std::fs::read(path)
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                .unwrap_or_default()
+        });
+    Ok((shell, recovery_present))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

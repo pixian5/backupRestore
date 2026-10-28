@@ -103,6 +103,9 @@ const MB_YESNOCANCEL: u32 = 0x00000003;
 const MB_ICONWARNING: u32 = 0x00000030;
 const MB_ICONINFORMATION: u32 = 0x00000040;
 const MB_ICONQUESTION: u32 = 0x00000020;
+/// 默认按钮放在第二个（「否」）。用于「发现镜像有问题」这类警告：让人看见，
+/// 但别让一个回车就把坏镜像装上去。
+const MB_DEFBUTTON2: u32 = 0x00000100;
 /// 让消息框在最前台（恢复环境没有外壳帮它抢焦点；待续跑询问框也需要）。
 const MB_SETFOREGROUND: u32 = 0x00010000;
 const IDYES: i32 = 6;
@@ -4026,6 +4029,126 @@ fn split_pe_dir_path(raw: &str) -> Option<(char, String)> {
 
 /// RAM disk 模式：把 boot.wim 复制到 `{卷}:\{目录}`（不占独立分区），
 /// bootmgr 通过 {ramdiskoptions} + boot.sdi 从内存启动。
+/// 装 PE 之前先看一眼**这个镜像自己带的启动配置**对不对——**只警告，不拦**
+/// （2026-10-29 用户拍板：`只警告，允许继续装`）。
+///
+/// 背景（实机踩过）：产品装 PE 是纯铺设器——格式化 + `dism /Apply-Image` + 建
+/// BCD 项，**一个字节都不改镜像里的文件**。而「PE 启动后自动弹出恢复桌面」靠的是
+/// 镜像自带的 `Windows\System32\winpeshl.ini`。若那份配置指向不存在的程序，装完
+/// 重启就是「黑一下又回 Windows」，19 秒一轮无限循环，而且**从外面看不出原因**
+/// （要进 PE 分区数日志条数才判得出）。机器一秒能查的事，不该让人查几小时。
+///
+/// 返回 `true` = 继续安装，`false` = 用户选择先不装。
+///
+/// ★ 探测本身失败（缺 wimlib、镜像正被占用、wimlib 报错）**一律不拦**：这是附加
+/// 保护，不是安装的前置条件；把它做成硬门禁会让「装 PE」在缺 wimlib 的机器上
+/// 整体不可用，而那种机器本来也能正常装 PE。
+unsafe fn confirm_pe_image_shell(state: &State, image_path: &str) -> bool {
+    let language = selected_language(state);
+    let work_dir = state.executable_dir.join("_pe-shell-check");
+    let log = crate::log_root::logs_dir().join("pe-shell-check.log");
+    let probe = crate::wimlib_apply::probe_pe_image_shell(
+        &state.executable_dir,
+        Path::new(image_path),
+        &work_dir,
+        &log,
+    );
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let (shell, recovery_exe_present) = match probe {
+        Ok(facts) => facts,
+        Err(error) => {
+            append_gui_log(
+                state,
+                &format!("PE image shell check skipped (probe failed): {error}"),
+            );
+            return true;
+        }
+    };
+    let Some(problem) = crate::text_parsing::judge_pe_shell(&crate::text_parsing::PeShellFacts {
+        shell: shell.as_deref(),
+        recovery_exe_present,
+    }) else {
+        append_gui_log(state, "PE image shell check passed");
+        return true;
+    };
+    append_gui_log(
+        state,
+        &format!(
+            "PE image shell check: {} (image={image_path} log={})",
+            problem.describe(),
+            log.display()
+        ),
+    );
+    let detail = match &problem {
+        crate::text_parsing::PeShellProblem::Missing => {
+            if language == Language::English {
+                "The image has no Windows\\System32\\winpeshl.ini, so WinPE would stop at a bare command prompt."
+                    .to_string()
+            } else {
+                "镜像里没有 Windows\\System32\\winpeshl.ini 这个文件，PE 启动后只会停在一个黑命令行窗口。"
+                    .to_string()
+            }
+        }
+        crate::text_parsing::PeShellProblem::Mismatch { bytes, actual } => {
+            if language == Language::English {
+                format!(
+                    "That file is {bytes} bytes and is not the expected shell (expected 61 bytes: one line, Recovery.exe,--pe-desktop). It reads: {actual}"
+                )
+            } else {
+                format!(
+                    "这个文件是 {bytes} 字节，内容不是产品期望的那一份（期望 61 字节、只有一行 Recovery.exe,--pe-desktop）。它的实际内容是：{actual}"
+                )
+            }
+        }
+        crate::text_parsing::PeShellProblem::RecoveryExeMissing => {
+            if language == Language::English {
+                "The shell file is correct, but the Recovery.exe it points at is not inside this image."
+                    .to_string()
+            } else {
+                "启动配置写对了，但它指向的 Recovery.exe 不在这个镜像里。".to_string()
+            }
+        }
+    };
+    if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
+        append_gui_log(
+            state,
+            "test hook: PE image shell warning auto-continued",
+        );
+        return true;
+    }
+    let message = if language == Language::English {
+        format!(
+            "This PE image's startup configuration is not what the product expects.\n\n{detail}\n\nInstalling it anyway will most likely give you a screen that flashes black and returns to Windows, over and over, every ~19 seconds. The product does not modify the image, so the install itself would still succeed.\n\nContinue installing anyway?"
+        )
+    } else {
+        format!(
+            "这个 PE 镜像的启动配置不对。\n\n{detail}\n\n照这样装下去，重启选 PE 之后大概率会「黑一下又回到 Windows」，而且反复循环（约 19 秒一轮）。安装动作本身会成功——产品只是把镜像原样铺到分区，不改里面的任何文件。\n\n仍然继续安装吗？"
+        )
+    };
+    let answer = show_message(
+        state.root,
+        &message,
+        if language == Language::English {
+            "PE image self-check"
+        } else {
+            "PE 镜像自检"
+        },
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+    );
+    if answer != IDYES {
+        append_gui_log(
+            state,
+            "GUI action cancelled: PE image shell warning declined by user",
+        );
+        return false;
+    }
+    append_gui_log(
+        state,
+        "PE image shell warning acknowledged; continuing by user choice",
+    );
+    true
+}
+
 unsafe fn install_pe_ramdisk(state: &State) {
     let language = selected_language(state);
     let image_path = get_text(state.controls.image).trim().to_string();
@@ -4127,6 +4250,11 @@ unsafe fn install_pe_ramdisk(state: &State) {
             },
             MB_OK | MB_ICONERROR,
         );
+        return;
+    }
+    // 装之前先看镜像自带的启动配置（只警告，不拦）。放在破坏性确认**之前**：
+    // 能改主意的时候给信息，比格式化完再讲有用。
+    if !confirm_pe_image_shell(state, &image_path) {
         return;
     }
     // Destructive-ish confirmation: overwrites <target>:\<dir>\sources\boot.wim
@@ -4621,6 +4749,10 @@ unsafe fn install_pe_harddisk(state: &State) {
             typed
         }
     };
+    // 装之前先看镜像自带的启动配置（只警告，不拦）。放在格式化确认之前。
+    if !confirm_pe_image_shell(state, &image_path) {
+        return;
+    }
     // 破坏性确认：目标分区将被格式化 + 写入 PE 系统
     let answer = if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
         append_gui_log(state, "test hook: hard disk confirmation auto-accepted");
@@ -7981,6 +8113,10 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
         return;
     }
     let mut found_bcd = false;
+    // 现场认不出 Windows 条目时，若 default 不是 PE 条目，仍可以照着现状重启
+    // （bootmgr 会回落到 displayorder 第一项）。与 `found_bcd` 分开记，免得
+    // 「改成功了」和「没改但能安全重启」两种结局混成一个布尔。
+    let mut reboot_without_target = false;
     loop {
         let length = volume.iter().position(|&unit| unit == 0).unwrap_or(0);
         let volume_path = String::from_utf16_lossy(&volume[..length]);
@@ -8046,21 +8182,46 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                     if GetFileAttributesW(wide(&bcd_path).as_ptr()) != u32::MAX {
                         diag.push("BCD file found".to_string());
                         esp_volume_path = Some(volume_path.clone());
-                        // Read the Windows entry GUID written to the ESP at
-                        // deploy time (`bcdedit /enum {current} /v`). `{current}`
-                        // cannot be used here: inside PE it resolves to the PE
-                        // entry, which does not exist in the store we edit.
-                        let mut win_guid: Option<String> = None;
-                        let guid_path = format!("{letter_char}:\\pe-exit-guid.txt");
-                        if let Ok(text) = std::fs::read_to_string(&guid_path) {
-                            let candidate = text.trim().to_string();
-                            if !candidate.is_empty() {
-                                win_guid = Some(candidate);
-                                diag.push(format!("deploy GUID: {}", win_guid.as_ref().unwrap()));
-                            }
+                        // **现查**「真正的 Windows 启动项」，不再信赖 ESP 上那个
+                        // `pe-exit-guid.txt`。
+                        //
+                        // 2026-10-29 实测的教训：那个文件是部署/测试时一次性写下的，
+                        // **之后没有任何机制刷新它**（本机停在 2026-09-26 09:21），
+                        // 于是 `default` 被写成一条早已删除的悬空 GUID；机器还能进
+                        // Windows，全靠 bootmgr 回落到 `displayorder` 第一项——是运气。
+                        //
+                        // `{current}` 在这里不能用：PE 里它解析成 PE 条目本身，而不是
+                        // 我们要回去的那个 Windows。所以枚举全部条目，按
+                        // 「非 winpe + path 是 winload.efi + 该盘符上文件真的存在」
+                        // 认出候选，多条时按启动菜单顺序取第一条。
+                        let enum_all_file =
+                            std::env::temp_dir().join("backuprestore-exit-enum-all.txt");
+                        let enum_all_code = run_cmd_to_file(
+                            &format!("bcdedit.exe /store \"{bcd_path}\" /enum all /v"),
+                            Some(&enum_all_file),
+                        );
+                        let enum_all_text = std::fs::read(&enum_all_file)
+                            .map(|bytes| decode_console_bytes(&bytes))
+                            .unwrap_or_default();
+                        diag.push(format!("enum all exit code: {enum_all_code}"));
+                        let win_guid = crate::text_parsing::pick_windows_loader(
+                            &enum_all_text,
+                            |letter| {
+                                let probe = format!("{letter}:\\Windows\\System32\\winload.efi");
+                                GetFileAttributesW(wide(&probe).as_ptr()) != u32::MAX
+                            },
+                        );
+                        for entry in crate::text_parsing::bcd_loader_entries(&enum_all_text) {
+                            diag.push(format!(
+                                "enum candidate: {} winpe={} device={:?} path={}",
+                                entry.identifier, entry.is_winpe, entry.device_partition, entry.loader_path
+                            ));
                         }
-                        if win_guid.is_none() {
-                            diag.push("no pe-exit-guid.txt on ESP".to_string());
+                        match &win_guid {
+                            Some(guid) => diag.push(format!("live Windows loader: {guid}")),
+                            None => {
+                                diag.push("no Windows loader identified by live query".to_string())
+                            }
                         }
                         if let Some(guid) = win_guid {
                             // Split the operations so a harmless
@@ -8101,6 +8262,47 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                             } else {
                                 diag.push("BCD restore verification failed".to_string());
                             }
+                        } else {
+                            // 认不出 Windows 条目时**绝不编一个 GUID 写进去**——那正是
+                            // 上一版把 default 写成悬空值的原因。但也不能什么都不做：
+                            // 若当前 default 指着一个 PE 条目（进 PE 就是靠它），直接
+                            // 重启会又回 PE。所以分两种：
+                            //   ① default 是 PE 条目 → 不重启，留在 PE 并弹诊断，让人自己
+                            //      从启动菜单选 Windows（此时菜单里 Windows 一定在）；
+                            //   ② default 不是 PE 条目 → 清掉 bootsequence 后照常重启，
+                            //      行为与现状（bootmgr 回落 displayorder 第一项）一致。
+                            let delete_command = format!(
+                                "bcdedit.exe /store \"{bcd_path}\" /deletevalue {{bootmgr}} bootsequence"
+                            );
+                            let delete_code = run_cmd_to_file(&delete_command, None);
+                            diag.push(format!(
+                                "no target identified: delete bootsequence exit code: {delete_code}"
+                            ));
+                            let default_is_pe =
+                                crate::text_parsing::bcd_boot_manager_default(&enum_all_text)
+                                    .is_some_and(|default| {
+                                        crate::text_parsing::bcd_loader_entries(&enum_all_text)
+                                            .iter()
+                                            .any(|entry| {
+                                                entry.is_winpe
+                                                    && entry
+                                                        .identifier
+                                                        .eq_ignore_ascii_case(&default)
+                                            })
+                                    });
+                            if default_is_pe {
+                                diag.push(
+                                    "default still points at a PE entry: staying in PE instead of \
+                                     rebooting back into it"
+                                        .to_string(),
+                                );
+                            } else {
+                                diag.push(
+                                    "default is not a PE entry: rebooting without changing default"
+                                        .to_string(),
+                                );
+                                reboot_without_target = true;
+                            }
                         }
                     } else {
                         diag.push("BCD file NOT found at mount point".to_string());
@@ -8114,7 +8316,7 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
                     }
                     let mut unmount = [letter, ':' as u16, '\\' as u16, 0];
                     DeleteVolumeMountPointW(unmount.as_mut_ptr());
-                    if found_bcd {
+                    if found_bcd || reboot_without_target {
                         break;
                     }
                 } else {
@@ -8130,8 +8332,10 @@ unsafe fn exit_pe_to_windows(hwnd: Hwnd) {
     // Post-unmount best effort: volume path still works after unmount, plus
     // Q: and X: (PE RAM disk).
     let _ = write_pe_exit_log(&diag, esp_volume_path.as_deref());
-    if found_bcd {
-        diag.push("exit sequence done, rebooting".to_string());
+    if found_bcd || reboot_without_target {
+        diag.push(format!(
+            "exit sequence done, rebooting (default restored={found_bcd}, reboot without target={reboot_without_target})"
+        ));
         let _ = write_pe_exit_log(&diag, esp_volume_path.as_deref());
         pe_reboot(hwnd);
     } else {

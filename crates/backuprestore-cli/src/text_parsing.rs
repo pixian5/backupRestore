@@ -479,6 +479,268 @@ pub(crate) fn bcd_output_has_bootsequence(text: &str) -> bool {
     })
 }
 
+// ---------------------------------------------------------------------------
+// 第一件：PE 镜像自带的启动配置（`Windows\System32\winpeshl.ini`）比对
+// ---------------------------------------------------------------------------
+
+/// 产品期望的 PE 启动配置：唯一一行启动项，指向我们自己的恢复桌面。
+///
+/// ★ 这是**两处权威之一**：另一处是生成镜像的脚本
+/// `poc/build-backuprestore-pe.ps1` 里的 `$expectedPeShell`。改壳模板必须同时改
+/// 这两处，否则会出现「产品拒绝自己刚生成的新镜像」的自锁。
+pub(crate) const EXPECTED_PE_SHELL: &str = concat!(
+    "[LaunchApps]\n",
+    "%SYSTEMROOT%\\System32\\Recovery.exe,--pe-desktop\n"
+);
+
+/// 去掉 BOM、统一换行、去掉尾部空白。只做这些——判据是「逐字等于」，
+/// 不能顺手做「每行 trim」之类会掩盖差异的加工。
+pub(crate) fn normalize_shell_text(text: &str) -> String {
+    text.trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .trim_end()
+        .to_owned()
+}
+
+/// 从镜像里读到的启动配置有什么问题。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PeShellProblem {
+    /// 镜像里根本没有这个文件：WinPE 会退到自带的 `startnet.cmd`，停在命令行。
+    Missing,
+    /// 内容不是产品期望的那一份。
+    Mismatch { bytes: usize, actual: String },
+    /// 配置写对了，但它指向的 `Recovery.exe` 不在镜像里（半成品镜像）。
+    RecoveryExeMissing,
+}
+
+impl PeShellProblem {
+    /// 一行英文说明，直接进 GUI 日志（日志历史上都是英文，不混中文）。
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            PeShellProblem::Missing => {
+                "PE image has no Windows/System32/winpeshl.ini: WinPE would fall back to \
+                 startnet.cmd and stop at a command prompt"
+                    .to_string()
+            }
+            PeShellProblem::Mismatch { bytes, actual } => format!(
+                "PE image winpeshl.ini is not the expected shell ({bytes} bytes): {actual}"
+            ),
+            PeShellProblem::RecoveryExeMissing => {
+                "PE image winpeshl.ini points at Recovery.exe but that file is not in the image"
+                    .to_string()
+            }
+        }
+    }
+}
+
+/// 判定所需的两个事实，由调用方去镜像里取（取法是平台相关的，不能放这里）。
+pub(crate) struct PeShellFacts<'a> {
+    /// 读到的 shell 原文；`None` = 镜像里没有这个文件。
+    pub shell: Option<&'a str>,
+    /// 镜像里是否存在 `Windows/System32/Recovery.exe`。
+    pub recovery_exe_present: bool,
+}
+
+/// 三条判据全过 → `None`；否则返回**第一条**命中的问题（按严重程度排序）。
+///
+/// ★ 为什么必须「逐字等于」而不是「包含 `Recovery.exe`」：见
+/// `docs/20261029-0014-PE安装前输入WIM壳契约校验方案`. 简单地说是——真正要表达的
+/// 不变量是「WinPE 启动后唯一在前台跑的程序必须是我们自己的」，而任何子串类判据
+/// 都表达不了它（并列第二个入口、或「至少有一个入口能起来」都会照样放过坏件）。
+pub(crate) fn judge_pe_shell(facts: &PeShellFacts<'_>) -> Option<PeShellProblem> {
+    let Some(shell) = facts.shell else {
+        return Some(PeShellProblem::Missing);
+    };
+    let normalized = normalize_shell_text(shell);
+    if normalized != normalize_shell_text(EXPECTED_PE_SHELL) {
+        return Some(PeShellProblem::Mismatch {
+            bytes: shell.len(),
+            actual: truncate_chars(&normalized.replace('\n', " | "), 160),
+        });
+    }
+    if !facts.recovery_exe_present {
+        return Some(PeShellProblem::RecoveryExeMissing);
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// 第三件：从 `bcdedit /enum all /v` 的输出里认出「真正的 Windows 启动项」
+// ---------------------------------------------------------------------------
+
+/// `/enum all /v` 里的一条系统加载器摘要。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BcdLoader {
+    pub identifier: String,
+    /// `device partition=X:` 里的盘符；不是分区设备（ramdisk/unknown…）时为 `None`。
+    pub device_partition: Option<char>,
+    pub loader_path: String,
+    /// 条目里出现 `winpe` 字段即视为 PE 条目。
+    ///
+    /// 判据取「字段存在」而不是「值等于 Yes」是有意的**安全偏向**：值读错最多让
+    /// 候选集变空（于是我们不动 `default`），而把 PE 条目误认成 Windows 会直接
+    /// 把机器送回 PE——两种错的代价差一个数量级。
+    pub is_winpe: bool,
+}
+
+fn braced_token(line: &str) -> Option<&str> {
+    let start = line.find('{')?;
+    let end = line[start..].find('}')? + start + 1;
+    Some(&line[start..end])
+}
+
+fn identifier_of(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("identifier") || trimmed.starts_with("标识符") {
+        braced_token(trimmed)
+    } else {
+        None
+    }
+}
+
+fn partition_letter(line: &str) -> Option<char> {
+    const KEY: &str = "partition=";
+    let lower = line.to_ascii_lowercase();
+    let start = lower.find(KEY)? + KEY.len();
+    let mut chars = line.get(start..)?.chars();
+    let letter = chars.next()?;
+    (letter.is_ascii_alphabetic() && chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
+}
+
+/// 把 `/enum all /v` 拆成一条条加载器摘要。空行是段分隔符。
+pub(crate) fn bcd_loader_entries(text: &str) -> Vec<BcdLoader> {
+    let normalized = text.replace("\r\n", "\n");
+    let mut loaders = Vec::new();
+    for block in normalized.split("\n\n") {
+        let mut identifier = None;
+        let mut device_partition = None;
+        let mut loader_path = String::new();
+        let mut is_winpe = false;
+        for line in block.lines() {
+            if let Some(found) = identifier_of(line) {
+                identifier = Some(found.to_owned());
+                continue;
+            }
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("device") {
+                device_partition = partition_letter(trimmed);
+            } else if lower.starts_with("path") {
+                loader_path = trimmed
+                    .split_whitespace()
+                    .skip(1)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+            } else if lower.starts_with("winpe") {
+                is_winpe = true;
+            }
+        }
+        if let Some(identifier) = identifier {
+            loaders.push(BcdLoader {
+                identifier,
+                device_partition,
+                loader_path,
+                is_winpe,
+            });
+        }
+    }
+    loaders
+}
+
+/// `{bootmgr}` 的 `displayorder`（启动菜单顺序，**可能是多行**）。
+///
+/// 只认 Windows Boot Manager 那一段：`/enum all` 里的固件启动管理器也有一个
+/// `displayorder`，混进来的话会把固件项排进候选顺序。
+pub(crate) fn bcd_display_order(text: &str) -> Vec<String> {
+    const WINDOWS_BOOT_MANAGER: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
+    let normalized = text.replace("\r\n", "\n");
+    for block in normalized.split("\n\n") {
+        let is_boot_manager = block.lines().any(|line| {
+            identifier_of(line).is_some_and(|found| found.eq_ignore_ascii_case(WINDOWS_BOOT_MANAGER))
+        });
+        if !is_boot_manager {
+            continue;
+        }
+        let mut order = Vec::new();
+        let mut reading = false;
+        for line in block.lines() {
+            let trimmed = line.trim();
+            let key = trimmed.split_whitespace().next().unwrap_or("");
+            if key.eq_ignore_ascii_case("displayorder") || key == "显示顺序" {
+                reading = true;
+            } else if !trimmed.starts_with('{') {
+                // `toolsdisplayorder` 等后续字段必须隔离，否则会被当成菜单项。
+                reading = false;
+            }
+            if reading {
+                if let Some(token) = braced_token(trimmed) {
+                    order.push(token.to_ascii_lowercase());
+                }
+            }
+        }
+        return order;
+    }
+    Vec::new()
+}
+
+/// `{bootmgr}` 的 `default`（可能不存在，也可能指向一个已经删掉的条目）。
+///
+/// 只在 Windows Boot Manager 那一段里找，否则会把某个加载器自己段里的
+/// `默认` 之类的行误当默认项。
+pub(crate) fn bcd_boot_manager_default(text: &str) -> Option<String> {
+    const WINDOWS_BOOT_MANAGER: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
+    let normalized = text.replace("\r\n", "\n");
+    for block in normalized.split("\n\n") {
+        let is_boot_manager = block.lines().any(|line| {
+            identifier_of(line).is_some_and(|found| found.eq_ignore_ascii_case(WINDOWS_BOOT_MANAGER))
+        });
+        if !is_boot_manager {
+            continue;
+        }
+        for line in block.lines() {
+            let trimmed = line.trim();
+            let key = trimmed.split_whitespace().next().unwrap_or("");
+            if key.eq_ignore_ascii_case("default") || key == "默认" {
+                return braced_token(trimmed).map(|token| token.to_ascii_lowercase());
+            }
+        }
+    }
+    None
+}
+
+/// 认出「真正的 Windows 启动项」：非 PE、`path` 是 `winload.efi`、`device` 是
+/// 分区盘符、且该盘符上真的存在这个加载器文件（`loader_exists` 由调用方用
+/// `GetFileAttributesW` 之类去查——盘符是 **PE 视角**的，只有 PE 自己能判）。
+///
+/// 多条候选时按启动菜单顺序取第一条。认不出来就返回 `None`，调用方**不许**
+/// 自己编一个 GUID 写进去（那正是上一版把 `default` 写成悬空值的原因）。
+pub(crate) fn pick_windows_loader(
+    text: &str,
+    loader_exists: impl Fn(char) -> bool,
+) -> Option<String> {
+    let order = bcd_display_order(text);
+    let mut candidates: Vec<BcdLoader> = bcd_loader_entries(text)
+        .into_iter()
+        .filter(|loader| !loader.is_winpe)
+        .filter(|loader| {
+            loader
+                .loader_path
+                .to_ascii_lowercase()
+                .contains("winload.efi")
+        })
+        .filter(|loader| loader.device_partition.is_some_and(&loader_exists))
+        .collect();
+    candidates.sort_by_key(|loader| {
+        order
+            .iter()
+            .position(|item| item.eq_ignore_ascii_case(&loader.identifier))
+            .unwrap_or(usize::MAX)
+    });
+    candidates.into_iter().next().map(|loader| loader.identifier)
+}
+
+
 /// Keep only the value rows of a `reg query "<key>"` listing.
 ///
 /// Without `/v`, `reg` prints the key's values and then **every subkey path**.
@@ -2929,5 +3191,186 @@ mod multibyte_safety {
         // 恰好等于上限：不加省略号
         assert_eq!(truncate_chars("abcd", 4), "abcd");
         assert_eq!(truncate_chars("", 4), "");
+    }
+}
+
+/// PE 镜像启动配置的比对，以及「从 BCD 输出里认出真正的 Windows 启动项」。
+///
+/// 这两组逻辑都必须留在这里（而不是 `native_gui.rs`）：后者只在 Windows 上编译，
+/// 放进去就等于在开发机上零覆盖——而这两处恰恰都是「判据错了会静默放行/把机器
+/// 送回 PE」的地方，属于绝不能靠肉眼保证的一类。
+#[cfg(test)]
+mod pe_shell_and_loader {
+    use super::*;
+
+    /// 与真机 `T:\Windows\System32\winpeshl.ini` 一致的那 61 字节。
+    const CORRECT_SHELL: &str =
+        "[LaunchApps]\n%SYSTEMROOT%\\System32\\Recovery.exe,--pe-desktop\n";
+
+    /// 2026-09-13 那份旧镜像里的 89 字节坏件（第一入口真能启动、第二入口文件不存在）。
+    const OLD_BROKEN_SHELL: &str = "[LaunchApps]\n%SYSTEMROOT%\\System32\\RecoveryLauncher.cmd\n%SYSTEMROOT%\\System32\\recenv.exe\n";
+
+    #[test]
+    fn expected_shell_constant_is_the_61_byte_correct_piece() {
+        assert_eq!(EXPECTED_PE_SHELL, CORRECT_SHELL);
+        assert_eq!(EXPECTED_PE_SHELL.len(), 61);
+        assert_eq!(OLD_BROKEN_SHELL.len(), 89);
+    }
+
+    #[test]
+    fn correct_shell_with_recovery_exe_passes() {
+        assert_eq!(
+            judge_pe_shell(&PeShellFacts {
+                shell: Some(CORRECT_SHELL),
+                recovery_exe_present: true,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn crlf_bom_and_trailing_spaces_still_pass() {
+        let windows_style = format!("\u{feff}{}", CORRECT_SHELL.replace('\n', "\r\n"));
+        assert_eq!(
+            judge_pe_shell(&PeShellFacts {
+                shell: Some(&windows_style),
+                recovery_exe_present: true,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn old_two_entry_shell_is_rejected_and_reports_real_size() {
+        let problem = judge_pe_shell(&PeShellFacts {
+            shell: Some(OLD_BROKEN_SHELL),
+            recovery_exe_present: true,
+        })
+        .expect("89-byte shell must not pass");
+        match problem {
+            PeShellProblem::Mismatch { bytes, .. } => assert_eq!(bytes, 89),
+            other => panic!("expected Mismatch, got {other:?}"),
+        }
+    }
+
+    /// 宽松判据的生死线：只要不是逐字等于就必须红，哪怕它「看起来对」。
+    #[test]
+    fn shell_with_an_extra_second_entry_is_rejected() {
+        let extra = "[LaunchApps]\n%SYSTEMROOT%\\System32\\Recovery.exe,--pe-desktop\n%SYSTEMROOT%\\System32\\cmd.exe\n";
+        assert!(matches!(
+            judge_pe_shell(&PeShellFacts {
+                shell: Some(extra),
+                recovery_exe_present: true,
+            }),
+            Some(PeShellProblem::Mismatch { .. })
+        ));
+    }
+
+    /// 参数写错（少了 `--pe-desktop`）同样必须红：那样 Recovery.exe 会以普通模式起来。
+    #[test]
+    fn shell_without_the_desktop_argument_is_rejected() {
+        let no_flag = "[LaunchApps]\n%SYSTEMROOT%\\System32\\Recovery.exe\n";
+        assert!(matches!(
+            judge_pe_shell(&PeShellFacts {
+                shell: Some(no_flag),
+                recovery_exe_present: true,
+            }),
+            Some(PeShellProblem::Mismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn missing_shell_and_missing_recovery_exe_are_distinct() {
+        assert_eq!(
+            judge_pe_shell(&PeShellFacts {
+                shell: None,
+                recovery_exe_present: true,
+            }),
+            Some(PeShellProblem::Missing)
+        );
+        assert_eq!(
+            judge_pe_shell(&PeShellFacts {
+                shell: Some(CORRECT_SHELL),
+                recovery_exe_present: false,
+            }),
+            Some(PeShellProblem::RecoveryExeMissing)
+        );
+    }
+
+    /// 真机 `bcdedit /enum all /v` 的节选（2026-10-29 抓取，中文标签）：
+    /// 我们的 PE 项 `winpe Yes`，真实 Windows 项没有 `winpe` 字段。
+    const MACHINE_ENUM: &str = "Windows 启动管理器\n--------------------\n标识符                  {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault                 {a6273652-d15f-11f1-aa4b-ff70ff0b7794}\ndisplayorder            {a6273652-d15f-11f1-aa4b-ff70ff0b7794}\n                        {831787dd-d2e1-11f1-89db-f371a71018a0}\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\ntimeout                 10\n\nWindows 启动加载器\n-------------------\n标识符                  {831787dd-d2e1-11f1-89db-f371a71018a0}\ndevice                  partition=T:\npath                    \\Windows\\system32\\winload.efi\ndescription             BR-PE-DISK\nosdevice                partition=T:\nsystemroot              \\Windows\nnx                      OptIn\ndetecthal               Yes\nwinpe                   Yes\n\nWindows 启动加载器\n-------------------\n标识符                  {a6273652-d15f-11f1-aa4b-ff70ff0b7794}\ndevice                  partition=C:\npath                    \\Windows\\system32\\winload.efi\ndescription             本次还原的 Windows\nosdevice                partition=C:\nsystemroot              \\Windows\nnx                      OptIn\n";
+
+    #[test]
+    fn display_order_is_read_across_continuation_lines_and_stops_at_toolsdisplayorder() {
+        assert_eq!(
+            bcd_display_order(MACHINE_ENUM),
+            vec![
+                "{a6273652-d15f-11f1-aa4b-ff70ff0b7794}".to_string(),
+                "{831787dd-d2e1-11f1-89db-f371a71018a0}".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn boot_manager_default_is_read_and_kept_lowercase() {
+        assert_eq!(
+            bcd_boot_manager_default(MACHINE_ENUM).as_deref(),
+            Some("{a6273652-d15f-11f1-aa4b-ff70ff0b7794}")
+        );
+        assert_eq!(bcd_boot_manager_default("Windows Boot Loader\nidentifier {1}"), None);
+    }
+
+    #[test]
+    fn windows_loader_is_picked_and_the_pe_entry_is_skipped() {
+        let picked = pick_windows_loader(MACHINE_ENUM, |letter| letter == 'C' || letter == 'T');
+        assert_eq!(
+            picked.as_deref(),
+            Some("{a6273652-d15f-11f1-aa4b-ff70ff0b7794}")
+        );
+    }
+
+    /// 最危险的错法：把 PE 条目当成 Windows 写进 default → 重启又回 PE。
+    #[test]
+    fn pe_only_store_yields_nothing_instead_of_the_pe_entry() {
+        let pe_only = MACHINE_ENUM
+            .split("\n\n")
+            .filter(|block| !block.contains("{a6273652"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        assert_eq!(pick_windows_loader(&pe_only, |_| true), None);
+    }
+
+    /// 盘符在 PE 里可能不指同一个卷：加载器文件不存在就不能当选。
+    #[test]
+    fn candidate_needs_the_loader_file_to_exist_on_that_letter() {
+        assert_eq!(pick_windows_loader(MACHINE_ENUM, |letter| letter == 'T'), None);
+    }
+
+    /// 多候选时按启动菜单顺序取第一条（而不是输出里的顺序）。
+    #[test]
+    fn display_order_decides_between_two_candidates() {
+        let two_windows = "Windows 启动管理器\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {11111111-1111-1111-1111-111111111111}\ndisplayorder {22222222-2222-2222-2222-222222222222}\n             {11111111-1111-1111-1111-111111111111}\n\nWindows Boot Loader\nidentifier {11111111-1111-1111-1111-111111111111}\ndevice partition=C:\npath \\Windows\\system32\\winload.efi\n\nWindows Boot Loader\nidentifier {22222222-2222-2222-2222-222222222222}\ndevice partition=D:\npath \\Windows\\system32\\winload.efi\n";
+        assert_eq!(
+            pick_windows_loader(two_windows, |_| true).as_deref(),
+            Some("{22222222-2222-2222-2222-222222222222}")
+        );
+    }
+
+    /// 英文标签同样要认（同一台机器换了系统语言就不能瞎）。
+    #[test]
+    fn english_labels_and_ramdisk_entries_are_handled() {
+        let english = "Windows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {aaaaaaaa-1111-1111-1111-111111111111}\ndisplayorder {aaaaaaaa-1111-1111-1111-111111111111}\n\nWindows Boot Loader\nidentifier {aaaaaaaa-1111-1111-1111-111111111111}\ndevice partition=C:\npath \\Windows\\system32\\winload.efi\n\nWindows Boot Loader\nidentifier {bbbbbbbb-1111-1111-1111-111111111111}\ndevice ramdisk=[C:]\\Recovery\\WindowsRE\\Winre.wim,{cccccccc-1111-1111-1111-111111111111}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n";
+        assert_eq!(
+            pick_windows_loader(english, |_| true).as_deref(),
+            Some("{aaaaaaaa-1111-1111-1111-111111111111}")
+        );
+    }
+
+    /// ramdisk 条目（恢复环境的典型形态）没有 `partition=X:`，不能被当成候选。
+    #[test]
+    fn ramdisk_entries_are_not_candidates() {
+        let ramdisk_only = "Windows Boot Loader\nidentifier {bbbbbbbb-1111-1111-1111-111111111111}\ndevice ramdisk=[C:]\\Recovery\\WindowsRE\\Winre.wim,{cccccccc-1111-1111-1111-111111111111}\npath \\windows\\system32\\winload.efi\n";
+        assert_eq!(pick_windows_loader(ramdisk_only, |_| true), None);
     }
 }
