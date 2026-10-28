@@ -252,6 +252,18 @@ pub(crate) fn execute(request: &Request) -> Result<String, TaskError> {
     let dir = parent.join(format!(".br-pe-{}", request.id));
     fs::create_dir(&dir)?;
     backuprestore_core::write_json_atomic(dir.join("request.json"), request)?;
+    // 【2026-10-29 用户要求】这个界面（PE 里的进度窗）也要把 cmd 放到后台：
+    // 恢复环境链（`recover_env_interactive`）一直有「最大化 + 在后台」的控制台，
+    // 但 PE 链此前从不打开它 —— 用户从产品里选「进入 PE」后，除了进度窗没有任何
+    // 命令行出口，和恢复环境的行为不一致。放在进度窗 spawn 之前，好让它先被压到
+    // z 序最底层，进度窗随后 `claim_foreground` 把前台抢回来。
+    // 幂等：`launch_background_console` 内部只生效一次，重复调用不会开第二个窗。
+    if let Err(error) = crate::launch_background_console() {
+        let _ = crate::append_log(
+            &dir.join("operation.log"),
+            &format!("background console could not be started ({error}); continuing without it"),
+        );
+    }
     let progress = ProgressGuard(crate::recovery_progress::spawn(
         dir.join("operation.log"),
         Some(&request.operation),

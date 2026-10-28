@@ -1959,6 +1959,14 @@ fn recover_env_interactive(path: String) -> Result<(), TaskError> {
 /// `recovery_progress::run_window`）——那里才是用户按 B 键的地方。
 #[cfg(windows)]
 pub(crate) fn launch_background_console() -> Result<(), TaskError> {
+    // 【2026-10-29】本函数改成**幂等**：恢复环境链与 PE 链现在都会调用它
+    // （用户要求「PE 里的进度窗也要把 cmd 放到后台」）。若两条链在同一个进程里
+    // 先后走到，旧行为会开出第二个 cmd 窗口——用户看到的是两层黑窗，且
+    // 「压到底层」的只有后开的那一个。这里一次生效、后续调用直接返回成功。
+    static SPAWNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if SPAWNED.get().is_some() {
+        return Ok(());
+    }
     #[repr(C)]
     struct StartupInfoW {
         cb: u32,
@@ -2081,6 +2089,8 @@ pub(crate) fn launch_background_console() -> Result<(), TaskError> {
             return Err(errc(ErrCode::ConsoleWindowTimeout));
         }
     }
+    // 只有真正把窗口摆好了才记「已开过」，失败路径仍允许下一次重试。
+    let _ = SPAWNED.set(());
     Ok(())
 }
 

@@ -875,23 +875,17 @@ fn refresh_log_window(shared: &ProgressShared) {
 
 /// 布局：四边留白。
 const MARGIN: i32 = 32;
-/// 按钮宽度。
+/// 按钮宽度（2026-10-29 起按钮独占底部一行，不再与日志尾部抢宽度）。
 ///
-/// 【2026-10-18 用户要求「尺寸调小一些」】原为 120，有两个连带缺陷：
-/// ① 默认窗宽（860）下 `tail_width` 只有 ~136px，代码用 `max(200)` 夹紧后
-///    与按钮坐标的预算不一致，第五个按钮（BCD 回退）右缘冲出客户区；
-///    ② 日志尾部被五个 120 宽的按钮挤到只剩 136px，3 行日志几乎没法看。
-/// 取 108：`5*BUTTON_WIDTH + 5*GAP + TAIL_MIN_WIDTH + 2*MARGIN ≈ 824`，
-/// 默认客户宽（≈852）下五个按钮恰好排满内容区，尾部仍留有 188px。
+/// 沿革：原为 120；2026-10-18 用户要求「尺寸调小一些」改为 108 —— 当时按钮与
+/// 日志尾部挤在同一行，5×120+间距把尾部压到几乎看不见。
+/// 2026-10-29 用户要求「底部按钮单独一行」后，宽度不再受尾部牵制，保持 108：
+/// 五个按钮整行 5×108+4×12 = 588px，默认客户宽（≈844）下右对齐绰绰有余。
 const BUTTON_WIDTH: i32 = 108;
-/// 按钮高度：独立于日志尾部行高。原与 3 行日志等高（94px）又高又大；
-/// 现在 32px，在日志尾部所在行内垂直居中。
+/// 按钮高度：独立于日志行高，固定 32px；底部按钮行按它算 y 坐标。
 const BUTTON_HEIGHT: i32 = 32;
 /// 控件间距。
 const GAP: i32 = 12;
-/// 日志尾部最小宽度：内容区不够时先保按钮整行，尾部最多让到这。
-const TAIL_MIN_WIDTH: i32 = 120;
-
 /// 按当前客户区尺寸重排全部控件。
 ///
 /// 必须有这个函数，最大化/拖拽改变大小才真正可用：控件原先是硬编码坐标，
@@ -909,92 +903,107 @@ unsafe fn layout_controls(hwnd: Hwnd) {
         return; // 最小化或尺寸异常时不动布局
     }
     let content = width - 2 * MARGIN;
-    // 顶部：阶段标题占左侧 55%，时间信息靠右占其余宽度。
-    let stage_width = (content * 55 / 100).max(240);
-    let time_width = content - stage_width - GAP;
-    // 日志尾部固定 3 行：按详情字体行高 26px 估算，加上边框留白。
-    let tail_height = 26 * TAIL_LINES as i32 + 16;
-    let bar_top = 92;
-    let detail_top = 144;
-    let tail_top = height - MARGIN - tail_height;
-    let detail_height = (tail_top - GAP - detail_top).max(80);
-    // 按钮排现有五个（详细日志/引导修复/命令提示符/暂停/BCD 回退），
-    // 日志尾部让出五份宽度（含尾部与第一个按钮之间的那份）。
+    // 顶部：阶段标题占左侧 62%，时间信息靠右占其余宽度。
     //
-    // 【2026-10-18 缺陷修复】tail_width 只算一次、所有 MoveWindow 复用同一个
-    // 值：此前绘制尾部时用 `max(200)` 夹紧、按钮坐标却用未夹紧的预算值，
-    // 两者不一致会把最后一个按钮推出客户区之外（默认窗宽即复现）。
-    let tail_width = (content - 5 * BUTTON_WIDTH - 5 * GAP).max(TAIL_MIN_WIDTH);
-    // 按钮在日志尾部行内垂直居中；空间被极端压缩时 x 夹紧在内容区内，
-    // 允许互相重叠也不允许冲出窗外（默认尺寸下不会触发，纯兜底）。
-    let button_y = tail_top + (tail_height - BUTTON_HEIGHT) / 2;
-    let clamp_x = |x: i32| x.clamp(MARGIN, (MARGIN + content - BUTTON_WIDTH).max(MARGIN));
+    // 【2026-10-29 用户反馈「标题被进度条压住、第二行看不全」】阶段正文在 30px
+    // 粗体下经常折成两行（例如「2/4 捕获镜像（候选副本，无固定超时）」），原来
+    // 只给 48px（一行半）高度，第二行直接被进度条盖住。现在标题区抬到 76px
+    // （两行 + 余量），进度条整体下移，两者不再重叠。
+    let stage_width = (content * 62 / 100).max(240);
+    let time_width = content - stage_width - GAP;
+    let stage_top = 24;
+    let stage_height = 76;
+    let bar_top = stage_top + stage_height + 8;
+    let bar_height = 28;
+    let steps_top = bar_top + bar_height + 10;
+    // 底部按钮独占一行（用户 2026-10-29 要求）：此前按钮与「日志尾部」挤在同一行，
+    // 五个按钮吃掉 5×108+5×12=600px，日志尾部只剩 180px、3 行几乎看不清。
+    // 现在按钮整行贴底，日志尾部吃满整个内容宽。
+    let buttons_top = height - MARGIN - BUTTON_HEIGHT;
+    // 中间「4 个进度步骤」列表（ID_DETAIL）：用户要求「高度减小一些，给日志大一点空间」。
+    // 固定 5 行文本高度，并且最多占「步骤 + 日志」可用高度的一半 —— 窗口拉高时
+    // 多出来的空间全部给日志。
+    let steps_budget = (buttons_top - GAP - steps_top).max(120);
+    let steps_height = (26 * 5 + 16).min((steps_budget / 2).max(80));
+    let tail_top = steps_top + steps_height + GAP;
+    let tail_height = (buttons_top - GAP - tail_top).max(60);
+    // 按钮单行右对齐：不写死 x，窗宽变化时整行跟着右缘走。
+    const BUTTON_COUNT: i32 = 5;
+    let row_width = BUTTON_COUNT * BUTTON_WIDTH + (BUTTON_COUNT - 1) * GAP;
+    let row_x = (MARGIN + content - row_width).max(MARGIN);
+    let button_x = |index: i32| row_x + index * (BUTTON_WIDTH + GAP);
     unsafe {
-        MoveWindow(GetDlgItem(hwnd, ID_STAGE), MARGIN, 28, stage_width, 48, 1);
+        MoveWindow(
+            GetDlgItem(hwnd, ID_STAGE),
+            MARGIN,
+            stage_top,
+            stage_width,
+            stage_height,
+            1,
+        );
         MoveWindow(
             GetDlgItem(hwnd, ID_TIME_INFO),
             MARGIN + stage_width + GAP,
-            28,
+            stage_top,
             time_width.max(160),
-            48,
+            stage_height,
             1,
         );
-        MoveWindow(GetDlgItem(hwnd, ID_BAR), MARGIN, bar_top, content, 36, 1);
+        MoveWindow(GetDlgItem(hwnd, ID_BAR), MARGIN, bar_top, content, bar_height, 1);
         MoveWindow(
             GetDlgItem(hwnd, ID_DETAIL),
             MARGIN,
-            detail_top,
+            steps_top,
             content,
-            detail_height,
+            steps_height,
             1,
         );
+        // 日志尾部吃满内容宽（按钮已挪到独立一行）。
         MoveWindow(
             GetDlgItem(hwnd, ID_TAIL),
             MARGIN,
             tail_top,
-            tail_width,
+            content,
             tail_height,
             1,
         );
-        // 按钮与日志尾部同一行、贴在其右侧（用户指定位置）。
+        // 底部按钮行：详细日志 / 引导修复 / 命令提示符 / 暂停 / BCD 回退。
         MoveWindow(
             GetDlgItem(hwnd, ID_LOG_BUTTON),
-            clamp_x(MARGIN + tail_width + GAP),
-            button_y,
+            button_x(0),
+            buttons_top,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
             1,
         );
-        // 引导修复按钮与详细日志按钮并排，避免挤压日志尾部。
         MoveWindow(
             GetDlgItem(hwnd, ID_BOOT_MENU),
-            clamp_x(MARGIN + tail_width + GAP + BUTTON_WIDTH + GAP),
-            button_y,
+            button_x(1),
+            buttons_top,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
             1,
         );
-        // 命令提示符按钮排在按钮行第三位，暂停按钮第四位。
         MoveWindow(
             GetDlgItem(hwnd, ID_CMD_BUTTON),
-            clamp_x(MARGIN + tail_width + GAP + 2 * (BUTTON_WIDTH + GAP)),
-            button_y,
+            button_x(2),
+            buttons_top,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
             1,
         );
         MoveWindow(
             GetDlgItem(hwnd, ID_PAUSE_BUTTON),
-            clamp_x(MARGIN + tail_width + GAP + 3 * (BUTTON_WIDTH + GAP)),
-            button_y,
+            button_x(3),
+            buttons_top,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
             1,
         );
         MoveWindow(
             GetDlgItem(hwnd, ID_BCD_ROLLBACK_BUTTON),
-            clamp_x(MARGIN + tail_width + GAP + 4 * (BUTTON_WIDTH + GAP)),
-            button_y,
+            button_x(4),
+            buttons_top,
             BUTTON_WIDTH,
             BUTTON_HEIGHT,
             1,
