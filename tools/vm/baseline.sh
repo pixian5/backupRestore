@@ -113,6 +113,24 @@ count_subdirs() { # $1=路径
 
 hex_to_dec() { printf '%d' "$1" 2>/dev/null || true; }
 
+# 一个路径是否存在：输出 YES / NO / __ERROR__。
+# ★ 两个分支都会打印东西（YES/NO），所以「空输出」只可能是命令没跑 → 无歧义。
+#   对比 `dir` 那种「空目录时合法为空」的查询，这里不需要哨兵。
+path_exists() { # $1=路径
+    local text
+    text=$(vm_read "if exist $1 (echo YES) else (echo NO)")
+    if [ -z "$text" ]; then
+        printf '%s' "__ERROR__"
+        return
+    fi
+    text=$(printf '%s\n' "$text" | tr -d '\r' | sed 's/[[:space:]]*$//')
+    case "$text" in
+        *YES*) printf '%s' "YES" ;;
+        *NO*)  printf '%s' "NO" ;;
+        *)     printf '%s' "__ERROR__" ;;
+    esac
+}
+
 # ---------- 清单 ----------
 # 每项：id|kind|参数…
 #   reg       : <键>|<值名>|<期望十进制>   可修复（ensure 写回）
@@ -126,6 +144,15 @@ ITEMS=(
     # ④⑤ 两条验收用例的夹具根：tasks/ 下**只能有一个**已完成任务
     "fixture_boot_fault|dir_exact|H:\\br-accept\\tasks|1"
     "fixture_menu_repair|dir_exact|H:\\br-accept2\\tasks|1"
+    # ⑥ `S:` 必须真的能按这个盘符摸到**引导存储**
+    #    项目里大量脚本硬编码 `S:\`（`bcdedit /store S:\EFI\Microsoft\Boot\BCD`、
+    #    冒烟脚本、PE 交接……）。一旦 S: 被别的卷占了或 ESP 换了盘符，
+    #    `bcdedit` 会把**不相干卷上的文件**当成引导存储来改——症状是「引导被改坏了
+    #    但看起来一切正常」，比弹窗难查得多。
+    #    ★ 判据选「BCD 文件在不在」，而不是「分区类型是不是 ESP」：前者才是脚本真正
+    #      需要的东西，后者只是它的代理；而且 `if exist` 用 cmd 就能问，避开在
+    #      prlctl 里跑 PowerShell 的引号/编码坑。
+    "esp_bcd_on_s|must_exist|S:\\EFI\\Microsoft\\Boot\\BCD"
 )
 
 check_item() { # $1=id $2=kind，其余为参数；返回 0/1/2
@@ -160,6 +187,22 @@ check_item() { # $1=id $2=kind，其余为参数；返回 0/1/2
         if [ "$got" != "$want" ]; then
             # 不可自动修复：清别人的任务目录属于破坏性动作，只报告、交给人决定。
             echo "ITEM=$id status=fail want=$want got=$got remanual=1"
+            return 1
+        fi
+        echo "ITEM=$id status=pass"
+        return 0
+    fi
+    if [ "$kind" = "must_exist" ]; then
+        local path=$1 got
+        got=$(path_exists "$path")
+        if [ "$got" = "__ERROR__" ]; then
+            echo "ITEM=$id status=error reason=path_unreadable path=$path"
+            return 2
+        fi
+        if [ "$got" != "YES" ]; then
+            # 不可自动修复：把 ESP 重新挂到 S: 属于改机器挂载状态的动作，
+            # 该由人来判断（而且产品侧走的是带租约的挂载入口，不该在这儿另开一条路）。
+            echo "ITEM=$id status=fail want=present got=ABSENT path=$path remanual=1"
             return 1
         fi
         echo "ITEM=$id status=pass"
@@ -212,12 +255,12 @@ if [ "$MODE" = "ensure" ]; then
         echo "BASELINE=repaired（复核通过）"
         exit 0
     fi
-    echo "BASELINE=repair_failed（注册表已尝试写回；剩余项见上，目录类需人工处理）"
+    echo "BASELINE=repair_failed（注册表已尝试写回；剩余项见上，标了 remanual=1 的需人工）"
     exit 1
 fi
 
 if [ "$rc" = "1" ]; then
-    echo "BASELINE=fail（注册表类可修：tools/vm/baseline.sh ensure；目录类需人工）"
+    echo "BASELINE=fail（注册表类可修：tools/vm/baseline.sh ensure；标了 remanual=1 的项需人工）"
     exit 1
 fi
 echo "BASELINE=error reason=instrument"

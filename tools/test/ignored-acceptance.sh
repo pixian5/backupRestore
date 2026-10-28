@@ -128,7 +128,7 @@ if [ "${1:-}" = "--only" ]; then ONLY="${2:-}"; fi
 #   而该值不存在时 Windows 默认就是开）。它们只存在于当前这台 VM 的注册表里——
 #   重建/换机就会丢，弹窗必然复发（用户已经报过两次）。
 #   ★ 这里只**检查**，不静默修改机器状态：改环境要显式敲 `tools/vm/baseline.sh ensure`。
-say "STEP 0/5 检查测试 VM 环境基线（防弹窗 3 项 + 验收夹具根 2 项）"
+say "STEP 0/5 检查测试 VM 环境基线（防弹窗 3 项 + 验收夹具根 2 项 + ESP 盘符 1 项）"
 bl_out=$(tools/vm/baseline.sh check 2>&1); bl_rc=$?
 printf '%s\n' "$bl_out" | sed 's/^/  /'
 case "$bl_rc" in
