@@ -1,6 +1,9 @@
 # BackupRestore User Guide (English)
 
-> **Applies to: v2.6.69 (2026-10-27).** This is a **living document** (like `ERROR-CODES.md`, an
+> **This guide ships with the program; read the version from the window title or the
+> [`VERSION`](../VERSION) file at the repository root — it is deliberately not pinned here**
+> (it would go stale: this line once said v2.6.69 while the actual build was 2.6.77).
+> This is a **living document** (like `ERROR-CODES.md`, an
 > intentionally named evergreen file). It describes end-user visible behaviour; development and
 > acceptance details live in the dated files under `docs/`, and the error-code lookup lives in
 > [`ERROR-CODES.md`](./ERROR-CODES.md).
@@ -32,8 +35,11 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 1. **Run as administrator.** The program self-checks; without elevation it cannot read volume
    identities and therefore cannot create a task.
-2. **Start from `H:\brwork\BackupRestore.exe`.** All five deployed files live in `H:\brwork`
-   (`BackupRestore.exe`, `Recovery.exe`, `winpe-winpeshl.ini`, `wimlib-imagex.exe`, `libwim-15.dll`).
+2. **Start from `H:\brwork\BackupRestore.exe`.** The four files required at runtime are
+   `BackupRestore.exe`, `Recovery.exe`, `wimlib-imagex.exe` and `libwim-15.dll`. The same directory
+   also holds `BackupRestore.settings.ini` (created after you save settings) and
+   `winpe-winpeshl.ini` (copied by the deploy script; the program never reads it at runtime, so a
+   missing copy does not affect operation).
    Task records and logs also live under `H:\brwork` — **do not copy just the exe elsewhere and run
    it**, that gives you a different task view.
 3. Keep the image (.wim) on a volume that is **not** the backup source or the restore target.
@@ -163,6 +169,26 @@ window** (since v2.6.66):
 > Broken record directories (missing/unparsable `task.json`/`status.json`, or two `taskId`s that
 > disagree) are still listed, marked "broken record" with the directory path — one bad directory
 > never blocks the whole list.
+
+### 3.8 Pre-install image check (Install PE)
+
+Before touching any disk, the program takes a **read-only** look at the `.wim` you selected:
+
+- does it contain `Windows\System32\winpeshl.ini` (which program the PE runs at startup);
+- is it **byte-for-byte** the expected 61-byte file (one line, `Recovery.exe,--pe-desktop`);
+- does the `Recovery.exe` it points at actually exist inside the image.
+
+If any check fails, a warning appears **before formatting or writing**, with **「No」 as the default button**:
+
+- **No**: abort the install; nothing is changed;
+- **Yes**: continue anyway — the check is a guard rail, **not a substitute for your judgement**.
+
+If the probe itself cannot run (missing `wimlib-imagex.exe`, image locked by another process), the
+install proceeds: an extra safeguard must not become a prerequisite. The result goes to
+`H:\brwork\logs\pe-shell-check.log`; `check passed` means OK.
+
+Why this matters: if that file points at a program that does not exist, the PE has no foreground
+process and **reboots itself roughly every 19 seconds** — looking like "a black flash and back to Windows".
 
 ---
 

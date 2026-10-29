@@ -1,6 +1,8 @@
 # BackupRestore 用户手册
 
-> **适用版本：v2.6.69（2026-10-27）**。本手册是**活文档**（与 `ERROR-CODES.md` 同属命名例外的常青文件），
+> **本手册随程序发布；具体版本读程序窗口标题或仓库根的 [`VERSION`](../VERSION) 文件，不在文中写死**
+> （它必然过期——本行曾写「适用版本 v2.6.69」，而 2026-10-29 实际已是 2.6.77）。
+> 本手册是**活文档**（与 `ERROR-CODES.md` 同属命名例外的常青文件），
 > 描述最终用户可见的行为；开发/验收细节见 `docs/` 下各轮文档，报障对照见 [`ERROR-CODES.md`](./ERROR-CODES.md)。
 > 行为与源码不一致时**以程序实际行为为准**，并请把差异反馈给维护者。
 
@@ -27,8 +29,9 @@ Legacy BIOS（MBR）、自动修改 BitLocker。MBR 磁盘上的第二系统盘�
 ## 2. 运行前提
 
 1. **必须以管理员身份运行**。程序会自检；非管理员启动会因读不到卷身份而无法创建任务。
-2. **从 `H:\brwork\BackupRestore.exe` 启动**（部署五件套都在 `H:\brwork`：`BackupRestore.exe`、
-   `Recovery.exe`、`winpe-winpeshl.ini`、`wimlib-imagex.exe`、`libwim-15.dll`）。
+2. **从 `H:\brwork\BackupRestore.exe` 启动**（运行必需的是四件：`BackupRestore.exe`、`Recovery.exe`、
+   `wimlib-imagex.exe`、`libwim-15.dll`；同目录还会有 `BackupRestore.settings.ini`（保存过设置才生成）
+   和 `winpe-winpeshl.ini`（部署脚本会放，程序运行不读它，**缺失不影响运行**））。
    任务记录、日志也都在 `H:\brwork` 下——**不要只把 exe 拷到别处单独运行**，那会换一套任务视角。
 3. 镜像（.wim）保存到一个**不是**被备份/还原目标的卷上。
 
@@ -126,6 +129,26 @@ BackupRestore.exe prepare --operation probe --source-drive C --no-reboot
 
 > 记录损坏的目录（`task.json`/`status.json` 缺失、解析失败、两份 `taskId` 不一致）也会列出来，
 > 标注「记录损坏」并给出目录路径——一个坏目录不会让整个列表打不开。
+
+### 3.8 安装 PE 前的镜像自检
+
+点「安装 PE」时，程序会先**只读**地看一眼你给的 `.wim` 镜像（不改镜像、不动硬盘）：
+
+- 镜像里有没有 `Windows\System32\winpeshl.ini`（PE 启动后运行哪个程序，由它决定）；
+- 内容是否**逐字等于**产品期望的那份（61 字节、只有一行 `Recovery.exe,--pe-desktop`）；
+- 它指向的 `Recovery.exe` 是否真的在镜像里。
+
+三条有任何一条不过，会在**格式化/写盘之前**弹一个警告框，**默认按钮是「否」**：
+
+- 点「否」：中止安装，什么都不改；
+- 点「是」：仍然继续装——这是保护提示，**不替代你的判断**。
+
+探测本身失败（缺 `wimlib-imagex.exe`、镜像被别的程序占用）**一律放行**：附加保护不该变成安装的前置条件。
+结果写在 `H:\brwork\logs\pe-shell-check.log`：`check passed` 是通过；其余关键字会写明是
+「缺文件 / 内容不符 / 程序不在镜像里」。
+
+为什么要这么严：这个文件如果指向不存在的程序，PE 启动后没有前台进程，会**每 19 秒左右自己重启一次**，
+看起来像「黑一下又回 Windows」。
 
 ---
 

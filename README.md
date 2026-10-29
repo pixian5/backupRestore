@@ -69,17 +69,19 @@ Legacy BIOS、自动修改 BitLocker。
 
 ## 二、代码结构
 
-产品代码 **全部是 Rust**，两个 crate，约 1.66 万行。依赖只有 `serde` / `chrono` / `serde_json` /
+产品代码 **全部是 Rust**，两个 crate。依赖只有 `serde` / `chrono` / `serde_json` /
 `sha2` / `thiserror` / `uuid` —— **没有任何 .NET/dotnet/C# 运行时依赖**。
+**具体行数不写在这里**（它必然过期：本段曾写「约 1.66 万行」，2026-10-29 核对时生产代码已约 3.2 万行）；
+要数量就 `wc -l`。
 
 ```
 crates/
 ├── backuprestore-core/     库：任务模型、载荷契约、元数据、SHA-256、错误类型
 └── backuprestore-cli/      可执行：原生 GUI + 准备 + WinRE 恢复环境
-    ├── native_gui.rs       原生 Win32 GUI（8325 行）
-    ├── main.rs             入口与任务分发（3080 行）
-    ├── windows_prepare.rs  正常 Windows 侧准备：校验/注入载荷/设置一次性 WinRE 启动（2136 行）
-    ├── text_parsing.rs     命令行输出（DISM/bcdedit/mountvol）本地化解析（1015 行）
+    ├── native_gui.rs       原生 Win32 GUI（最大单文件，未拆完）
+    ├── main.rs             入口与任务分发、恢复环境主链
+    ├── windows_prepare.rs  正常 Windows 侧准备：校验/注入载荷/设置一次性 WinRE 启动
+    ├── text_parsing.rs     命令行输出（DISM/bcdedit/mountvol）本地化解析（纯逻辑，macOS 可单测）
     ├── online_operation.rs 在线候选镜像事务、回读及副档同步
     ├── windows_command.rs  作业对象约束的命令与进程树管理
     ├── recovery_progress.rs WinRE/在线进度上报
@@ -123,7 +125,7 @@ PowerShell / .NET 只出现在**测试脚手架**（`tools/win-clicker/`）和�
 
 | 目标 | 定位 | 文件 |
 |---|---|---|
-| **唯一部署位 `H:\brwork\`** | 所有启动入口都从这里起；任务存储随之落在 `H:\brwork\tasks` | `BackupRestore.exe` + `Recovery.exe` + `winpe-winpeshl.ini` + `wimlib-imagex.exe` + `libwim-15.dll` |
+| **唯一部署位 `H:\brwork\`** | 所有启动入口都从这里起；任务存储随之落在 `H:\brwork\tasks` | **运行必需四件**：`BackupRestore.exe` + `Recovery.exe` + `wimlib-imagex.exe` + `libwim-15.dll`。另有两件非运行必需：`BackupRestore.settings.ini`（首次保存设置时生成）与 `winpe-winpeshl.ini`（部署脚本会拷，程序只在备份排除表里列它，**缺失不影响运行**） |
 
 > ⚠️ **不再往 C: 部署 exe**（2026-10-24 用户裁定）：历史部署位
 > `C:\Users\Public\backupRestore-package` 停止写入，`build-win.sh --deploy` 与
@@ -164,8 +166,9 @@ cargo test --manifest-path X:\Cargo.toml -p backuprestore-cli
 git config core.hooksPath tools/git-hooks   # 一次性安装（per-clone）
 ```
 
-安装后每次 `git push` 自动跑 6 步：`cargo test --workspace`、core clippy `-D warnings`、
-错误码清单同步、`./build-win.sh` 交叉编译、Windows **测试**目标编译、文档链接入库检查。
+安装后每次 `git push` 自动跑 **7 步**（步骤以 `tools/git-hooks/pre-push` 头注释为准）：
+`cargo test --workspace`、core clippy `-D warnings`、错误码清单同步、`./build-win.sh` 交叉编译、
+Windows **测试**目标编译、文档链接入库检查、**源码静态守卫**（挂盘符必须带租约）。
 失败即拒绝 push；`git push --no-verify` 可强行跳过。发布级门禁（构建+部署+冒烟）是
 `tools/smoke/deploy-and-smoke.sh`，按需手动跑。
 
