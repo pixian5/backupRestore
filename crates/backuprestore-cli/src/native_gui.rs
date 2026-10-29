@@ -1003,16 +1003,27 @@ fn wide(value: &str) -> Vec<u16> {
 /// 溢出、按钮互压（2026-10-30 实测：顶栏按钮与入口按钮重叠）。布局缩放是下一
 /// 步；在那之前先把字体钉在 96dpi 基准上，保证 100% 与 200% 下布局一致。
 unsafe fn gui_font() -> Handle {
-    let face = wide("SimSun");
-    // ★ 2.6.79：字号改为随 DPI 缩放（200% 下 12→24）。之前钉死 12 是为了防止
-    //   200% 下文字溢出压住按钮，代价是界面整体偏小；现在布局坐标同步缩放，
-    //   字号与坐标比例不变，既不会压住按钮、也不会小得看不清。
+    // ★ 2.6.80：宋体（SimSun）→ 微软雅黑（Microsoft YaHei）。
+    //   原因：用户反馈「字体看着不是特别清楚」。宋体是点阵/旧式字体，在 14px 下
+    //   笔画发虚，而且**没有真正的粗体字形**——把它请求成 700 字重时视觉上几乎没变化
+    //   （实测加粗前后模型判断均为「笔画较细」）。雅黑是矢量字体、自带 Bold，
+    //   同样字号下更清晰饱满。字符集仍按 GB2312（134），与原来一致。
+    let face = wide("Microsoft YaHei");
+    // ★ 2.6.79：字号改为随 DPI 缩放（200% 下 14→28）。
+    // ★ 2.6.80：基准从 12 提到 14（约 10.5pt）。12px 宋体在中文界面下确实偏小
+    //   （用户 2026-10-30 反馈「仍然有点小」）。★ **改基准字号必须同步改下面
+    //   那几个按「行距 × 行数」算出来的高度**（`details_height` / `status_height`
+    //   与 ID_SOURCE_DETAILS / ID_TARGET_DETAILS / ID_STATUS 的创建高度），
+    //   否则多行文本的最后一行会被切成半截（2026-10-26 踩过，见 `details_height` 注释）。
+    // ★ 2.6.80：字重 400 → 700（粗体）。用户反馈「字体看着不是特别清楚」。
+    //   注意：宋体本身没有真正的粗体字形，Windows 会对笔画做合成加粗，
+    //   若加粗后反而发糊，下一步应改为换字体族（微软雅黑）而不是继续加粗。
     CreateFontW(
-        -crate::dpi::s(12),
+        -crate::dpi::s(14),
         0,
         0,
         0,
-        400,
+        700,
         0,
         0,
         0,
@@ -1461,13 +1472,15 @@ unsafe fn layout_operation(state: &State) {
     let field_x = 180;
     let field_width = (client_width - field_x - 24).max(700);
     // ★ 高度按「**最坏行数 × 行距**」算，不能按某一页的行数算。
-    // 行距 = SimSun 9pt 的 tmHeight 12 + tmExternalLeading 2 = **14 px**（2026-10-26 实测：
-    // 按 tmHeight 12 算会得出「9 行只要 108 px、装得下」，而屏幕上最后一行被切成半截）。
+    // ★ 2.6.80：基准字号 12→14，行距随之 **14 px → 17 px**（tmHeight 14 + tmExternalLeading 3）。
+    //   原行距 = SimSun 9pt 的 tmHeight 12 + tmExternalLeading 2 = 14 px（2026-10-26 实测：
+    //   按 tmHeight 12 算会得出「9 行只要 108 px、装得下」，而屏幕上最后一行被切成半截）。
     // 最坏情况 = 「还原数据到非 C 盘」页的目标卷详情 **10 行**（该页设备详情有一行
     // 954 px > 可用 950 px，软换行多出一行）→ 需 140 px；EM_GETRECT 实测文本区比控件
     // 高少 4 px（上下边框各 2）→ 148 留 8 px 余量。其余页 9 行（=126 px）都在其内。
     // ★ 往 `drive_details` 加字段就要同步这里，否则又是一次「最后一行看不到」。
-    let details_height = 148;
+    // 2.6.80：10 行 × 17 px = 170，加 EM_GETRECT 少 4 px 与余量 → 178。
+    let details_height = 178;
     let row_gap = 8;
     // 行可见性：源卷行仅「备份」显示（A/B/C 隐藏——C 源恒为当前系统盘，
     // v2.6.13 起从 C 页移除），通道单选行仅 B/C 显示。隐藏的行不占位，
@@ -1687,12 +1700,12 @@ unsafe fn layout_operation(state: &State) {
         let format_row_y = if channel_visible { format_y } else { channel_y };
         reposition(format_hwnd, field_x, format_row_y, 460, 22);
     }
-    // ★ 同样按「最坏行数 × 行距 14 px」，并且**以实测可用高度反推**：
-    // 提示文案最长 9 行（restore 页）→ 126 px；实测该控件 EM_GETRECT 的文本区
-    // 比控件高度少 14 px（148 → availH 134），故 148 之后余量 8 px。
+    // ★ 同样按「最坏行数 × 行距」算，并且**以实测可用高度反推**：
+    // 2.6.80：行距 17 px，提示文案最长 9 行（restore 页）→ 153 px；实测该控件
+    // EM_GETRECT 的文本区比控件高度少 14 px（178 → availH 164），故 178 之后余量 11 px。
     // 更长的内容（PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。
     // 此前 64 px 只够 4.2 行，第 5 行被切成半截。
-    let status_height = 148;
+    let status_height = 178;
     reposition(state.controls.status, 20, status_y, client_width - 40, status_height);
 
     // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
@@ -1814,12 +1827,13 @@ unsafe fn layout_operation(state: &State) {
             200,
             24,
         );
-        // 浏览按钮紧贴目录输入框右侧（输入框 380..580，按钮 586..646）
+        // 浏览按钮紧贴目录输入框右侧（输入框 380..580，按钮 586..666）
+        // ★ 2.6.80：按钮宽 60 → 80，给 14px 微软雅黑 Bold 的「浏览…」留出余量。
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32),
             field_x + 586,
             mode_y,
-            60,
+            80,
             24,
         );
         // 行3：「PE 启动项名称」（两种模式通用，始终显示）
@@ -1870,13 +1884,17 @@ unsafe fn layout_operation(state: &State) {
         );
     }
 
-    let image_width = (field_width - 90).max(400);
+    // ★ 2.6.80：基准字号 12→14 且改用微软雅黑 Bold 之后，浏览按钮的文字变宽，
+    //   原来「间距 10 + 按钮宽 80」在视觉上贴到输入框右端（用户反馈重叠）。
+    //   这里把间距加到 14、按钮宽加到 106，并相应缩短输入框，右缘仍与
+    //   `field_x + field_width` 对齐（10+80=90 与 14+106=120 的差额由输入框吸收）。
+    let image_width = (field_width - 120).max(370);
     reposition(state.controls.image, field_x, image_y, image_width, 24);
     reposition(
         GetDlgItem(state.root, ID_BROWSE_IMAGE as i32),
-        field_x + image_width + 10,
+        field_x + image_width + 14,
         image_y,
-        80,
+        106,
         24,
     );
     // 「单系统还原」与「新增第二系统」tab 的 WIM 索引与校验复选框布局：
@@ -7369,7 +7387,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 250,
                 800,
-                148,
+                178,
                 ID_SOURCE_DETAILS,
             ),
             target_details: create_control(
@@ -7380,7 +7398,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 360,
                 800,
-                148,
+                178,
                 ID_TARGET_DETAILS,
             ),
             verify_hash: create_control(
@@ -7402,7 +7420,7 @@ unsafe extern "system" fn window_proc(
                 20,
                 440,
                 960,
-                148,
+                178,
                 ID_STATUS,
             ),
         };
