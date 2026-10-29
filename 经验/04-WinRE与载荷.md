@@ -11,7 +11,10 @@
 - **静态 CRT 是硬要求**：恢复环境/预安装环境/精简 Windows 无 VCRUNTIME140/UCRT，动态 CRT 产物进程创建即被加载器终止，症状=**零输出、零副作用、无日志无弹窗**，退出码 `4294967418`=`0xC0000135`=STATUS_DLL_NOT_FOUND；三步判断法：看退出码→解析预安装环境导入表→加 `+crt-static` 重构建比对 —— 20260925-0207 [✅]
 - **`winpeshl.ini` 已实测四种形态，字节级钉死（2026-10-28/29）**：① **官方母本** `C:\Users\Public\winre-src\Winre.wim` = 整包 **709,810,082 B**、`winpeshl.ini` **53 B** `[LaunchApp]` + `AppPath=X:\sources\recovery\recenv.exe`（CRLF）；整包 SHA256 = **`0E09F47DC74F90AC65FE8412372A77B322831DA6E4D06BA087FF88DA1E792AC0`**，`F:\Users\Public\winre-src\Winre.wim` 有同哈希副本（`C:` 那份 2026-10-29 被误删后即由它恢复，见 `经验/02 §16`）；② **注册位 / 注入件** = **99 B** `[LaunchApps]` + `%SYSTEMROOT%\System32\Recovery.exe,recover-env …RecoveryTask.env`（**LF**，与 `EXPECTED_WINRE_SHELL` 逐字节相同）；③ **PE 镜像**（正确件）= `windows/winpe-winpeshl.ini` → `Recovery.exe,--pe-desktop`。★ 推论：**「注入件与注册位 winpeshl.ini 同哈希」是预期而不是异常**（注册位本身早就注入过），真正的「原版」是 53 B 那个；PE 的 shell 属于**镜像构建**职责（`poc/build-backuprestore-pe.ps1:77-81` 拷 `Recovery.exe`/`winpe-winpeshl.ini` 等五个文件并校验），**PE 安装链路是纯铺设器：格式化 + `dism /Apply-Image` + 建 BCD 项，一个文件都不往镜像里写**（`native_gui.rs install_pe_harddisk`）—— 所以「安装成功但里面起不来」只能说明输入 WIM 陈旧，产品侧唯一的合理加保险是**安装前校验 WIM 的 shell 契约** —— 20261028-2328 [✅]
 - ★★ **PE 镜像还有「第 4 种壳」= 89 B 旧式双入口（2026-10-29 实测，别再当成「三个形态」）**：内容为 `[LaunchApps]` + `%SYSTEMROOT%\System32\RecoveryLauncher.cmd` + `%SYSTEMROOT%\System32\recenv.exe`（LF，89 B）。第一行**能成功启动**（旧 POC 启动器，要 `RecoveryTask.env`，缺则 `exit /b 87`），第二行的 `recenv.exe` 在镜像里**根本不存在** → `0x80070002`；两份入口都退出后 WinPE 无前台进程 → **自重启**。★ 因此校验判据必须是「壳**逐字等于** 61 B 正确件」；**不能**用「至少有一个入口能启动」「含 `Recovery`」「含 `[LaunchApps]`」这类宽松判据——旧件**满足**前面几条（它的第一行真能起来）却照样 19 s 自重启。注意：`包含 Recovery.exe` 这一种**碰巧**能拒掉旧件（旧件不含该子串），但那是运气，别拿它当「宽松判据也行」的理由 —— 20261029-0020 [✅]
-- **判 PE 到底起没起，看 `T:\Windows\System32\winpeshl.log`，不要靠画面**：只有**一条** `[LaunchApps]: Launching … Recovery.exe --pe-desktop` + `Succeeded launching` = 驻留成功；**多条、相邻间隔约 19 秒** = 壳失败后自重启的死循环（旧件实测连跳 9 次）。同目录 `Recovery-launcher-early.log` 是旧 POC 启动器留下的，记 `RecoveryTask.env missing` —— 20261029-0020 [✅]
+- **判 PE 到底起没起，看 `T:\Windows\System32\winpeshl.log`，不要靠画面**（★ **前提：日志非空**；0 字节时
+  这条判据失效，见 §9 末尾）：只有**一条** `[LaunchApps]: Launching … Recovery.exe --pe-desktop` +
+  `Succeeded launching` = 驻留成功；**多条、相邻间隔约 19 秒** = 壳失败后自重启的死循环（旧件实测连跳 9 次）。
+  同目录 `Recovery-launcher-early.log` 是旧 POC 启动器留下的，记 `RecoveryTask.env missing` —— 20261029-0020 [✅]
 - **PE 硬盘版是「直接分区引导」，不用 ramdisk、也不用 `boot.sdi`**：BCD 九条里 `device`/`osdevice` 都是 `partition=T:`、`path \Windows\system32\winload.efi`，再加 `winpe yes` + `detecthal yes`。所以「重测 PE」只要一份新 `.wim`，不必出 ISO（构建加 `-SkipIso`）；反过来，「PE 起不来」与 `boot.sdi`/ramdisk 规格无关，别往那条路上查 —— 20261029-0020 [✅ 源码+实测]
 - ★★ **装 PE 前可以自动看一眼镜像的壳（v2.6.75，只警告不拦）**：`wimlib-imagex dir <wim> 1 --path=/Windows/System32` 判存在性 → `extract` 取 `winpeshl.ini`（★单文件会**拍平**到 `--dest-dir` 根下；不存在时退出码是 **49** 而不是 0/1）→ 三条判据（存在／**逐字等于** 61 B 正确件／`Recovery.exe` 在镜像里）。判据用「等于」不用「包含」，理由见 20261029-0014 §三。★ 探测失败（缺 wimlib／镜像被占用）**一律不拦**：附加保护不该变成安装的前置条件 —— 20261029-0120 [✅ 实机]
 - Windows servicing 会**静默替换注册 Winre.wim**（当天部署的载荷被累积更新冲掉为官方原版）→ 注册恢复环境不是可靠载荷宿主；这也是本项目载荷放任务自有启动配置数据条目的原因 —— 20260927-2015 [✅]
@@ -24,7 +27,12 @@
 - 注册位只能时间分片：`C:\Recovery\WindowsRE\Winre.wim` 同文件两互斥角色（载荷宿主 / 捕获纯净）；三条不变量 A 存活期必须注入件、B 捕获瞬间必须干净且**硬失败**、C 终态必须干净 —— 20261011-2350 [🔸 机理可信、单源]
 - reagentc 顺序约束（恢复环境内对离线目标）：`/disable` rc=50（预安装环境不支持）、对 Enabled 目标 `/setreimage` rc=183、`/enable` 没有 `/target` 只有 `/osguid` → **顺序只能「先 setreimage（Disabled 态）→ 后 enable」**；`/setreimage` 的 `/target` 必须是正在运行的操作系统的 Windows 目录；`/setreimage` 是**移动**不是复制 —— 20260927-2015 §9.5.2 [✅]
 - 预安装环境里 `reagentc /disable` rc=50「Windows 预安装环境中不支持此命令」——纯 WinPE 走 create-secondary 必须被**擦除前预检**拒绝（否则"目标卷已格式化+镜像已应用后才失败"）；预检双层：DISM 只读挂载探测（权威）不可用时降级镜像名启发式；**本机有 VHD 附加时 `DISM /Mount-Wim` 一律报 87** —— 20261013-1036/0815/0340 [✅]
-- `winre_registration` preflight 要求目标有 `reagentc.exe` + SYSTEM hive，缺则报「目标缺少离线注册组件」——**代价是失败发生在擦除应用之后**（优先级 5：应前移到擦除前预检，**至今未修**）—— 20261011-2140/1216 [✅ 源码仍在]
+- `winre_registration` preflight 要求目标有 `reagentc.exe` + SYSTEM hive，缺则报「目标缺少离线注册组件」。
+  ★ **旧记载「代价是失败发生在擦除应用之后（优先级 5 未修）」已作废（2026-10-29 订正）**：擦除**之前**准备阶段
+  就会调 `wim_full_windows_probe` → `wim_mount_markers` 挂载镜像做权威判定（查的正是 `reagentc.exe` +
+  `config\SYSTEM`），位置在 `windows_prepare.rs:2682`，早于格式化；`pe_operation.rs:499` 与
+  `online_operation.rs:616` 另有两处同款调用。缺件现在是**准备期硬拒**，不是「擦完才发现」。
+  完整结论见 `07` §3（该行写「已解决」）—— 20261011-2140/1216；订正 20261029 [✅ 源码]
 
 ## 3. 恢复环境内环境事实
 
@@ -37,7 +45,12 @@
 - 判"是不是新通道"的终态指纹：旧通道 `WinRE cleanup completed`，新通道 `Boot entry cleaned` / `new boot channel: BCD objects removed` / `staging directory \\?\Volume{…}\BackupRestoreRE removed and verified` —— 20260930-0030 [✅]
 - 探针纪律：`probe` 成功 ≠ 备份还原成功（只证明准备链+入口+清理）；Capture/Apply/格式化/BCDBoot/第二系统启动必须各自单独留证；`prepare --no-reboot` 不是无副作用预览（已建启动配置数据对象、已拷贝/挂载镜像，只是不 arm 不重启）—— 20260925-0025/20260930-1925 [✅]
 - 探针/错注入方法：`--test-efi-drive`（隔离 EFI 临时挂载）与 `--test-fault`（`identity-env-mismatch`/`bcdboot-failure`/`power-loss-*`）仅开发命令行暴露；`--test-fault none` 不被接受；持续型故障（acceptance:apply:error）在恢复环境内**无法解除**（无 Tools 写不了 fault-released）→ 改用 `error-once` —— 20260819-impl-notes/20261010-1910 [✅]
-- ⚠️ `.fault-<name>.triggered` 标记**按日志路径定位**而 `Recovery.log` 跨任务共享 → 同一故障一生只能触发一次，重测会静默不触发、差点被误判成"修好了"；**至今未修**，重测前手工删 —— 20260930-0320 [🔸 源码 main.rs 仍 log-path-based]
+- `.fault-<name>.triggered` 标记**按日志路径定位**而 `Recovery.log` 跨任务共享 → 同一故障一生只能触发一次，
+  重测会静默不触发、差点被误判成"修好了"。★ **已修 v2.6.74（2026-10-28），但不是靠挪标记位置**
+  （挪了会让「同一任务只触发一次」失效、重启后无限重放，更糟）：改成两道保险——
+  （a）被陈旧标记抑制时写一条**可 grep 的痕迹** `TEST_FAULT=<name> injection=suppressed_by_stale_marker`
+  （`main.rs:4502-4506`），不再静默；（b）门禁 STEP 2 跑前清夹具根下的标记并复扫，输出 `FAULT_MARKERS_CLEARED=n`。
+  ★ 重测时仍要手工删标记（夹具是固定 task id、复用目录），但现在「没触发」会留下证据 —— 20260930-0320；订正 20261028-1400 [✅ 源码]
 - 镜像时点状态会被还原：备份时 C: 的恢复环境注册本就 Disabled，还原后也 Disabled，新通道把注册镜像当只读资产来源 → prepare 直接失败；属固有代价不是代码缺陷 —— 20260930-0230 [✅]
 
 ## 4. 救援工具箱（虚拟机起不来/恢复环境卡死时）
@@ -132,7 +145,10 @@
 - **归位手法（PE 里没有 `prlctl exec`）**：`prlctl send-key-event --scancode 15`（Tab）×5 → 焦点落到
   第 5 张卡片「返回 Windows」（拍图确认虚线框）→ `--scancode 28`（Enter）。
 - **PE 里的日志落在 `T:\`**：`T:\exit-pe.log`（「返回 Windows」的现查过程全在里面）；
-  `T:\Windows\System32\winpeshl.log` 可能是 0 字节 —— **判「起没起」以截图为准，别拿这个 0 字节下结论**。
+  `T:\Windows\System32\winpeshl.log` **可能是 0 字节 —— 0 字节不能证明任何一方**（既不是「没起来」也不是
+  「起来了」），此时才退回截图判活。★ 与 §1「判 PE 起没起看日志」的分界：**有内容时日志是更强判据**
+  （条数 + 约 19 秒间隔是结构化特征，截图只能看当下这一帧）；**只有 0 字节时才用画面兜底**。
+  这条是「别把空输出当结论」的同一课 —— 2026-10-29 订正（原文只说「以截图为准」，与 §1 冲突）[✅ 实测]
 - **排查提示**：`exit-pe.log` 里第一块 FAT 卷会报 `BCD file NOT found`（那不是 ESP），
   第二块（`d08d796f…`）才找到 BCD —— 看到 `BCD file NOT found` 别急着当故障。
 - 取证图在 `.test-artifacts/secboot-pe/`（已 gitignore）：`01-after-reboot-50s.png` /
