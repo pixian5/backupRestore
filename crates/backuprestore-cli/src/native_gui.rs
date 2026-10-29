@@ -149,6 +149,9 @@ const ID_SETTINGS_DISM_TIMEOUT_EDIT: usize = 3108;
 const ID_SETTINGS_DISM_TIMEOUT_HINT: usize = 3109;
 /// `pause` 策略的最长等待秒数文本框。
 const ID_SETTINGS_PAUSE_WAIT_EDIT: usize = 3110;
+/// 界面字号下拉框与其说明（2.6.81 起用户可在设置里自选字号）。
+const ID_SETTINGS_FONT_SIZE_COMBO: usize = 3111;
+const ID_SETTINGS_FONT_SIZE_HINT: usize = 3112;
 /// 设置窗口的类名（`RegisterClassExW` 用）。
 const SETTINGS_WINDOW_CLASS: &str = "BackupRestoreSettingsWindow";
 /// 顶栏「备份文件管理…」按钮（P1-c：需求 §3 的「管理备份文件」入口）。
@@ -436,6 +439,9 @@ unsafe extern "system" {
     // 对话框式键盘导航：让普通窗口也能用 Tab 遍历焦点、方向键切换
     // 单选按钮、回车触发默认按钮、Esc 关闭、Alt+助记键。
     fn IsDialogMessageW(hwnd: Hwnd, message: *const Msg) -> i32;
+    // 2.6.81：用户在设置里改字号后，要遍历主窗口所有子控件重设字体。
+    // 回调返回 0 表示停止枚举，这里始终返回 1（继续）。
+    fn EnumChildWindows(hwnd: Hwnd, callback: EnumChildProc, l_param: LParam) -> i32;
     // 即时物理键盘状态：prlctl 宿主导入的修饰键（如 Ctrl）在消息队列里可能有
     // 时序延迟，GetKeyState 偶发读不到；GetAsyncKeyState 反映当前真实状态，更可靠。
     fn GetAsyncKeyState(key: i32) -> i16;
@@ -1019,7 +1025,8 @@ unsafe fn gui_font() -> Handle {
     //   注意：宋体本身没有真正的粗体字形，Windows 会对笔画做合成加粗，
     //   若加粗后反而发糊，下一步应改为换字体族（微软雅黑）而不是继续加粗。
     CreateFontW(
-        -crate::dpi::s(14),
+        // ★ 2.6.81：字号改为读「用户在设置里选的值」，不再写死。
+        -crate::dpi::s(crate::dpi::font_size() as i32),
         0,
         0,
         0,
@@ -1479,8 +1486,9 @@ unsafe fn layout_operation(state: &State) {
     // 954 px > 可用 950 px，软换行多出一行）→ 需 140 px；EM_GETRECT 实测文本区比控件
     // 高少 4 px（上下边框各 2）→ 148 留 8 px 余量。其余页 9 行（=126 px）都在其内。
     // ★ 往 `drive_details` 加字段就要同步这里，否则又是一次「最后一行看不到」。
-    // 2.6.80：10 行 × 17 px = 170，加 EM_GETRECT 少 4 px 与余量 → 178。
-    let details_height = 178;
+    // ★ 2.6.81：按**当前字号**算（最坏 10 行 + 8 余量），不再写死 178。
+    //   字号可在设置里改，行距随之变，这里必须跟着变，否则最后一行被切。
+    let details_height = crate::dpi::text_block_height(10, 8);
     let row_gap = 8;
     // 行可见性：源卷行仅「备份」显示（A/B/C 隐藏——C 源恒为当前系统盘，
     // v2.6.13 起从 C 页移除），通道单选行仅 B/C 显示。隐藏的行不占位，
@@ -1705,7 +1713,8 @@ unsafe fn layout_operation(state: &State) {
     // EM_GETRECT 的文本区比控件高度少 14 px（178 → availH 164），故 178 之后余量 11 px。
     // 更长的内容（PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。
     // 此前 64 px 只够 4.2 行，第 5 行被切成半截。
-    let status_height = 178;
+    // 9 行 + 25（文本区比控件高少 14px，另留 11px 余量）；同样随字号变化。
+    let status_height = crate::dpi::text_block_height(9, 25);
     reposition(state.controls.status, 20, status_y, client_width - 40, status_height);
 
     // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
@@ -3150,6 +3159,37 @@ mod logs_viewer;
 use logs_viewer::open_logs_viewer;
 
 /// 顶栏「设置…」按钮的处理：弹窗 → 保存到设置文件 → 更新内存策略与 DISM 上限。
+/// `EnumChildWindows` 的回调签名。
+type EnumChildProc = unsafe extern "system" fn(Hwnd, LParam) -> i32;
+
+/// 字号刷新期间由回调读取：本次要应用到所有子控件的字体句柄。
+static FONT_TO_APPLY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// 给每个子控件发 `WM_SETFONT`（`1` = 立即重绘）。
+unsafe extern "system" fn apply_font_proc(hwnd: Hwnd, _l_param: LParam) -> i32 {
+    let font = FONT_TO_APPLY.load(std::sync::atomic::Ordering::SeqCst);
+    if font != 0 {
+        SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+    }
+    1
+}
+
+/// 用户在设置里改了界面字号之后调用：换掉主窗口所有子控件的字体，并重排。
+///
+/// ★ 只换字体**不够**：行距和「按行数算出来的控件高度」都随字号变
+/// （`dpi::line_height` / `dpi::text_block_height`），不重排的话详情框、状态框
+/// 会维持旧高度，大字号下最后一行又被切成半截。
+unsafe fn apply_font_size(state: &mut State) {
+    let font = gui_font();
+    if font.is_null() {
+        return;
+    }
+    FONT_TO_APPLY.store(font as isize, std::sync::atomic::Ordering::SeqCst);
+    EnumChildWindows(state.root, apply_font_proc, 0);
+    FONT_TO_APPLY.store(0, std::sync::atomic::Ordering::SeqCst);
+    layout_operation(state);
+}
+
 unsafe fn open_settings(state: &mut State) {
     let language = selected_language(state);
     let Some(policy) =
@@ -3185,6 +3225,19 @@ unsafe fn open_settings(state: &mut State) {
     }
     if let Err(error) = crate::dism_timeout::save_to_dir(dism_secs, &state.executable_dir) {
         failures.push(format!("DISM timeout: {error}"));
+    }
+    // 界面字号：与其它设置同一个文件、同一次保存触发。用哨兵区分
+    //「本次没保存」与「保存成某个值」（字号最小 10，0 不是合法值，但保持
+    // 与其它 RESULT 一致的写法）。改完立即对当前窗口生效。
+    let saved_font_size =
+        settings_dialog::SETTINGS_FONT_SIZE_RESULT.load(std::sync::atomic::Ordering::SeqCst);
+    if saved_font_size != settings_dialog::SETTINGS_RESULT_UNSET
+        && crate::dpi::set_font_size(saved_font_size)
+    {
+        if let Err(error) = crate::dpi::save_font_size(&state.executable_dir, saved_font_size) {
+            failures.push(format!("font size: {error}"));
+        }
+        apply_font_size(state);
     }
     if failures.is_empty() {
         append_gui_log(
@@ -7387,7 +7440,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 250,
                 800,
-                178,
+                crate::dpi::text_block_height(10, 8),
                 ID_SOURCE_DETAILS,
             ),
             target_details: create_control(
@@ -7398,7 +7451,7 @@ unsafe extern "system" fn window_proc(
                 180,
                 360,
                 800,
-                178,
+                crate::dpi::text_block_height(10, 8),
                 ID_TARGET_DETAILS,
             ),
             verify_hash: create_control(
@@ -7420,7 +7473,7 @@ unsafe extern "system" fn window_proc(
                 20,
                 440,
                 960,
-                178,
+                crate::dpi::text_block_height(9, 25),
                 ID_STATUS,
             ),
         };
@@ -7694,6 +7747,9 @@ unsafe extern "system" fn window_proc(
         // 必须在把 `executable_dir` 移进 State 之前算好。
         let failure_policy = crate::failure_policy::FailurePolicy::load_from_dir(&executable_dir);
         let dism_timeout_secs = crate::dism_timeout::load_from_dir(&executable_dir);
+        // 2.6.81：界面字号在**窗口创建之前**读回来——`gui_font()` 与那几个
+        //「按行数算的高度」都按它取值，晚了就会用默认值画一遍再改，白闪一下。
+        crate::dpi::set_font_size(crate::dpi::load_font_size(&executable_dir));
         let state = Box::new(State {
             root: hwnd,
             tooltip: null_mut(),

@@ -97,3 +97,136 @@ pub(crate) fn init() {
         let _ = SetProcessDPIAware();
     }
 }
+
+// ===================== 界面字号（用户可在「程序设置」里自选） =====================
+//
+// 2.6.81 起字号不再写死：用户能在设置窗口里选 12 / 14 / 16 / 18，
+// 选完立即生效（重设所有控件字体并重排），同时存进 `BackupRestore.settings.ini`。
+//
+// ★ 字号一变，"行距"和"按行数算出来的控件高度"必须跟着变，否则多行文本
+//   的最后一行会被切成半截。所以这两个量**不许再写死**，一律走下面两个函数：
+//   `line_height()` 与 `text_block_height()`。2026-10-26 踩过写死行距的坑，
+//   2.6.80 又踩了一次（改字号没同步改高度），这是第三次被同一类问题咬到。
+
+/// 设置文件里的键名（小写，与 `failure_threshold` 等保持一致）。
+const FONT_SIZE_KEY: &str = "font_size";
+
+/// 默认字号。14 = 2.6.80 定的基准（12 对中文偏小）。
+pub(crate) const DEFAULT_FONT_SIZE: u32 = 14;
+
+/// 可选档位（小 / 标准 / 大 / 特大）。设置窗口的下拉框按这个顺序画。
+pub(crate) const FONT_SIZE_CHOICES: [u32; 4] = [12, 14, 16, 18];
+
+/// 合法区间：太小看不清，太大会把布局撑出窗口。
+const FONT_SIZE_MIN: u32 = 10;
+const FONT_SIZE_MAX: u32 = 24;
+
+static FONT_SIZE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(DEFAULT_FONT_SIZE);
+
+/// 当前界面字号（像素，96dpi 基准）。
+pub(crate) fn font_size() -> u32 {
+    let v = FONT_SIZE.load(std::sync::atomic::Ordering::SeqCst);
+    if (FONT_SIZE_MIN..=FONT_SIZE_MAX).contains(&v) {
+        v
+    } else {
+        DEFAULT_FONT_SIZE
+    }
+}
+
+/// 改用新字号（设置窗口保存后调用）。越界值被拒绝，返回是否真的改了。
+pub(crate) fn set_font_size(v: u32) -> bool {
+    if !(FONT_SIZE_MIN..=FONT_SIZE_MAX).contains(&v) {
+        return false;
+    }
+    let old = FONT_SIZE.swap(v, std::sync::atomic::Ordering::SeqCst);
+    old != v
+}
+
+/// 一行的高度：字号 + 外部行距。
+///
+/// 实测锚点：12 → 14（tmHeight 12 + tmExternalLeading 2）、14 → 17（14 + 3）。
+/// 用 `(size + 5) / 6` 复现这两点，并在 16/18 上给出 19/21。
+pub(crate) fn line_height() -> i32 {
+    let s = font_size() as i32;
+    s + (s + 5) / 6
+}
+
+/// 多行文本控件需要的高度 = 行数 × 行距 + 附加量（边框差 + 余量）。
+///
+/// 2.6.80 的两个锚点：详情框 10 行 → `10×17 + 8 = 178`；
+/// 状态框 9 行 → `9×17 + 25 = 178`（该控件的文本区比控件高少 14px，另留 11px 余量）。
+pub(crate) fn text_block_height(rows: i32, extra: i32) -> i32 {
+    rows * line_height() + extra
+}
+
+/// 启动时从设置文件读字号。文件不存在 / 值非法 → 默认值（界面必须能起来）。
+pub(crate) fn load_font_size(executable_dir: &std::path::Path) -> u32 {
+    use std::fs;
+    let path = executable_dir.join(super::settings_file::SETTINGS_FILE_NAME);
+    let Ok(text) = fs::read_to_string(path) else {
+        return DEFAULT_FONT_SIZE;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == FONT_SIZE_KEY {
+            if let Ok(v) = value.trim().parse::<u32>() {
+                if (FONT_SIZE_MIN..=FONT_SIZE_MAX).contains(&v) {
+                    return v;
+                }
+            }
+        }
+    }
+    DEFAULT_FONT_SIZE
+}
+
+/// 把字号写进设置文件（**合并**，只替换 `font_size` 一个键）。
+///
+/// 为什么必须合并：`BackupRestore.settings.ini` 是共享文件，`failure_policy`
+/// 与 `dism_timeout` 也往里写。整文件重写会把它们的键**静默**冲掉，
+/// 用户改一次字号就丢失失败策略——这种丢失事后极难归因（`failure_policy`
+/// 的注释里记过同样的教训）。
+pub(crate) fn save_font_size(
+    executable_dir: &std::path::Path,
+    size: u32,
+) -> std::io::Result<()> {
+    use std::fs;
+    use std::io::Write;
+    if !(FONT_SIZE_MIN..=FONT_SIZE_MAX).contains(&size) {
+        return Ok(());
+    }
+    fs::create_dir_all(executable_dir)?;
+    let path = executable_dir.join(super::settings_file::SETTINGS_FILE_NAME);
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        let is_font_key = !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && !trimmed.starts_with(';')
+            && trimmed.split_once('=').map(|(k, _)| k.trim() == FONT_SIZE_KEY)
+                == Some(true);
+        if is_font_key {
+            if !replaced {
+                out.push_str(&format!("{FONT_SIZE_KEY} = {size}\n"));
+                replaced = true;
+            }
+            // 重复的旧行直接丢弃，避免留下两行 font_size。
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !replaced {
+        out.push_str(&format!("{FONT_SIZE_KEY} = {size}\n"));
+    }
+    let mut file = fs::File::create(path)?;
+    file.write_all(out.as_bytes())
+}

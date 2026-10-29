@@ -56,6 +56,15 @@ pub(super) static SETTINGS_DISM_TIMEOUT_RESULT: std::sync::atomic::AtomicU32 =
 /// 用户点「保存」且校验通过时写入新的 `pause` 最长等待秒数。
 pub(super) static SETTINGS_PAUSE_WAIT_RESULT: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(u32::MAX);
+/// 设置窗口打开时的初始界面字号（像素，96dpi 基准）。
+static SETTINGS_INITIAL_FONT_SIZE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(crate::dpi::DEFAULT_FONT_SIZE);
+/// 用户点「保存」时写入的新界面字号；`SETTINGS_RESULT_UNSET` = 本次没保存。
+///
+/// 与主窗口其它 RESULT 一样用哨兵而不是 `Option`：0 在这里**不是**合法值
+/// （字号最小 10），但保持与其它 RESULT 一致的写法更不容易看错。
+pub(super) static SETTINGS_FONT_SIZE_RESULT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(u32::MAX);
 /// 两个 `*_RESULT` 的哨兵：`u32::MAX` = 本次没保存（取消/关窗）。
 /// 用它而不是 `Option`：这些 static 没有外部所有权，哨兵比加锁更省事，
 /// 且 0 是一个**合法**值（= 不限制），不能拿 0 当"未保存"。
@@ -301,13 +310,74 @@ unsafe extern "system" fn window_proc_settings(
             44,
             0,
         );
+        // 2.6.81：界面字号（用户自选）。放在「保存位置说明」下方、按钮上方；
+        // 两个按钮因此下移 38px（470 → 508），窗口总高同步 560 → 590。
+        create_control(
+            hwnd,
+            "STATIC",
+            if english {
+                "Interface font size:"
+            } else {
+                "界面字号："
+            },
+            0,
+            24,
+            468,
+            150,
+            20,
+            ID_SETTINGS_FONT_SIZE_HINT,
+        );
+        let font_combo = create_control(
+            hwnd,
+            "COMBOBOX",
+            "",
+            WS_TABSTOP | CBS_DROPDOWNLIST,
+            180,
+            464,
+            180,
+            24,
+            ID_SETTINGS_FONT_SIZE_COMBO,
+        );
+        for size in crate::dpi::FONT_SIZE_CHOICES {
+            let label = match size {
+                12 => {
+                    if english {
+                        "12 (small)"
+                    } else {
+                        "12（小）"
+                    }
+                }
+                14 => {
+                    if english {
+                        "14 (standard)"
+                    } else {
+                        "14（标准）"
+                    }
+                }
+                16 => {
+                    if english {
+                        "16 (large)"
+                    } else {
+                        "16（大）"
+                    }
+                }
+                _ => {
+                    if english {
+                        "18 (extra large)"
+                    } else {
+                        "18（特大）"
+                    }
+                }
+            };
+            add_combo_item(font_combo, label);
+        }
         create_control(
             hwnd,
             "BUTTON",
             if english { "Cancel" } else { "取消" },
             WS_TABSTOP,
             330,
-            470,
+            508,
             96,
             30,
             ID_SETTINGS_CANCEL,
@@ -318,7 +388,7 @@ unsafe extern "system" fn window_proc_settings(
             if english { "Save" } else { "保存" },
             WS_TABSTOP | BS_DEFPUSHBUTTON,
             434,
-            470,
+            508,
             96,
             30,
             ID_SETTINGS_SAVE,
@@ -354,6 +424,18 @@ unsafe extern "system" fn window_proc_settings(
             GetDlgItem(hwnd, checked as i32),
             BM_SETCHECK,
             BST_CHECKED,
+            0,
+        );
+        // 字号下拉框初值：按值找索引（`FONT_SIZE_CHOICES` 是档位的单一来源）。
+        let initial_font_size = SETTINGS_INITIAL_FONT_SIZE.load(std::sync::atomic::Ordering::SeqCst);
+        let font_index = crate::dpi::FONT_SIZE_CHOICES
+            .iter()
+            .position(|&s| s == initial_font_size)
+            .unwrap_or(1);
+        SendMessageW(
+            GetDlgItem(hwnd, ID_SETTINGS_FONT_SIZE_COMBO as i32),
+            CB_SETCURSEL,
+            font_index as usize,
             0,
         );
         SetFocus(GetDlgItem(hwnd, ID_SETTINGS_THRESHOLD_EDIT as i32));
@@ -457,6 +539,20 @@ unsafe extern "system" fn window_proc_settings(
                 SETTINGS_DISM_TIMEOUT_RESULT.store(dism_secs, std::sync::atomic::Ordering::SeqCst);
                 SETTINGS_PAUSE_WAIT_RESULT
                     .store(pause_wait_secs, std::sync::atomic::Ordering::SeqCst);
+                // 界面字号：按**下拉框索引**取值而不是解析文本——文本带本地化后缀
+                // （「14（标准）」/「14 (standard)」），解析它会把两种语言都写死，
+                // 而索引与语言无关（`FONT_SIZE_CHOICES` 是单一来源）。
+                let font_combo = GetDlgItem(hwnd, ID_SETTINGS_FONT_SIZE_COMBO as i32);
+                let font_index = SendMessageW(font_combo, CB_GETCURSEL, 0, 0);
+                let font_size = if font_index >= 0 {
+                    crate::dpi::FONT_SIZE_CHOICES
+                        .get(font_index as usize)
+                        .copied()
+                        .unwrap_or(crate::dpi::DEFAULT_FONT_SIZE)
+                } else {
+                    crate::dpi::DEFAULT_FONT_SIZE
+                };
+                SETTINGS_FONT_SIZE_RESULT.store(font_size, std::sync::atomic::Ordering::SeqCst);
                 if let Ok(policy) = crate::failure_policy::FailurePolicy::new(threshold, action)
                     && let Ok(mut slot) = SETTINGS_RESULT.lock()
                 {
@@ -525,6 +621,8 @@ pub(super) unsafe fn ask_settings_dialog(
     // 哨兵：本次没保存。0 是合法值（= 不限制），不能拿 0 当"未保存"。
     SETTINGS_DISM_TIMEOUT_RESULT.store(SETTINGS_RESULT_UNSET, std::sync::atomic::Ordering::SeqCst);
     SETTINGS_PAUSE_WAIT_RESULT.store(SETTINGS_RESULT_UNSET, std::sync::atomic::Ordering::SeqCst);
+    SETTINGS_FONT_SIZE_RESULT.store(SETTINGS_RESULT_UNSET, std::sync::atomic::Ordering::SeqCst);
+    SETTINGS_INITIAL_FONT_SIZE.store(crate::dpi::font_size(), std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut slot) = SETTINGS_RESULT.lock() {
         *slot = None;
     }
@@ -533,20 +631,21 @@ pub(super) unsafe fn ask_settings_dialog(
     } else {
         "程序设置"
     });
-    // 客户区高度需要 ≈ 500（按钮底缘 500），总高 560 才不会被裁掉
+    // 客户区高度需要 ≈ 538（按钮底缘 508+30），总高 590 才不会被裁掉
     //（项目此前在 460×268 上裁掉过「取消」按钮；2026-10-16 依次加了
-    // DISM 等待上限与 pause 最长等待两行，从 400 → 480 → 560）。
+    // DISM 等待上限与 pause 最长等待两行，从 400 → 480 → 560；
+    // 2026-10-30 加界面字号一行 → 590）。
     let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
-    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(560);
+    let screen_h = GetSystemMetrics(SM_CYSCREEN).max(590);
     let dialog = CreateWindowExW(
         0,
         class_name.as_ptr(),
         caption.as_ptr(),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         (screen_w - 560) / 2,
-        (screen_h - 560) / 2,
+        (screen_h - 590) / 2,
         560,
-        560,
+        590,
         hwnd,
         null_mut(),
         instance,
