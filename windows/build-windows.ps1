@@ -118,8 +118,18 @@ function Invoke-Cargo([string[]]$Arguments) {
         (Join-Path $repoRoot 'Cargo.toml')
         $Arguments | Select-Object -Skip 1
     )
-    & cargo @cargoArguments
-    if ($LASTEXITCODE -ne 0) { throw "cargo failed with exit code $LASTEXITCODE" }
+    # ★ cargo 把编译进度写到 stderr。PowerShell 5 会把 native 命令的 stderr 包装成
+    #   ErrorRecord，而本脚本全局是 `Stop` —— 增量构建没有输出时相安无事，一旦全量
+    #   编译第一条 "Compiling …" 就会让脚本直接终止（2026-10-30 实测，现象是构建
+    #   看起来"自己退出"、日志停在 Compiling 上）。
+    #   这里临时切到 Continue 并**显式检查退出码**：真正的失败照样抛出，
+    #   只是不再把正常进度误判为错误。
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & cargo @cargoArguments 2>&1 | ForEach-Object { Write-Output $_ }
+    $rc = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($rc -ne 0) { throw "cargo failed with exit code $rc" }
 }
 
 function Initialize-MsvcEnvironment([string]$arch) {

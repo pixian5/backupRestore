@@ -1004,7 +1004,25 @@ fn wide(value: &str) -> Vec<u16> {
 /// 步；在那之前先把字体钉在 96dpi 基准上，保证 100% 与 200% 下布局一致。
 unsafe fn gui_font() -> Handle {
     let face = wide("SimSun");
-    CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, 134, 0, 0, 0, 0, face.as_ptr())
+    // ★ 2.6.79：字号改为随 DPI 缩放（200% 下 12→24）。之前钉死 12 是为了防止
+    //   200% 下文字溢出压住按钮，代价是界面整体偏小；现在布局坐标同步缩放，
+    //   字号与坐标比例不变，既不会压住按钮、也不会小得看不清。
+    CreateFontW(
+        -crate::dpi::s(12),
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        134,
+        0,
+        0,
+        0,
+        0,
+        face.as_ptr(),
+    )
 }
 
 // Win32 control creation mirrors CreateWindowExW's explicit rectangle and id.
@@ -1027,10 +1045,13 @@ unsafe fn create_control(
         class.as_ptr(),
         text.as_ptr(),
         WS_CHILD | WS_VISIBLE | style,
-        x,
-        y,
-        width,
-        height,
+        // ★ 2.6.79：所有控件坐标统一按 DPI 系数缩放。这里是 71 个控件的唯一
+        //   创建入口，在一处乘系数即可覆盖全部静态布局；动态重排走
+        //   `layout_operation` 的 `reposition`（同样已缩放）。
+        crate::dpi::s(x),
+        crate::dpi::s(y),
+        crate::dpi::s(width),
+        crate::dpi::s(height),
         parent,
         id as HMenu,
         null_mut(),
@@ -1430,7 +1451,13 @@ unsafe fn layout_operation(state: &State) {
         bottom: 760,
     };
     GetClientRect(state.root, &mut rect);
-    let client_width = (rect.right - rect.left).max(1020);
+    // ★ 2.6.79：把实际客户区换算回 96dpi 基准空间，下面这一大段重排常量
+    //   （右对齐的「客户宽 − 20 − 总宽」之类）一概不动，仍按 96dpi 书写；
+    //   最终由 `reposition` 统一乘系数输出物理像素。
+    //   为什么必须先换算：客户区读出来已经是放大后的值，若在物理量上再整体乘系数，
+    //   右对齐会算出「(2040−20−241)×2」这种翻倍的错误位置。
+    //   100% 下 `unscale` 是恒等，结果与改动前逐像素相同。
+    let client_width = crate::dpi::unscale(rect.right - rect.left).max(1020);
     let field_x = 180;
     let field_width = (client_width - field_x - 24).max(700);
     // ★ 高度按「**最坏行数 × 行距**」算，不能按某一页的行数算。
@@ -1509,7 +1536,17 @@ unsafe fn layout_operation(state: &State) {
 
     let reposition = |hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32| {
         if !hwnd.is_null() {
-            MoveWindow(hwnd, x, y, width, height, 1);
+            // ★ 2.6.79：入参都是 96dpi 基准值（含由 `client_width` 推出的结果），
+            //   这里统一换算成物理像素。这一处覆盖本函数全部动态重排，
+            //   所以 530 行常量不需要逐个改写。
+            MoveWindow(
+                hwnd,
+                crate::dpi::s(x),
+                crate::dpi::s(y),
+                crate::dpi::s(width),
+                crate::dpi::s(height),
+                1,
+            );
         }
     };
     // 语言栏靠右显示：标签(55) + 间距(6) + combo(180)，combo 右缘 = 客户宽 - 20。
@@ -2608,7 +2645,9 @@ unsafe fn set_wim_items(state: &State) {
     GetClientRect(state.root, &mut rect);
     // The open list must expose each index's full metadata, even when the
     // selected one-line control shares a row with a secondary-system name.
-    let dropdown_width = (rect.right - rect.left - 204).max(440) as usize;
+    // ★ 2.6.79：客户区换算回 96dpi 基准再减常量，最后整体缩放成物理像素。
+    let dropdown_width =
+        crate::dpi::s((crate::dpi::unscale(rect.right - rect.left) - 204).max(440)) as usize;
     SendMessageW(state.controls.index, CB_SETDROPPEDWIDTH, dropdown_width, 0);
     SendMessageW(state.controls.index, CB_SETCURSEL, selected_position, 0);
 }
@@ -8651,10 +8690,15 @@ unsafe fn pe_dialog(
             let mut out = PE_DLG_OUT.lock().unwrap();
             *out = None;
         }
-        let width = 440;
+        // ★ 2.6.79：PE 内对话框尺寸按 DPI 缩放，否则 200% 下它只有屏幕的 1/4 大。
+        let width = crate::dpi::s(440);
         // 对话框总高需预留 WS_CAPTION 标题栏（约 28-30px），否则底部
         // 「执行/取消」按钮会超出客户区被裁剪，PE 内显示不完整。
-        let height = if show_name { 324 } else { 312 };
+        let height = if show_name {
+            crate::dpi::s(324)
+        } else {
+            crate::dpi::s(312)
+        };
         let x = ((GetSystemMetrics(SM_CXSCREEN) - width) / 2).max(0);
         let y = ((GetSystemMetrics(SM_CYSCREEN) - height) / 2).max(0);
         let wtitle = wide(title);
@@ -8988,7 +9032,15 @@ unsafe extern "system" fn system_info_window_proc(
             if !edit.is_null() {
                 let width = (l_param & 0xffff) as i32;
                 let height = ((l_param >> 16) & 0xffff) as i32;
-                MoveWindow(edit, 8, 8, width - 16, height - 16, 1);
+                // ★ 2.6.79：内边距随 DPI 缩放；width/height 来自父窗口，已是物理像素。
+                MoveWindow(
+                    edit,
+                    crate::dpi::s(8),
+                    crate::dpi::s(8),
+                    width - crate::dpi::s(16),
+                    height - crate::dpi::s(16),
+                    1,
+                );
             }
             0
         }
@@ -9450,14 +9502,17 @@ unsafe fn show_task_admin(parent: Hwnd, language: Language, root: &Path) {
     //   到 708 > 704，被裁掉 4 px；提示条 y 到 448 > 441，纵向也被裁 7 px。
     //   这类缺陷肉眼在小屏上很难分辨（差 4 px），是几何判据抓出来的。
     //   正解：先用 AdjustWindowRectEx 由目标客户区反推整窗尺寸。
-    const CLIENT_W: i32 = 720;
-    const CLIENT_H: i32 = 480;
+    // ★ 2.6.79：目标客户区先按 DPI 缩放，再由 AdjustWindowRectEx 反推整窗尺寸。
+    //   边框与标题栏的厚度本身也随 DPI 变，交给 AdjustWindowRectEx 处理即可。
+    //   100% 下 s() 是恒等，与改动前完全一致。
+    let client_w = crate::dpi::s(720);
+    let client_h = crate::dpi::s(480);
     let style = WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
     let mut frame = Rect {
         left: 0,
         top: 0,
-        right: CLIENT_W,
-        bottom: CLIENT_H,
+        right: client_w,
+        bottom: client_h,
     };
     unsafe {
         AdjustWindowRectEx(&mut frame, style, 0, 0);
@@ -9674,9 +9729,55 @@ unsafe extern "system" fn window_proc_pe(
 ) -> LResult {
     if message == WM_CREATE {
         let face = wide("Segoe UI");
-        let title_font = CreateFontW(-44, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 0, 0, face.as_ptr());
-        let card_font = CreateFontW(-30, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 0, 0, face.as_ptr());
-        let bar_font = CreateFontW(-18, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 0, 0, face.as_ptr());
+        // ★ 2.6.79：恢复桌面上的大字号同样按 DPI 缩放，与布局坐标同比放大。
+        let title_font = CreateFontW(
+            -crate::dpi::s(44),
+            0,
+            0,
+            0,
+            700,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            face.as_ptr(),
+        );
+        let card_font = CreateFontW(
+            -crate::dpi::s(30),
+            0,
+            0,
+            0,
+            600,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            face.as_ptr(),
+        );
+        let bar_font = CreateFontW(
+            -crate::dpi::s(18),
+            0,
+            0,
+            0,
+            500,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            face.as_ptr(),
+        );
         let width = GetSystemMetrics(SM_CXSCREEN).max(640);
         let height = GetSystemMetrics(SM_CYSCREEN).max(480);
 
@@ -10305,10 +10406,11 @@ pub fn run() -> Result<(), super::TaskError> {
             class_name.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            120,
-            80,
-            1020,
-            760,
+            // ★ 2.6.79：初始尺寸按 DPI 缩放（随后会最大化，但还原窗口时也该是对的）。
+            crate::dpi::s(120),
+            crate::dpi::s(80),
+            crate::dpi::s(1020),
+            crate::dpi::s(760),
             null_mut(),
             null_mut(),
             instance,
