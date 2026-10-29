@@ -996,6 +996,17 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 固定 9pt（96dpi 基准）的界面字体。
+///
+/// 为什么不用 `GetStockObject(DEFAULT_GUI_FONT)`：进程声明 DPI 感知后，系统
+/// 字体随 DPI 变大（200% 下约 18px），而所有布局坐标仍按 96dpi 写死，文字会
+/// 溢出、按钮互压（2026-10-30 实测：顶栏按钮与入口按钮重叠）。布局缩放是下一
+/// 步；在那之前先把字体钉在 96dpi 基准上，保证 100% 与 200% 下布局一致。
+unsafe fn gui_font() -> Handle {
+    let face = wide("SimSun");
+    CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, 134, 0, 0, 0, 0, face.as_ptr())
+}
+
 // Win32 control creation mirrors CreateWindowExW's explicit rectangle and id.
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_control(
@@ -1025,7 +1036,7 @@ unsafe fn create_control(
         null_mut(),
         null_mut(),
     );
-    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let font = gui_font();
     if !handle.is_null() && !font.is_null() {
         SendMessageW(handle, WM_SETFONT, font as usize, 1);
     }
@@ -8907,7 +8918,7 @@ unsafe fn show_system_info_window(parent: Hwnd, report: &str) {
     // WinRE images do not necessarily ship Consolas, and the fallback lacks
     // Chinese glyphs. The stock GUI font is localized with the image, so the
     // report remains readable without assuming a font file exists.
-    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let font = gui_font();
     if !text_box.is_null() {
         if !font.is_null() {
             SendMessageW(text_box, WM_SETFONT, font as WParam, 1);
@@ -9342,7 +9353,7 @@ unsafe fn task_admin_create_controls(hwnd: Hwnd, language: Language) {
     }
     create_control(hwnd, "STATIC", "", 0, 12, 428, 696, 20, ID_TASK_HINT);
     // 统一字体：WinRE 未必带 Consolas，且回退字体缺中文；stock GUI 字体随镜像本地化。
-    let font = GetStockObject(DEFAULT_GUI_FONT);
+    let font = gui_font();
     if !font.is_null() {
         for id in [
             ID_TASK_LABEL,

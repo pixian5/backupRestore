@@ -32,7 +32,15 @@ $pkg = "H:\brwork"
 $src = "\\Mac\backupRestore\tools\win-clicker\$Script"
 if (-not (Test-Path -LiteralPath $src)) {
     $alt = "X:\tools\win-clicker\$Script"
-    if (Test-Path -LiteralPath $alt) { $src = $alt } else { Write-Output "MISSING_SRC $src"; exit 2 }
+    if (Test-Path -LiteralPath $alt) {
+        $src = $alt
+    } else {
+        # 预刷副本：宿主侧先经 SYSTEM 通道（读 UNC 稳定）把脚本拷到 $pkg，
+        # 提权会话读 UNC 间歇失败时用它。2026-10-29 实测：同一脚本第一次能读、
+        # 第二次报「系统找不到指定的文件」，而同刻 SYSTEM 通道能读。
+        $pre = Join-Path $pkg $Script
+        if (Test-Path -LiteralPath $pre) { $src = $pre } else { Write-Output "MISSING_SRC $src"; exit 2 }
+    }
 }
 # 二进制复制，不要用 Copy-Item 也不要做编码转换：
 # 实测从 UNC 共享源 Copy-Item 到 C:\ 会得到一个 0 字节文件（读源正常是 12684 字节，
@@ -41,8 +49,9 @@ if (-not (Test-Path -LiteralPath $src)) {
 # 复制前先删目标，避免残留/占用导致的截断。
 # 必须用 ReadAllBytes 读源（UNC 上 ReadAllText 会拿到空串，坑），再转成 GBK(936) 落地，
 # 这样中文注释在客体里显示正常，PowerShell 报错的行号也不会因为乱码偏移。
-Remove-Item "$pkg\$Script" -ErrorAction SilentlyContinue
+# ★ 先读字节再删目标：$src 可能就是这个目标本身（预刷副本路径）。
 $srcBytes = [System.IO.File]::ReadAllBytes($src)
+Remove-Item "$pkg\$Script" -ErrorAction SilentlyContinue
 $utf8str  = [System.Text.Encoding]::UTF8.GetString($srcBytes)
 $gbkBytes = [System.Text.Encoding]::GetEncoding(936).GetBytes($utf8str)
 [System.IO.File]::WriteAllBytes("$pkg\$Script", $gbkBytes)

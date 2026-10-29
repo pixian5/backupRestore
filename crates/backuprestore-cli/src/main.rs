@@ -45,6 +45,8 @@ pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(any(windows, test))]
 mod boot_cleanup;
 #[cfg(windows)]
+mod dpi;
+#[cfg(windows)]
 mod boot_entry;
 /// DISM 等待上限：把「无限等待」变成可配置，**默认仍是无限**（零回归）。
 /// 跨平台纯逻辑，本机单测即可覆盖全部分支。
@@ -196,6 +198,10 @@ fn suppress_system_error_dialogs() {
 }
 
 fn main() {
+    // 必须最先做：任何窗口创建之前声明 DPI 感知，否则 200% 缩放下界面被
+    // 系统位图放大、底部控件落到窗口外（2026-10-30 实测）。
+    #[cfg(windows)]
+    crate::dpi::init();
     // 必须最先做：之后任何一次落盘/探测都不该再弹系统框。
     #[cfg(windows)]
     suppress_system_error_dialogs();
