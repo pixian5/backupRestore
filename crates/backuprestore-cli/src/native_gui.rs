@@ -10024,18 +10024,29 @@ unsafe extern "system" fn window_proc_pe(
     l_param: LParam,
 ) -> LResult {
     if message == WM_CREATE {
-        let face = wide("Segoe UI");
+        // ★ 2.6.89：PE 恢复桌面也换成微软雅黑常规字重，与主界面统一。
+        //   原来这里用 "Segoe UI"，字重 700 / 600 / 500 三级做层次。
+        //   但实测本项目的 PE 镜像里 **Segoe UI 只登记了 Bold(700) / Light(300) /
+        //   Semilight(350) / Italic，没有常规体 `segoeui.ttf`**，于是：
+        //     700 → 命中真粗体；
+        //     600 → 按最接近挑到 Bold（600 比 350 更靠近 700）；
+        //     500 → 按最接近挑到 Semilight(350)。
+        //   也就是三级字重全是错位的，代码写的和实际画的不是一回事。
+        //   微软雅黑在本 PE 镜像里是齐的（`msyh.ttc` 已登记），换成它之后三档字号
+        //   用同一个真常规体，层次改由**字号**（44 / 30 / 18）承担。
+        //   证据见 `docs/20261030-1520-PE镜像字体核查-微软雅黑可用但SegoeUI缺常规体-v2.6.89-DS41F.md`。
+        let face = wide("Microsoft YaHei");
         // ★ 2.6.79：恢复桌面上的大字号同样按 DPI 缩放，与布局坐标同比放大。
         let title_font = CreateFontW(
             -crate::dpi::s(44),
             0,
             0,
             0,
-            700,
+            400,
             0,
             0,
             0,
-            1,
+            134,
             0,
             0,
             0,
@@ -10047,11 +10058,11 @@ unsafe extern "system" fn window_proc_pe(
             0,
             0,
             0,
-            600,
+            400,
             0,
             0,
             0,
-            1,
+            134,
             0,
             0,
             0,
@@ -10063,11 +10074,11 @@ unsafe extern "system" fn window_proc_pe(
             0,
             0,
             0,
-            500,
+            400,
             0,
             0,
             0,
-            1,
+            134,
             0,
             0,
             0,
