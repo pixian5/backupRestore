@@ -50,7 +50,7 @@ Binding a second system by drive letter on an MBR disk does not work — that is
 
 ### 3.1 Layout
 
-Main window after start (the title bar shows the version, e.g. `BackupRestore - Rust GUI v2.6.69`):
+Main window after start (the title bar shows the current version):
 
 - **Operation mode** (a row of radio entries): `Backup` / `Restore system to C:` /
   `Restore data to non-C:` / `Add second system (non-C:)` / `Install PE`
@@ -67,6 +67,9 @@ Main window after start (the title bar shows the version, e.g. `BackupRestore - 
   `Refresh task status` (refreshes the status line, then opens the Tasks & evidence window — see §3.7)
 - Every entry has an explanation block underneath stating what it reads, what it writes and whether
   it reboots — **read it before acting**.
+- **Every button, edit box and dropdown has its own explanation**: hover the mouse over it for about
+  a second and a balloon tooltip appears, saying what it is and what it touches (see §3.9).
+  When you are unsure what a control does, hovering is faster than guessing.
 
 ### 3.2 First run: click "Refresh environment"
 
@@ -110,6 +113,13 @@ task files plus recovery payload to confirm the setup is wired correctly.
    - **System volume**: reboots into the recovery environment, captures offline, then returns to
      Windows automatically.
 6. On success the task record and logs stay under `H:\brwork` (see §7).
+
+> **What does not go into the image**: the program's own work directory — including the records and
+> logs of **finished** tasks — **does** go into the image; that is deliberate evidence, so after a
+> restore you can still see how and when that image was made. But a task that has **not finished**
+> does not go into the image: it holds two copies of the recovery image (~680 MB each), which would
+> inflate the backup for nothing, and on another machine it would resurface as a "ghost task" that
+> cannot resume. Finished tasks (success/failure) are kept as before.
 
 > **Space pre-check (runs when the task is created, writes nothing):** the free space on the
 > **volume holding the image** is inspected first.
@@ -160,9 +170,13 @@ window** (since v2.6.66):
   timestamps of the selected task. A failure that recorded **no reason** says so explicitly
   instead of leaving a blank;
 - **`Reload list`**: rescan the directory (the list does not auto-refresh while a task runs);
-- **`Clean work tree`**: removes only temporary work-tree directories — **`task.json`,
-  `status.json` and the logs are always kept**; evidence is a product promise. The button is
-  disabled for incomplete tasks (a resumable task must not be cleaned);
+- **`Clean work tree`**: removes the task's work-tree subdirectories
+  (`mount` / `stage` / `original` / `payload`) — **`task.json`, `status.json`, the manifest,
+  the logs and the BCD backup are always kept**; evidence is a product promise. Those
+  subdirectories hold two copies of the recovery image (before and after modification, ~680 MB
+  each), so **cleaning one task usually frees well over 1 GB** (measured: 4 finished tasks went
+  from 5.3 GB to 3.2 MB with not a single record lost).
+  The button is disabled for incomplete tasks (a running or resumable task must not be cleaned);
 - **`Open task folder`**: opens the current task's directory in Explorer;
 - **`Close`**: returns to the main window, which stays fully usable.
 
@@ -189,6 +203,37 @@ install proceeds: an extra safeguard must not become a prerequisite. The result 
 
 Why this matters: if that file points at a program that does not exist, the PE has no foreground
 process and **reboots itself roughly every 19 seconds** — looking like "a black flash and back to Windows".
+
+### 3.9 Hover tooltips and font size
+
+**Hover tooltips**: rest the mouse on a button, edit box or dropdown for about a second and a balloon
+appears, saying what the control is and what it touches.
+
+- Long text **wraps onto multiple lines** (since v2.7.0). Before that, tooltips never wrapped: long
+  explanations stretched into a single thin strip across the screen with the right end cut off.
+  If you still see that, you are on an older build — upgrade.
+- Every interactive control in the main window (buttons / edit boxes / dropdowns, 30-odd of them)
+  **has a tooltip**. The program self-checks this on each start and writes "how many controls exist
+  and how many of them lack a tooltip" to the log (see the `tooltip audit:` line in §7.3) — so
+  "which ones are missing" is a measurable number, not a manual count.
+- A tooltip **explains**; it does not decide. What actually tells you whether to act is the
+  explanation block under each entry (§3.1).
+
+**Font size**: `Settings…` → font size, four presets:
+
+| Preset | Size |
+|---|---|
+| Small | 12 |
+| Standard (default) | 14 |
+| Large | 16 |
+| Extra large | 18 |
+
+It takes effect **immediately**, no restart needed. Control widths are computed from the **measured
+text** (hard-coded pixels are not used), so when the text grows the buttons grow with it and labels
+wrap where needed — the layout stays intact at large sizes instead of clipping the text.
+If writing the settings file fails (e.g. permissions), the program **reports the failure explicitly**:
+the new size still applies to this session, but the next start falls back to the old value. The
+difference is told to you rather than silently dropped.
 
 ---
 
@@ -281,6 +326,7 @@ time window from `H:\brwork\logs`.**
 | `failure_pause_max_wait_secs` | Total unattended wait cap for the `pause` policy (seconds, 0 = unlimited) | 0 |
 | `dism_timeout_secs` | DISM wait cap (seconds, 0 = unlimited) | 0 |
 | `ui_language` | UI language `zh`/`en` (also switchable from the top-bar Language dropdown; remembered) | zh |
+| `font_size` | UI font size: 12 small / 14 standard / 16 large / 18 extra large (valid range 10–24; also selectable in `Settings…`, applied immediately) | 14 |
 
 Settings apply to tasks created **afterwards**; a running task keeps the settings it was created with.
 (Maintainer note: several modules share this file, so anyone writing it must merge — replace only your
@@ -310,6 +356,9 @@ read them; humans can grep them to locate a problem fast:
 | `CAPTURE_HEARTBEAT elapsed_secs= image_bytes= phase=` | Offline capture of a system volume, one line every 30 seconds | The image is still growing, therefore work is happening |
 | `CAPTURE_STALL elapsed_secs= image_bytes= silent_secs=` | The image has not grown for 10 minutes during capture | **Not a failure**: DISM pre-scans the whole volume before writing, so zero bytes at the start is normal (measured: a 8.7 GB subtree pre-scanned for 100 s; a whole volume can take minutes) |
 | `CAPTURE_SUMMARY` | Written once when capture ends | The totals for that capture |
+| `tooltip audit: children=… candidates(button=… edit=… combo=…) tipped=… untipped=…` | Every start (GUI log) | "How many interactive controls exist and how many of them have a hover tooltip". `untipped=0` **with a candidate count above 0** means full coverage; **a candidate count of 0 means the self-check found no controls**, i.e. the check itself is broken |
+| `tooltips installed: added=… tool_count=… wrap=…` | Every start (GUI log) | How many tooltips got attached; `wrap` is the balloon's maximum width in pixels (scaled with the system zoom) |
+| `Pending recovery skipped (boot entry no longer in BCD): <task id>` | Start-up detection (launcher log) | A task record says "unfinished", but its one-time boot entry is no longer in the boot configuration (typically the record travelled inside a backup image to another machine/system), **so no resume dialog is shown**. Not a fault — a deliberate skip |
 
 Do not kill the process just because you see `CAPTURE_STALL`: it only records, it never intervenes.
 Real timeouts are handled by `dism_timeout_secs` in Settings.

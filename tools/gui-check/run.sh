@@ -12,7 +12,7 @@
 #   4) 提示覆盖审计（候选数与未挂数） -> CANDIDATES / UNTIPPED
 #
 # 用法：
-#   tools/gui-check/run.sh              # 全矩阵：5 页签 x 中英 x 14/18 号（约 8 分钟）
+#   tools/gui-check/run.sh              # 全矩阵：5 页签 x 中英 x 12/14/16/18 号（约 15 分钟）
 #   tools/gui-check/run.sh --quick      # 冒烟：1 个组合（约 25 秒）
 #   BR_VM='Windows 11' tools/gui-check/run.sh
 #
@@ -66,11 +66,14 @@ if ! sync_ps; then
   exit 2
 fi
 
+# ★ 字号档位取自产品本身：dpi.rs 的 FONT_SIZE_CHOICES = [12,14,16,18]。
+#   2.7.2 之前这里只跑 14/18 两档——**漏了 12 和 16**，是我自己工具的覆盖缺口。
+#   判据的档位不能靠人记，应当跟着产品的可选档位走。
 if [ "$QUICK" = 1 ]; then
   COMBOS=("14 zh")
   TABS=(1101)
 else
-  COMBOS=("14 zh" "14 en" "18 zh" "18 en")
+  COMBOS=("12 zh" "12 en" "14 zh" "14 en" "16 zh" "16 en" "18 zh" "18 en")
   TABS=(1101 1102 1103 1104 1105)
 fi
 
