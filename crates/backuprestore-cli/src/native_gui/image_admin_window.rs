@@ -397,14 +397,23 @@ unsafe extern "system" fn window_proc_image_admin(
 ) -> LResult {
     let english = IMAGE_ADMIN_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
     if message == WM_CREATE {
+        // ★ 2.6.86：标签宽度按当前字号实测，下拉框右缘固定、宽度从下拉框里扣。
+        //   原来标签写死 90，英文 18 号下 "WIM image:" 实测要 110 基准像素，
+        //   被切掉 41 物理像素（判据 2026-10-30 实测 slack=-41）。
+        //   仍是 `(实测 + 8).max(旧值)`：默认字号下宽度不变。
+        let image_label = if english { "WIM image:" } else { "镜像：" };
+        let image_label_width = (measure_text_width(image_label) + 8).max(90);
+        const IMAGE_COMBO_RIGHT: i32 = 606; // 原来的 106 + 500
+        let image_combo_x = 16 + image_label_width;
+        let image_combo_width = (IMAGE_COMBO_RIGHT - image_combo_x).max(200);
         create_control(
             hwnd,
             "STATIC",
-            if english { "WIM image:" } else { "镜像：" },
+            image_label,
             0,
             16,
             14,
-            90,
+            image_label_width,
             20,
             0,
         );
@@ -413,9 +422,9 @@ unsafe extern "system" fn window_proc_image_admin(
             "COMBOBOX",
             "",
             WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL | WS_BORDER,
-            106,
+            image_combo_x,
             10,
-            500,
+            image_combo_width,
             300,
             ID_IMAGE_ADMIN_COMBO,
         );
@@ -430,18 +439,27 @@ unsafe extern "system" fn window_proc_image_admin(
             330,
             ID_IMAGE_ADMIN_DETAIL,
         );
+        // 「保留最近 [N] 个索引：」这一行。
+        // ★ 2.6.86：三个控件的宽度改成按当前字号实测。
+        //   原来标签写死 80 / 70，中文 18 号下「个索引：」实测要 72 基准像素，
+        //   控件只有 70 → 末尾的冒号被切（判据 slack=-4 物理像素）。
+        //   英文「Keep latest」更长，写死 80 更早就切了。
+        //   取 `(实测 + 8).max(旧值)`：默认字号下仍是旧值（外观不变），
+        //   只有真的装不下才变宽。
+        let keep_label = if english { "Keep latest" } else { "保留最近" };
+        let indexes_label = if english { "indexes:" } else { "个索引：" };
+        let keep_label_width = (measure_text_width(keep_label) + 8).max(80);
+        let indexes_label_width = (measure_text_width(indexes_label) + 8).max(70);
+        let keep_edit_x = 16 + keep_label_width;
+        let indexes_label_x = keep_edit_x + 48 + 6;
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Keep latest"
-            } else {
-                "保留最近"
-            },
+            keep_label,
             0,
             16,
             388,
-            80,
+            keep_label_width,
             20,
             0,
         );
@@ -450,7 +468,7 @@ unsafe extern "system" fn window_proc_image_admin(
             "EDIT",
             "1",
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
-            96,
+            keep_edit_x,
             384,
             48,
             24,
@@ -459,67 +477,83 @@ unsafe extern "system" fn window_proc_image_admin(
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "indexes:"
-            } else {
-                "个索引："
-            },
+            indexes_label,
             0,
-            150,
+            indexes_label_x,
             388,
-            70,
+            indexes_label_width,
             20,
             0,
         );
+        // ★ 2.6.86：按钮宽度也改成按实测文字算，依次往右排。
+        //   原来四个按钮写死 80/160/140/80，「删除旧索引…」在英文 18 号下
+        //   "Delete old indexes..." 实测要 184 基准像素、控件只有 160，
+        //   被切掉 48 物理像素（判据实测 slack=-48）。
+        //   取 `(实测 + 24).max(旧值)`：24 是左右各 12 的内边距；
+        //   默认字号下算出来都小于旧值，所以外观不变。
+        const BTN_GAP: i32 = 8;
+        let btn_w = |text: &str, min: i32| (measure_text_width(text) + 24).max(min);
+        let refresh_text = if english { "Refresh" } else { "刷新" };
+        let delete_text = if english {
+            "Delete old indexes..."
+        } else {
+            "删除旧索引…"
+        };
+        let open_folder_text = if english {
+            "Open folder"
+        } else {
+            "打开所在文件夹"
+        };
+        let close_text = if english { "Close" } else { "关闭" };
+        let refresh_w = btn_w(refresh_text, 80);
+        let delete_w = btn_w(delete_text, 160);
+        let open_folder_w = btn_w(open_folder_text, 140);
+        let close_w = btn_w(close_text, 80);
+        let refresh_x = 16;
+        let delete_x = refresh_x + refresh_w + BTN_GAP;
+        let open_folder_x = delete_x + delete_w + BTN_GAP;
+        let close_x = open_folder_x + open_folder_w + BTN_GAP;
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Refresh" } else { "刷新" },
+            refresh_text,
             WS_TABSTOP,
-            16,
+            refresh_x,
             420,
-            80,
+            refresh_w,
             28,
             ID_IMAGE_ADMIN_REFRESH,
         );
         create_control(
             hwnd,
             "BUTTON",
-            if english {
-                "Delete old indexes..."
-            } else {
-                "删除旧索引…"
-            },
+            delete_text,
             WS_TABSTOP | BS_DEFPUSHBUTTON,
-            104,
+            delete_x,
             420,
-            160,
+            delete_w,
             28,
             ID_IMAGE_ADMIN_DELETE,
         );
         create_control(
             hwnd,
             "BUTTON",
-            if english {
-                "Open folder"
-            } else {
-                "打开所在文件夹"
-            },
+            open_folder_text,
             WS_TABSTOP,
-            272,
+            open_folder_x,
             420,
-            140,
+            open_folder_w,
             28,
             ID_IMAGE_ADMIN_OPEN_FOLDER,
         );
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Close" } else { "关闭" },
+            close_text,
             WS_TABSTOP,
+            close_x,
             420,
-            420,
-            80,
+            close_w,
             28,
             ID_IMAGE_ADMIN_CLOSE,
         );

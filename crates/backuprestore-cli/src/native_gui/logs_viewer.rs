@@ -312,14 +312,23 @@ unsafe extern "system" fn window_proc_logs(
 ) -> LResult {
     let english = LOGS_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
     if message == WM_CREATE {
+        // ★ 2.6.86：标签宽度改成按当前字号实测。原来写死 90，中文 18 号下
+        //   「日志文件：」实测就要 90 基准像素，控件正好贴边（判据 slack=0，
+        //   末尾那个全角冒号随时会被切掉半个）。下拉框右缘固定不动，
+        //   左边让出来的宽度从下拉框里扣，避免整行顶出窗口。
+        let log_label = if english { "Log file:" } else { "日志文件：" };
+        let log_label_width = (measure_text_width(log_label) + 8).max(90);
+        const LOG_COMBO_RIGHT: i32 = 606; // 原来的 106 + 500
+        let log_combo_x = 16 + log_label_width;
+        let log_combo_width = (LOG_COMBO_RIGHT - log_combo_x).max(200);
         create_control(
             hwnd,
             "STATIC",
-            if english { "Log file:" } else { "日志文件：" },
+            log_label,
             0,
             16,
             50,
-            90,
+            log_label_width,
             20,
             0,
         );
@@ -328,9 +337,9 @@ unsafe extern "system" fn window_proc_logs(
             "COMBOBOX",
             "",
             WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL | WS_BORDER,
-            106,
+            log_combo_x,
             46,
-            500,
+            log_combo_width,
             300,
             ID_LOGS_COMBO,
         );
@@ -345,47 +354,68 @@ unsafe extern "system" fn window_proc_logs(
             250,
             ID_LOGS_DETAIL,
         );
+        // ★ 2.6.86：按钮宽度按实测文字算、依次往右排。原来写死 160/140/80/80，
+        //   英文 18 号下 "Open in Notepad" 只剩 7 物理像素余量，再加一个字母就切。
+        //   取 `(实测 + 24).max(旧值)`：默认字号下仍是旧值，外观不变。
+        const BTN_GAP: i32 = 8;
+        let btn_w = |text: &str, min: i32| (measure_text_width(text) + 24).max(min);
+        let open_file_text = if english {
+            "Open in Notepad"
+        } else {
+            "用记事本打开"
+        };
+        let open_dir_text = if english { "Open folder" } else { "打开日志目录" };
+        let refresh_text = if english { "Refresh" } else { "刷新" };
+        let close_text = if english { "Close" } else { "关闭" };
+        let open_file_w = btn_w(open_file_text, 160);
+        let open_dir_w = btn_w(open_dir_text, 140);
+        let refresh_w = btn_w(refresh_text, 80);
+        let close_w = btn_w(close_text, 80);
+        let open_file_x = 16;
+        let open_dir_x = open_file_x + open_file_w + BTN_GAP;
+        let refresh_x = open_dir_x + open_dir_w + BTN_GAP;
+        let close_x = refresh_x + refresh_w + BTN_GAP;
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Open in Notepad" } else { "用记事本打开" },
+            open_file_text,
             WS_TABSTOP | BS_DEFPUSHBUTTON,
-            16,
+            open_file_x,
             346,
-            160,
+            open_file_w,
             28,
             ID_LOGS_OPEN_FILE,
         );
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Open folder" } else { "打开日志目录" },
+            open_dir_text,
             WS_TABSTOP,
-            184,
+            open_dir_x,
             346,
-            140,
+            open_dir_w,
             28,
             ID_LOGS_OPEN_DIR,
         );
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Refresh" } else { "刷新" },
+            refresh_text,
             WS_TABSTOP,
-            332,
+            refresh_x,
             346,
-            80,
+            refresh_w,
             28,
             ID_LOGS_REFRESH,
         );
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Close" } else { "关闭" },
+            close_text,
             WS_TABSTOP,
-            420,
+            close_x,
             346,
-            80,
+            close_w,
             28,
             ID_LOGS_CLOSE,
         );
