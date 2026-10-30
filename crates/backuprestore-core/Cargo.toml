@@ -1,6 +1,6 @@
 [package]
 name = "backuprestore-core"
-version = "2.6.96"
+version = "2.6.97"
 edition = "2024"
 
 [lib]

@@ -2140,13 +2140,15 @@ unsafe fn layout_operation(state: &State) {
             24,
         );
         // 行3：「PE 启动项名称」（两种模式通用，始终显示）
+        // ★ 2.6.97：文案提到变量里，下面的 reposition 要拿它按实测定宽。
+        let pe_name_label_text = if selected_language(state) == Language::English {
+            "Boot entry name"
+        } else {
+            "PE 启动项名称"
+        };
         set_text(
             GetDlgItem(state.root, ID_PE_NAME_LABEL as i32),
-            if selected_language(state) == Language::English {
-                "Boot entry name"
-            } else {
-                "PE 启动项名称"
-            },
+            pe_name_label_text,
         );
         // 输入框为空时按语言+当前模式填默认名；若仍是另一模式的默认名
         // （用户未自定义），切换模式时跟随更新（用户自定义后保留）。
@@ -2161,16 +2163,19 @@ unsafe fn layout_operation(state: &State) {
                 set_text(name_edit_hwnd, &default_name);
             }
         }
+        // ★ 2.6.97：标签固定 130 装不下，18 号英文 `Boot entry name` 要 144。
+        //   按实测加宽，输入框跟着右移。
+        let pe_name_label_w = fit_width(pe_name_label_text, 130);
         reposition(
             GetDlgItem(state.root, ID_PE_NAME_LABEL as i32),
             field_x,
             mode_y + 56,
-            130,
+            pe_name_label_w,
             22,
         );
         reposition(
             GetDlgItem(state.root, ID_PE_NAME_EDIT as i32),
-            field_x + 140,
+            field_x + pe_name_label_w + 10,
             mode_y + 54,
             300,
             24,
@@ -2320,18 +2325,23 @@ unsafe fn layout_operation(state: &State) {
     // 创建时使用固定坐标（560/710, 630），这里与通用按钮行同 y 对齐，
     // 避免窗口/布局变化时与右侧控件错位或遮挡。
     if selected_operation(state) == "install-pe-entry" {
+        // ★ 2.6.97：这两个按钮原来写死 560 / 710——按钮行改成「按实测宽度顺序排布」之后，
+        //   18 号英文下最后一个按钮（Refresh task status）会伸到 486 基准像素以右，
+        //   实测与「重启进入 PE」重叠 208×56。改成接着按钮行末尾排。
+        let pe_reboot_w = fit_width(ui_text(language, "pe_reboot_main"), 140);
+        let pe_reboot_x = buttons_x.max(560);
         reposition(
             GetDlgItem(state.root, ID_PE_REBOOT_MAIN as i32),
-            560,
+            pe_reboot_x,
             buttons_y,
-            140,
+            pe_reboot_w,
             28,
         );
         reposition(
             GetDlgItem(state.root, ID_PE_SHORTCUT as i32),
-            710,
+            pe_reboot_x + pe_reboot_w + 10,
             buttons_y,
-            140,
+            fit_width(ui_text(language, "pe_shortcut"), 140),
             28,
         );
     }
