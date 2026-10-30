@@ -545,10 +545,12 @@ unsafe fn release_tracked_fonts() {
 }
 
 fn create_font(height: i32, bold: bool) -> Hwnd {
+    // ★ 2.6.81：字号随 DPI 缩放（调用方传负值，如 -30 → 200% 下 -60）。
+    //   这是本模块唯一的字体入口，改一处即覆盖进度窗与详细日志窗的全部字号。
     let face = encode("Microsoft YaHei");
     let handle = unsafe {
         CreateFontW(
-            height,
+            crate::dpi::s(height),
             0,
             0,
             0,
@@ -897,8 +899,14 @@ unsafe fn layout_controls(hwnd: Hwnd) {
             return;
         }
     }
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
+    // ★ 2.6.81：把客户区换算回 96dpi 基准空间，让下面这一大段常量（MARGIN / GAP /
+    //   BUTTON_WIDTH / stage_height 等）仍按 96dpi 书写、一个都不用改；最终由各处
+    //   `MoveWindow` 的 `crate::dpi::s(...)` 统一乘系数输出物理像素。
+    //   与主窗口 `layout_operation` 同一套做法：若在物理量上直接乘系数，
+    //   「宽度 − 边距」这类算式会算出翻倍的错误位置。
+    //   100% 下 `unscale` 是恒等，与改动前逐像素等价。
+    let width = crate::dpi::unscale(rect.right - rect.left);
+    let height = crate::dpi::unscale(rect.bottom - rect.top);
     if width <= 2 * MARGIN || height <= 260 {
         return; // 最小化或尺寸异常时不动布局
     }
@@ -933,81 +941,25 @@ unsafe fn layout_controls(hwnd: Hwnd) {
     let row_x = (MARGIN + content - row_width).max(MARGIN);
     let button_x = |index: i32| row_x + index * (BUTTON_WIDTH + GAP);
     unsafe {
+        MoveWindow(GetDlgItem(hwnd, ID_STAGE), crate::dpi::s(MARGIN), crate::dpi::s(stage_top), crate::dpi::s(stage_width), crate::dpi::s(stage_height), 1);
+        MoveWindow(GetDlgItem(hwnd, ID_TIME_INFO), crate::dpi::s(MARGIN + stage_width + GAP), crate::dpi::s(stage_top), crate::dpi::s(time_width.max(160)), crate::dpi::s(stage_height), 1);
         MoveWindow(
-            GetDlgItem(hwnd, ID_STAGE),
-            MARGIN,
-            stage_top,
-            stage_width,
-            stage_height,
+            GetDlgItem(hwnd, ID_BAR),
+            crate::dpi::s(MARGIN),
+            crate::dpi::s(bar_top),
+            crate::dpi::s(content),
+            crate::dpi::s(bar_height),
             1,
         );
-        MoveWindow(
-            GetDlgItem(hwnd, ID_TIME_INFO),
-            MARGIN + stage_width + GAP,
-            stage_top,
-            time_width.max(160),
-            stage_height,
-            1,
-        );
-        MoveWindow(GetDlgItem(hwnd, ID_BAR), MARGIN, bar_top, content, bar_height, 1);
-        MoveWindow(
-            GetDlgItem(hwnd, ID_DETAIL),
-            MARGIN,
-            steps_top,
-            content,
-            steps_height,
-            1,
-        );
+        MoveWindow(GetDlgItem(hwnd, ID_DETAIL), crate::dpi::s(MARGIN), crate::dpi::s(steps_top), crate::dpi::s(content), crate::dpi::s(steps_height), 1);
         // 日志尾部吃满内容宽（按钮已挪到独立一行）。
-        MoveWindow(
-            GetDlgItem(hwnd, ID_TAIL),
-            MARGIN,
-            tail_top,
-            content,
-            tail_height,
-            1,
-        );
+        MoveWindow(GetDlgItem(hwnd, ID_TAIL), crate::dpi::s(MARGIN), crate::dpi::s(tail_top), crate::dpi::s(content), crate::dpi::s(tail_height), 1);
         // 底部按钮行：详细日志 / 引导修复 / 命令提示符 / 暂停 / BCD 回退。
-        MoveWindow(
-            GetDlgItem(hwnd, ID_LOG_BUTTON),
-            button_x(0),
-            buttons_top,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-            1,
-        );
-        MoveWindow(
-            GetDlgItem(hwnd, ID_BOOT_MENU),
-            button_x(1),
-            buttons_top,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-            1,
-        );
-        MoveWindow(
-            GetDlgItem(hwnd, ID_CMD_BUTTON),
-            button_x(2),
-            buttons_top,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-            1,
-        );
-        MoveWindow(
-            GetDlgItem(hwnd, ID_PAUSE_BUTTON),
-            button_x(3),
-            buttons_top,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-            1,
-        );
-        MoveWindow(
-            GetDlgItem(hwnd, ID_BCD_ROLLBACK_BUTTON),
-            button_x(4),
-            buttons_top,
-            BUTTON_WIDTH,
-            BUTTON_HEIGHT,
-            1,
-        );
+        MoveWindow(GetDlgItem(hwnd, ID_LOG_BUTTON), crate::dpi::s(button_x(0)), crate::dpi::s(buttons_top), crate::dpi::s(BUTTON_WIDTH), crate::dpi::s(BUTTON_HEIGHT), 1);
+        MoveWindow(GetDlgItem(hwnd, ID_BOOT_MENU), crate::dpi::s(button_x(1)), crate::dpi::s(buttons_top), crate::dpi::s(BUTTON_WIDTH), crate::dpi::s(BUTTON_HEIGHT), 1);
+        MoveWindow(GetDlgItem(hwnd, ID_CMD_BUTTON), crate::dpi::s(button_x(2)), crate::dpi::s(buttons_top), crate::dpi::s(BUTTON_WIDTH), crate::dpi::s(BUTTON_HEIGHT), 1);
+        MoveWindow(GetDlgItem(hwnd, ID_PAUSE_BUTTON), crate::dpi::s(button_x(3)), crate::dpi::s(buttons_top), crate::dpi::s(BUTTON_WIDTH), crate::dpi::s(BUTTON_HEIGHT), 1);
+        MoveWindow(GetDlgItem(hwnd, ID_BCD_ROLLBACK_BUTTON), crate::dpi::s(button_x(4)), crate::dpi::s(buttons_top), crate::dpi::s(BUTTON_WIDTH), crate::dpi::s(BUTTON_HEIGHT), 1);
     }
 }
 
@@ -1078,8 +1030,8 @@ unsafe fn open_log_window(main_hwnd: Hwnd, shared: &ProgressShared) {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            1000,
-            720,
+            crate::dpi::s(1000),
+            crate::dpi::s(720),
             null_mut(),
             null_mut(),
             GetModuleHandleW(null()),
@@ -1150,7 +1102,16 @@ unsafe extern "system" fn log_window_proc(
             if GetClientRect(hwnd, &mut rect) != 0 {
                 let width = (rect.right - rect.left - 24).max(80);
                 let height = (rect.bottom - rect.top - 24).max(80);
-                MoveWindow(GetDlgItem(hwnd, ID_LOG_EDIT), 12, 12, width, height, 1);
+                // ★ 2.6.81：内边距随 DPI 缩放；width/height 来自 WM_SIZE，
+                //   已是物理像素，只减去缩放后的边距。
+                MoveWindow(
+                    GetDlgItem(hwnd, ID_LOG_EDIT),
+                    crate::dpi::s(12),
+                    crate::dpi::s(12),
+                    width - crate::dpi::s(24),
+                    height - crate::dpi::s(24),
+                    1,
+                );
             }
             0
         },
@@ -1353,10 +1314,10 @@ unsafe extern "system" fn window_proc(
                 encode("Static").as_ptr(),
                 encode("正在准备恢复环境…").as_ptr(),
                 WS_CHILD | WS_VISIBLE,
-                32,
-                28,
-                440,
-                48,
+                crate::dpi::s(32),
+                crate::dpi::s(28),
+                crate::dpi::s(440),
+                crate::dpi::s(48),
                 hwnd,
                 ID_STAGE as usize as Hwnd,
                 GetModuleHandleW(null()),
@@ -1373,10 +1334,10 @@ unsafe extern "system" fn window_proc(
                 encode("Static").as_ptr(),
                 null(),
                 WS_CHILD | WS_VISIBLE | SS_RIGHT,
-                480,
-                28,
-                348,
-                48,
+                crate::dpi::s(480),
+                crate::dpi::s(28),
+                crate::dpi::s(348),
+                crate::dpi::s(48),
                 hwnd,
                 ID_TIME_INFO as usize as Hwnd,
                 GetModuleHandleW(null()),
@@ -1391,10 +1352,10 @@ unsafe extern "system" fn window_proc(
                 encode("msctls_progress32").as_ptr(),
                 null(),
                 WS_CHILD | WS_VISIBLE | WS_BORDER,
-                32,
-                92,
-                796,
-                36,
+                crate::dpi::s(32),
+                crate::dpi::s(92),
+                crate::dpi::s(796),
+                crate::dpi::s(36),
                 hwnd,
                 ID_BAR as usize as Hwnd,
                 GetModuleHandleW(null()),
@@ -1410,10 +1371,10 @@ unsafe extern "system" fn window_proc(
                 encode("Edit").as_ptr(),
                 null(),
                 WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                32,
-                144,
-                796,
-                414,
+                crate::dpi::s(32),
+                crate::dpi::s(144),
+                crate::dpi::s(796),
+                crate::dpi::s(414),
                 hwnd,
                 ID_DETAIL as usize as Hwnd,
                 GetModuleHandleW(null()),
@@ -1431,10 +1392,10 @@ unsafe extern "system" fn window_proc(
                 // 折行会让 3 条日志占到 3 行以上，所以每次刷新后把控件滚到末尾
                 // （见 refresh_from_log），保证最新一行始终可见。
                 WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE | ES_READONLY,
-                32,
-                0,
-                640,
-                94,
+                crate::dpi::s(32),
+                crate::dpi::s(0),
+                crate::dpi::s(640),
+                crate::dpi::s(94),
                 hwnd,
                 ID_TAIL as usize as Hwnd,
                 GetModuleHandleW(null()),
@@ -1804,8 +1765,8 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            860,
-            600,
+            crate::dpi::s(860),
+            crate::dpi::s(600),
             null_mut(),
             null_mut(),
             GetModuleHandleW(null()),

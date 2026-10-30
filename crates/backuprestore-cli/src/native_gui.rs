@@ -577,6 +577,18 @@ unsafe extern "system" {
     fn KillTimer(hwnd: Hwnd, id: usize) -> i32;
     fn SetTextColor(hdc: Handle, color: u32) -> u32;
     fn SetBkMode(hdc: Handle, mode: i32) -> i32;
+    // ★ 2.6.83：文字块尺寸**实测**用。用户可自选 12/14/16/18 四种字号，
+    //   同一段文字在不同字号下折行数不同（14 号两行、18 号三行），写死高度
+    //   必然错位，只能让 GDI 按当前字体真正算一遍。
+    fn GetDC(hwnd: Hwnd) -> Handle;
+    fn ReleaseDC(hwnd: Hwnd, hdc: Handle) -> i32;
+    fn DrawTextW(
+        hdc: Handle,
+        text: *const u16,
+        count: i32,
+        rect: *mut Rect,
+        format: u32,
+    ) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -628,6 +640,7 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn CreateSolidBrush(color: u32) -> Handle;
     fn DeleteObject(object: Handle) -> i32;
+    fn SelectObject(hdc: Handle, object: Handle) -> Handle;
     fn CreateFontW(
         height: i32,
         width: i32,
@@ -1043,6 +1056,73 @@ unsafe fn gui_font() -> Handle {
     )
 }
 
+/// 用当前界面字体**实测**一段文字在给定宽度下需要占多大。
+///
+/// 返回 `(宽, 高)`，单位是 96dpi 基准像素（与写死的布局坐标同一空间）；
+/// `wrap = true` 时按 `width96` 折行算多行高度，`false` 时按单行算宽度。
+///
+/// ## 为什么必须实测，不能按「行距 × 行数」估
+///
+/// 2026-10-30 用户反馈「设置界面过小」时修完窗口尺寸后暴露出更底层的问题：
+/// 设置对话框里每块说明文字的高度与下一个控件的 y 全是写死的（40/56/44），
+/// 那是按 14 号字折两行算出来的。2.6.81 允许用户把字号调到 16/18 之后，
+/// 同一段文字在 18 号下折成三行，第三行画到控件矩形**外面**，又被下一个
+/// 控件的背景盖掉上半截——截图里「并重启回正常 Windows」只剩半行字，且压在
+/// 下面那个单选按钮上。折几行由「字体 × 宽度 × 文案」三者共同决定（文案还随
+/// 界面语言变），所以只能让 GDI 用同一套字体真算一遍。
+///
+/// 用屏幕 DC（`GetDC(NULL)`）而不是窗口 DC：这样窗口还没创建也能量，
+/// 布局可以在创建控件之前就把高度算准。
+pub(crate) unsafe fn measure_text(
+    text: &str,
+    width96: i32,
+    wrap: bool,
+) -> (i32, i32) {
+    // DrawTextW 的格式位（winuser.h）：只在本函数用到，就近定义。
+    const DT_CALCRECT: u32 = 0x0400;
+    const DT_WORDBREAK: u32 = 0x0010;
+    const DT_SINGLELINE: u32 = 0x0020;
+    const DT_NOPREFIX: u32 = 0x0800;
+    let font = gui_font();
+    let hdc = GetDC(null_mut());
+    if hdc.is_null() || font.is_null() {
+        // 量不出来就退回「一行高度」，至少不会算出负数或 0。
+        return (width96, crate::dpi::line_height());
+    }
+    let previous = SelectObject(hdc, font);
+    let mut rect = Rect {
+        left: 0,
+        top: 0,
+        right: crate::dpi::s(width96),
+        bottom: 0,
+    };
+    let format = DT_CALCRECT
+        | DT_NOPREFIX
+        | if wrap { DT_WORDBREAK } else { DT_SINGLELINE };
+    let text = wide(text);
+    DrawTextW(hdc, text.as_ptr(), -1, &mut rect, format);
+    SelectObject(hdc, previous);
+    // 屏幕 DC 用完必须归还：GetDC 每次都会给一个新的 DC，不还就漏（每开一次
+    // 对话框要量十几段文字，漏 DC 会一路累积到 GDI 对象上限）。
+    ReleaseDC(null_mut(), hdc);
+    // 字体是本函数自己新建的，量完就删；不删的话每开一次对话框漏十几个 GDI 对象。
+    DeleteObject(font);
+    let width = crate::dpi::unscale(rect.right - rect.left);
+    let height = crate::dpi::unscale(rect.bottom - rect.top).max(crate::dpi::line_height());
+    (width.max(0), height)
+}
+
+/// 单行文字实测宽度（96dpi 基准像素）。用于「标签 + 输入框 + 后缀」这种
+/// 同行排布：标签宽度随文案和字号变，写死就会把输入框压住或者把后缀挤出去。
+pub(crate) unsafe fn measure_text_width(text: &str) -> i32 {
+    measure_text(text, 0, false).0
+}
+
+/// 多行文字实测高度（96dpi 基准像素），按 `width96` 折行。
+pub(crate) unsafe fn measure_text_height(text: &str, width96: i32) -> i32 {
+    measure_text(text, width96, true).1
+}
+
 // Win32 control creation mirrors CreateWindowExW's explicit rectangle and id.
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_control(
@@ -1327,6 +1407,94 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
     }
 }
 
+/// 「操作模式」那一排入口按钮（五个「按下去像页签」的单选按钮）的横向排布。
+///
+/// ## 为什么必须实测文字宽度，不能写死
+///
+/// ★ 2.6.83 修缺陷。这五个按钮的宽度是**创建时写死**的
+/// （56 / 120 / 120 / 150 / 72，x 从 90 起每隔 3px 排下去），那是按 14 号字
+/// 的中文文案估出来的。用户能在设置里把字号调到 16 / 18 之后，三个问题同时出现：
+///
+/// 1. 文字整体变宽，「新增非 C 盘第二系统」这种 9 字长文案直接顶出按钮矩形，
+///    相邻两个按钮的字贴在一起，看上去像一串挤在一块的标签；
+/// 2. 左边「操作模式」这个标签只有 62px 宽，18 号字下四个汉字要 70 多像素，
+///    末字被切掉；
+/// 3. 英文界面同理，而且更严重——「Add second Windows system off C:」
+///    比任何中文文案都长。
+///
+/// 所以这里改成：**让 GDI 按当前字体把每段文案真正量一遍**（`measure_text_width`），
+/// 加左右内边距当按钮宽度，再依次往右排。文案随语言切换、字号随用户选择变，
+/// 量出来的宽度自然跟着变，不需要再维护一张「哪个语言多宽」的表。
+///
+/// 这一行的高度（32）不随字号变：18 号字行距是 21，装进 32 仍有余量，
+/// 下面的控件 y 坐标链（`layout_operation` 里从 y=100 起）也就不必跟着改。
+unsafe fn layout_operation_tabs(state: &State) {
+    /// 文字左右各留的空白：按钮边框 + 一点视觉呼吸。太窄会让字贴着边框。
+    const TAB_SIDE_PADDING: i32 = 9;
+    /// ★ 给 `DrawTextW` 的 `DT_CALCRECT` **补一段实测偏窄量**。
+    ///
+    /// 2026-10-30 实测（200% 缩放、微软雅黑粗体）：同一段文字
+    /// `DT_CALCRECT` 报的宽度比 `GetTextExtentPoint32` 在真实排版字体上量的
+    /// **窄 8~9 个基准像素**（18 号字下「还原数据到非 C 盘」报 298、实排 316）。
+    /// 只按 `DT_CALCRECT` 加左右 9px，每侧实际只剩 2~3px，字体版本或 ClearType
+    /// 取整稍有差别就会切字。补 12 让每侧回到 10px 以上。
+    const CALCRECT_UNDER_REPORT: i32 = 12;
+    /// 相邻两个按钮之间的空隙。
+    const TAB_GAP: i32 = 3;
+    /// 最小宽度：「备份」这种两字文案也至少要有这么宽，否则看着不像按钮。
+    const TAB_MIN_WIDTH: i32 = 56;
+    const TOP: i32 = 60;
+    const HEIGHT: i32 = 32;
+    /// 「操作模式」标签与第一个按钮之间的空隙。
+    const LABEL_GAP: i32 = 8;
+
+    let move_to = |hwnd: Hwnd, x: i32, width: i32| {
+        if !hwnd.is_null() {
+            MoveWindow(
+                hwnd,
+                crate::dpi::s(x),
+                crate::dpi::s(TOP),
+                crate::dpi::s(width),
+                crate::dpi::s(HEIGHT),
+                1,
+            );
+        }
+    };
+
+    let mut x = 20;
+    // 先排「操作模式」标签：它的宽度也按当前文案实测（中文 4 字 / 英文 "Operation"
+    // 差别很大），不再固定 62。控件 id 2001 是 `WM_CREATE` 里创建的那个 STATIC。
+    let label = GetDlgItem(state.root, 2001);
+    if !label.is_null() {
+        let text = get_text(label);
+        let width = (measure_text_width(&text)
+            + TAB_SIDE_PADDING * 2
+            + CALCRECT_UNDER_REPORT)
+            .max(40);
+        move_to(label, x, width);
+        x += width + LABEL_GAP;
+    }
+    for button in state.controls.operation_tabs.iter() {
+        let text = get_text(*button);
+        let width = (measure_text_width(&text)
+            + TAB_SIDE_PADDING * 2
+            + CALCRECT_UNDER_REPORT)
+            .max(TAB_MIN_WIDTH);
+        move_to(*button, x, width);
+        x += width + TAB_GAP;
+    }
+    // 只在右边缘真的变了才记日志：`layout_operation` 每次 WM_SIZE 都会跑，
+    // 无条件下日志会在拖拽窗口时把 GUI 日志刷满。
+    let right_edge = x - TAB_GAP;
+    static LAST_EDGE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+    if LAST_EDGE.swap(right_edge, std::sync::atomic::Ordering::SeqCst) != right_edge {
+        append_gui_log(
+            state,
+            &format!("layout: operation tabs right edge={right_edge} (96dpi base)"),
+        );
+    }
+}
+
 fn operation_display(language: Language, operation: &str) -> &'static str {
     match (language, operation) {
         (Language::Chinese, "probe") => "探测（仅检查）",
@@ -1476,6 +1644,10 @@ unsafe fn layout_operation(state: &State) {
     //   右对齐会算出「(2040−20−241)×2」这种翻倍的错误位置。
     //   100% 下 `unscale` 是恒等，结果与改动前逐像素相同。
     let client_width = crate::dpi::unscale(rect.right - rect.left).max(1020);
+    // 「操作模式」那一排页签的横向排布：宽度按当前字号/语言实测，见函数注释。
+    // 放在这里而不是只在语言切换时调用，是因为**改字号**也要重排
+    // （`apply_font_size` 也是走 `layout_operation`）。
+    layout_operation_tabs(state);
     let field_x = 180;
     let field_width = (client_width - field_x - 24).max(700);
     // ★ 高度按「**最坏行数 × 行距**」算，不能按某一页的行数算。

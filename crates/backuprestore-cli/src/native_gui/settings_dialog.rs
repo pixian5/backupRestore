@@ -90,254 +90,315 @@ unsafe extern "system" fn window_proc_settings(
         let ml = message_language(language);
         let auto = FailureAction::AutoEscape;
         let pause = FailureAction::PauseInRecovery;
-        // 第一行：次数文本框。
+        // ★ 2.6.83：布局从「每块写死坐标与高度」改成「从上往下按实测高度流水排」。
+        //   旧写法的高度（40/56/44）是按 14 号字折两行/三行算的；用户把字号调到
+        //   16/18 后同一段文案折行数变多，多出来的行画到控件矩形外面、被下一个
+        //   控件的背景盖掉半截（2026-10-30 实测）。为什么只能实测见父模块
+        //   `measure_text` 的注释。
+        let left = 24;
+        let content_width = 500;
+        let indent_left = 46;
+        let indent_width = 480;
+        let line = crate::dpi::line_height();
+        let mut y = 20;
+
+        // ── 第一行：连续失败次数 ────────────────────────────────────────
+        let threshold_label = if english {
+            "After the recovery environment fails"
+        } else {
+            "恢复环境连续失败"
+        };
+        let threshold_suffix = if english { "times:" } else { "次后：" };
+        let threshold_label_width = measure_text_width(threshold_label).max(80);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "After the recovery environment fails"
-            } else {
-                "恢复环境连续失败"
-            },
+            threshold_label,
             0,
-            24,
-            20,
-            150,
-            20,
+            left,
+            y,
+            threshold_label_width,
+            line,
             0,
         );
+        let threshold_edit_x = left + threshold_label_width + 12;
         create_control(
             hwnd,
             "EDIT",
             "",
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
-            180,
-            18,
+            threshold_edit_x,
+            y - 2,
             56,
-            24,
+            line + 7,
             ID_SETTINGS_THRESHOLD_EDIT,
         );
         create_control(
             hwnd,
             "STATIC",
-            if english { "times:" } else { "次后：" },
+            threshold_suffix,
             0,
-            244,
-            20,
-            120,
-            20,
+            threshold_edit_x + 66,
+            y,
+            160,
+            line,
             0,
         );
+        y += line + 10;
+        let threshold_hint = if english {
+            "Enter 1-20 (default 3)."
+        } else {
+            "可填 1–20，默认 3。"
+        };
+        let height = measure_text_height(threshold_hint, content_width);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Enter 1-20 (default 3)."
-            } else {
-                "可填 1–20，默认 3。"
-            },
+            threshold_hint,
             0,
-            24,
-            50,
-            500,
-            20,
+            left,
+            y,
+            content_width,
+            height,
             ID_SETTINGS_HINT,
         );
-        // 第二行：两种处理方式（标签 + 说明各自来自 failure_policy，单一来源）。
+        y += height + 12;
+        // ── 第二行：两种处理方式（标签 + 说明各自来自 failure_policy，单一来源）──
+        let auto_label = auto.label(ml);
         create_control(
             hwnd,
             "BUTTON",
-            auto.label(ml),
+            auto_label,
             WS_TABSTOP | BS_AUTORADIOBUTTON | WS_GROUP,
-            24,
-            86,
-            500,
-            22,
+            left,
+            y,
+            content_width,
+            line + 4,
             ID_SETTINGS_ACTION_AUTO,
         );
+        y += line + 8;
+        let auto_detail = auto.detail(ml);
+        let height = measure_text_height(auto_detail, indent_width);
         create_control(
             hwnd,
             "STATIC",
-            auto.detail(ml),
+            auto_detail,
             0,
-            46,
-            110,
-            480,
-            40,
+            indent_left,
+            y,
+            indent_width,
+            height,
             ID_SETTINGS_DETAIL_AUTO,
         );
+        y += height + 14;
+        let pause_label = pause.label(ml);
         create_control(
             hwnd,
             "BUTTON",
-            pause.label(ml),
+            pause_label,
             WS_TABSTOP | BS_AUTORADIOBUTTON,
-            24,
-            160,
-            500,
-            22,
+            left,
+            y,
+            content_width,
+            line + 4,
             ID_SETTINGS_ACTION_PAUSE,
         );
+        y += line + 8;
+        let pause_detail = pause.detail(ml);
+        let height = measure_text_height(pause_detail, indent_width);
         create_control(
             hwnd,
             "STATIC",
-            pause.detail(ml),
+            pause_detail,
             0,
-            46,
-            184,
-            480,
-            56,
+            indent_left,
+            y,
+            indent_width,
+            height,
             ID_SETTINGS_DETAIL_PAUSE,
         );
-        // 第三行：DISM 等待上限（秒）。0 = 不限制 = 历史行为。
+        y += height + 16;
+        // ── 第三行：DISM 等待上限（秒）。0 = 不限制 = 历史行为 ──────────
+        let dism_label = if english {
+            "Maximum wait for DISM"
+        } else {
+            "DISM 最长等待"
+        };
+        let dism_suffix = if english {
+            "seconds (0 = unlimited)"
+        } else {
+            "秒（0=不限制）"
+        };
+        let dism_label_width = measure_text_width(dism_label).max(80);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Maximum wait for DISM"
-            } else {
-                "DISM 最长等待"
-            },
+            dism_label,
             0,
-            24,
-            244,
-            150,
-            20,
+            left,
+            y,
+            dism_label_width,
+            line,
             0,
         );
+        let dism_edit_x = left + dism_label_width + 12;
         create_control(
             hwnd,
             "EDIT",
             "",
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
-            180,
-            242,
+            dism_edit_x,
+            y - 2,
             56,
-            24,
+            line + 7,
             ID_SETTINGS_DISM_TIMEOUT_EDIT,
         );
         create_control(
             hwnd,
             "STATIC",
-            if english { "seconds:" } else { "秒（0=不限制）：" },
+            dism_suffix,
             0,
-            244,
-            244,
-            120,
-            20,
+            dism_edit_x + 66,
+            y,
+            220,
+            line,
             0,
         );
+        y += line + 12;
+        let dism_hint = crate::dism_timeout::hint(ml);
+        let height = measure_text_height(dism_hint, content_width);
         create_control(
             hwnd,
             "STATIC",
-            crate::dism_timeout::hint(ml),
+            dism_hint,
             0,
-            24,
-            272,
-            500,
-            56,
+            left,
+            y,
+            content_width,
+            height,
             ID_SETTINGS_DISM_TIMEOUT_HINT,
         );
-        // 第四行：`pause` 策略的最长等待秒数（只对「暂停」生效）。
+        y += height + 16;
+        // ── 第四行：`pause` 策略的最长等待秒数（只对「暂停」生效）────────
+        let pause_wait_label = if english {
+            "Maximum wait when paused in the recovery environment"
+        } else {
+            "暂停在恢复环境时最长等待"
+        };
+        let pause_wait_suffix = if english {
+            "seconds (0 = wait indefinitely)"
+        } else {
+            "秒（0=一直等）"
+        };
+        // 上限 280：英文文案在 18 号字下比这还长，放开就会把后缀挤到窗口外。
+        // 中文 11 个字在 18 号下约 200，正常用不到上限。
+        let pause_wait_label_width = measure_text_width(pause_wait_label).clamp(80, 280);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Maximum wait when paused in the recovery environment"
-            } else {
-                "暂停在恢复环境时最长等待"
-            },
+            pause_wait_label,
             0,
-            24,
-            334,
-            260,
-            20,
+            left,
+            y,
+            pause_wait_label_width,
+            line,
             0,
         );
+        let pause_wait_edit_x = left + pause_wait_label_width + 12;
         create_control(
             hwnd,
             "EDIT",
             "",
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER,
-            180,
-            332,
+            pause_wait_edit_x,
+            y - 2,
             56,
-            24,
+            line + 7,
             ID_SETTINGS_PAUSE_WAIT_EDIT,
         );
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "seconds (0 = wait indefinitely):"
-            } else {
-                "秒（0=一直等）："
-            },
+            pause_wait_suffix,
             0,
-            244,
-            334,
-            200,
-            20,
+            pause_wait_edit_x + 66,
+            y,
+            220,
+            line,
             0,
         );
+        y += line + 12;
+        let pause_wait_hint = if english {
+            "Only applies to the \"pause\" option above. After the limit expires the program runs the same cleanup as \"Yes\" and reboots to Windows. Leave 0 to wait indefinitely (the previous behaviour)."
+        } else {
+            "只对上面选「暂停在恢复环境」时生效。超时后程序执行与「是」完全相同的清理并重启回正常 Windows。填 0 = 一直等（与旧版一致）。"
+        };
+        let height = measure_text_height(pause_wait_hint, content_width);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Only applies to the \"pause\" option above. After the limit expires the program runs the same cleanup as \"Yes\" and reboots to Windows. Leave 0 to wait indefinitely (the previous behaviour)."
-            } else {
-                "只对上面选「暂停在恢复环境」时生效。超时后程序执行与「是」完全相同的清理并重启回正常 Windows。填 0 = 一直等（与旧版一致）。"
-            },
+            pause_wait_hint,
             0,
-            24,
-            360,
-            500,
-            44,
+            left,
+            y,
+            content_width,
+            height,
             0,
         );
-        // 保存位置说明（让用户知道改的是哪个文件、对哪些任务生效）。
+        y += height + 16;
+        // ── 保存位置说明（让用户知道改的是哪个文件、对哪些任务生效）──────
+        let saved_note = if english {
+            "Saved to BackupRestore.settings.ini next to the program. It applies to tasks created afterwards; existing tasks keep the setting they were created with."
+        } else {
+            "设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效；已有任务沿用创建时的设置。"
+        };
+        let height = measure_text_height(saved_note, content_width);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Saved to BackupRestore.settings.ini next to the program. It applies to tasks created afterwards; existing tasks keep the setting they were created with."
-            } else {
-                "设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效；已有任务沿用创建时的设置。"
-            },
+            saved_note,
             0,
-            24,
-            412,
-            500,
-            44,
+            left,
+            y,
+            content_width,
+            height,
             0,
         );
-        // 2.6.81：界面字号（用户自选）。放在「保存位置说明」下方、按钮上方；
-        // 两个按钮因此下移 38px（470 → 508），窗口总高同步 560 → 590。
+        y += height + 18;
+        // ── 2.6.81：界面字号（用户自选）──────────────────────────────
+        let font_hint = if english {
+            "Interface font size:"
+        } else {
+            "界面字号："
+        };
+        let font_hint_width = measure_text_width(font_hint).max(80);
         create_control(
             hwnd,
             "STATIC",
-            if english {
-                "Interface font size:"
-            } else {
-                "界面字号："
-            },
+            font_hint,
             0,
-            24,
-            468,
-            150,
-            20,
+            left,
+            y,
+            font_hint_width,
+            line,
             ID_SETTINGS_FONT_SIZE_HINT,
         );
+        // 下拉列表的「高度」参数是**展开后列表**的总高度（不是闭合时的高度，
+        // 闭合高度由字体决定）。旧值写死 24，比一行还矮，展开后一条都看不到。
+        let font_combo_height =
+            (line + 6) * (crate::dpi::FONT_SIZE_CHOICES.len() as i32 + 1);
         let font_combo = create_control(
             hwnd,
             "COMBOBOX",
             "",
             WS_TABSTOP | CBS_DROPDOWNLIST,
+            left + font_hint_width + 12,
+            y - 4,
             180,
-            464,
-            180,
-            24,
+            font_combo_height,
             ID_SETTINGS_FONT_SIZE_COMBO,
         );
+        y += line + 20;
         for size in crate::dpi::FONT_SIZE_CHOICES {
             let label = match size {
                 12 => {
@@ -371,13 +432,15 @@ unsafe extern "system" fn window_proc_settings(
             };
             add_combo_item(font_combo, label);
         }
+        // ── 按钮行 ─────────────────────────────────────────────────
+        y += 10;
         create_control(
             hwnd,
             "BUTTON",
             if english { "Cancel" } else { "取消" },
             WS_TABSTOP,
             330,
-            508,
+            y,
             96,
             30,
             ID_SETTINGS_CANCEL,
@@ -388,10 +451,36 @@ unsafe extern "system" fn window_proc_settings(
             if english { "Save" } else { "保存" },
             WS_TABSTOP | BS_DEFPUSHBUTTON,
             434,
-            508,
+            y,
             96,
             30,
             ID_SETTINGS_SAVE,
+        );
+        // ── 按实测内容定窗口尺寸并居中 ────────────────────────────────
+        // ★ 2.6.82 只把窗口尺寸跟着 DPI 放大，高度仍写死 590（按 14 号字算的），
+        //   字号一大内容就顶出窗口底部。现在客户区高度直接取「最后一个控件底缘 +
+        //   边距」，再用 AdjustWindowRectEx 由客户区反推整窗尺寸（含标题栏）。
+        //   窗口还没 ShowWindow，这里 MoveWindow 不会闪。
+        let client_h = y + 30 + 18;
+        let frame_style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+        let mut frame = Rect {
+            left: 0,
+            top: 0,
+            right: crate::dpi::s(560),
+            bottom: crate::dpi::s(client_h),
+        };
+        AdjustWindowRectEx(&mut frame, frame_style, 0, 0);
+        let window_w = frame.right - frame.left;
+        let window_h = frame.bottom - frame.top;
+        let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN).max(480);
+        MoveWindow(
+            hwnd,
+            ((screen_w - window_w) / 2).max(0),
+            ((screen_h - window_h) / 2).max(0),
+            window_w,
+            window_h,
+            1,
         );
         // 初值：次数 + 选中的行为 + DISM 等待上限 + pause 最长等待。
         set_child_text(
@@ -631,10 +720,11 @@ pub(super) unsafe fn ask_settings_dialog(
     } else {
         "程序设置"
     });
-    // 客户区高度需要 ≈ 538（按钮底缘 508+30），总高 590 才不会被裁掉
-    //（项目此前在 460×268 上裁掉过「取消」按钮；2026-10-16 依次加了
-    // DISM 等待上限与 pause 最长等待两行，从 400 → 480 → 560；
-    // 2026-10-30 加界面字号一行 → 590）。
+    // ★ 2.6.83：这里的尺寸只是**初始占位**，真正的尺寸由 `WM_CREATE` 末尾按
+    //   实测内容高度算出来再 MoveWindow 居中（见 `window_proc_settings`）。
+    //   历史：项目此前在 460×268 上裁掉过「取消」按钮；2026-10-16 加 DISM 等待
+    //   上限与 pause 最长等待两行 → 400 → 480 → 560；2.6.81 加界面字号一行 → 590。
+    //   这一串数字每次加行都要手算，且字号一变就失效，所以 2.6.83 彻底改成实测。
     let screen_w = GetSystemMetrics(SM_CXSCREEN).max(640);
     let screen_h = GetSystemMetrics(SM_CYSCREEN).max(590);
     let dialog = CreateWindowExW(
@@ -642,10 +732,13 @@ pub(super) unsafe fn ask_settings_dialog(
         class_name.as_ptr(),
         caption.as_ptr(),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        (screen_w - 560) / 2,
-        (screen_h - 590) / 2,
-        560,
-        590,
+        // ★ 2.6.81：窗口尺寸必须和内部控件**一起**按 DPI 缩放。之前只缩放了控件
+        //   （它们走父模块的 `create_control`），窗口本身没缩放，200% 下控件被画到
+        //   窗口外面，右侧与底部内容全被切掉（用户 2026-10-30 截图反馈）。
+        (screen_w - crate::dpi::s(560)) / 2,
+        (screen_h - crate::dpi::s(590)) / 2,
+        crate::dpi::s(560),
+        crate::dpi::s(590),
         hwnd,
         null_mut(),
         instance,
