@@ -305,7 +305,10 @@ pub(crate) fn ui_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "operation") => "Operation",
         (Language::English, "source") => "Windows source",
-        (Language::English, "image") => "Image absolute path",
+        // 2.6.91：原为 "Image absolute path"，18 号字下需要 178 基准像素，
+        // 而标签列统一宽 150 → 文字被切掉 28 像素（100% 缩放下实测）。
+        // 中文「镜像绝对路径」只要 108，装得下；只有英文串超宽，故缩短。
+        (Language::English, "image") => "Image path",
         (Language::English, "target") => "Restore target",
         (Language::English, "index") => "WIM index",
         (Language::English, "menu") => "Secondary boot name",
