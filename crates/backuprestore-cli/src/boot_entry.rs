@@ -78,6 +78,41 @@ fn bcd(args: &[&str]) -> Result<String, TaskError> {
     Ok(text)
 }
 
+/// 某个 BCD 对象当前是否**真的存在**。
+///
+/// ★ 为什么不能用退出码：实测 `bcdedit /enum {已删对象}` **退出码仍为 0**，
+///   只输出本地化文案「没有匹配的对象或存储为空。」（英文 "The element data store
+///   is not present."）。判据只能是「输出里有没有 BCD 标识符」。
+///
+/// 用途（2026-10-30，v2.7.1）：续跑检测前确认任务的一次性启动项还在。
+/// 任务目录会随备份镜像进 WIM（排除表明确「`tasks\` 必须留在镜像里」做证据），
+/// 还原到新系统后本机会看到一个**别人的半截任务**——它的启动项只存在于原系统的 BCD 里，
+/// 此时弹「上次没跑完」的续跑框，用户点了必然失败。
+#[cfg(windows)]
+pub fn bcd_object_present(object: &str) -> bool {
+    // 空 GUID 会让 bcdedit 静默作用于 {default}（见本文件模块头的教训），先挡掉。
+    if object.trim().is_empty() {
+        return false;
+    }
+    let Ok(text) = bcd(&["/enum", object]) else {
+        return false;
+    };
+    // ★ 判据必须**与语言无关**：bcdedit 在中文 Windows 上输出 GBK，而 `bcd()` 是
+    //   `String::from_utf8_lossy` 解码——中文关键字（「标识符」）到这里已经是替换字符，
+    //   拿它做判据会**永远不匹配**，于是"存在的对象"也被判成不存在。
+    //   （2026-10-30 变异验证抓到：把启动项改成真实存在的 `{current}` 后，续跑框仍然不弹。）
+    //   改为「输出里有没有回显请求的那个对象」——找到时 `bcdedit` 一定在标识符行回显它，
+    //   找不到时只回一句「没有匹配的对象或存储为空」，不含请求串。
+    text.contains(object.trim())
+}
+
+/// 非 Windows 平台（单元测试在 macOS 上跑）：一律按「存在」处理，
+/// 保持与引入本判据之前完全相同的行为，避免把平台差异带进逻辑。
+#[cfg(not(windows))]
+pub fn bcd_object_present(_object: &str) -> bool {
+    true
+}
+
 /// 写操作（`/set`、`/copy`、`/delete`、`/bootsequence`）：直接调 bcdedit，判退出码。
 ///
 /// 这里一度绕过一圈「交给 `BackupRestore.exe bcd-set` 子进程代跑」，理由是以为

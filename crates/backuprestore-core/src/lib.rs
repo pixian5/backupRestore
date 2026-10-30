@@ -1765,6 +1765,51 @@ pub fn is_reparse_point(path: &Path) -> bool {
     }
 }
 
+/// 任务目录里的 `status.json` 是否已经处于**终态**（`success` / `failed`）。
+///
+/// 读不到、解析失败、字段缺失、目录里根本没有 `status.json` 一律按**非终态**处理
+/// —— 宁可多排掉一个目录（少备份一条"没跑完"的记录），也不要让半截任务进镜像：
+/// 它会带 1.4GB 的恢复环境镜像，并让还原后的新系统弹一个续不了的续跑框。
+fn task_stage_is_terminal(task_dir: &Path) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        stage: String,
+    }
+    let Ok(text) = fs::read_to_string(task_dir.join("status.json")) else {
+        return false;
+    };
+    let Ok(probe) = serde_json::from_str::<Probe>(&text) else {
+        return false;
+    };
+    matches!(probe.stage.as_str(), "success" | "failed")
+}
+
+/// 列出 `tasks` 目录里**还没跑完**的任务名（非终态），供捕获排除表使用。
+///
+/// 单独抽出来是为了能在 macOS 上单测：`build_capture_exclusions` 里那段被
+/// 「源卷与程序卷是否同一个」的判定把关，而那个判定在非 Windows 上恒为假
+/// —— 直接测整函数会得到空列表，把「逻辑错」误判成「平台不同」。
+fn pending_task_names(tasks_dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(tasks_dir) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if task_stage_is_terminal(&entry.path()) {
+            continue;
+        }
+        names.push(name);
+    }
+    names.sort();
+    names
+}
+
 pub fn build_capture_exclusions(source_root: &Path, self_exe_dir: Option<&Path>) -> Result<String, TaskError> {
     // 固定的根级可排除项（全部为 DISM 规范内的根路径锚定写法，无通配符）。
     // 注意：hiberfil.sys/pagefile.sys/swapfile.sys/\System Volume Information
@@ -1912,6 +1957,19 @@ pub fn build_capture_exclusions(source_root: &Path, self_exe_dir: Option<&Path>)
     {
         for file in SELF_DEPLOY_FILES {
             lines.push(format!("\\{rel}\\{file}"));
+        }
+        // ★ 2.7.2：**未完成任务的工作树不进镜像**。
+        //
+        // 背景：2026-10-24 拍板「`tasks\` 与 `logs\` 必须留在镜像里」——那是为了**证据**。
+        // 但未完成的任务不是证据，它同时带来两个坏处：
+        //   1) 每个任务目录里躺着 `original\Winre.wim`(679MB) + `stage\Winre.wim`(682MB)，
+        //      合计约 1.4GB 白烘进备份镜像；
+        //   2) 还原到新系统后，本机会看到一个**续不了的幽灵任务**（启动项只存在于原系统 BCD），
+        //      2026-10-18 实测：还原后开机就弹「上次没跑完」，点了必然失败。
+        //      2.7.2 已让续跑检测校验启动项（治标），这里再从源头不让它进镜像（治本）。
+        // 终态任务（success / failed）照旧保留——那才是"证据全留"要保的东西。
+        for name in pending_task_names(&exe_dir.join("tasks")) {
+            lines.push(format!("\\{rel}\\tasks\\{name}"));
         }
     }
 
@@ -3355,5 +3413,51 @@ mod tests {
             validate_volume_roles(&roles_image_conflict, Operation::Backup, &recovery),
             Err(VolumeRoleConflict::ImageOnRegisteredWinre)
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_exclusion_task_tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 2.7.2：非终态任务要被排除、终态任务要保留。
+    ///
+    /// 判据取向：**宁可多排**——读不到 status.json 也按非终态处理（见 `task_stage_is_terminal`）。
+    /// ★ 这里只测纯函数 `pending_task_names`，不走 `build_capture_exclusions`：
+    ///   后者有「源卷 == 程序卷」的守卫，在 macOS 上恒为假，直接测整函数会得到空列表，
+    ///   把「逻辑错」伪装成「平台不同」。
+    #[test]
+    fn pending_tasks_excluded_finished_kept() {
+        let tasks = std::env::temp_dir().join(format!(
+            "br-excl-tasks-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        for (id, stage) in [
+            ("done-1", Some(r#"{"stage":"success"}"#)),
+            ("fail-1", Some(r#"{"stage":"failed"}"#)),
+            ("busy-1", Some(r#"{"stage":"capturing"}"#)),
+            ("broken-1", None),
+        ] {
+            let dir = tasks.join(id);
+            fs::create_dir_all(&dir).unwrap();
+            if let Some(text) = stage {
+                fs::write(dir.join("status.json"), text).unwrap();
+            }
+        }
+
+        let pending = pending_task_names(&tasks);
+        assert_eq!(
+            pending,
+            vec!["broken-1".to_string(), "busy-1".to_string()],
+            "只应排除非终态：终态 success/failed 保留，读不到的按非终态排除"
+        );
+
+        let _ = fs::remove_dir_all(&tasks);
     }
 }

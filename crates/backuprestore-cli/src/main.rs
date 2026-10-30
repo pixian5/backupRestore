@@ -1166,6 +1166,8 @@ pub(crate) fn find_pending_boot_task() -> Result<Option<PendingResume>, TaskErro
     }
 
     let mut pending = Vec::new();
+    // 有任务记录、但 BCD 里已经没有它的一次性启动项 → 续不了，跳过（下面统一记日志）。
+    let mut skipped_without_entry: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tasks_root)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
@@ -1187,8 +1189,40 @@ pub(crate) fn find_pending_boot_task() -> Result<Option<PendingResume>, TaskErro
             && status.stage == task.status
             && task.task_id.eq_ignore_ascii_case(&task_id)
         {
+            // ★ 2.7.1：**这个任务的一次性启动项必须真的还在**，否则它续不了。
+            //
+            // 为什么会有"任务在、启动项没了"：任务目录随备份镜像进 WIM（排除表明确
+            // 「tasks\ 必须留在镜像里」做证据）。还原到新系统后，本机会看到一个
+            // **别人的半截任务** —— 它的启动项只存在于原系统的 BCD 里。旧代码不看这一条，
+            // 直接弹「上次没跑完的还原任务」，用户点了必然失败（2026-10-18 实测：
+            // 还原后开机就弹，继续时报错）。
+            //
+            // 判据不看退出码：`bcdedit /enum {已删对象}` 退出码仍为 0，见
+            // `boot_entry::bcd_object_exists` 的注释。
+            match read_json::<crate::boot_entry::ReBootEntry>(&entry.path().join("boot-entry.json")) {
+                Ok(record) if !record.loader_guid.trim().is_empty() => {
+                    if !crate::boot_entry::bcd_object_present(&record.loader_guid) {
+                        skipped_without_entry.push(task_id.clone());
+                        continue;
+                    }
+                }
+                // 没有簿记（旧任务）：保持引入本判据之前的行为，照旧视为可续跑。
+                _ => {}
+            }
             pending.push((task, entry.path()));
         }
+    }
+
+    // 被跳过的任务留一行日志：不弹框，但排查时能看出"这里本来是待续跑的"。
+    if !skipped_without_entry.is_empty() {
+        let log = workspace.join("logs").join("launcher-errors.log");
+        append_log(
+            &log,
+            &format!(
+                "Pending recovery skipped (boot entry no longer in BCD): {}",
+                skipped_without_entry.join(",")
+            ),
+        )?;
     }
 
     if pending.is_empty() {
