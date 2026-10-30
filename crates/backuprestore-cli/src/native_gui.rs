@@ -654,6 +654,9 @@ unsafe extern "system" {
         count: i32,
         size: *mut TextSize,
     ) -> i32;
+    /// 2.6.90：查 GDI **实际选中**的字体族名。`CreateFontW` 找不到字体会静默
+    /// 挑一个替代品，句柄照样有效——只有这个调用能把"到底用的是哪个字体"问出来。
+    fn GetTextFaceW(hdc: Handle, count: i32, name: *mut u16) -> i32;
     fn CreateFontW(
         height: i32,
         width: i32,
@@ -1034,6 +1037,49 @@ fn wide(value: &str) -> Vec<u16> {
 /// 字体随 DPI 变大（200% 下约 18px），而所有布局坐标仍按 96dpi 写死，文字会
 /// 溢出、按钮互压（2026-10-30 实测：顶栏按钮与入口按钮重叠）。布局缩放是下一
 /// 步；在那之前先把字体钉在 96dpi 基准上，保证 100% 与 200% 下布局一致。
+/// 界面字体的字重（400 = 常规）。2.6.88 起从 700 改成 400；单独提成常量是为了
+/// 让日志里报的字重和 `CreateFontW` 实际传的值不可能走岔。
+const GUI_FONT_WEIGHT: i32 = 400;
+
+/// GDI 本次实际选中的字体族名只记一次。
+static FONT_RESOLVED_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 把 GDI **实际选中**的字体族名写进 GUI 日志（每个进程一次）。
+///
+/// 为什么需要这一行：`CreateFontW` 找不到请求的字体时**不会失败**，会静默挑一个最接近
+/// 的替代品，返回的句柄照样有效。于是"代码里写着微软雅黑"和"屏幕上真的是微软雅黑"
+/// 是两件事，而且后者没有任何痕迹可查。
+/// 2026-10-30 就吃过这个亏：PE 里字体到底有没有生效，只能靠拆镜像 + 查注册表 + 看截图推断。
+/// 有了这行日志，字体被换掉（比如镜像精简了 `msyh.ttc`）能第一时间在日志里看到。
+unsafe fn log_resolved_font(state: &mut State) {
+    if FONT_RESOLVED_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let screen = GetDC(null_mut());
+    if screen.is_null() {
+        return;
+    }
+    let previous = SelectObject(screen, gui_font());
+    let mut buffer = [0u16; 64];
+    let written = GetTextFaceW(screen, buffer.len() as i32, buffer.as_mut_ptr());
+    SelectObject(screen, previous);
+    let _ = ReleaseDC(null_mut(), screen);
+    let face = if written > 1 {
+        let end = (written as usize - 1).min(buffer.len());
+        String::from_utf16_lossy(&buffer[..end])
+    } else {
+        String::from("<unreadable>")
+    };
+    append_gui_log(
+        state,
+        &format!(
+            "font: requested=\"Microsoft YaHei\" weight={GUI_FONT_WEIGHT} size={} -> GDI selected \"{face}\"",
+            crate::dpi::font_size()
+        ),
+    );
+}
+
 unsafe fn gui_font() -> Handle {
     // ★ 2.6.80：宋体（SimSun）→ 微软雅黑（Microsoft YaHei）。
     //   原因：用户反馈「字体看着不是特别清楚」。宋体是点阵/旧式字体，在 14px 下
@@ -1062,7 +1108,7 @@ unsafe fn gui_font() -> Handle {
         0,
         0,
         0,
-        400,
+        GUI_FONT_WEIGHT,
         0,
         0,
         0,
@@ -8039,6 +8085,8 @@ unsafe extern "system" fn window_proc(
         if !explicit_tab {
             select_operation(&mut *state_ptr, 0);
         }
+        // 记一行「GDI 到底选中了哪个字体」——静默回退是这套界面里最难查的一类问题。
+        log_resolved_font(&mut *state_ptr);
         // 测试钩子：仅在显式 --test-hook 参数下读取 C:\br-test.json（正常启动不读，
         // 避免残留 JSON 导致程序一启动就自动执行备份/还原并弹窗）
         {
