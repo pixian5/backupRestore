@@ -45,7 +45,7 @@ GUI 占了全项目 **22%** 的代码（`native_gui.rs` 11,010 行），但只�
 ## 用法
 
 ```bash
-tools/gui-check/run.sh              # 全矩阵：5 页签 × 中英 × 12/14/16/18 号（约 17 分钟）
+tools/gui-check/run.sh              # 全矩阵：5 页签 × 中英 × 12/14/16/18 号 + 错误码判据（实测 29 分钟）
 tools/gui-check/run.sh --quick      # 冒烟：1 个组合 + 错误码判据（约 1 分钟）
 BR_VM='Windows 11' tools/gui-check/run.sh
 ```
