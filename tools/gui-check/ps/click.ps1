@@ -11,7 +11,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
-public class GC {
+public class GCLK {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool EnumWindows(Cb cb, IntPtr l);
   public delegate bool Cb(IntPtr h, IntPtr l);
@@ -25,30 +25,42 @@ public class GC {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 }
 '@
-[void][GC]::SetProcessDPIAware()
+[void][GCLK]::SetProcessDPIAware()
 $script:win = [IntPtr]::Zero
-$cb = [GC+Cb]{
+$cb = [GCLK+Cb]{
   param([IntPtr]$h,[IntPtr]$l)
   $c = New-Object System.Text.StringBuilder 256
-  [void][GC]::GetClassNameW($h, $c, 256)
+  [void][GCLK]::GetClassNameW($h, $c, 256)
   if ($c.ToString() -eq $Class) { $script:win = $h; return $false }
   return $true
 }
-[void][GC]::EnumWindows($cb, [IntPtr]::Zero)
+[void][GCLK]::EnumWindows($cb, [IntPtr]::Zero)
 if ($script:win -eq [IntPtr]::Zero) { "CLICK=NO_WINDOW class=$Class"; '__END__'; exit 1 }
-$ctl = [GC]::GetDlgItem($script:win, $Id)
+$ctl = [GCLK]::GetDlgItem($script:win, $Id)
 if ($ctl -eq [IntPtr]::Zero) { "CLICK=NO_CONTROL id=$Id"; '__END__'; exit 1 }
-if (-not [GC]::IsWindowVisible($ctl)) { "CLICK=HIDDEN id=$Id"; '__END__'; exit 2 }
-$r = New-Object GC+RECT
-[void][GC]::GetWindowRect($ctl, [ref]$r)
+if (-not [GCLK]::IsWindowVisible($ctl)) { "CLICK=HIDDEN id=$Id"; '__END__'; exit 2 }
+$r = New-Object GCLK+RECT
+[void][GCLK]::GetWindowRect($ctl, [ref]$r)
 $x = [int](($r.L + $r.R) / 2); $y = [int](($r.T + $r.B) / 2)
-[void][GC]::SetForegroundWindow($script:win)
+# The coordinates MUST be sanity-checked. 2026-10-30: the type name in
+# New-Object was not renamed along with the class (RECT still resolved to
+# System.GC), so $r failed to construct and all four fields were 0 -- the click
+# landed at screen (0,0) while the script still reported CLICK=OK, and not a
+# single tab actually switched. Without this check the verdict keeps lying.
+# (Also: this file must stay ASCII-only -- PowerShell 5 reads BOM-less files as
+# ANSI, and non-ASCII bytes in a script can break parsing outright.)
+if ($r.R -le $r.L -or $r.B -le $r.T) {
+  "CLICK=BAD_RECT id=$Id rect=$($r.L),$($r.T),$($r.R),$($r.B)"
+  '__END__'
+  exit 3
+}
+[void][GCLK]::SetForegroundWindow($script:win)
 Start-Sleep -Milliseconds 400
-[void][GC]::SetCursorPos($x, $y)
+[void][GCLK]::SetCursorPos($x, $y)
 Start-Sleep -Milliseconds 200
-[GC]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
+[GCLK]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)
 Start-Sleep -Milliseconds 80
-[GC]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
+[GCLK]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
 Start-Sleep -Milliseconds 700
 "CLICK=OK id=$Id at=$x,$y"
 '__END__'
