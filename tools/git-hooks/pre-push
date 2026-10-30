@@ -117,4 +117,28 @@ else
     echo "[pre-push] 7/7 未找到 tools/test/source-guard.sh：跳过。"
 fi
 
-echo "[pre-push] OK：单测 / core clippy / 错误码同步 / 交叉编译 / Windows 测试目标编译 / 文档链接入库 / 源码静态守卫均通过，放行 push。"
+# ★ 2026-10-30 新增第 8 项（**默认关**）：GUI 判据。
+#   为什么默认关：全矩阵要 8 分钟，而绝大多数提交不动 GUI。
+#   为什么要有：GUI 占全项目 22% 的代码却只有 3 个单测，且 cfg(windows) 在 mac 侧零信息；
+#   改过 native_gui.rs 的提交必须能自证「没把别处挤坏」。
+#   开启方式：`BR_GUI_GATE=1 git push`（或 `BR_GUI_GATE=quick` 只跑一个组合，约 25 秒）。
+if [ -n "${BR_GUI_GATE:-}" ]; then
+    echo "[pre-push] 8/8 GUI 判据（BR_GUI_GATE=${BR_GUI_GATE}）"
+    if [ "${BR_GUI_GATE}" = "quick" ]; then
+        gui_out=$(bash tools/gui-check/run.sh --quick 2>&1)
+    else
+        gui_out=$(bash tools/gui-check/run.sh 2>&1)
+    fi
+    gui_rc=$?
+    printf '%s\n' "$gui_out" | grep -E '^(GUI_CHECK|RESULT=)' | tail -3
+    if [ "$gui_rc" = "2" ]; then
+        fail "GUI 判据通道抽风（rc=2，有组合记 SKIP）——这不是通过"
+    elif [ "$gui_rc" != "0" ]; then
+        printf '%s\n' "$gui_out" | grep -E '^  FAIL' | head -10
+        fail "GUI 判据变红（见上方 FAIL 行）"
+    fi
+else
+    echo "[pre-push] 8/8 GUI 判据未启用（需要时：BR_GUI_GATE=1 git push）"
+fi
+
+echo "[pre-push] OK：单测 / core clippy / 错误码同步 / 交叉编译 / Windows 测试目标编译 / 文档链接入库 / 源码静态守卫 / GUI 判据(可选) 均通过，放行 push。"

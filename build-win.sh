@@ -1,6 +1,6 @@
 #!/bin/bash
 # BackupRestore macOS 交叉编译 Windows ARM64 一键构建脚本
-# 用法：./build-win.sh [--deploy]
+# 用法：./build-win.sh [--deploy] [--gui-check]
 #   --deploy  构建后部署到 VM 唯一目标 H:\brwork（BackupRestore.exe / Recovery.exe
 #             / wimlib-imagex.exe / libwim-15.dll / winpe-winpeshl.ini 五件套）
 #
@@ -88,7 +88,20 @@ prl_exec_retry() {
   done
 }
 
-if [ "$1" = "--deploy" ]; then
+# ★ 2026-10-30：`--gui-check` 是**独立的可选门禁**，默认关（全矩阵约 8 分钟）：
+#   GUI 占全项目 22% 的代码却只有 3 个单测，且是 cfg(windows)，mac 侧编译为零信息。
+#   改过 native_gui.rs 就该跑它；同目录下 `--quick` 只跑一个组合（约 25 秒）做冒烟。
+#   判据本身在 tools/gui-check/（进仓库、可复跑），不要在别处另写一套。
+GUI_CHECK=0
+DEPLOY=0
+for arg in "$@"; do
+  case "$arg" in
+    --deploy) DEPLOY=1 ;;
+    --gui-check) GUI_CHECK=1 ;;
+  esac
+done
+
+if [ "$DEPLOY" = 1 ]; then
   echo ">> 部署到 VM Windows 11"
   # 部署全程用 SYSTEM 通道（prlctl exec 不加 --current-user），不依赖 VM 是否有
   # 交互登录会话来跑命令。共享盘用 UNC 路径 \\Mac\backupRestore 而非盘符 X:，
@@ -151,5 +164,16 @@ if [ "$1" = "--deploy" ]; then
     fi
   done
   echo ">> DEPLOYED SHA256=$HOST_SHA wimlib=$WIMLIB_EXE_SHA/$WIMLIB_DLL_SHA"
+fi
+
+if [ "$GUI_CHECK" = 1 ]; then
+  echo ">> GUI 判据（tools/gui-check）"
+  if bash tools/gui-check/run.sh; then
+    echo ">> GUI_CHECK 通过"
+  else
+    rc=$?
+    echo ">> GUI_CHECK 未通过（退出码 $rc：1=判据变红 2=通道抽风记 SKIP）" >&2
+    exit "$rc"
+  fi
 fi
 echo ">> 完成"
