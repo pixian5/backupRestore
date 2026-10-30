@@ -128,7 +128,10 @@ const MB_SETFOREGROUND: u32 = 0x0001_0000;
 /// 写法与 `native_gui.rs` 既有窗口类一致（小整数当 hbrBackground 传，系统自动取画刷）。
 const CLASS_BACKGROUND_BRUSH: Hwnd = 6usize as Hwnd;
 const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
-const FW_BOLD: i32 = 700;
+/// 2.6.88：界面字体统一「微软雅黑不加粗」，进度窗也跟随。
+/// 原来这里有个 `FW_BOLD = 700`，给阶段标题和按钮加粗用；现在一律常规字重。
+/// 常量保留成 400 而不是删掉，是为了让 `create_font` 的字重参数一眼可读。
+const FW_NORMAL: i32 = 400;
 const CLEARTYPE_QUALITY: u32 = 5;
 
 /// 暂停总上限（秒）。0 = 不限制（**默认**）。
@@ -544,7 +547,9 @@ unsafe fn release_tracked_fonts() {
     }
 }
 
-fn create_font(height: i32, bold: bool) -> Hwnd {
+fn create_font(height: i32, _bold: bool) -> Hwnd {
+    // 2.6.88：`_bold` 已不生效——用户要求「字体都改成微软雅黑不加粗」。
+    // 保留参数是为了不改十几处调用点（传 true 的地方原来是要加粗的）。
     // ★ 2.6.81：字号随 DPI 缩放（调用方传负值，如 -30 → 200% 下 -60）。
     //   这是本模块唯一的字体入口，改一处即覆盖进度窗与详细日志窗的全部字号。
     let face = encode("Microsoft YaHei");
@@ -554,7 +559,7 @@ fn create_font(height: i32, bold: bool) -> Hwnd {
             0,
             0,
             0,
-            if bold { FW_BOLD } else { 0 },
+            FW_NORMAL,
             0,
             0,
             0,
