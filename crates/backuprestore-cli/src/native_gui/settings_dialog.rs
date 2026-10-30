@@ -96,19 +96,107 @@ unsafe extern "system" fn window_proc_settings(
         //   控件的背景盖掉半截（2026-10-30 实测）。为什么只能实测见父模块
         //   `measure_text` 的注释。
         let left = 24;
-        let content_width = 500;
-        let indent_left = 46;
-        let indent_width = 480;
+        /// 右侧留白，与左边距对称。
+        const RIGHT_MARGIN: i32 = 24;
+        /// 窗口客户区宽度的下限。560 是 2.6.80~2.6.83 一直用的值，留着它 = 中文
+        /// 界面在默认字号下窗口大小不变，只有真的装不下时才变宽。
+        const MIN_CLIENT_WIDTH: i32 = 560;
+        /// 编辑框行里，编辑框本身的宽、标签与编辑框之间、编辑框与后缀之间的间距。
+        const EDIT_WIDTH: i32 = 56;
+        const LABEL_TO_EDIT: i32 = 12;
+        const EDIT_TO_SUFFIX: i32 = 10;
+        /// 单选按钮前面的圆点占位（`BS_AUTORADIOBUTTON` 自己画的，不属于文字宽度）。
+        const RADIO_DOT: i32 = 22;
+        /// 字号下拉框宽度。
+        const FONT_COMBO_WIDTH: i32 = 180;
         let line = crate::dpi::line_height();
         let mut y = 20;
 
-        // ── 第一行：连续失败次数 ────────────────────────────────────────
+        // ── 第一遍：先把所有文案定下来，只为算「窗口要多宽」────────────
+        // ★ 2.6.84：窗口宽度不再写死 560。
+        //   写死宽度在「英文 + 18 号字」下装不下
+        //   「Maximum wait when paused in the recovery environment」这一行——
+        //   2.6.83 是靠 `clamp(80, 280)` 把标签宽度硬卡住的，代价是英文标签被切字。
+        //   现在先按**单行**内容算出需要的宽度（说明文字会折行，不参与），
+        //   再用这个宽度去量每块说明文字的高度：两遍，不构成循环依赖。
         let threshold_label = if english {
             "After the recovery environment fails"
         } else {
             "恢复环境连续失败"
         };
         let threshold_suffix = if english { "times:" } else { "次后：" };
+        let threshold_hint = if english {
+            "Enter 1-20 (default 3)."
+        } else {
+            "可填 1–20，默认 3。"
+        };
+        let auto_label = auto.label(ml);
+        let auto_detail = auto.detail(ml);
+        let pause_label = pause.label(ml);
+        let pause_detail = pause.detail(ml);
+        let dism_label = if english {
+            "Maximum wait for DISM"
+        } else {
+            "DISM 最长等待"
+        };
+        let dism_suffix = if english {
+            "seconds (0 = unlimited)"
+        } else {
+            "秒（0=不限制）"
+        };
+        let dism_hint = crate::dism_timeout::hint(ml);
+        let pause_wait_label = if english {
+            "Maximum wait when paused in the recovery environment"
+        } else {
+            "暂停在恢复环境时最长等待"
+        };
+        let pause_wait_suffix = if english {
+            "seconds (0 = wait indefinitely)"
+        } else {
+            "秒（0=一直等）"
+        };
+        let pause_wait_hint = if english {
+            "Only applies to the \"pause\" option above. After the limit expires the program runs the same cleanup as \"Yes\" and reboots to Windows. Leave 0 to wait indefinitely (the previous behaviour)."
+        } else {
+            "只对上面选「暂停在恢复环境」时生效。超时后程序执行与「是」完全相同的清理并重启回正常 Windows。填 0 = 一直等（与旧版一致）。"
+        };
+        let saved_note = if english {
+            "Saved to BackupRestore.settings.ini next to the program. It applies to tasks created afterwards; existing tasks keep the setting they were created with."
+        } else {
+            "设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效；已有任务沿用创建时的设置。"
+        };
+        let font_hint = if english {
+            "Interface font size:"
+        } else {
+            "界面字号："
+        };
+        // 一行「标签 + 编辑框 + 后缀」占多宽。`.max(80)` / `.max(60)` 与下面创建
+        // 控件时用的下限保持一致，否则两者会算出不同的宽度。
+        let edit_row_width = |label: &str, suffix: &str| {
+            left + measure_text_width(label).max(80)
+                + LABEL_TO_EDIT
+                + EDIT_WIDTH
+                + EDIT_TO_SUFFIX
+                + measure_text_width(suffix).max(60)
+        };
+        let needed = edit_row_width(threshold_label, threshold_suffix)
+            .max(edit_row_width(dism_label, dism_suffix))
+            .max(edit_row_width(pause_wait_label, pause_wait_suffix))
+            .max(left + RADIO_DOT + measure_text_width(auto_label))
+            .max(left + RADIO_DOT + measure_text_width(pause_label))
+            .max(left + measure_text_width(font_hint) + LABEL_TO_EDIT + FONT_COMBO_WIDTH);
+        // 再宽也不能超出屏幕：留 80 的余量，免得窗口左右两侧都跑到屏幕外。
+        let screen_client_max =
+            (crate::dpi::unscale(GetSystemMetrics(SM_CXSCREEN)) - 80).max(MIN_CLIENT_WIDTH);
+        let client_width = (needed + RIGHT_MARGIN)
+            .max(MIN_CLIENT_WIDTH)
+            .min(screen_client_max);
+        // 说明文字的可用宽度 / 缩进块（单选按钮的说明比标题右缩 22）。
+        let content_width = client_width - left - RIGHT_MARGIN;
+        let indent_left = left + 22;
+        let indent_width = content_width - 22;
+
+        // ── 第一行：连续失败次数 ────────────────────────────────────────
         let threshold_label_width = measure_text_width(threshold_label).max(80);
         create_control(
             hwnd,
@@ -138,18 +226,16 @@ unsafe extern "system" fn window_proc_settings(
             "STATIC",
             threshold_suffix,
             0,
-            threshold_edit_x + 66,
+            threshold_edit_x + EDIT_WIDTH + EDIT_TO_SUFFIX,
             y,
-            160,
+            // ★ 2.6.84：后缀宽度也必须实测。原来写死 160/220，中文够用，
+            //   英文 18 号字下「seconds (0 = wait indefinitely)」要 294 基准像素，
+            //   超出部分被 STATIC 直接裁掉（2026-10-30 判据实测 slack=-149）。
+            measure_text_width(threshold_suffix).max(60),
             line,
             0,
         );
         y += line + 10;
-        let threshold_hint = if english {
-            "Enter 1-20 (default 3)."
-        } else {
-            "可填 1–20，默认 3。"
-        };
         let height = measure_text_height(threshold_hint, content_width);
         create_control(
             hwnd,
@@ -164,7 +250,6 @@ unsafe extern "system" fn window_proc_settings(
         );
         y += height + 12;
         // ── 第二行：两种处理方式（标签 + 说明各自来自 failure_policy，单一来源）──
-        let auto_label = auto.label(ml);
         create_control(
             hwnd,
             "BUTTON",
@@ -177,7 +262,6 @@ unsafe extern "system" fn window_proc_settings(
             ID_SETTINGS_ACTION_AUTO,
         );
         y += line + 8;
-        let auto_detail = auto.detail(ml);
         let height = measure_text_height(auto_detail, indent_width);
         create_control(
             hwnd,
@@ -191,7 +275,6 @@ unsafe extern "system" fn window_proc_settings(
             ID_SETTINGS_DETAIL_AUTO,
         );
         y += height + 14;
-        let pause_label = pause.label(ml);
         create_control(
             hwnd,
             "BUTTON",
@@ -204,7 +287,6 @@ unsafe extern "system" fn window_proc_settings(
             ID_SETTINGS_ACTION_PAUSE,
         );
         y += line + 8;
-        let pause_detail = pause.detail(ml);
         let height = measure_text_height(pause_detail, indent_width);
         create_control(
             hwnd,
@@ -219,16 +301,6 @@ unsafe extern "system" fn window_proc_settings(
         );
         y += height + 16;
         // ── 第三行：DISM 等待上限（秒）。0 = 不限制 = 历史行为 ──────────
-        let dism_label = if english {
-            "Maximum wait for DISM"
-        } else {
-            "DISM 最长等待"
-        };
-        let dism_suffix = if english {
-            "seconds (0 = unlimited)"
-        } else {
-            "秒（0=不限制）"
-        };
         let dism_label_width = measure_text_width(dism_label).max(80);
         create_control(
             hwnd,
@@ -258,14 +330,16 @@ unsafe extern "system" fn window_proc_settings(
             "STATIC",
             dism_suffix,
             0,
-            dism_edit_x + 66,
+            dism_edit_x + EDIT_WIDTH + EDIT_TO_SUFFIX,
             y,
-            220,
+            // ★ 2.6.84：后缀宽度也必须实测。原来写死 160/220，中文够用，
+            //   英文 18 号字下「seconds (0 = wait indefinitely)」要 294 基准像素，
+            //   超出部分被 STATIC 直接裁掉（2026-10-30 判据实测 slack=-149）。
+            measure_text_width(dism_suffix).max(60),
             line,
             0,
         );
         y += line + 12;
-        let dism_hint = crate::dism_timeout::hint(ml);
         let height = measure_text_height(dism_hint, content_width);
         create_control(
             hwnd,
@@ -280,19 +354,10 @@ unsafe extern "system" fn window_proc_settings(
         );
         y += height + 16;
         // ── 第四行：`pause` 策略的最长等待秒数（只对「暂停」生效）────────
-        let pause_wait_label = if english {
-            "Maximum wait when paused in the recovery environment"
-        } else {
-            "暂停在恢复环境时最长等待"
-        };
-        let pause_wait_suffix = if english {
-            "seconds (0 = wait indefinitely)"
-        } else {
-            "秒（0=一直等）"
-        };
-        // 上限 280：英文文案在 18 号字下比这还长，放开就会把后缀挤到窗口外。
-        // 中文 11 个字在 18 号下约 200，正常用不到上限。
-        let pause_wait_label_width = measure_text_width(pause_wait_label).clamp(80, 280);
+        // ★ 2.6.84：这里原来写 `clamp(80, 280)` 兜底，因为窗口宽度写死 560，
+        //   英文长标签放开就会把后缀挤到窗口外。现在窗口宽度按内容算
+        //   （第一遍 `needed` 已把它算进去了），标签可以按实测值给足，不再截断。
+        let pause_wait_label_width = measure_text_width(pause_wait_label).max(80);
         create_control(
             hwnd,
             "STATIC",
@@ -321,18 +386,16 @@ unsafe extern "system" fn window_proc_settings(
             "STATIC",
             pause_wait_suffix,
             0,
-            pause_wait_edit_x + 66,
+            pause_wait_edit_x + EDIT_WIDTH + EDIT_TO_SUFFIX,
             y,
-            220,
+            // ★ 2.6.84：后缀宽度也必须实测。原来写死 160/220，中文够用，
+            //   英文 18 号字下「seconds (0 = wait indefinitely)」要 294 基准像素，
+            //   超出部分被 STATIC 直接裁掉（2026-10-30 判据实测 slack=-149）。
+            measure_text_width(pause_wait_suffix).max(60),
             line,
             0,
         );
         y += line + 12;
-        let pause_wait_hint = if english {
-            "Only applies to the \"pause\" option above. After the limit expires the program runs the same cleanup as \"Yes\" and reboots to Windows. Leave 0 to wait indefinitely (the previous behaviour)."
-        } else {
-            "只对上面选「暂停在恢复环境」时生效。超时后程序执行与「是」完全相同的清理并重启回正常 Windows。填 0 = 一直等（与旧版一致）。"
-        };
         let height = measure_text_height(pause_wait_hint, content_width);
         create_control(
             hwnd,
@@ -347,11 +410,6 @@ unsafe extern "system" fn window_proc_settings(
         );
         y += height + 16;
         // ── 保存位置说明（让用户知道改的是哪个文件、对哪些任务生效）──────
-        let saved_note = if english {
-            "Saved to BackupRestore.settings.ini next to the program. It applies to tasks created afterwards; existing tasks keep the setting they were created with."
-        } else {
-            "设置保存在程序目录的 BackupRestore.settings.ini，对之后创建的任务生效；已有任务沿用创建时的设置。"
-        };
         let height = measure_text_height(saved_note, content_width);
         create_control(
             hwnd,
@@ -366,11 +424,6 @@ unsafe extern "system" fn window_proc_settings(
         );
         y += height + 18;
         // ── 2.6.81：界面字号（用户自选）──────────────────────────────
-        let font_hint = if english {
-            "Interface font size:"
-        } else {
-            "界面字号："
-        };
         let font_hint_width = measure_text_width(font_hint).max(80);
         create_control(
             hwnd,
@@ -433,15 +486,20 @@ unsafe extern "system" fn window_proc_settings(
             add_combo_item(font_combo, label);
         }
         // ── 按钮行 ─────────────────────────────────────────────────
+        // ★ 2.6.84：按钮改成**贴着内容区右缘**（不再写死 330/434）。窗口按内容变宽时
+        //   按钮跟着右移，否则宽窗口下按钮会飘在中间。
         y += 10;
+        let button_width = 96;
+        let save_x = left + content_width - button_width;
+        let cancel_x = save_x - 8 - button_width;
         create_control(
             hwnd,
             "BUTTON",
             if english { "Cancel" } else { "取消" },
             WS_TABSTOP,
-            330,
+            cancel_x,
             y,
-            96,
+            button_width,
             30,
             ID_SETTINGS_CANCEL,
         );
@@ -450,9 +508,9 @@ unsafe extern "system" fn window_proc_settings(
             "BUTTON",
             if english { "Save" } else { "保存" },
             WS_TABSTOP | BS_DEFPUSHBUTTON,
-            434,
+            save_x,
             y,
-            96,
+            button_width,
             30,
             ID_SETTINGS_SAVE,
         );
@@ -460,13 +518,15 @@ unsafe extern "system" fn window_proc_settings(
         // ★ 2.6.82 只把窗口尺寸跟着 DPI 放大，高度仍写死 590（按 14 号字算的），
         //   字号一大内容就顶出窗口底部。现在客户区高度直接取「最后一个控件底缘 +
         //   边距」，再用 AdjustWindowRectEx 由客户区反推整窗尺寸（含标题栏）。
+        // ★ 2.6.84：宽度同理，用第一遍算出的 `client_width`，不再写死 560——
+        //   写死的宽度在「英文 + 18 号字」下装不下最长那行标签，只能靠截断兜底。
         //   窗口还没 ShowWindow，这里 MoveWindow 不会闪。
         let client_h = y + 30 + 18;
         let frame_style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
         let mut frame = Rect {
             left: 0,
             top: 0,
-            right: crate::dpi::s(560),
+            right: crate::dpi::s(client_width),
             bottom: crate::dpi::s(client_h),
         };
         AdjustWindowRectEx(&mut frame, frame_style, 0, 0);

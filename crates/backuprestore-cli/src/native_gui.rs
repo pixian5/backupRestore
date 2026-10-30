@@ -297,6 +297,13 @@ struct Rect {
     bottom: i32,
 }
 
+/// `SIZE`：`GetTextExtentPoint32W` 的输出（宽、高，单位是 DC 的逻辑像素）。
+#[repr(C)]
+struct TextSize {
+    cx: i32,
+    cy: i32,
+}
+
 #[repr(C)]
 struct SystemTime {
     year: u16,
@@ -641,6 +648,12 @@ unsafe extern "system" {
     fn CreateSolidBrush(color: u32) -> Handle;
     fn DeleteObject(object: Handle) -> i32;
     fn SelectObject(hdc: Handle, object: Handle) -> Handle;
+    fn GetTextExtentPoint32W(
+        hdc: Handle,
+        text: *const u16,
+        count: i32,
+        size: *mut TextSize,
+    ) -> i32;
     fn CreateFontW(
         height: i32,
         width: i32,
@@ -1114,8 +1127,38 @@ pub(crate) unsafe fn measure_text(
 
 /// 单行文字实测宽度（96dpi 基准像素）。用于「标签 + 输入框 + 后缀」这种
 /// 同行排布：标签宽度随文案和字号变，写死就会把输入框压住或者把后缀挤出去。
+///
+/// ## 为什么不用 `DrawTextW(DT_CALCRECT)` 量宽度
+///
+/// 2026-10-30 实测（200% 缩放、微软雅黑粗体）：`DT_CALCRECT` 报的宽度**比真实排版窄**，
+/// 而且窄多少**随字符串变**——强的窄 8 个基准像素（「还原数据到非 C 盘」报 298、实排 316），
+/// 弱的窄 20（「Interface font size:」报 170、实排 190）。先试着补一个固定 14，
+/// 结果仍然有两处各差 3~6 像素被判据抓到——固定补偿这条路走不通。
+///
+/// 所以宽度改用 `GetTextExtentPoint32W`：它就是排版时用来取字符串尺寸的那个接口，
+/// 配同一个字体、同一块屏幕 DC，量出来的值直接就是绘制宽度。
+///
+/// 高度仍然走 `measure_text`（`DT_CALCRECT|DT_WORDBREAK`）：那个方向没观察到偏差，
+/// 而且折行只有 `DrawText` 会算。
 pub(crate) unsafe fn measure_text_width(text: &str) -> i32 {
-    measure_text(text, 0, false).0
+    /// ClearType 取整可能差 1~2 像素，留一点余量，避免控件边框压住最后一个字。
+    const SAFETY: i32 = 4;
+    let font = gui_font();
+    let hdc = GetDC(null_mut());
+    if hdc.is_null() || font.is_null() {
+        return SAFETY;
+    }
+    let previous = SelectObject(hdc, font);
+    let wide = wide(text);
+    let mut size = TextSize { cx: 0, cy: 0 };
+    let ok = GetTextExtentPoint32W(hdc, wide.as_ptr(), wide.len() as i32 - 1, &mut size) != 0;
+    SelectObject(hdc, previous);
+    ReleaseDC(null_mut(), hdc);
+    DeleteObject(font);
+    if !ok {
+        return SAFETY;
+    }
+    crate::dpi::unscale(size.cx).max(0) + SAFETY
 }
 
 /// 多行文字实测高度（96dpi 基准像素），按 `width96` 折行。
@@ -1431,14 +1474,8 @@ unsafe fn set_operation_tabs(state: &State, language: Language) {
 unsafe fn layout_operation_tabs(state: &State) {
     /// 文字左右各留的空白：按钮边框 + 一点视觉呼吸。太窄会让字贴着边框。
     const TAB_SIDE_PADDING: i32 = 9;
-    /// ★ 给 `DrawTextW` 的 `DT_CALCRECT` **补一段实测偏窄量**。
-    ///
-    /// 2026-10-30 实测（200% 缩放、微软雅黑粗体）：同一段文字
-    /// `DT_CALCRECT` 报的宽度比 `GetTextExtentPoint32` 在真实排版字体上量的
-    /// **窄 8~9 个基准像素**（18 号字下「还原数据到非 C 盘」报 298、实排 316）。
-    /// 只按 `DT_CALCRECT` 加左右 9px，每侧实际只剩 2~3px，字体版本或 ClearType
-    /// 取整稍有差别就会切字。补 12 让每侧回到 10px 以上。
-    const CALCRECT_UNDER_REPORT: i32 = 12;
+    // 注：`measure_text_width` 走的是 `GetTextExtentPoint32W`，量出来的就是
+    // 真实绘制宽度（另加 4 px 防 ClearType 取整），这里只加视觉内边距。
     /// 相邻两个按钮之间的空隙。
     const TAB_GAP: i32 = 3;
     /// 最小宽度：「备份」这种两字文案也至少要有这么宽，否则看着不像按钮。
@@ -1467,19 +1504,13 @@ unsafe fn layout_operation_tabs(state: &State) {
     let label = GetDlgItem(state.root, 2001);
     if !label.is_null() {
         let text = get_text(label);
-        let width = (measure_text_width(&text)
-            + TAB_SIDE_PADDING * 2
-            + CALCRECT_UNDER_REPORT)
-            .max(40);
+        let width = (measure_text_width(&text) + TAB_SIDE_PADDING * 2).max(40);
         move_to(label, x, width);
         x += width + LABEL_GAP;
     }
     for button in state.controls.operation_tabs.iter() {
         let text = get_text(*button);
-        let width = (measure_text_width(&text)
-            + TAB_SIDE_PADDING * 2
-            + CALCRECT_UNDER_REPORT)
-            .max(TAB_MIN_WIDTH);
+        let width = (measure_text_width(&text) + TAB_SIDE_PADDING * 2).max(TAB_MIN_WIDTH);
         move_to(*button, x, width);
         x += width + TAB_GAP;
     }
