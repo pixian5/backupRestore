@@ -47,7 +47,12 @@ unsafe extern "system" fn window_proc_system_choice(
         // B 入口离线通道用通用文案（目标是数据卷，不是系统盘）；消费后立即复位，
         // 下一次（如备份/还原系统盘）回到默认系统盘文案。
         let generic_offline = CHOICE_GENERIC_OFFLINE.swap(false, std::sync::atomic::Ordering::SeqCst);
-        let font = GetStockObject(DEFAULT_GUI_FONT) as Handle;
+        // ★ 2.6.87：删掉「用系统字体覆盖」的那两行（原来在这里取
+        //   `GetStockObject(DEFAULT_GUI_FONT)` 再对每个控件 WM_SETFONT）。
+        //   `create_control` 内部已经用 `gui_font()`（雅黑 + 用户选定字号）设过字体，
+        //   这里再用系统字体覆盖回去，导致**这个弹窗的字号根本不跟随设置**、
+        //   字体族也跟其它窗口不一致（中文看着像宋体、笔画发虚）。
+        //   2026-10-30 截图确认：18 号设置下这个框仍是老样子。
         let body_text = if english {
             if generic_offline {
                 "Offline channel selected: the target volume will be formatted and receive the image after rebooting into PE or Windows RE. Choose how to proceed:"
@@ -59,18 +64,29 @@ unsafe extern "system" fn window_proc_system_choice(
         } else {
             "目标分区是当前正在运行的系统。系统分区的备份与还原必须在 PE 或 Windows RE 中离线执行。请选择处理方式："
         };
-        let body = create_control(
+        // 正文高度按当前字号实测：换字体后文案会折成更多行，写死 78 会把
+        // 最后一行切掉（英文 18 号要 5 行 = 105 基准像素）。
+        const MARGIN: i32 = 30;
+        const CONTENT_W: i32 = 400;
+        const BTN_H: i32 = 42;
+        const BTN_GAP: i32 = 8;
+        // +8：`DrawText` 的 DT_CALCRECT 高度与真实排版可能差 1~2 像素，
+        // 正好贴住时最后一行的下缘（尤其降部，如「返」「y」）会被切。
+        // 判据实测：不加时中文 18 号 slack=0、中文 14 号 slack=1。
+        let body_height = measure_text_height(body_text, CONTENT_W) + 8;
+        create_control(
             hwnd,
             "STATIC",
             body_text,
             0,
-            30,
+            MARGIN,
             24,
-            400,
-            78,
+            CONTENT_W,
+            body_height,
             ID_CHOICE_BODY,
         );
-        let btn_pe = create_control(
+        let mut y = 24 + body_height + 16;
+        create_control(
             hwnd,
             "BUTTON",
             if english {
@@ -79,13 +95,14 @@ unsafe extern "system" fn window_proc_system_choice(
                 "进入 PE（推荐）"
             },
             WS_TABSTOP | BS_DEFPUSHBUTTON,
-            30,
-            112,
-            400,
-            42,
+            MARGIN,
+            y,
+            CONTENT_W,
+            BTN_H,
             ID_CHOICE_PE,
         );
-        let btn_re = create_control(
+        y += BTN_H + BTN_GAP;
+        create_control(
             hwnd,
             "BUTTON",
             if english {
@@ -94,27 +111,48 @@ unsafe extern "system" fn window_proc_system_choice(
                 "进入 Windows RE"
             },
             WS_TABSTOP,
-            30,
-            162,
-            400,
-            42,
+            MARGIN,
+            y,
+            CONTENT_W,
+            BTN_H,
             ID_CHOICE_RE,
         );
-        let btn_cancel = create_control(
+        y += BTN_H + BTN_GAP;
+        create_control(
             hwnd,
             "BUTTON",
             if english { "Cancel" } else { "取消" },
             WS_TABSTOP,
-            30,
-            212,
-            400,
-            42,
+            MARGIN,
+            y,
+            CONTENT_W,
+            BTN_H,
             ID_CHOICE_CANCEL,
         );
-        SendMessageW(body, WM_SETFONT, font as WParam, 1);
-        SendMessageW(btn_pe, WM_SETFONT, font as WParam, 1);
-        SendMessageW(btn_re, WM_SETFONT, font as WParam, 1);
-        SendMessageW(btn_cancel, WM_SETFONT, font as WParam, 1);
+        // 整窗尺寸按内容反推并居中。
+        // ★ 原来窗口写死 460×320 且居中算法写成 `(屏幕宽 − 460)/2`——屏幕宽是
+        //   物理像素、460 是基准像素，200% 下窗口实际 920 宽，于是整体偏右 230。
+        let client_w = MARGIN * 2 + CONTENT_W;
+        let client_h = y + BTN_H + 24;
+        let mut frame = Rect {
+            left: 0,
+            top: 0,
+            right: crate::dpi::s(client_w),
+            bottom: crate::dpi::s(client_h),
+        };
+        AdjustWindowRectEx(&mut frame, WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0);
+        let window_w = frame.right - frame.left;
+        let window_h = frame.bottom - frame.top;
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        MoveWindow(
+            hwnd,
+            ((screen_w - window_w) / 2).max(0),
+            ((screen_h - window_h) / 2).max(0),
+            window_w,
+            window_h,
+            1,
+        );
         return 0;
     }
     if message == WM_KEYDOWN && w_param as u32 == VK_ESCAPE {
@@ -214,8 +252,10 @@ pub(super) unsafe fn ask_system_drive_handler(hwnd: Hwnd, language: Language) ->
         class_name.as_ptr(),
         caption.as_ptr(),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        (screen_w - 460) / 2,
-        (screen_h - 320) / 2,
+        // 这两个值只是占位：真正的尺寸与居中在 `WM_CREATE` 末尾按内容算完再
+        // MoveWindow。这里必须也用 `dpi::s` 换算，否则 200% 下会先闪一下偏右的窗口。
+        (screen_w - crate::dpi::s(460)) / 2,
+        (screen_h - crate::dpi::s(320)) / 2,
         crate::dpi::s(460),
         crate::dpi::s(320),
         hwnd,
@@ -275,24 +315,36 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
     if message == WM_CREATE {
         let english = INVALID_PATH_LANGUAGE.load(std::sync::atomic::Ordering::SeqCst) == 1;
         let empty = INVALID_PATH_EMPTY.load(std::sync::atomic::Ordering::SeqCst);
-        let font = GetStockObject(DEFAULT_GUI_FONT) as Handle;
-        let body = create_control(
+        // ★ 2.6.87：同上，删掉用系统字体覆盖的两行——`create_control` 已经用
+        //   `gui_font()` 设过字体，再覆盖回 `DEFAULT_GUI_FONT` 会让这个弹窗
+        //   不跟随用户的「界面字号」，字体族也与其它窗口不一致。
+        let body_text = match (english, empty) {
+            (true, true) => "The image absolute path has not been entered yet.\n\nClick [Choose image location] to select a file, or [Cancel] to return.",
+            (true, false) => "The image absolute path is invalid.\n\nClick [Choose image location] to select a file, or [Cancel] to return.",
+            (false, true) => "尚未输入镜像绝对路径。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
+            (false, false) => "镜像绝对路径无效。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
+        };
+        const MARGIN: i32 = 30;
+        const CONTENT_W: i32 = 400;
+        const BTN_H: i32 = 42;
+        const BTN_GAP: i32 = 10;
+        // +8：`DrawText` 的 DT_CALCRECT 高度与真实排版可能差 1~2 像素，
+        // 正好贴住时最后一行的下缘（尤其降部，如「返」「y」）会被切。
+        // 判据实测：不加时中文 18 号 slack=0、中文 14 号 slack=1。
+        let body_height = measure_text_height(body_text, CONTENT_W) + 8;
+        create_control(
             hwnd,
             "STATIC",
-            match (english, empty) {
-                (true, true) => "The image absolute path has not been entered yet.\n\nClick [Choose image location] to select a file, or [Cancel] to return.",
-                (true, false) => "The image absolute path is invalid.\n\nClick [Choose image location] to select a file, or [Cancel] to return.",
-                (false, true) => "尚未输入镜像绝对路径。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
-                (false, false) => "镜像绝对路径无效。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
-            },
+            body_text,
             0,
-            30,
+            MARGIN,
             24,
-            400,
-            64,
+            CONTENT_W,
+            body_height,
             0,
         );
-        let btn_choose = create_control(
+        let mut y = 24 + body_height + 16;
+        create_control(
             hwnd,
             "BUTTON",
             if english {
@@ -301,26 +353,46 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
                 "选择镜像位置"
             },
             WS_TABSTOP | BS_DEFPUSHBUTTON,
-            30,
-            104,
-            400,
-            42,
+            MARGIN,
+            y,
+            CONTENT_W,
+            BTN_H,
             ID_CHOICE_CHOOSE_LOCATION,
         );
-        let btn_cancel = create_control(
+        y += BTN_H + BTN_GAP;
+        create_control(
             hwnd,
             "BUTTON",
             if english { "Cancel" } else { "取消" },
             WS_TABSTOP,
-            30,
-            156,
-            400,
-            42,
+            MARGIN,
+            y,
+            CONTENT_W,
+            BTN_H,
             ID_CHOICE_PATH_CANCEL,
         );
-        SendMessageW(body, WM_SETFONT, font as WParam, 1);
-        SendMessageW(btn_choose, WM_SETFONT, font as WParam, 1);
-        SendMessageW(btn_cancel, WM_SETFONT, font as WParam, 1);
+        // 整窗尺寸按内容反推并居中（原来写死 460×220，且居中混用了物理与基准像素）。
+        let client_w = MARGIN * 2 + CONTENT_W;
+        let client_h = y + BTN_H + 24;
+        let mut frame = Rect {
+            left: 0,
+            top: 0,
+            right: crate::dpi::s(client_w),
+            bottom: crate::dpi::s(client_h),
+        };
+        AdjustWindowRectEx(&mut frame, WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0);
+        let window_w = frame.right - frame.left;
+        let window_h = frame.bottom - frame.top;
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        MoveWindow(
+            hwnd,
+            ((screen_w - window_w) / 2).max(0),
+            ((screen_h - window_h) / 2).max(0),
+            window_w,
+            window_h,
+            1,
+        );
         return 0;
     }
     if message == WM_KEYDOWN && w_param as u32 == VK_ESCAPE {
@@ -397,8 +469,8 @@ pub(super) unsafe fn ask_invalid_image_path(hwnd: Hwnd, language: Language, empt
         class_name.as_ptr(),
         caption.as_ptr(),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        (screen_w - 460) / 2,
-        (screen_h - 260) / 2,
+        (screen_w - crate::dpi::s(460)) / 2,
+        (screen_h - crate::dpi::s(260)) / 2,
         crate::dpi::s(460),
         crate::dpi::s(260),
         hwnd,

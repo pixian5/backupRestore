@@ -209,7 +209,9 @@ const ID_TARGET_DETAILS: usize = 2013;
 const OFN_PATHMUSTEXIST: u32 = 0x00000800;
 const OFN_FILEMUSTEXIST: u32 = 0x00001000;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-const DEFAULT_GUI_FONT: i32 = 17;
+// 2.6.87：`DEFAULT_GUI_FONT` 常量已删除。原来两个「选择」弹窗用它取系统字体
+// 再覆盖 `create_control` 设好的雅黑，导致那两个弹窗的字号不跟随设置。
+// 现在全仓统一走 `gui_font()`，不要再引入系统字体。
 // Edit control messages: EM_SETLIMITTEXT with a zero limit on a multiline EDIT
 // lifts the default 32,767 character cap, which silently truncated the tail of
 // the information report (the 按钮边界 section never reached the screen).
@@ -454,10 +456,8 @@ unsafe extern "system" {
     fn GetAsyncKeyState(key: i32) -> i16;
 }
 
-#[link(name = "gdi32")]
-unsafe extern "system" {
-    fn GetStockObject(index: i32) -> Handle;
-}
+// 2.6.87：这里原来的 `GetStockObject` 声明已删除（唯一的两处调用是那两个
+// 「选择」弹窗拿系统字体覆盖雅黑，现已改为统一走 `gui_font()`）。
 
 #[link(name = "comdlg32")]
 unsafe extern "system" {
