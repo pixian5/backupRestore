@@ -219,6 +219,10 @@ const EM_SETLIMITTEXT: u32 = 0x00C5;
 const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_ELEVATION_CLASS: u32 = 20;
 const TTM_ADDTOOLW: u32 = 0x0432;
+/// WM_USER(0x0400) + 24：给气泡提示设最大宽度。
+/// ★ 2.6.98：**不设这个就没有折行** —— Win32 气泡默认把整段文案摊成一条横贯屏幕的细条，
+///   用户反馈的「只能显示一行」就是这个原因。单位是像素，调用处按 DPI 缩放。
+const TTM_SETMAXTIPWIDTH: u32 = 0x0418;
 const TTM_GETTOOLCOUNT: u32 = 0x040d;
 const TTF_IDISHWND: u32 = 0x0001;
 const TTF_SUBCLASS: u32 = 0x0010;
@@ -427,6 +431,7 @@ unsafe extern "system" {
     fn IsDlgButtonChecked(hwnd: Hwnd, id: i32) -> u32;
     fn GetWindowTextLengthW(hwnd: Hwnd) -> i32;
     fn GetWindowTextW(hwnd: Hwnd, text: *mut u16, max_count: i32) -> i32;
+    fn GetDlgCtrlID(hwnd: Hwnd) -> i32;
     fn GetClassNameW(hwnd: Hwnd, class_name: *mut u16, max_count: i32) -> i32;
     fn GetWindowThreadProcessId(hwnd: Hwnd, process_id: *mut u32) -> u32;
     fn MessageBoxW(hwnd: Hwnd, text: *const u16, caption: *const u16, flags: u32) -> i32;
@@ -898,6 +903,13 @@ fn audit_control_action(control_id: usize, notification: usize) {
     );
 }
 
+/// `EnumChildWindows` 回调：把子窗口句柄收集进 `l_param` 指向的 Vec。
+unsafe extern "system" fn collect_child_hwnd(hwnd: Hwnd, l_param: LParam) -> i32 {
+    let out = &mut *(l_param as *mut Vec<Hwnd>);
+    out.push(hwnd);
+    1
+}
+
 unsafe fn install_tooltips(state: &mut State) {
     if !state.tooltip.is_null() {
         DestroyWindow(state.tooltip);
@@ -922,6 +934,10 @@ unsafe fn install_tooltips(state: &mut State) {
         append_gui_log(state, "tooltip create failed (window null)");
         return;
     }
+    // ★ 2.6.98：气泡提示默认**不折行**。不设最大宽度时，长文案会摊成一条横贯屏幕的
+    //   细条（用户反馈「只能显示一行」）。这里给提示窗设上限宽度，comctl32 才会按词折行。
+    //   420 基准像素 ≈ 20 个中文字/宽度适中；按 DPI 缩放（200% 下 840 物理像素）。
+    SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, crate::dpi::s(420) as isize);
     let language = selected_language(state);
     let controls = [
         (state.controls.operation_tabs[0], "backup"),
@@ -983,9 +999,20 @@ unsafe fn install_tooltips(state: &mut State) {
             "cancel_pending",
         ),
         (GetDlgItem(state.root, ID_VIEW_LOGS as i32), "view_logs"),
+        // ★ 2.6.98：这两个之前漏挂了。`image_admin` 的文案早就写好了却没接上，
+        //   「安装 PE」页的启动项名称输入框则连文案都没有。
+        (
+            GetDlgItem(state.root, ID_IMAGE_ADMIN as i32),
+            "image_admin",
+        ),
+        (
+            GetDlgItem(state.root, ID_PE_NAME_EDIT as i32),
+            "pe_name_edit",
+        ),
     ];
     let mut added = 0usize;
     let mut missing = 0usize;
+    let mut attached: Vec<Hwnd> = Vec::new();
     for (control, key) in controls {
         if control.is_null() {
             missing += 1;
@@ -993,13 +1020,59 @@ unsafe fn install_tooltips(state: &mut State) {
         }
         let text = tooltip_text(language, key);
         add_tooltip(tooltip, state.root, control, text);
+        attached.push(control);
         added += 1;
     }
     let tool_count = SendMessageW(tooltip, TTM_GETTOOLCOUNT, 0, 0) as usize;
     append_gui_log(
         state,
         &format!(
-            "tooltips installed: added={added} missing={missing} tool_count={tool_count} balloon=true"
+            "tooltips installed: added={added} missing={missing} tool_count={tool_count} balloon=true wrap={} hwnd={}",
+            crate::dpi::s(420),
+            tooltip as usize
+        ),
+    );
+    // ★ 2.6.98：**提示覆盖审计**。枚举所有可交互子控件（按钮 / 编辑框 / 下拉框），
+    //   把没挂提示的按 `id:类名` 列进日志。用户问「还有哪些没提示」时，这个列表就是答案，
+    //   不用人肉数控件——而且每次启动都会重算，新增控件漏挂会立刻现形。
+    let mut children: Vec<Hwnd> = Vec::new();
+    EnumChildWindows(
+        state.root,
+        collect_child_hwnd,
+        &mut children as *mut Vec<Hwnd> as LParam,
+    );
+    let mut untipped: Vec<String> = Vec::new();
+    let (mut n_button, mut n_edit, mut n_combo) = (0usize, 0usize, 0usize);
+    for child in &children {
+        let mut buf = [0u16; 64];
+        let n = GetClassNameW(*child, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
+        let class = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+        match class.as_str() {
+            "Button" => n_button += 1,
+            "Edit" => n_edit += 1,
+            "ComboBox" => n_combo += 1,
+            _ => continue,
+        }
+        if attached.contains(child) {
+            continue;
+        }
+        untipped.push(format!("{}:{class}", GetDlgCtrlID(*child)));
+    }
+    // ★ 关键：把**候选数量**一起打出来。只报 untipped=0 是没有说服力的——
+    //   万一枚举根本没找到按钮（类名比较写错、控件还没创建），也会"成功报 0"。
+    //   候选总数 > 0 且 untipped=0 才算真的全覆盖。
+    append_gui_log(
+        state,
+        &format!(
+            "tooltip audit: children={} candidates(button={} edit={} combo={}) total_candidates={} tipped={} untipped={} [{}]",
+            children.len(),
+            n_button,
+            n_edit,
+            n_combo,
+            n_button + n_edit + n_combo,
+            attached.len(),
+            untipped.len(),
+            untipped.join(" ")
         ),
     );
     // Keep the tooltip handle alive by storing it in the state object. The

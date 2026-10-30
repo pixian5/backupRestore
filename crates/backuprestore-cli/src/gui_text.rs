@@ -81,6 +81,12 @@ pub(crate) fn tooltip_text(language: Language, key: &str) -> &'static str {
         (Language::Chinese, "pe_shortcut") => {
             "在桌面创建「打开 安装 PE」快捷方式，方便以后手动进入已安装的 PE 环境。"
         }
+        (Language::Chinese, "pe") => {
+            "安装 PE：把 PE 镜像装成启动项（RAM disk 或独立分区两种模式），重启即可进 PE。安装本身不改动现有系统分区，但硬盘模式会格式化你选的空闲分区。"
+        }
+        (Language::Chinese, "pe_name_edit") => {
+            "启动项名称：这条 PE 启动项在 Windows 启动菜单里显示的名字。留空会自动填默认名，可以按喜好改。"
+        }
         (Language::Chinese, "pe_mode_ram") => {
             "RAM disk 模式（适合临时验证）：PE 镜像临时复制到内存盘启动，不占用独立分区、不改变现有分区布局。"
         }
@@ -180,6 +186,12 @@ pub(crate) fn tooltip_text(language: Language, key: &str) -> &'static str {
         }
         (Language::English, "pe_shortcut") => {
             "Create an 'Open Installed PE' shortcut on the desktop for easy entry later."
+        }
+        (Language::English, "pe") => {
+            "Install PE: install the PE image as a boot entry (RAM disk or a dedicated partition) so you can reboot into PE. Installing does not touch the existing system partition, but hard-disk mode WILL FORMAT the spare partition you pick."
+        }
+        (Language::English, "pe_name_edit") => {
+            "Boot entry name: how this PE entry appears in the Windows boot menu. Leave it empty to use the default name, or rename it as you like."
         }
         (Language::English, "pe_mode_ram") => {
             "RAM disk mode (good for quick testing): the PE image is loaded into a memory drive, no partition used, existing layout untouched."
