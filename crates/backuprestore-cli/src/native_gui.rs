@@ -1733,8 +1733,19 @@ unsafe fn layout_operation(state: &State) {
     } else {
         0
     };
+    // 状态提示框的高度：9 行文字 + 边框与余量，随字号变。
+    // ★ 必须在这里先算出来：下面每一行的 y 都要让过它。
+    //   2.6.80 把基准字号 12→14 之后这个高度从 148 涨到 178，但 `image_y` 仍按
+    //   「status_y + 168」排（168 是「148 + 20 空隙」的老值），于是状态框把
+    //   「镜像绝对路径」那一行的顶部压住了 10 个基准像素（200% 下 20 物理像素）。
+    //   2026-10-30 用户截图指出「镜像绝对路径这一行顶部被稍微遮挡了」。
+    //   教训与 2.6.83 同源：**高度一改，靠它算出来的每一个 y 都得重新审视**。
+    let status_height = crate::dpi::text_block_height(9, 25);
     let status_y = last_details_y + 16 + pe_extra_y;
-    let image_y = status_y + 168;
+    // 状态框与下一行之间的空隙。原来是 20（= 168 − 148）；现在按实测高度算，
+    // 8 已经够呼吸，也少往下推一些，免得整窗底部贴到屏幕边。
+    let status_gap = 8;
+    let image_y = status_y + status_height + status_gap;
     let secondary_y = image_y + 34;
     // C（还原系统到非 C 盘）与「新增第二系统」的 verify_hash 复选框在
     // secondary_y+32（底缘 +56）——按钮行必须让过它，留 8px 间隙。
@@ -1755,7 +1766,8 @@ unsafe fn layout_operation(state: &State) {
     } else if image_visible {
         image_y + 40
     } else {
-        status_y + 168
+        // 「探测」页没有镜像行，按钮直接跟在状态框下面——同样必须让过实测高度。
+        status_y + status_height + status_gap
     };
 
     let reposition = |hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32| {
@@ -1917,7 +1929,8 @@ unsafe fn layout_operation(state: &State) {
     // 更长的内容（PE 页）靠 WS_VSCROLL 滚动——**宁可滚，也不要切半行**。
     // 此前 64 px 只够 4.2 行，第 5 行被切成半截。
     // 9 行 + 25（文本区比控件高少 14px，另留 11px 余量）；同样随字号变化。
-    let status_height = crate::dpi::text_block_height(9, 25);
+    // 高度在函数上半段就已经算好了（`status_height`）——下面几行的 y 都靠它定位，
+    // 所以不能只在这儿算。
     reposition(state.controls.status, 20, status_y, client_width - 40, status_height);
 
     // 「安装 PE」tab：行1 RAM disk 单选 + PE 目录路径（完整路径，同排）；
