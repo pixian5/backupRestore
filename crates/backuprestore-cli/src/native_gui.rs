@@ -1712,6 +1712,18 @@ unsafe fn set_operation_visibility(state: &State) {
 /// 一个 y 时，必须按**最坏宽度**（最小窗口 + 最长语言）核算，不能只看各自的起点。
 const TOP_BAR_Y: i32 = 18;
 
+/// 按文字实测给控件定宽：不少于 `floor`，并在测量值上加 12 px 余量。
+///
+/// ★ 2.6.92：主窗口原先有一批「按 14 号字调出来的固定宽度」控件（顶栏按钮、
+///   右侧小标签、按钮行），字号调到 18 号时文字会被切——最严重的是英文
+///   `Secondary boot name`：控件 100、文字要 189，切掉 89 像素。
+///   字号是用户在设置里可调的，所以宽度必须跟着文字走，不能写死。
+///   100% 与 200% 缩放下都成立（`measure_text_width` 返回的是 96dpi 基准值，
+///   `reposition` 再统一乘系数）。
+unsafe fn fit_width(text: &str, floor: i32) -> i32 {
+    (measure_text_width(text) + 12).max(floor)
+}
+
 unsafe fn layout_operation(state: &State) {
     let mut rect = Rect {
         left: 0,
@@ -1731,6 +1743,8 @@ unsafe fn layout_operation(state: &State) {
     // 放在这里而不是只在语言切换时调用，是因为**改字号**也要重排
     // （`apply_font_size` 也是走 `layout_operation`）。
     layout_operation_tabs(state);
+    // 2.6.92：下面多处要按文字实测定宽，语言在这里取一次。
+    let language = selected_language(state);
     let field_x = 180;
     let field_width = (client_width - field_x - 24).max(700);
     // ★ 高度按「**最坏行数 × 行距**」算，不能按某一页的行数算。
@@ -1840,13 +1854,18 @@ unsafe fn layout_operation(state: &State) {
     // 语言栏靠右显示：标签(55) + 间距(6) + combo(180)，combo 右缘 = 客户宽 - 20。
     // 创建时的静态坐标只对最小宽 1020 成立，这里按实际客户宽动态右对齐
     //（覆盖最大化/还原/拖拽改尺寸等所有窗口状态）。
+    // ★ 2.6.92：语言标签与下面四个顶栏按钮的宽度改成按文字实测——原来是按 14 号字
+    //   调出来的固定值（55 / 90 / 150 / 140 / 120），18 号字下分别被切
+    //   （最严重 `Cancel pending reboot`：150 装 198）。
+    //   顶栏是**右对齐链条**，加宽只会把整条链往左推，不会压到邻接控件。
+    let lang_label_w = fit_width(ui_text(language, "language"), 55);
     let lang_combo_w = 180;
-    let lang_total = 55 + 6 + lang_combo_w;
+    let lang_total = lang_label_w + 6 + lang_combo_w;
     reposition(
         GetDlgItem(state.root, ID_LANGUAGE_LABEL as i32),
         client_width - 20 - lang_total,
         TOP_BAR_Y + 7,
-        55,
+        lang_label_w,
         18,
     );
     reposition(
@@ -1857,7 +1876,7 @@ unsafe fn layout_operation(state: &State) {
         300,
     );
     // 「设置…」按钮紧靠语言栏左侧、同排右对齐（客户宽变化时一起跟随）。
-    let settings_w = 90;
+    let settings_w = fit_width(ui_text(language, "settings"), 90);
     let settings_x = client_width - 20 - lang_total - 8 - settings_w;
     reposition(
         GetDlgItem(state.root, ID_SETTINGS as i32),
@@ -1869,7 +1888,7 @@ unsafe fn layout_operation(state: &State) {
     // 「取消待重启任务」在「设置…」左侧，同排右对齐。
     // 2026-10-17 教训：这个按钮最初漏了这条重排，停留在创建坐标 760，把语言
     // 标签和 combo 压掉半个 —— 顶栏三个右对齐控件必须一起进 layout_operation。
-    let cancel_w = 150;
+    let cancel_w = fit_width(ui_text(language, "cancel_pending"), 150);
     let cancel_x = settings_x - 8 - cancel_w;
     reposition(
         GetDlgItem(state.root, ID_CANCEL_PENDING as i32),
@@ -1880,7 +1899,7 @@ unsafe fn layout_operation(state: &State) {
     );
     // 「备份文件管理…」在「取消待重启任务」左侧，同排右对齐（同一链条，
     // 漏了重排就会压在邻接控件上——2026-10-17 的教训对每个新顶栏按钮都成立）。
-    let image_admin_w = 140;
+    let image_admin_w = fit_width(ui_text(language, "image_admin"), 140);
     let image_admin_x = cancel_x - 8 - image_admin_w;
     reposition(
         GetDlgItem(state.root, ID_IMAGE_ADMIN as i32),
@@ -1890,7 +1909,7 @@ unsafe fn layout_operation(state: &State) {
         24,
     );
     // 「查看日志」在同一链条的最左端（同一个教训：新顶栏按钮必须进这条重排链）。
-    let view_logs_w = 120;
+    let view_logs_w = fit_width(ui_text(language, "view_logs"), 120);
     reposition(
         GetDlgItem(state.root, ID_VIEW_LOGS as i32),
         image_admin_x - 8 - view_logs_w,
@@ -2090,16 +2109,23 @@ unsafe fn layout_operation(state: &State) {
                 });
             set_text(dir_edit_hwnd, &format!("{default_drive}:\\BackupRestorePE"));
         }
+        // ★ 2.6.92：标签与浏览按钮改按实测宽度（18 号字下固定 110/80 会切）。
+        let pe_dir_label_text = if language == Language::English {
+            "PE folder path"
+        } else {
+            "PE 目录路径"
+        };
+        let pe_dir_label_w = fit_width(pe_dir_label_text, 110);
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_LABEL as i32),
             field_x + 270,
             mode_y,
-            110,
+            pe_dir_label_w,
             22,
         );
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_EDIT as i32),
-            field_x + 380,
+            field_x + 270 + pe_dir_label_w + 10,
             mode_y,
             200,
             24,
@@ -2108,9 +2134,9 @@ unsafe fn layout_operation(state: &State) {
         // ★ 2.6.80：按钮宽 60 → 80，给 14px 微软雅黑 Bold 的「浏览…」留出余量。
         reposition(
             GetDlgItem(state.root, ID_PE_DIR_BROWSE as i32),
-            field_x + 586,
+            field_x + 270 + pe_dir_label_w + 10 + 200 + 6,
             mode_y,
-            80,
+            fit_width(ui_text(language, "pe_dir_browse"), 80),
             24,
         );
         // 行3：「PE 启动项名称」（两种模式通用，始终显示）
@@ -2197,9 +2223,10 @@ unsafe fn layout_operation(state: &State) {
         300,
         24,
     );
+    // ★ 2.6.92：标签加宽后输入框跟着右移（否则英文 18 号下标签会压到输入框上）。
     reposition(
         state.controls.menu,
-        field_x + 500,
+        field_x + 390 + fit_width(ui_text(language, "menu"), 100) + 10,
         secondary_y,
         (field_width - 500).max(300),
         24,
@@ -2209,27 +2236,40 @@ unsafe fn layout_operation(state: &State) {
     reposition(GetDlgItem(state.root, 2014), 20, secondary_y + 2, 150, 24);
     reposition(state.controls.compress, field_x, secondary_y, 280, 220);
 
+    // ★ 2.6.92：这两个标签的宽度不能加（右边紧邻输入框，列宽固定 150），
+    //   但**高度**得按实测算：18 号字下「目标卷（镜像位置）」在 150 宽内会折成两行，
+    //   写死 40 会把第二行切掉（实测 h=40 / need=48，切 8 像素）。
+    // ★ 2.6.94：这里**不能**用 `measure_text_height` 算——布局这一段跑在
+    //   「字体尺寸已经改、但控件字体还没应用」的窗口期，量出来的是旧字号下的行数
+    //   （18 号字下实测量到 1 行 → 高度算成 40，而真实排版是 2 行 48，切掉半行）。
+    //   改成按「最坏 2 行 × 当前行距 + 8」直接算：行距本身跟随字号，与测量无关。
+    //   中英文在 150 宽内最多占 2 行（中文「目标卷（镜像位置）」9 字 = 162 > 150）。
+    let label_h = crate::dpi::text_block_height(2, 8).max(40);
+    let source_label_h = label_h;
+    let target_label_h = label_h;
     reposition(
         GetDlgItem(state.root, 2003),
         20,
         source_combo_y + 2,
         150,
-        40,
+        source_label_h,
     );
     reposition(
         GetDlgItem(state.root, 2005),
         20,
         target_combo_y + 2,
         150,
-        40,
+        target_label_h,
     );
     reposition(GetDlgItem(state.root, 2004), 20, image_y + 2, 150, 24);
     reposition(GetDlgItem(state.root, 2007), 20, secondary_y + 2, 150, 24);
+    // ★ 2.6.92：同上——固定 100 宽在 18 号字下装不下
+    //   中文「第二系统名称」108 / 英文 `Secondary boot name` 189。
     reposition(
         GetDlgItem(state.root, 2008),
         field_x + 500 - 110,
         secondary_y + 2,
-        100,
+        fit_width(ui_text(language, "menu"), 100),
         24,
     );
     // 备份 tab 第二行：索引名（左）+ 保留最近 N 个（右），位于压缩率行下方。
@@ -2242,27 +2282,39 @@ unsafe fn layout_operation(state: &State) {
         280,
         24,
     );
+    // ★ 2.6.92：这个标签原来固定 100 宽（14 号字调出来的），18 号字下
+    //   中文「保留最近 N 个」要 115、英文 `Keep latest N` 要 115 都被切。
+    //   标签按实测加宽后，右侧的计数框跟着右移，保证不压在一起。
+    let keep_label_x = field_x + 320;
+    let keep_label_w = fit_width(ui_text(language, "keep"), 100);
     reposition(
         GetDlgItem(state.root, 2016),
-        field_x + 320,
+        keep_label_x,
         index_name_y,
-        100,
+        keep_label_w,
         24,
     );
-    reposition(state.controls.keep, field_x + 430, index_name_y - 2, 80, 24);
-    for (id, x) in [
-        (ID_REFRESH, 20),
-        (ID_READ_IMAGE, 150),
-        (ID_CREATE_TASK, 280),
-        (ID_REFRESH_TASK, 410),
+    reposition(
+        state.controls.keep,
+        keep_label_x + keep_label_w + 10,
+        index_name_y - 2,
+        80,
+        24,
+    );
+    // ★ 2.6.92：这排按钮原来是固定 x（20/150/280/410）+ 固定宽（120/120/120/140），
+    //   18 号字下「刷新环境」120 装 178、「刷新任务状态」140 装 160 都被切。
+    //   改成按实测宽度**顺序排布**：宽度跟文字走，后面的按钮自然右移，
+    //   不再需要手工维护 x 常量（以前加一个按钮就要重算整排）。
+    let mut buttons_x = 20;
+    for (id, key, floor) in [
+        (ID_REFRESH, "refresh", 120),
+        (ID_READ_IMAGE, "read_image", 120),
+        (ID_CREATE_TASK, "create_task", 120),
+        (ID_REFRESH_TASK, "refresh_task", 140),
     ] {
-        reposition(
-            GetDlgItem(state.root, id as i32),
-            x,
-            buttons_y,
-            if id == ID_REFRESH_TASK { 140 } else { 120 },
-            28,
-        );
+        let w = fit_width(ui_text(language, key), floor);
+        reposition(GetDlgItem(state.root, id as i32), buttons_x, buttons_y, w, 28);
+        buttons_x += w + 10;
     }
     // 「安装 PE」tab 专属按钮（重启进入 PE / 创建快捷方式）：
     // 创建时使用固定坐标（560/710, 630），这里与通用按钮行同 y 对齐，
@@ -7987,7 +8039,9 @@ unsafe extern "system" fn window_proc(
             WS_TABSTOP,
             410,
             726,
-            60,
+            // ★ 2.6.96：60 是按 14 号字定的，18 号英文 `Browse…` 要 76 → 切 16。
+            //   这里只影响「PE 页未激活时的创建值」（激活后由 layout_operation 按实测重排）。
+            96,
             24,
             ID_PE_DIR_BROWSE,
         );
