@@ -6,12 +6,16 @@
 #     · 挂着的 WIM 会让下一次 `dism /Mount-Image` 撞车；
 #     · `diskpart assign letter=` 留下的**幽灵盘符**（`\DosDevices\V:`）会在删掉分区后
 #       继续弹「找不到磁盘」——用户为这类弹窗报过两次；
-#     · 遗留的 `*.vhdx` / 挂载目录会被后续脚本当成真实卷；
-#     · 卡住的提权 PowerShell 会把下一次 `prlctl exec` 一起拖住（曾卡满 40 秒）。
+#     · 滞留的 `*.vhdx` / 挂载目录会被后续脚本当成真实卷；
+#     · 卡住的提权 PowerShell 会把下一次 `prlctl exec` 一起拖住（曾卡满 40 秒）；
+#     · ★ 孤儿的**控制台宿主**（`conhost.exe` + `OpenConsole.exe`）：每次提权探测都会漏一对，
+#       父进程早没了、窗口却留在桌面上。2026-10-31 一次性清掉 **828 对**，屏幕被一叠黑窗糊满
+#       ——用户直接截图来问「怎么打开了这么多终端」。这一条以前完全没有判据。
 #
 # 用法：
 #   tools/vm/postflight.sh            # 只检查（默认，只读）
-#   tools/vm/postflight.sh clean      # 清掉**可安全自动清**的两类：卸载的 WIM、幽灵盘符
+#   tools/vm/postflight.sh clean      # 清掉**可安全自动清**的三类：卸载的 WIM、幽灵盘符、
+#                                     # 孤儿控制台宿主（父进程已消失的 conhost/OpenConsole）
 #                                     # 文件/目录只列出来，不代删（删文件风险不对等）
 #   BR_VM='Windows 11' tools/vm/postflight.sh
 #
@@ -66,6 +70,18 @@ if (\$mw -match 'No mounted images') { 'MOUNTED=0' } else { 'MOUNTED=1' }
 \$img | ForEach-Object { 'STRAY_IMG_ITEM=' + \$_.Name }
 \$ps = @(Get-Process powershell -ErrorAction SilentlyContinue)
 'PS_COUNT=' + \$ps.Count
+\$allp = @(Get-CimInstance Win32_Process)
+\$live = New-Object 'System.Collections.Generic.HashSet[int]'
+foreach (\$p in \$allp) { [void]\$live.Add([int]\$p.ProcessId) }
+\$orph = @(\$allp | Where-Object {
+    (\$_.Name -eq 'conhost.exe' -or \$_.Name -eq 'OpenConsole.exe') -and
+    (-not \$live.Contains([int]\$_.ParentProcessId)) })
+'ORPHAN_CONSOLE=' + \$orph.Count
+if (\$orph.Count -gt 0) {
+    \$old = (\$orph | Sort-Object CreationDate | Select-Object -First 1)
+    'ORPHAN_OLDEST_MIN=' + [int]((Get-Date) - \$old.CreationDate).TotalMinutes
+    'ORPHAN_SESSIONS=' + ((\$orph | Select-Object -ExpandProperty SessionId -Unique | Sort-Object) -join ',')
+}
 '__END__'
 "
 }
@@ -86,6 +102,9 @@ n_vhd=$(field STRAY_VHD)
 n_mnt=$(field STRAY_MNT)
 n_img=$(field STRAY_IMG)
 n_ps=$(field PS_COUNT)
+n_orphan=$(field ORPHAN_CONSOLE)
+orphan_old=$(field ORPHAN_OLDEST_MIN)
+orphan_sess=$(field ORPHAN_SESSIONS)
 
 say "ITEM=volumes status=info letters=$(field VOLS)"
 
@@ -132,6 +151,16 @@ else
   say "ITEM=stray_process status=pass count=${n_ps:-0}"
 fi
 
+# ★ 孤儿控制台宿主：窗口会留在桌面上（父进程没了、宿主却活着）。这不是 warn，是**残留**。
+if [ "${n_orphan:-0}" -gt 0 ] 2>/dev/null; then
+  say "ITEM=orphan_console status=fail count=$n_orphan oldest_min=${orphan_old:-?} sessions=${orphan_sess:-?} hint=window_leak_after_elevated_probe"
+  say "  >> 每调用一次提权 PowerShell 探测就可能漏一对 conhost/OpenConsole：父进程退出、窗口不关。"
+  say "  >> 攒到几百个就是一屏黑窗口。用 clean 模式可自动清（只杀父进程已消失的那些）。"
+  left=1
+else
+  say "ITEM=orphan_console status=pass count=0"
+fi
+
 if [ "$MODE" = "clean" ]; then
   if [ "$mounted" = "1" ]; then
     dirs=$(run_ps "
@@ -149,23 +178,60 @@ if [ "$MODE" = "clean" ]; then
       say "ACTION=reg_delete ghost_letter=$letter"
     done
   fi
+  # 孤儿控制台宿主：只杀「父进程已不存在」的那些，绝不碰还活着的控制台会话
+  if [ "${n_orphan:-0}" -gt 0 ] 2>/dev/null; then
+    killed=$(run_ps "
+\$allp = @(Get-CimInstance Win32_Process)
+\$live = New-Object 'System.Collections.Generic.HashSet[int]'
+foreach (\$p in \$allp) { [void]\$live.Add([int]\$p.ProcessId) }
+\$t = @(\$allp | Where-Object {
+    (\$_.Name -eq 'conhost.exe' -or \$_.Name -eq 'OpenConsole.exe') -and
+    (-not \$live.Contains([int]\$_.ParentProcessId)) })
+foreach (\$x in \$t) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction Stop } catch { } }
+'KILL_TARGETS=' + \$t.Count
+'__END__'
+")
+    say "ACTION=kill_orphan_console targets=$(printf '%s' "$killed" | grep -oE 'KILL_TARGETS=[0-9]+' | cut -d= -f2)"
+  fi
   # 复核：清理类动作必须**写完再读一遍**，不能只看动作执行成功
   if [ -f "$0" ]; then
     after=$(probe_state) || after=''
+    # ★ 必须剥 CR：PowerShell 出来是 CRLF，`GHOST=\r` 会让 `-z` 判空永远为假
+    #   → 明明干净却报 clean_verify status=fail（2026-10-31 实测踩到，上面 `state`
+    #   早就剥了，这里漏了，属于「同一个坑只堵了一半」）。
+    after=$(printf '%s' "$after" | tr -d '\r')
     g2=$(printf '%s' "$after" | grep -oE 'GHOST=[^ ]*' | head -1 | cut -d= -f2-)
     m2=$(printf '%s' "$after" | grep -oE 'MOUNTED=[^ ]*' | head -1 | cut -d= -f2-)
+    o2=$(printf '%s' "$after" | grep -oE 'ORPHAN_CONSOLE=[0-9]+' | head -1 | cut -d= -f2-)
     if [ -z "${g2:-}" ] && [ "$mounted" = "1" ]; then
       say "ITEM=clean_verify status=error reason=recheck_failed"
       say "POSTFLIGHT=error"
       exit 2
     fi
-    say "ITEM=clean_verify status=$([ -z "${g2:-}" ] && [ "${m2:-1}" = "0" ] && echo pass || echo fail) ghost_after=${g2:-none} mounted_after=${m2:-?}"
+    # 孤儿控制台：清过了就必须归零，否则说明「杀了但没死」（进程僵着），不能算清干净
+    if [ "${n_orphan:-0}" -gt 0 ] 2>/dev/null && [ "${o2:-?}" != "0" ]; then
+      say "ITEM=clean_verify status=fail reason=orphan_console_survived orphan_after=${o2:-unreadable}"
+      say "POSTFLIGHT=leftovers"
+      exit 1
+    fi
+    if [ -z "${g2:-}" ] && [ "${m2:-1}" = "0" ]; then
+      say "ITEM=clean_verify status=pass ghost_after=none mounted_after=0 orphan_after=${o2:-?}"
+    else
+      say "ITEM=clean_verify status=fail ghost_after=${g2:-none} mounted_after=${m2:-?} orphan_after=${o2:-?}"
+      say "  >> 清理动作报成功但复查没通过：**以复查值为准**，别以 ACTION 为准。"
+      left=1
+    fi
   fi
 fi
 
 if [ "$left" -gt 0 ]; then
   say "POSTFLIGHT=leftovers"
-  say "  >> 文件/目录类残留**不代删**（删文件风险不对等）：请按上面 detail 人工确认后删。"
+  if [ "${n_vhd:-0}" -gt 0 ] 2>/dev/null || [ "${n_mnt:-0}" -gt 0 ] 2>/dev/null || [ "${n_img:-0}" -gt 0 ] 2>/dev/null; then
+    say "  >> 文件/目录类残留**不代删**（删文件风险不对等）：请按上面 detail 人工确认后删。"
+  fi
+  if [ "${n_orphan:-0}" -gt 0 ] 2>/dev/null; then
+    say "  >> 进程类残留可自动清：tools/vm/postflight.sh clean"
+  fi
   exit 1
 fi
 say "POSTFLIGHT=clean"
