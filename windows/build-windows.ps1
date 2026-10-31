@@ -202,6 +202,14 @@ function Publish-Build {
         if (-not (Test-Path -LiteralPath $target.Path)) {
             throw "部署失败：$($target.Label) 未生成于 $($target.Path)"
         }
+        # ★ 2026-11-01：Copy-Item **保留源文件的 LastWriteTime**。而 cargo 是增量的——
+        #   源码没变时「Finished in 0.08s」，二进制的时间还是上一轮构建那一刻。
+        #   于是「提交后重新构建部署」这一步做完，部署件的 mtime 仍早于新提交，
+        #   preflight 的 deploy_freshness 会判「过期」——实测就这样假红过一次。
+        #   这里把时间改成「本次部署时刻」：这个字段的语义本来该是「这份内容是什么时候
+        #   放进运行目录的」，而不是「上一轮什么时候编译的」。内容是否最新由上面的
+        #   SHA-256 与刚构建出的二进制比对保证，与时间戳无关。
+        (Get-Item -LiteralPath $target.Path).LastWriteTime = Get-Date
     }
     # WinPE 的 winpeshl.ini 是仓库里的审计夹具，随运行目录一起放，便于人工比对。
     Copy-Item (Join-Path $PSScriptRoot 'winpe-winpeshl.ini') (Join-Path $WorkDir 'winpe-winpeshl.ini') -Force
