@@ -120,10 +120,11 @@ n_helper=$(field ELEVATED_HELPER)
 
 say "ITEM=volumes status=info letters=$(field VOLS)"
 
-left=0
+hard=0   # 文件/目录类残留：从不代删，只能人工确认
+soft=0   # 进程/注册表类：clean 模式能清，清完复查通过即视为已解决
 if [ "$mounted" = "1" ]; then
   say "ITEM=mounted_wim status=fail reason=still_mounted"
-  left=1
+  soft=1
 else
   say "ITEM=mounted_wim status=pass"
 fi
@@ -131,28 +132,28 @@ fi
 if [ -n "${ghost:-}" ]; then
   say "ITEM=ghost_letter status=fail letters=$ghost"
   say "  >> 这些盘符在注册表 MountedDevices 里，但对应卷已不存在（典型来源 diskpart assign letter）。"
-  left=1
+  soft=1
 else
   say "ITEM=ghost_letter status=pass"
 fi
 
 if [ "${n_vhd:-0}" -gt 0 ] 2>/dev/null; then
   say "ITEM=stray_vhd status=fail count=$n_vhd detail=$(printf '%s' "$state" | grep -oE 'STRAY_VHD_ITEM=[^ ]*' | cut -d= -f2- | tr '\n' ',')"
-  left=1
+  hard=1
 else
   say "ITEM=stray_vhd status=pass"
 fi
 
 if [ "${n_mnt:-0}" -gt 0 ] 2>/dev/null; then
   say "ITEM=stray_mount_dir status=fail count=$n_mnt detail=$(printf '%s' "$state" | grep -oE 'STRAY_MNT_ITEM=[^ ]*' | cut -d= -f2- | tr '\n' ',')"
-  left=1
+  hard=1
 else
   say "ITEM=stray_mount_dir status=pass"
 fi
 
 if [ "${n_img:-0}" -gt 0 ] 2>/dev/null; then
   say "ITEM=stray_image status=fail count=$n_img detail=$(printf '%s' "$state" | grep -oE 'STRAY_IMG_ITEM=[^ ]*' | cut -d= -f2- | tr '\n' ',')"
-  left=1
+  hard=1
 else
   say "ITEM=stray_image status=pass"
 fi
@@ -168,7 +169,7 @@ if [ "${n_orphan:-0}" -gt 0 ] 2>/dev/null; then
   say "ITEM=orphan_console status=fail count=$n_orphan oldest_min=${orphan_old:-?} sessions=${orphan_sess:-?} hint=window_leak_after_elevated_probe"
   say "  >> 每调用一次提权 PowerShell 探测就可能漏一对 conhost/OpenConsole：父进程退出、窗口不关。"
   say "  >> 攒到几百个就是一屏黑窗口。用 clean 模式可自动清（只杀父进程已消失的那些）。"
-  left=1
+  soft=1
 else
   say "ITEM=orphan_console status=pass count=0"
 fi
@@ -254,18 +255,26 @@ Remove-Item -LiteralPath 'C:\Users\Public\pkg\helper.pid' -ErrorAction SilentlyC
     else
       say "ITEM=clean_verify status=fail ghost_after=${g2:-none} mounted_after=${m2:-?} orphan_after=${o2:-?}"
       say "  >> 清理动作报成功但复查没通过：**以复查值为准**，别以 ACTION 为准。"
-      left=1
+      hard=1
     fi
   fi
 fi
 
-if [ "$left" -gt 0 ]; then
+# ★ 2026-11-01 修：之前这里只看一个 `left`，于是 clean 模式**清完、复查也过了**，
+#   仍然打印 POSTFLIGHT=leftovers、退出 1——清理明明成功却报残留（实测踩到：
+#   清掉 65 个孤儿后仍然 leftovers）。现在把两类分开：
+#     hard = 文件/目录类（不代删，必须人来）
+#     soft = 进程/注册表类（clean 能清；走到这里说明复查已通过，视为已解决）
+if [ "$MODE" = "clean" ]; then
+  soft=0
+fi
+if [ $((hard + soft)) -gt 0 ]; then
   say "POSTFLIGHT=leftovers"
-  if [ "${n_vhd:-0}" -gt 0 ] 2>/dev/null || [ "${n_mnt:-0}" -gt 0 ] 2>/dev/null || [ "${n_img:-0}" -gt 0 ] 2>/dev/null; then
+  if [ "$hard" -gt 0 ]; then
     say "  >> 文件/目录类残留**不代删**（删文件风险不对等）：请按上面 detail 人工确认后删。"
   fi
-  if [ "${n_orphan:-0}" -gt 0 ] 2>/dev/null; then
-    say "  >> 进程类残留可自动清：tools/vm/postflight.sh clean"
+  if [ "$soft" -gt 0 ]; then
+    say "  >> 进程/注册表类残留可自动清：tools/vm/postflight.sh clean"
   fi
   exit 1
 fi
