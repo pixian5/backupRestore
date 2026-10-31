@@ -102,6 +102,31 @@ vmps_elev() {
   printf ''; return 1
 }
 
+# 一次 prlctl 调用里顺序跑多个探测（每个子进程 -NoNewWindow 继承控制台）。
+#
+# ★★ 为什么：每一次 `prlctl exec --current-user powershell` 都漏一对
+#   conhost/OpenConsole（实测 2026-11-01：+1/次，提权与否一样——漏的是**客户端进程**）。
+#   一个主窗口组合原来要 7 次调用、一个辅助窗口 5 次。合并成批以后次数直接除以 4，
+#   泄漏也跟着少 4 倍（收尾还有 SYSTEM 通道清扫兜底）。
+#
+# 参数：一组 "脚本名|参数串"，用 ~~ 连接。任一条的输出没给 __END__ 都算通道没跑通。
+vmps_batch() {
+  local args=() i=0 spec out
+  # ★ 每个任务一个独立参数（-J1..-J5）。不要用分隔符塞进一个参数：实测 prlctl exec
+  #   会把 "@@" 整个吃掉、把 "~~" 变成空格，三个任务会静默并成一个（2026-11-01 踩过）。
+  for spec in "$@"; do
+    i=$((i+1))
+    args+=("-J$i" "$spec")
+  done
+  for _ in 1 2 3; do
+    out=$(prlctl exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass \
+          -File "${DST}\\batch.ps1" "${args[@]}" 2>&1)
+    case "$out" in *BATCH=*) printf '%s' "$out"; return 0 ;; esac
+    sleep 2
+  done
+  printf ''; return 1
+}
+
 num() { case "$1" in *"$2"*) : ;; esac; printf '%s' "${1#*"$2"}" | grep -oE '^[0-9]+' | head -1; }
 
 # ---- 判据 6：四个辅助窗口 ----
@@ -143,9 +168,11 @@ aux_pass() {
          aux_skipped=$((aux_skipped+1)); return 0 ;;
     esac
 
-    o_fit=$(vmps dlg-fit.ps1 -FontSize "$font" -Class "$cls") || o_fit=''
-    o_ov=$(vmps overlap-all.ps1 -Class "$cls" -MinControls "$minc") || o_ov=''
-    o_bot=$(vmps fit-bottom.ps1 -Class "$cls") || o_bot=''
+    # 三个测量合并成一次调用（原来 3 次 = 3 个泄漏点）
+    o_all=$(vmps_batch "dlg-fit.ps1|-FontSize $font -Class $cls" \
+                       "overlap-all.ps1|-Class $cls -MinControls $minc" \
+                       "fit-bottom.ps1|-Class $cls") || o_all=''
+    o_fit=$o_all; o_ov=$o_all; o_bot=$o_all
     # 无论量成没量成，都要把窗口关掉，否则后面全部卡住
     vmps_elev aux-close.ps1 -Class "$cls" >/dev/null 2>&1 || true
 
@@ -226,10 +253,14 @@ for combo in "${COMBOS[@]}"; do
     esac
     sleep 2
 
-    o_ov=$(vmps overlap-all.ps1 -Class BackupRestoreNativeGui) || { say "  SKIP $tag (overlap 通道没跑)"; skipped=$((skipped+1)); continue; }
-    o_fit=$(vmps dlg-fit.ps1 -FontSize "$FONT" -Class BackupRestoreNativeGui) || { say "  SKIP $tag (fit 通道没跑)"; skipped=$((skipped+1)); continue; }
-    o_bot=$(vmps fit-bottom.ps1 -Class BackupRestoreNativeGui) || { say "  SKIP $tag (bottom 通道没跑)"; skipped=$((skipped+1)); continue; }
-    o_tip=$(vmps tipaudit.ps1) || o_tip='CANDIDATES=NA UNTIPPED=NA'
+    # 四个测量合并成一次调用（原来 4 次 = 4 个泄漏点）。各自输出不变，
+    # 下面照旧按各自的键解析；缺键仍然 SKIP，不会落到默认 0 假装通过。
+    o_meas=$(vmps_batch "overlap-all.ps1|-Class BackupRestoreNativeGui" \
+                        "dlg-fit.ps1|-FontSize $FONT -Class BackupRestoreNativeGui" \
+                        "fit-bottom.ps1|-Class BackupRestoreNativeGui" \
+                        "tipaudit.ps1|") \
+      || { say "  SKIP $tag (measure 批次通道没跑)"; skipped=$((skipped+1)); continue; }
+    o_ov=$o_meas; o_fit=$o_meas; o_bot=$o_meas; o_tip=$o_meas
 
     # 判据输出必须**真的带那个数字**。缺了就 SKIP —— 绝不能落到默认值 0 去"通过"：
     # 空值默认 0 会把"没量到"伪装成"量到 0 个问题"，那是最坏的假绿。
