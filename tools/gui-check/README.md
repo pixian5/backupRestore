@@ -100,6 +100,10 @@ Windows 11（默认终端是 Windows Terminal）下，几乎每次都会漏下�
 - 助手挂了会自动重启（`helper.pid` 是存活标记）；起不来时**退回旧的逐次提权**并打印
   `HELPER=fallback`——功能优先，但让泄漏显式可见，而不是静默发生。
 - 收工用 `tools/vm/postflight.sh clean` 收掉它（检查项 `elevated_helper`）。
+- ★★ **但助手解决不了根本那一层**：`prlctl exec --current-user powershell` **每调用一次**就漏一对
+  `conhost`/`OpenConsole`（提权与否一样，泄漏的是客户端进程本身；SYSTEM 通道则零泄漏）。
+  所以 `run.sh` 收尾会用 SYSTEM 通道扫一次：实测一轮 `--quick` 自己漏 41 对，扫完归零
+  （输出 `GUI_CHECK sweep=ACTION=kill_orphan_console targets=N`）。这是收尾，不是根治，见 BACKLOG B-2694。
 - 附带收益：`--quick` 从约 2.5 分钟降到 **66 秒**（少了几十次提权等待）。
 
 ## 退出码

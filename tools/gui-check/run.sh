@@ -284,6 +284,19 @@ else
   esac
 fi
 
+# ★★ 收尾清扫（2026-11-01）：每一次 `prlctl exec --current-user powershell` 都会在用户
+#   会话里新起一个控制台进程，Windows Terminal 的交接大概率失败 → 留下一个孤儿
+#   conhost/OpenConsole 窗口。实测：5 次调用 conhost 1→6；提权与否都一样，助手也挡不住
+#   （泄漏的是**客户端进程本身**）。而 **SYSTEM 通道（不带 --current-user）实测零泄漏**，
+#   所以这里用它扫一次，把本轮攒下的孤儿窗口清掉，桌面不会留一屏空窗口。
+#   注意：这只是收尾，不是根治——真正的根治要么让 prlctl 不开控制台，要么把探测批次
+#   合并进更少的调用里（BACKLOG B-2694）。
+SWEEP="$(dirname "$0")/../vm/postflight.sh"
+if [ -x "$SWEEP" ]; then
+  sweep_out=$("$SWEEP" clean 2>&1 | grep -oE 'ACTION=kill_orphan_console targets=[0-9]+' | tail -1)
+  say "GUI_CHECK sweep=${sweep_out:-none}"
+fi
+
 say "GUI_CHECK combos=$combos clipped=$clipped overlaps=$overlaps below=$below untipped=$untipped skipped=$skipped candidates_min=$cand_min errcode_na=$errcode_na errcode_missing=$errcode_missing"
 say "GUI_CHECK_AUX checked=$aux clipped=$aux_clipped overlaps=$aux_overlaps below=$aux_below skipped=$aux_skipped"
 
