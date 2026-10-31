@@ -9675,6 +9675,20 @@ unsafe fn task_admin_reload(hwnd: Hwnd) {
             (Language::English, total) => format!("Tasks: {total}"),
         };
         set_text(label, &text);
+        // ★ 2.7.3：标签宽度按**实测文本**算。
+        //   原来写死 80 基准像素：14 号字下「任务：50 个」= 66 px 装得下，但 18 号字下
+        //   「任务：4 个」实测 88 px、控件只有 80 → 右边被切掉 8 px。
+        //   2026-10-31 由 GUI 判据在「任务与证据」窗口抓到，是四个辅助窗口
+        //   **首次纳入矩阵**后报出的第一个真缺陷（此前只量主窗口，永远看不见它）。
+        //   做法：标签按实测加宽，下拉框跟着右移、**右边界保持 708 不变**
+        //   （详情框/提示条都是 x=12 宽 696 → 右边界 708），窗口尺寸不变。
+        let label_w = fit_width(&text, 80);
+        let combo_x = 12 + label_w + 4;
+        let combo_w = (708 - combo_x).max(320);
+        task_admin_place(label, 12, 14, label_w, 20);
+        if let Some(combo) = task_admin_control(hwnd, ID_TASK_COMBO) {
+            task_admin_place(combo, combo_x, 10, combo_w, 240);
+        }
         if count == 0 {
             task_admin_set_hint(
                 hwnd,
@@ -9849,6 +9863,21 @@ unsafe fn task_admin_open_dir(hwnd: Hwnd) {
 
 /// 固定尺寸布局（不设 `WS_THICKFRAME`）：窗口不可缩放，布局一次算清，
 /// 省掉「缩放后控件重叠」这类只能靠截图才发现的问题。
+/// 把控件挪到「基准像素」位置并设定大小。
+///
+/// 与 `create_control` 共用同一套缩放（内部乘 DPI 系数）：布局代码一律写基准像素，
+/// 遇到 125%/200% 才不会出现「一处乘了系数、一处没乘」的错位。
+unsafe fn task_admin_place(hwnd: Hwnd, x: i32, y: i32, width: i32, height: i32) {
+    MoveWindow(
+        hwnd,
+        crate::dpi::s(x),
+        crate::dpi::s(y),
+        crate::dpi::s(width),
+        crate::dpi::s(height),
+        1,
+    );
+}
+
 unsafe fn task_admin_create_controls(hwnd: Hwnd, language: Language) {
     let chinese = language == Language::Chinese;
     create_control(hwnd, "STATIC", "", 0, 12, 14, 80, 20, ID_TASK_LABEL);
