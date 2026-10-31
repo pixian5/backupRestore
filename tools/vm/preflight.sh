@@ -10,7 +10,9 @@
 # 判据（都不读程序自陈）：
 #   1) VM 可达（`prlctl exec` 有约 1/8 概率**静默不执行**：空输出 + 退出码 0，看起来和
 #      「真没有」一模一样，所以每个探测都要求回显 `__END__` 才算真跑过，最多 3 次）
-#   2) 部署件 mtime **不早于** HEAD 提交时间  → 否则判定「部署过期」
+#   2) 部署件 mtime **不早于**「最后一次改动产品代码的提交」（crates/ VERSION Cargo.toml
+#      Cargo.lock）→ 否则判定「部署过期」。★ 基准**不是 HEAD**：纯文档/工具提交不改二进制，
+#      拿 HEAD 当基准会让每次写完文档都变红，逼人做无意义的重构建。
 #   3) 部署件里能不能搜到 VERSION 文件里的版本号（版本号对不上立刻报）
 #   4) 宿主构建产物与部署件的尺寸差（**仅提示**：发布唯一路径是 VM 内构建，
 #      宿主 `build-win.sh` 只做类型检查，两者不同属正常）
@@ -118,22 +120,41 @@ exe_size=$(printf '%s' "$probe" | grep -oE 'EXE_SIZE=[0-9]+' | head -1 | cut -d=
 exe_sha=$(printf '%s' "$probe" | grep -oE 'EXE_SHA=[0-9a-f]+' | head -1 | cut -d= -f2)
 say "ITEM=deploy_exe status=present mtime=$exe_mtime epoch=$exe_epoch size=$exe_size"
 
-# ---- 3) 与 HEAD 提交时间比 ----
+# ---- 3) 与「最后一次改动产品代码的提交」比时间 ----
+# ★ 基准不是 HEAD，而是**最后一次碰到产品输入的那次提交**（2026-10-31 修订）。
+#   理由：仓库里绝大多数提交是文档/工具，它们不改变二进制内容。若拿 HEAD 当基准，
+#   每次写完文档 preflight 都会变红，逼人去重构建——正好落进「假红导致瞎折腾」。
+#   产品输入 = 会进二进制的那些路径：crates/、VERSION、Cargo.toml、Cargo.lock。
+PRODUCT_INPUTS='crates VERSION Cargo.toml Cargo.lock'
 head_epoch=$(git log -1 --format=%ct 2>/dev/null)
 head_ref=$(git log -1 --format='%h' 2>/dev/null)
 head_when=$(git log -1 --format='%ad' --date=format:'%Y-%m-%d %H:%M:%S' 2>/dev/null)
-if [ -z "${exe_epoch:-}" ] || [ -z "${head_epoch:-}" ]; then
+prod_epoch=$(git log -1 --format=%ct -- $PRODUCT_INPUTS 2>/dev/null)
+prod_ref=$(git log -1 --format='%h' -- $PRODUCT_INPUTS 2>/dev/null)
+prod_when=$(git log -1 --format='%ad' --date=format:'%Y-%m-%d %H:%M:%S' -- $PRODUCT_INPUTS 2>/dev/null)
+# 兜底：仓库里没有任何提交碰过产品输入（异常）时退回 HEAD，宁可严不可松。
+if [ -z "${prod_epoch:-}" ]; then
+  prod_epoch=$head_epoch; prod_ref=$head_ref; prod_when=$head_when
+  basis='head_fallback'
+else
+  basis='product_code'
+fi
+if [ -z "${exe_epoch:-}" ] || [ -z "${prod_epoch:-}" ]; then
   say "ITEM=deploy_freshness status=error reason=cannot_compare"
   say "PREFLIGHT=error"
   exit 2
 fi
 say "ITEM=head_commit ref=$head_ref time=$head_when epoch=$head_epoch"
-if [ "$exe_epoch" -ge "$head_epoch" ]; then
-  say "ITEM=deploy_freshness status=pass"
+note=''
+if [ "$head_ref" != "$prod_ref" ]; then
+  note=' note=HEAD_newer_but_no_product_change'
+fi
+if [ "$exe_epoch" -ge "$prod_epoch" ]; then
+  say "ITEM=deploy_freshness status=pass basis=$basis ref=$prod_ref ref_time=$prod_when${note}"
 else
-  delta=$((head_epoch - exe_epoch))
-  say "ITEM=deploy_freshness status=fail reason=deployed_older_than_HEAD delta_sec=$delta"
-  say "  >> 部署件比最新提交旧 ${delta} 秒：它很可能**不含这次改动**，此刻跑出来的结论不作数。"
+  delta=$((prod_epoch - exe_epoch))
+  say "ITEM=deploy_freshness status=fail reason=deployed_older_than_product_commit basis=$basis ref=$prod_ref ref_time=$prod_when delta_sec=$delta${note}"
+  say "  >> 部署件比「最后一次改动产品代码的提交」旧 ${delta} 秒：它很可能**不含这次改动**，此刻跑出来的结论不作数。"
   say "  >> 按项目规矩（2026-10-15 用户拍板）发布唯一路径 = VM 内 Windows 构建，先重构建再部署。"
   fail=1
 fi
