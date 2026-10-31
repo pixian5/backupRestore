@@ -9904,14 +9904,42 @@ unsafe fn task_admin_create_controls(hwnd: Hwnd, language: Language) {
         336,
         ID_TASK_DETAIL,
     );
+    // ★ 2.7.4：这一排按钮原来写死 100/150/130/66 + 固定 x（238/346/504/642）。
+    //   和同窗口那个标签（2.7.3 修）是同一类隐患：宽度不随文本/字号变，全靠「恰好还够」。
+    //   18 号中文下「打开任务目录」实测 156 px > 写死的 130 px，之所以没被切，是因为
+    //   按钮框比控件框宽一点点——换个更长的词就破。改成：先按实测文本算宽，再从右边界
+    //   往左排，右边界仍是 708（与详情框右边缘对齐），窗口尺寸不用变。
     let buttons = [
-        (ID_TASK_REFRESH, if chinese { "刷新列表" } else { "Refresh" }, 238, 100),
-        (ID_TASK_CLEANUP, if chinese { "清理工作树" } else { "Clean tree" }, 346, 150),
-        (ID_TASK_OPEN_DIR, if chinese { "打开任务目录" } else { "Open dir" }, 504, 130),
-        (ID_TASK_CLOSE, if chinese { "关闭" } else { "Close" }, 642, 66),
+        (ID_TASK_REFRESH, if chinese { "刷新列表" } else { "Refresh" }, 100),
+        (ID_TASK_CLEANUP, if chinese { "清理工作树" } else { "Clean tree" }, 150),
+        (ID_TASK_OPEN_DIR, if chinese { "打开任务目录" } else { "Open dir" }, 130),
+        (ID_TASK_CLOSE, if chinese { "关闭" } else { "Close" }, 66),
     ];
-    for (id, text, x, width) in buttons {
-        create_control(hwnd, "BUTTON", text, WS_TABSTOP, x, 392, width, 28, id);
+    const BUTTON_GAP: i32 = 8;
+    const BUTTON_RIGHT: i32 = 708;
+    let mut widths = [0i32; 4];
+    let mut xs = [0i32; 4];
+    let mut cursor = BUTTON_RIGHT;
+    for index in (0..buttons.len()).rev() {
+        let width = fit_width(buttons[index].1, buttons[index].2);
+        widths[index] = width;
+        cursor -= width;
+        xs[index] = cursor;
+        cursor -= BUTTON_GAP;
+    }
+    // 按原顺序创建：WS_TABSTOP 的键盘遍历顺序 = 创建顺序，倒着建会把 Tab 顺序反掉。
+    for index in 0..buttons.len() {
+        create_control(
+            hwnd,
+            "BUTTON",
+            buttons[index].1,
+            WS_TABSTOP,
+            xs[index],
+            392,
+            widths[index],
+            28,
+            buttons[index].0,
+        );
     }
     create_control(hwnd, "STATIC", "", 0, 12, 428, 696, 20, ID_TASK_HINT);
     // 统一字体：WinRE 未必带 Consolas，且回退字体缺中文；stock GUI 字体随镜像本地化。

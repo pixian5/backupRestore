@@ -4,7 +4,7 @@
 # and a zero-sized / off-screen rect makes a synthetic mouse click land nowhere.
 # Output: BTN id=.. cls=.. text=[..] rect=.. en=.. vis=.. found=1|0
 #         __END__
-param([int]$Id = 1007)
+param([int]$Id = 1007, [string]$Class = 'BackupRestoreNativeGui')
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -29,11 +29,11 @@ $cb = [BI+Cb]{
   param([IntPtr]$h,[IntPtr]$l)
   $sb = New-Object System.Text.StringBuilder 256
   [void][BI]::GetClassNameW($h, $sb, 256)
-  if ($sb.ToString() -eq 'BackupRestoreNativeGui') { $script:main = $h }
+  if ($sb.ToString() -eq $Class) { $script:main = $h }   # -Class: also targets the auxiliary windows
   return $true
 }
 [void][BI]::EnumWindows($cb, [IntPtr]::Zero)
-if ($script:main -eq [IntPtr]::Zero) { 'BTN found=0 reason=no_main'; '__END__'; exit 1 }
+if ($script:main -eq [IntPtr]::Zero) { ('BTN found=0 reason=no_window class=' + $Class); '__END__'; exit 1 }
 $c = [BI]::GetDlgItem($script:main, $Id)
 if ($c -eq [IntPtr]::Zero) { "BTN id=$Id found=0"; '__END__'; exit 1 }
 $sb = New-Object System.Text.StringBuilder 256
