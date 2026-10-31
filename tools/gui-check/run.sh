@@ -82,6 +82,68 @@ vmps_elev() {
 
 num() { case "$1" in *"$2"*) : ;; esac; printf '%s' "${1#*"$2"}" | grep -oE '^[0-9]+' | head -1; }
 
+# ---- 判据 6：四个辅助窗口 ----
+# 为什么单列：主窗口矩阵只量「主窗口 × 5 页签」，而设置 / 备份文件管理 / 查看日志 /
+# 任务与证据这四个窗口**从来没进过矩阵**（2.6.91 只在 100% 缩放下手量过一次默认字号）。
+#
+# ★ 模态陷阱：这四窗口的处理函数都是「先 EnableWindow(main,0)，再自己泵消息循环」。
+#   所以 ① 开下一个之前必须先关掉上一个（主窗口禁用期间任何点击都不响应）；
+#        ② 关闭走 WM_CLOSE，跨进程投递同样受 UIPI 约束，非提权会静默失效。
+# ★ 只跑 12/18 两个极端档：控件宽度 = f(实测文本宽度) 随字号单调增，最小档装得下、
+#   最大档也装得下，中间档不会更差（这条对「固定宽度」不成立，所以固定宽度的检查
+#   仍由主窗口 4 档全矩阵负责）。
+AUX_LIST=(
+  "1007 BackupRestoreSettingsWindow 10"
+  "1009 BackupRestoreImageAdminWindow 10"
+  "1010 BackupRestoreLogsWindow 6"
+  "1004 BackupRestoreTaskAdmin 6"
+)
+
+aux_pass() {
+  local font="$1" lang="$2"
+  # 全矩阵里只跑 12/18 两个极端档（理由见上）。--quick 只有 14 zh 一个组合，
+  # 就让它也跑一遍——冒烟的意义是把整条链路走通，不是省那两分钟。
+  case "$font" in
+    12|18) ;;
+    *) [ "$QUICK" = 1 ] || return 0 ;;
+  esac
+  local spec id cls minc tag o_open o_fit o_ov o_bot n_cl n_ov m_bot
+  for spec in "${AUX_LIST[@]}"; do
+    set -- $spec; id=$1; cls=$2; minc=$3
+    tag="aux font=$font lang=$lang $cls"
+    o_open=$(vmps_elev aux-open.ps1 -Id "$id" -Class "$cls") || { say "  SKIP $tag (open 通道没跑)"; aux_skipped=$((aux_skipped+1)); return 0; }
+    case "$o_open" in
+      *"ELEVATED=False"*)
+        say "  SKIP $tag (判据没提权 -> UIPI 会吞掉点击，不是产品问题)"; aux_skipped=$((aux_skipped+1)); return 0 ;;
+      *"OPENED=1"*) ;;
+      *) say "  SKIP $tag (窗口没开: $(printf '%s' "$o_open" | grep -oE 'reason=[a-z_]+' | head -1))"
+         vmps_elev aux-close.ps1 -Class "$cls" >/dev/null 2>&1 || true
+         aux_skipped=$((aux_skipped+1)); return 0 ;;
+    esac
+
+    o_fit=$(vmps dlg-fit.ps1 -FontSize "$font" -Class "$cls") || o_fit=''
+    o_ov=$(vmps overlap-all.ps1 -Class "$cls" -MinControls "$minc") || o_ov=''
+    o_bot=$(vmps fit-bottom.ps1 -Class "$cls") || o_bot=''
+    # 无论量成没量成，都要把窗口关掉，否则后面全部卡住
+    vmps_elev aux-close.ps1 -Class "$cls" >/dev/null 2>&1 || true
+
+    case "$o_fit" in *"SINGLE_LINE_CLIPPED="*) ;; *) say "  SKIP $tag (fit 没给出数字)"; aux_skipped=$((aux_skipped+1)); continue ;; esac
+    case "$o_ov"  in *"OVERLAPS="*) ;;           *) say "  SKIP $tag (overlap 没给出数字)"; aux_skipped=$((aux_skipped+1)); continue ;; esac
+    case "$o_bot" in *"MARGIN="*) ;;             *) say "  SKIP $tag (bottom 没给出数字)"; aux_skipped=$((aux_skipped+1)); continue ;; esac
+
+    n_cl=$(num "$o_fit" 'SINGLE_LINE_CLIPPED=')
+    n_ov=$(num "$o_ov" 'OVERLAPS=')
+    m_bot=$(printf '%s' "$o_bot" | grep -oE 'MARGIN=-?[0-9]+' | head -1 | grep -oE '\-?[0-9]+')
+    : "${n_cl:=0}"; : "${n_ov:=0}"; : "${m_bot:=0}"
+    aux=$((aux+1))
+    aux_clipped=$((aux_clipped+n_cl)); aux_overlaps=$((aux_overlaps+n_ov))
+    if [ "$m_bot" -lt 0 ] 2>/dev/null; then aux_below=$((aux_below+1)); fi
+    verdict=FITS
+    if [ "$n_cl" -gt 0 ] || [ "$n_ov" -gt 0 ] || [ "$m_bot" -lt 0 ] 2>/dev/null; then verdict=FAIL; fi
+    say "  $verdict $tag clipped=$n_cl overlap=$n_ov margin=$m_bot"
+  done
+}
+
 say "GUI_CHECK start vm=$VM quick=$QUICK"
 if ! sync_ps; then
   say "GUI_CHECK sync=FAIL -> ABORT（脚本没进 VM，任何结论都不可信）"
@@ -106,6 +168,7 @@ else
 fi
 
 clipped=0; overlaps=0; below=0; untipped=0; skipped=0; combos=0
+aux=0; aux_clipped=0; aux_overlaps=0; aux_below=0; aux_skipped=0
 cand_min=999999
 
 for combo in "${COMBOS[@]}"; do
@@ -169,6 +232,10 @@ for combo in "${COMBOS[@]}"; do
     if [ "$n_ov" -gt 0 ] || [ "$n_cl" -gt 0 ] || [ "$n_ut" -gt 0 ] || [ "$m_bot" -lt 0 ] 2>/dev/null; then verdict=FAIL; fi
     say "  $verdict $tag overlap=$n_ov clipped=$n_cl margin=$m_bot cand=$n_cd untipped=$n_ut"
   done
+
+  # 五个页签都量完之后，程序仍以这个字号/语言在跑 —— 顺手把四个辅助窗口也量了，
+  # 不用再重启一次。
+  aux_pass "$FONT" "$LANG_"
 done
 
 # ---- 判据 5：错误码在界面上到底看不看得见（G4）----
@@ -196,11 +263,13 @@ else
 fi
 
 say "GUI_CHECK combos=$combos clipped=$clipped overlaps=$overlaps below=$below untipped=$untipped skipped=$skipped candidates_min=$cand_min errcode_na=$errcode_na errcode_missing=$errcode_missing"
+say "GUI_CHECK_AUX checked=$aux clipped=$aux_clipped overlaps=$aux_overlaps below=$aux_below skipped=$aux_skipped"
 
-if [ "$skipped" -gt 0 ]; then
-  say "RESULT=SKIP（有 $skipped 个组合通道没跑，不能当通过）"; exit 2
+if [ "$skipped" -gt 0 ] || [ "$aux_skipped" -gt 0 ]; then
+  say "RESULT=SKIP（有组合/辅助窗口通道没跑，不能当通过）"; exit 2
 fi
-if [ "$clipped" -gt 0 ] || [ "$overlaps" -gt 0 ] || [ "$below" -gt 0 ] || [ "$untipped" -gt 0 ] || [ "$errcode_missing" -gt 0 ]; then
+if [ "$clipped" -gt 0 ] || [ "$overlaps" -gt 0 ] || [ "$below" -gt 0 ] || [ "$untipped" -gt 0 ] || [ "$errcode_missing" -gt 0 ] \
+   || [ "$aux_clipped" -gt 0 ] || [ "$aux_overlaps" -gt 0 ] || [ "$aux_below" -gt 0 ]; then
   say "RESULT=FAIL"; exit 1
 fi
 say "RESULT=PASS"; exit 0

@@ -20,18 +20,22 @@ public class FB {
 }
 '@
 [void][FB]::SetProcessDPIAware()
+# ★ Prove WHICH window is measured (class + rect), and never exit without
+#   printing __END__ -- otherwise "not found" looks identical to "did not run".
+$script:wantClass = $Class
 $script:main = [IntPtr]::Zero
 $cb = [FB+Cb]{
   param([IntPtr]$h,[IntPtr]$l)
   $sb = New-Object System.Text.StringBuilder 256
   [void][FB]::GetClassNameW($h, $sb, 256)
-  if ($sb.ToString() -eq $Class) { $script:main = $h }
+  if ($sb.ToString() -eq $script:wantClass) { $script:main = $h }
   return $true
 }
 [void][FB]::EnumWindows($cb, [IntPtr]::Zero)
-if ($script:main -eq [IntPtr]::Zero) { "WINDOW_NOT_FOUND class=$Class"; exit 1 }
+if ($script:main -eq [IntPtr]::Zero) { "WINDOW_NOT_FOUND class=$Class"; '__END__'; exit 1 }
 $wr = New-Object FB+RECT
 [void][FB]::GetWindowRect($script:main, [ref]$wr)
+"FOUND class=$Class rect=$($wr.L),$($wr.T),$($wr.R),$($wr.B)"
 $maxB = 0; $maxId = 0
 $cb2 = [FB+Cb]{
   param([IntPtr]$h,[IntPtr]$l)

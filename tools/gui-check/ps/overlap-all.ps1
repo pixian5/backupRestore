@@ -5,7 +5,7 @@
 #   - every pair whose rectangles intersect
 #   - the smallest vertical gap between vertically adjacent controls
 # Usage: -Class BackupRestoreNativeGui
-param([string]$Class = 'BackupRestoreNativeGui')
+param([string]$Class = 'BackupRestoreNativeGui', [int]$MinControls = 10)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -24,16 +24,28 @@ public class OV {
 }
 '@
 [void][OV]::SetProcessDPIAware()
-$main = [IntPtr]::Zero
+# ★ Prove WHICH window is measured (class + rect). Without this, a wrong class
+#   silently measured the main window and the numbers looked plausible.
+$script:wantClass = $Class
+# ★ Must initialise the SCRIPT-scoped variable, not a local: the callback sets
+#   $script:main, and the guard below tests $script:main. With a local init the
+#   script tested $null, and `$null -eq [IntPtr]::Zero` is FALSE in PowerShell
+#   (null on the left compares against $null, not against the value), so the
+#   guard never fired and EnumChildWindows(NULL) enumerated the whole desktop --
+#   producing a plausible-looking "CONTROLS=29" for a class that did not exist.
+$script:main = [IntPtr]::Zero
 $cb = [OV+Cb]{
   param([IntPtr]$h,[IntPtr]$l)
   $sb = New-Object System.Text.StringBuilder 256
   [void][OV]::GetClassNameW($h, $sb, 256)
-  if ($sb.ToString() -eq $Class) { $script:main = $h }
+  if ($sb.ToString() -eq $script:wantClass) { $script:main = $h }
   return $true
 }
 [void][OV]::EnumWindows($cb, [IntPtr]::Zero)
-if ($script:main -eq [IntPtr]::Zero) { "WINDOW_NOT_FOUND class=$Class"; exit 1 }
+if ($script:main -eq [IntPtr]::Zero) { "WINDOW_NOT_FOUND class=$Class"; '__END__'; exit 1 }
+$wr0 = New-Object OV+RECT
+[void][OV]::GetWindowRect($script:main, [ref]$wr0)
+"FOUND class=$Class rect=$($wr0.L),$($wr0.T),$($wr0.R),$($wr0.B)"
 $items = New-Object System.Collections.ArrayList
 $cb2 = [OV+Cb]{
   param([IntPtr]$h,[IntPtr]$l)
@@ -52,8 +64,8 @@ $cb2 = [OV+Cb]{
 [void][OV]::EnumChildWindows($script:main, $cb2, [IntPtr]::Zero)
 
 $n = $items.Count
-"CONTROLS=$n"
-if ($n -lt 10) { 'TOO_FEW_CONTROLS_REFUSE_TO_PASS'; exit 2 }
+"CONTROLS=$n MIN_CONTROLS=$MinControls"
+if ($n -lt $MinControls) { 'TOO_FEW_CONTROLS_REFUSE_TO_PASS'; '__END__'; exit 2 }
 
 $bad = 0
 for ($i = 0; $i -lt $n; $i++) {

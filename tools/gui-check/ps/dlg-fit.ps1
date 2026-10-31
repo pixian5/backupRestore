@@ -32,18 +32,26 @@ public class DF {
 }
 '@
 [void][DF]::SetProcessDPIAware()
-$dlg = [IntPtr]::Zero
+# ★ Pin the wanted class into a script-scoped variable BEFORE the delegate:
+#   a delegate scriptblock does not reliably see the script's own parameters,
+#   and a silent miss used to fall through to "measured something else" or to
+#   a message with no __END__ (indistinguishable from "channel did not run").
+$script:wantClass = $Class
+# ★ Script-scoped init (see the note in overlap-all.ps1): a local init makes the
+#   not-found guard compare $null and therefore never fire.
+$script:dlg = [IntPtr]::Zero
 $cb = [DF+Cb]{
   param([IntPtr]$h,[IntPtr]$l)
   $sb = New-Object System.Text.StringBuilder 256
   [void][DF]::GetClassNameW($h, $sb, 256)
-  if ($sb.ToString() -eq $Class) { $script:dlg = $h }
+  if ($sb.ToString() -eq $script:wantClass) { $script:dlg = $h }
   return $true
 }
 [void][DF]::EnumWindows($cb, [IntPtr]::Zero)
-if ($script:dlg -eq [IntPtr]::Zero) { "WINDOW_NOT_FOUND class=$Class"; exit 1 }
-$dr = New-Object DF+RECT
-[void][DF]::GetWindowRect($script:dlg, [ref]$dr)
+if ($script:dlg -eq [IntPtr]::Zero) { "WINDOW_NOT_FOUND class=$Class"; '__END__'; exit 1 }
+$script:dr = New-Object DF+RECT
+[void][DF]::GetWindowRect($script:dlg, [ref]$script:dr)
+"FOUND class=$Class rect=$($script:dr.L),$($script:dr.T),$($script:dr.R),$($script:dr.B)"
 $cr = New-Object DF+RECT
 [void][DF]::GetClientRect($script:dlg, [ref]$cr)
 "DLG rect=$($dr.L),$($dr.T) w=$($dr.R-$dr.L) h=$($dr.B-$dr.T) clientW=$($cr.R) clientH=$($cr.B)"
@@ -57,7 +65,12 @@ $old = [DF]::SelectObject($screen, $font)
 $linePx = [int][math]::Round(($FontSize + [math]::Floor(($FontSize + 5) / 6)) * $scale)
 "DPI=$dpi SCALE=$scale FONT_PX=$px LINE_PX=$linePx"
 
-$script:worst = -999
+# ★ Sentinel must be the LARGEST possible slack, because the loop keeps the
+#   SMALLEST: `if ($slack -lt $script:worst) { $script:worst = $slack }`.
+#   It used to be -999, so the comparison was always false and WORST_SLACK
+#   printed -999 forever -- a dead diagnostic that still looked like a number.
+#   Found 2026-10-31 while measuring the auxiliary dialogs.
+$script:worst = 999999
 $bad = 0
 $rows = New-Object System.Collections.ArrayList
 $cb2 = [DF+Cb]{
