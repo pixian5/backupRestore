@@ -57,7 +57,7 @@ GUI 占了全项目 **22%** 的代码（`native_gui.rs` 11,010 行），但只�
 
 ```bash
 tools/gui-check/run.sh              # 全矩阵：5 页签 × 中英 × 12/14/16/18 号 + 错误码判据（实测 29 分钟）
-tools/gui-check/run.sh --quick      # 冒烟：1 个组合 + 4 个辅助窗口 + 错误码判据（实测约 2.5 分钟）
+tools/gui-check/run.sh --quick      # 冒烟：1 个组合 + 4 个辅助窗口 + 错误码判据（实测约 66 秒）
 BR_VM='Windows 11' tools/gui-check/run.sh
 ```
 
@@ -81,6 +81,26 @@ BR_VM='Windows 11' tools/gui-check/run.sh
 
 > 同一个坑的另一种形态：跨权限**发消息**（如 `SendMessage(TTM_GETMAXTIPWIDTH)`）
 > 也会被静默丢弃并返回 0，曾让我误判成「设置没生效」。见 `经验/05`。
+
+## ★★ 提权怎么做的：一个常驻助手，不是每次新起一个
+
+`ps/runas.ps1` **不再**每次探测都 `Start-Process cmd.exe -Verb RunAs`。那样在
+Windows 11（默认终端是 Windows Terminal）下，几乎每次都会漏下一对**孤儿控制台**
+（`conhost.exe` + `OpenConsole.exe`）：进程退了、窗口留在桌面上。2026-10-31 实测
+攒了 **828 对**——GUI 矩阵跑一小时就是 400 多个，屏幕糊满黑窗。
+
+现在只有一个常驻的提权进程 `ps/helper.ps1`：
+
+| 角色 | 做什么 |
+|---|---|
+| `helper.ps1` | 提权启动**一次**，立刻隐藏自己的控制台窗口，然后循环读 `C:\Users\Public\pkg\run\*.req` |
+| 每次请求 | `Start-Process powershell **-NoNewWindow**` → 子进程**继承助手的控制台**，不新建 → 没有可漏的东西 |
+| `runas.ps1` | 只负责「写请求、等结果」，输出契约不变（目标脚本 stdout + `HELPER=resident pid=N` + `__END__`） |
+
+- 助手挂了会自动重启（`helper.pid` 是存活标记）；起不来时**退回旧的逐次提权**并打印
+  `HELPER=fallback`——功能优先，但让泄漏显式可见，而不是静默发生。
+- 收工用 `tools/vm/postflight.sh clean` 收掉它（检查项 `elevated_helper`）。
+- 附带收益：`--quick` 从约 2.5 分钟降到 **66 秒**（少了几十次提权等待）。
 
 ## 退出码
 

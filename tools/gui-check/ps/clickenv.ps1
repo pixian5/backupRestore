@@ -5,7 +5,11 @@
 # rejection apart from "window not found".
 # Output: IDENT=.. ADMIN=.. INTEGRITY=.. MAIN_FOUND=.. BTN_FOUND=.. POST_OK=..
 #         __END__
-param([int]$Id = 1007)
+# NOTE: do NOT name this $Id. PowerShell parameter names are CASE-INSENSITIVE,
+# so `param([int]$Id)` also constrains $id -- and line 24 assigns a
+# WindowsIdentity to $id, which then fails with ArgumentTransformationMetadata
+# and silently leaves IDENT=/ADMIN= empty (found 2026-10-31).
+param([int]$ButtonId = 1007)
 $ErrorActionPreference = 'Continue'
 Add-Type -TypeDefinition @'
 using System;
@@ -45,7 +49,7 @@ $mf = ($script:main -ne [IntPtr]::Zero)
 $bf = $false
 $post = 'n/a'
 if ($mf) {
-  $b = [CE]::GetDlgItem($script:main, $Id)
+  $b = [CE]::GetDlgItem($script:main, $ButtonId)
   $bf = ($b -ne [IntPtr]::Zero)
   if ($bf) { $post = [CE]::PostMessageW($b, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }
 }

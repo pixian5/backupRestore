@@ -70,6 +70,17 @@ if (\$mw -match 'No mounted images') { 'MOUNTED=0' } else { 'MOUNTED=1' }
 \$img | ForEach-Object { 'STRAY_IMG_ITEM=' + \$_.Name }
 \$ps = @(Get-Process powershell -ErrorAction SilentlyContinue)
 'PS_COUNT=' + \$ps.Count
+# 常驻提权助手（gui-check 用）：会话内有意留着，收工时该收掉
+\$hpid = 0
+\$hfile = 'C:\Users\Public\pkg\helper.pid'
+if (Test-Path -LiteralPath \$hfile) {
+    \$hraw = ((Get-Content -LiteralPath \$hfile -ErrorAction SilentlyContinue | Select-Object -First 1) -as [string])
+    \$hnum = 0
+    if ([int]::TryParse((\$hraw).Trim(), [ref]\$hnum)) {
+        if (Get-Process -Id \$hnum -ErrorAction SilentlyContinue) { \$hpid = \$hnum }
+    }
+}
+'ELEVATED_HELPER=' + \$hpid
 \$allp = @(Get-CimInstance Win32_Process)
 \$live = New-Object 'System.Collections.Generic.HashSet[int]'
 foreach (\$p in \$allp) { [void]\$live.Add([int]\$p.ProcessId) }
@@ -105,6 +116,7 @@ n_ps=$(field PS_COUNT)
 n_orphan=$(field ORPHAN_CONSOLE)
 orphan_old=$(field ORPHAN_OLDEST_MIN)
 orphan_sess=$(field ORPHAN_SESSIONS)
+n_helper=$(field ELEVATED_HELPER)
 
 say "ITEM=volumes status=info letters=$(field VOLS)"
 
@@ -161,6 +173,14 @@ else
   say "ITEM=orphan_console status=pass count=0"
 fi
 
+# 常驻提权助手：会话中活着是正常（就是它让每次探测不再新开控制台），
+# 但它是个**提权**常驻进程，不该跨会话留着。
+if [ "${n_helper:-0}" -gt 0 ] 2>/dev/null; then
+  say "ITEM=elevated_helper status=warn pid=$n_helper hint=resident_probe_helper run_clean_to_stop"
+else
+  say "ITEM=elevated_helper status=pass"
+fi
+
 if [ "$MODE" = "clean" ]; then
   if [ "$mounted" = "1" ]; then
     dirs=$(run_ps "
@@ -193,6 +213,15 @@ foreach (\$x in \$t) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction 
 ")
     say "ACTION=kill_orphan_console targets=$(printf '%s' "$killed" | grep -oE 'KILL_TARGETS=[0-9]+' | cut -d= -f2)"
   fi
+  # 收掉常驻提权助手：它是提权进程，不跨会话留
+  if [ "${n_helper:-0}" -gt 0 ] 2>/dev/null; then
+    run_ps "
+try { Stop-Process -Id ${n_helper} -Force -ErrorAction Stop; 'STOPPED' } catch { 'STOP_FAILED' }
+Remove-Item -LiteralPath 'C:\Users\Public\pkg\helper.pid' -ErrorAction SilentlyContinue
+'__END__'
+" >/dev/null
+    say "ACTION=stop_elevated_helper pid=$n_helper"
+  fi
   # 复核：清理类动作必须**写完再读一遍**，不能只看动作执行成功
   if [ -f "$0" ]; then
     after=$(probe_state) || after=''
@@ -203,6 +232,7 @@ foreach (\$x in \$t) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction 
     g2=$(printf '%s' "$after" | grep -oE 'GHOST=[^ ]*' | head -1 | cut -d= -f2-)
     m2=$(printf '%s' "$after" | grep -oE 'MOUNTED=[^ ]*' | head -1 | cut -d= -f2-)
     o2=$(printf '%s' "$after" | grep -oE 'ORPHAN_CONSOLE=[0-9]+' | head -1 | cut -d= -f2-)
+    h2=$(printf '%s' "$after" | grep -oE 'ELEVATED_HELPER=[0-9]+' | head -1 | cut -d= -f2-)
     if [ -z "${g2:-}" ] && [ "$mounted" = "1" ]; then
       say "ITEM=clean_verify status=error reason=recheck_failed"
       say "POSTFLIGHT=error"
@@ -214,8 +244,13 @@ foreach (\$x in \$t) { try { Stop-Process -Id \$x.ProcessId -Force -ErrorAction 
       say "POSTFLIGHT=leftovers"
       exit 1
     fi
+    if [ "${n_helper:-0}" -gt 0 ] 2>/dev/null && [ "${h2:-?}" != "0" ]; then
+      say "ITEM=clean_verify status=fail reason=elevated_helper_survived pid_after=${h2:-unreadable}"
+      say "POSTFLIGHT=leftovers"
+      exit 1
+    fi
     if [ -z "${g2:-}" ] && [ "${m2:-1}" = "0" ]; then
-      say "ITEM=clean_verify status=pass ghost_after=none mounted_after=0 orphan_after=${o2:-?}"
+      say "ITEM=clean_verify status=pass ghost_after=none mounted_after=0 orphan_after=${o2:-?} helper_after=${h2:-?}"
     else
       say "ITEM=clean_verify status=fail ghost_after=${g2:-none} mounted_after=${m2:-?} orphan_after=${o2:-?}"
       say "  >> 清理动作报成功但复查没通过：**以复查值为准**，别以 ACTION 为准。"

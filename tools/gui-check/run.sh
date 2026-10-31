@@ -15,7 +15,7 @@
 #
 # 用法：
 #   tools/gui-check/run.sh              # 全矩阵：5 页签 x 中英 x 12/14/16/18 号（约 15 分钟）
-#   tools/gui-check/run.sh --quick      # 冒烟：1 个组合（约 25 秒）
+#   tools/gui-check/run.sh --quick      # 冒烟：1 个组合 + 4 个辅助窗口 + 错误码（实测约 66 秒）
 #   BR_VM='Windows 11' tools/gui-check/run.sh
 #
 # 退出码：0=全绿；1=有真判据变红；2=通道抽风（记 SKIP，不当成红）
@@ -35,11 +35,33 @@ done
 say() { printf '%s\n' "$*"; }
 
 # 把判据脚本推进 VM。★ 不依赖 X: 映射——那个盘符每次 VM 重启都会丢（踩过多次）。
+#
+# ★★ 2026-10-31 修：这里原来有两处「假绿」，合起来能让整轮矩阵跑在旧脚本上——
+#   ① `${SHARE}\\tools\\...` 在双引号里 `\\` 被 bash 折成 `\`，UNC 路径变成
+#      `\Mac\backupRestore\...`（驱动器相对路径），robocopy 报错但 `>nul` 吞了；
+#   ② 判据是 `& echo SYNC_OK`——**只能证明命令执行过，不能证明复制成功**。
+#   实测后果：`runas.ps1` 在 VM 里停了 12 小时没更新，而同步步骤一路绿。
+#   现在的做法：路径用单反斜杠拼（拼出来才是真正的 UNC），判据改成
+#   robocopy 的 errorlevel（0~7 算成功，≥8 失败）+ **内容比对**（新脚本里必须有
+#   只有新版本才有的串）。复制没成功就让整轮 ABORT，绝不拿旧脚本出结论。
 sync_ps() {
-  local out
+  local out out2 src='\\Mac\backupRestore\tools\gui-check\ps' want vm_size
+  want=$(wc -c < "$(dirname "$0")/ps/runas.ps1" | tr -d ' ')
   for _ in 1 2 3; do
-    out=$(prlctl exec "$VM" cmd /c "robocopy ${SHARE}\\tools\\gui-check\\ps ${DST} /E /NFL /NDL /NJH /NJS /R:1 /W:1 >nul & echo SYNC_OK" 2>&1)
-    case "$out" in *SYNC_OK*) return 0 ;; esac
+    out=$(prlctl exec "$VM" cmd /c "robocopy ${src} ${DST} /E /NFL /NDL /NJH /NJS /R:1 /W:1 >nul & if errorlevel 8 (echo SYNC_FAIL) else (echo SYNC_OK)" 2>&1)
+    case "$out" in
+      *SYNC_OK*)
+        # ★ 内容判据：宿主与 VM 里 runas.ps1 的**字节数必须一致**。
+        #   不用固定字符串（改个名字就误报），也不用时间戳（SMB 缓存会让它骗人）。
+        vm_size=$(prlctl exec "$VM" powershell -NoProfile -Command \
+                    "(Get-Item -LiteralPath '${DST}\runas.ps1' -ErrorAction SilentlyContinue).Length" 2>/dev/null \
+                  | tr -d '\r\n ')
+        case "$vm_size" in
+          ''|*[!0-9]*) ;;
+          *) [ "$vm_size" = "$want" ] && return 0 ;;
+        esac
+        ;;
+    esac
     sleep 2
   done
   return 1
