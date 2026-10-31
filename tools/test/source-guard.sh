@@ -158,6 +158,27 @@ fi
 count=$(printf '%s' "$hold_sites" | grep -c . || true)
 say "HOLD_FOR_PROCESS_COUNT=${count:-0}"
 
+# ---------- D. `$VAR` 紧跟非 ASCII 字符（bash 按字节吞进变量名）----------
+say "--- D. 脚本里变量后紧跟中文/全角字符 ---"
+# 机理（2026-10-31 实测，macOS 自带 bash 3.2）：`say "... $want_ver：基本..."` 里的中文
+# 冒号是多字节，bash 按字节解析变量名 → 名字变成 `want_ver<0xEF>` → `set -u` 下直接
+# `unbound variable` 崩掉；没有 -u 时更阴：值被静默吞掉，只少一个数字，肉眼很难发现。
+# 两种都只在**失败分支**触发，所以长期藏着——本轮一次扫出 7 处，全在报错路径上。
+# 规矩：变量后面紧跟非 ASCII 字符，一律写 `${var}`。
+# 注释行（本身在讲这个坑）不算违规。
+multibyte_hits=$(LC_ALL=C grep -rn -E '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' \
+        --include='*.sh' --exclude-dir=target --exclude-dir=.git --exclude-dir=dist \
+        "$ROOT" 2>/dev/null | grep -v -E ':[0-9]+:[[:space:]]*#' || true)
+if [ -n "$multibyte_hits" ]; then
+    printf '%s\n' "$multibyte_hits" | sed "s|$ROOT/||" | while IFS= read -r l; do
+        say "VIOLATION=var_followed_by_multibyte $l"
+    done
+    say "  说明：把 \${var} 加上花括号即可；不加则失败分支要么崩、要么少打印一个值。"
+    fail=1
+else
+    say "OK no_var_multibyte_collision"
+fi
+
 if [ "$fail" != "0" ]; then
     say "RESULT=FAIL"
     exit 1

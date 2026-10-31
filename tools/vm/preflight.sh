@@ -8,11 +8,17 @@
 #   这类错误最贵的地方在于：它看起来像产品缺陷，会把人引去改代码。
 #
 # 判据（都不读程序自陈）：
-#   1) VM 可达（`prlctl exec` 有约 1/8 概率不执行，必须看到回显才算通）
+#   1) VM 可达（`prlctl exec` 有约 1/8 概率**静默不执行**：空输出 + 退出码 0，看起来和
+#      「真没有」一模一样，所以每个探测都要求回显 `__END__` 才算真跑过，最多 3 次）
 #   2) 部署件 mtime **不早于** HEAD 提交时间  → 否则判定「部署过期」
 #   3) 部署件里能不能搜到 VERSION 文件里的版本号（版本号对不上立刻报）
 #   4) 宿主构建产物与部署件的尺寸差（**仅提示**：发布唯一路径是 VM 内构建，
 #      宿主 `build-win.sh` 只做类型检查，两者不同属正常）
+#
+# 读数侧故障 vs 判据不满足（2026-10-31 修订，别混为一谈）：
+#   status=error  = 探测没跑通（通道故障），**不代表**部署过期，重跑即可，不要据此重构建；
+#   status=fail   = 探测跑通了，结论就是「过期 / 缺版本号」，要动。
+#   两者分开报，且 error 必须带 raw= 原始回显，否则没法证明是通道问题。
 #
 # 用法：
 #   tools/vm/preflight.sh          # 检查（默认）
@@ -31,33 +37,70 @@ LOCAL='target/aarch64-pc-windows-msvc/release/BackupRestore.exe'
 
 say() { printf '%s\n' "$*"; }
 fail=0
+warn_reason=''   # 「通过但有一项没验到」——不能让 PREFLIGHT=pass 把它盖掉
+
+# 把多行原始输出压成一行并截断，用于 raw=[...]
+oneline() { printf '%s' "$1" | tr '\r\n' '  ' | cut -c1-200; }
+
+# prlctl exec 有约 1/8 概率**静默不执行**（空输出、退出码 0），空输出分不清「真没有」与
+# 「命令没跑」。所以每个探测都要求回显 `__END__` 才算真跑过，最多 3 次。
+# ★ 三次都没等到哨兵时，**把最后一次的原始回显当标准输出交回去**（return 1），调用方用
+#   `if ! x=$(run_ps ...)` 接住即可拿到 raw=。不要用「函数里赋值全局变量」的写法——
+#   调用侧是 `$( )`，函数在子 shell 里跑，全局变量赋值全丢（2026-10-31 踩过：raw=[] 永远是空）。
+run_ps() {
+  local script="$1" out
+  for _ in 1 2 3; do
+    out=$(prlctl exec "$VM" powershell -NoProfile -Command "$script" 2>&1)
+    case "$out" in *__END__*) printf '%s' "$out"; return 0 ;; esac
+    sleep 2
+  done
+  oneline "$out"
+  return 1
+}
+
+run_cmd() {
+  local cmdline="$1" out
+  for _ in 1 2 3; do
+    out=$(prlctl exec "$VM" cmd /c "$cmdline" 2>&1)
+    case "$out" in *__END__*) printf '%s' "$out"; return 0 ;; esac
+    sleep 2
+  done
+  oneline "$out"
+  return 1
+}
 
 # ---- 1) VM 可达 ----
-reach=''
-for _ in 1 2 3; do
-  out=$(prlctl exec "$VM" cmd /c "echo VM_OK" 2>&1)
-  case "$out" in *VM_OK*) reach=yes; break ;; esac
-  sleep 2
-done
-if [ "$reach" != yes ]; then
-  say "ITEM=vm status=error reason=no_response hint=prlctl_list_or_vm_paused"
+if ! vm_out=$(run_cmd "echo VM_OK & echo __END__"); then
+  say "ITEM=vm status=error reason=no_response attempts=3 raw=[$(oneline "$vm_out")] hint=prlctl_list_or_vm_paused"
   say "PREFLIGHT=error"
   exit 2
 fi
-say "ITEM=vm status=pass name=$VM"
+case "$vm_out" in
+  *VM_OK*) say "ITEM=vm status=pass name=$VM" ;;
+  *)
+    say "ITEM=vm status=error reason=sentinel_without_vm_ok raw=[$(oneline "$vm_out")]"
+    say "PREFLIGHT=error"
+    exit 2 ;;
+esac
 
 # ---- 2) 部署件 mtime / 尺寸 / 版本号串 ----
 want_ver=$(cat VERSION 2>/dev/null | tr -d ' \r\n')
-probe=$(prlctl exec "$VM" powershell -NoProfile -Command "
+if ! probe=$(run_ps "
 \$p='${DEST}'
-if (-not (Test-Path -LiteralPath \$p)) { 'EXE=missing'; exit 0 }
+if (-not (Test-Path -LiteralPath \$p)) { 'EXE=missing'; '__END__'; exit 0 }
 \$i = Get-Item -LiteralPath \$p
 'EXE=present'
 'EXE_EPOCH=' + ([DateTimeOffset]\$i.LastWriteTime).ToUnixTimeSeconds()
 'EXE_MTIME=' + \$i.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
 'EXE_SIZE=' + \$i.Length
 'EXE_SHA=' + (Get-FileHash -LiteralPath \$p -Algorithm SHA256).Hash.ToLower()
-" 2>&1)
+'__END__'
+"); then
+  say "ITEM=deploy_exe status=error reason=probe_failed attempts=3 raw=[$(oneline "$probe")]"
+  say "  >> 这是**读数侧**故障（通道没执行），不代表部署过期，别据此重构建；重跑本脚本即可。"
+  say "PREFLIGHT=error"
+  exit 2
+fi
 case "$probe" in
   *EXE=missing*)
     say "ITEM=deploy_exe status=fail reason=missing path=$DEST"
@@ -65,7 +108,7 @@ case "$probe" in
     exit 1 ;;
   *EXE=present*) ;;
   *)
-    say "ITEM=deploy_exe status=error reason=probe_failed"
+    say "ITEM=deploy_exe status=error reason=marker_absent raw=[$(oneline "$probe")]"
     say "PREFLIGHT=error"
     exit 2 ;;
 esac
@@ -98,24 +141,26 @@ fi
 # ---- 4) 部署件里的版本号串 ----
 if [ -n "$exe_sha" ] && [ -n "$want_ver" ]; then
   has_ver=''
-  for _ in 1 2 3; do
-    out=$(prlctl exec "$VM" cmd /c "findstr /C:\"$want_ver\" ${DEST} >nul 2>&1 && echo VER_HIT || echo VER_MISS" 2>&1)
+  out=''
+  if out=$(run_cmd "findstr /C:\"$want_ver\" ${DEST} >nul 2>&1 && (echo VER_HIT & echo __END__) || (echo VER_MISS & echo __END__)"); then
     case "$out" in
-      *VER_HIT*) has_ver=hit; break ;;
-      *VER_MISS*) has_ver=miss; break ;;
+      *VER_HIT*) has_ver=hit ;;
+      *VER_MISS*) has_ver=miss ;;
+      *) has_ver='' ;;
     esac
-    sleep 2
-  done
+  fi
   case "$has_ver" in
     hit) say "ITEM=deploy_version status=pass want=$want_ver hint=version_string_not_sufficient" ;;
     miss)
       say "ITEM=deploy_version status=fail want=$want_ver reason=version_string_absent"
-      say "  >> 部署件里搜不到 VERSION 的 $want_ver：基本可以确定是旧版本。"
+      say "  >> 部署件里搜不到 VERSION 的 ${want_ver}：基本可以确定是旧版本。"
       fail=1 ;;
-    *) say "ITEM=deploy_version status=warn reason=probe_failed" ;;
+    *) say "ITEM=deploy_version status=warn reason=probe_failed attempts=3 raw=[$(oneline "$out")] hint=not_checked_not_absent"
+       warn_reason='deploy_version_probe_failed' ;;
   esac
 else
   say "ITEM=deploy_version status=warn reason=no_version_file_or_hash"
+  warn_reason='no_version_file'
 fi
 
 # ---- 5) 宿主构建产物对比（仅提示） ----
@@ -135,5 +180,5 @@ if [ "$fail" -gt 0 ]; then
   say "PREFLIGHT=fail"
   exit 1
 fi
-say "PREFLIGHT=pass"
+say "PREFLIGHT=pass${warn_reason:+ warn=$warn_reason}"
 exit 0

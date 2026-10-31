@@ -52,7 +52,7 @@ if [ "$LOCAL" = "1" ]; then
   EXE=target/aarch64-pc-windows-msvc/release/BackupRestore.exe
   SUFFIX=-local
   if [ ! -f "$EXE" ]; then
-    echo "找不到 $EXE，先跑 ./build-win.sh" >&2
+    echo "找不到 ${EXE}，先跑 ./build-win.sh" >&2
     exit 1
   fi
 else

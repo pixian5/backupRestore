@@ -38,7 +38,7 @@ if [ -z "$RLLD" ] || [ ! -f "$RLLD" ]; then
 fi
 for d in /Users/x/win-sdk-arm64/um/arm64 /Users/x/win-sdk-arm64/ucrt/arm64 /Users/x/win-sdk-arm64/vc/arm64; do
   if [ ! -d "$d" ]; then
-    echo "缺少 SDK libs 目录：$d（见 docs 踩坑 23）" >&2
+    echo "缺少 SDK libs 目录：${d}（见 docs 踩坑 23）" >&2
     exit 1
   fi
 done
@@ -159,7 +159,7 @@ if [ "$DEPLOY" = 1 ]; then
     expected=${rest%%:*}
     sha=${rest##*:}
     if [ "$sha" != "$expected" ]; then
-      echo "部署失败：$name 的 SHA-256 与基线不一致（客体=$sha 基线=$expected）" >&2
+      echo "部署失败：$name 的 SHA-256 与基线不一致（客体=$sha 基线=${expected}）" >&2
       exit 1
     fi
   done
@@ -172,7 +172,7 @@ if [ "$GUI_CHECK" = 1 ]; then
     echo ">> GUI_CHECK 通过"
   else
     rc=$?
-    echo ">> GUI_CHECK 未通过（退出码 $rc：1=判据变红 2=通道抽风记 SKIP）" >&2
+    echo ">> GUI_CHECK 未通过（退出码 ${rc}：1=判据变红 2=通道抽风记 SKIP）" >&2
     exit "$rc"
   fi
 fi

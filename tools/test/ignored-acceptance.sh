@@ -135,7 +135,7 @@ case "$bl_rc" in
     0) : ;;
     3) say "  BASELINE_SKIP=vm_not_running（VM 没跑，后面本来也跑不了）" ;;
     1) say "ERROR: 基线不成立，弹窗会复发。修复：tools/vm/baseline.sh ensure"; exit 2 ;;
-    *) say "ERROR: 基线判据自身故障（rc=$bl_rc）——这不是「通过」"; exit 2 ;;
+    *) say "ERROR: 基线判据自身故障（rc=${bl_rc}）——这不是「通过」"; exit 2 ;;
 esac
 
 # ---------- 前置：编译（用户会话，因为 X: 只在用户会话里可见）----------
@@ -215,7 +215,7 @@ for marker_root in "$BR_ACCEPTANCE_ROOT" "$BR_BOOT_FAULT_ROOT"; do
     [ -n "$marker_root" ] || continue
     scan=$(vm "dir /b /s \"$marker_root\\tasks\\.fault-*.triggered\" 2>nul & echo __END__")
     if ! printf '%s' "$scan" | grep -q '__END__'; then
-        say "  ERROR=fault_marker_scan_unreadable root=$marker_root（仪器故障，不是「没有标记」）"
+        say "  ERROR=fault_marker_scan_unreadable root=${marker_root}（仪器故障，不是「没有标记」）"
         exit 2
     fi
     before=$(printf '%s\n' "$scan" | grep -v '__END__' | grep -c . || true)
