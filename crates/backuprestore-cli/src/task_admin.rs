@@ -1,3 +1,6 @@
+// defect_combo_label 等辅助函数仅被 native_gui（Windows 专用）调用，
+// macOS 编译时没有调用者——允许死代码，避免平台差异告警。
+#![cfg_attr(not(windows), allow(dead_code))]
 //! 任务与证据管理：把 `<运行目录>\tasks` 下的任务目录读成界面行。
 //!
 //! **纯逻辑、无条件编译**（不碰任何 Win32 / 文件系统），所以 mac 上能单测全部分支。

@@ -1,3 +1,5 @@
+// Windows 专用模块——非 Windows 编译时仅作类型检查，调用方被 cfg 门控。
+#![cfg_attr(not(windows), allow(dead_code))]
 //! 备份文件管理（P1-c）：镜像清单与旧索引删除。
 //!
 //! 背景：需求 §3 明确 `BackupRestore.exe` 负责「管理备份文件」，此前只有

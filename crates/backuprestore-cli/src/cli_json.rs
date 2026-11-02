@@ -1,3 +1,5 @@
+// Windows 专用模块——非 Windows 编译时仅作类型检查，调用方被 cfg 门控。
+#![cfg_attr(not(windows), allow(dead_code))]
 //! CLI 结构化输出（`--json`）。
 //!
 //! 【为什么需要】CLI 的人类可读输出是中文（本产品是中文产品），自动化判据若去

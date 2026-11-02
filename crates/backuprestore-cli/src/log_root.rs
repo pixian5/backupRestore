@@ -1,3 +1,5 @@
+// Windows 专用模块——非 Windows 编译时仅作类型检查，调用方被 cfg 门控。
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 //! 日志根目录的统一解析。
 //!
 //! 【2026-10-18 用户要求】「日志应该放到一个不是 PE、不是目标分区的一个地方」。

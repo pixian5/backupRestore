@@ -227,7 +227,12 @@ fn main() {
     // 同样门控，否则本机 `cargo build` 会报找不到模块（DISM 也只存在于 Windows）。
     #[cfg(windows)]
     crate::dism_timeout::init_process_env_from_settings();
+    // macOS 编译时 `arguments` 不被修改（`retain` 在 `#[cfg(windows)]` 块内），
+    // 门控 `mut` 避免 `unused_mut` 告警而不引入 `#[allow]`。
+    #[cfg(windows)]
     let mut arguments: Vec<String> = env::args().skip(1).collect();
+    #[cfg(not(windows))]
+    let arguments: Vec<String> = env::args().skip(1).collect();
     // `--json`：命令把结论以单行 JSON 打印（command/operation/success/
     // log_path/error），让自动化判据只认字段、不再解析中文文案。
     // ★ 2026-10-25 订正：**必须真的从 arguments 摘除**。旧注释说「子命令解析
@@ -1150,6 +1155,7 @@ pub(crate) fn collect_orphan_tasks() -> Result<usize, TaskError> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub(crate) fn collect_orphan_tasks() -> Result<usize, TaskError> {
     Ok(0)
 }
@@ -2688,6 +2694,7 @@ fn recover_env(path: String) -> Result<(), TaskError> {
 ///
 /// 只有**同时**满足「本次回退过」与「错误是续跑链校验」才改写——其它失败
 /// （镜像损坏、载荷缺失等）必须保持原文，不能被这句说明糊住。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn annotate_chain_failure(error: &str, rolled_back: bool) -> Option<String> {
     if rolled_back && error.contains("续跑启动链") {
         // `TaskError` 的 Display 自带 `invalid task: ` 前缀，而调用方还要再包一层
@@ -3666,6 +3673,7 @@ fn recover_windows(
 /// create-secondary 的常态是「prepare 刚格式化完的空卷」：灌镜像前探测必然
 /// false，所以必须认 `role=NewWindows`。2026-10-19 实机撞见（06fc5e8 引入时
 /// 即只认前者；run10 能过只因那次目标卷已装着 Windows）。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn recovery_needs_boot_menu_session(
     target_is_windows: bool,
     role: backuprestore_core::TargetRole,

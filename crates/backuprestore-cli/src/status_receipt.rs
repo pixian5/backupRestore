@@ -1,3 +1,5 @@
+// Windows 专用模块——非 Windows 编译时仅作类型检查，调用方被 cfg 门控。
+#![cfg_attr(not(windows), allow(dead_code))]
 //! 「最近任务状态」回执：让图形界面真正把 `status.json` 读给用户看。
 //!
 //! ## 为什么需要这个模块

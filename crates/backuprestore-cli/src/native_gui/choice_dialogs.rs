@@ -67,13 +67,34 @@ unsafe extern "system" fn window_proc_system_choice(
         // 正文高度按当前字号实测：换字体后文案会折成更多行，写死 78 会把
         // 最后一行切掉（英文 18 号要 5 行 = 105 基准像素）。
         const MARGIN: i32 = 30;
-        const CONTENT_W: i32 = 400;
+        const MIN_CONTENT_W: i32 = 400;
         const BTN_H: i32 = 42;
         const BTN_GAP: i32 = 8;
+
+        let btn_pe_text = if english {
+            "Enter PE (recommended)"
+        } else {
+            "进入 PE（推荐）"
+        };
+        let btn_re_text = if english {
+            "Enter Windows RE"
+        } else {
+            "进入 Windows RE"
+        };
+        let btn_cancel_text = if english { "Cancel" } else { "取消" };
+
+        // 实测所有按钮文本宽，按最大宽度 + 40（左右 padding 各 20）算内容区宽，不写死固定值
+        let max_btn_w = [btn_pe_text, btn_re_text, btn_cancel_text]
+            .iter()
+            .map(|t| measure_text_width(t) + 40)
+            .max()
+            .unwrap_or(MIN_CONTENT_W);
+        let content_w = MIN_CONTENT_W.max(max_btn_w);
+
         // +8：`DrawText` 的 DT_CALCRECT 高度与真实排版可能差 1~2 像素，
         // 正好贴住时最后一行的下缘（尤其降部，如「返」「y」）会被切。
         // 判据实测：不加时中文 18 号 slack=0、中文 14 号 slack=1。
-        let body_height = measure_text_height(body_text, CONTENT_W) + 8;
+        let body_height = measure_text_height(body_text, content_w) + 8;
         create_control(
             hwnd,
             "STATIC",
@@ -81,7 +102,7 @@ unsafe extern "system" fn window_proc_system_choice(
             0,
             MARGIN,
             24,
-            CONTENT_W,
+            content_w,
             body_height,
             ID_CHOICE_BODY,
         );
@@ -89,15 +110,11 @@ unsafe extern "system" fn window_proc_system_choice(
         create_control(
             hwnd,
             "BUTTON",
-            if english {
-                "Enter PE (recommended)"
-            } else {
-                "进入 PE（推荐）"
-            },
+            btn_pe_text,
             WS_TABSTOP | BS_DEFPUSHBUTTON,
             MARGIN,
             y,
-            CONTENT_W,
+            content_w,
             BTN_H,
             ID_CHOICE_PE,
         );
@@ -105,15 +122,11 @@ unsafe extern "system" fn window_proc_system_choice(
         create_control(
             hwnd,
             "BUTTON",
-            if english {
-                "Enter Windows RE"
-            } else {
-                "进入 Windows RE"
-            },
+            btn_re_text,
             WS_TABSTOP,
             MARGIN,
             y,
-            CONTENT_W,
+            content_w,
             BTN_H,
             ID_CHOICE_RE,
         );
@@ -121,18 +134,18 @@ unsafe extern "system" fn window_proc_system_choice(
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Cancel" } else { "取消" },
+            btn_cancel_text,
             WS_TABSTOP,
             MARGIN,
             y,
-            CONTENT_W,
+            content_w,
             BTN_H,
             ID_CHOICE_CANCEL,
         );
         // 整窗尺寸按内容反推并居中。
         // ★ 原来窗口写死 460×320 且居中算法写成 `(屏幕宽 − 460)/2`——屏幕宽是
         //   物理像素、460 是基准像素，200% 下窗口实际 920 宽，于是整体偏右 230。
-        let client_w = MARGIN * 2 + CONTENT_W;
+        let client_w = MARGIN * 2 + content_w;
         let client_h = y + BTN_H + 24;
         let mut frame = Rect {
             left: 0,
@@ -325,13 +338,28 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
             (false, false) => "镜像绝对路径无效。\n\n请点击【选择镜像位置】选择文件，或点击【取消】返回。",
         };
         const MARGIN: i32 = 30;
-        const CONTENT_W: i32 = 400;
+        const MIN_CONTENT_W: i32 = 400;
         const BTN_H: i32 = 42;
         const BTN_GAP: i32 = 10;
+
+        let btn_choose_text = if english {
+            "Choose image location"
+        } else {
+            "选择镜像位置"
+        };
+        let btn_cancel_text = if english { "Cancel" } else { "取消" };
+
+        let max_btn_w = [btn_choose_text, btn_cancel_text]
+            .iter()
+            .map(|t| measure_text_width(t) + 40)
+            .max()
+            .unwrap_or(MIN_CONTENT_W);
+        let content_w = MIN_CONTENT_W.max(max_btn_w);
+
         // +8：`DrawText` 的 DT_CALCRECT 高度与真实排版可能差 1~2 像素，
         // 正好贴住时最后一行的下缘（尤其降部，如「返」「y」）会被切。
         // 判据实测：不加时中文 18 号 slack=0、中文 14 号 slack=1。
-        let body_height = measure_text_height(body_text, CONTENT_W) + 8;
+        let body_height = measure_text_height(body_text, content_w) + 8;
         create_control(
             hwnd,
             "STATIC",
@@ -339,7 +367,7 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
             0,
             MARGIN,
             24,
-            CONTENT_W,
+            content_w,
             body_height,
             0,
         );
@@ -347,15 +375,11 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
         create_control(
             hwnd,
             "BUTTON",
-            if english {
-                "Choose image location"
-            } else {
-                "选择镜像位置"
-            },
+            btn_choose_text,
             WS_TABSTOP | BS_DEFPUSHBUTTON,
             MARGIN,
             y,
-            CONTENT_W,
+            content_w,
             BTN_H,
             ID_CHOICE_CHOOSE_LOCATION,
         );
@@ -363,16 +387,16 @@ unsafe extern "system" fn window_proc_invalid_path_choice(
         create_control(
             hwnd,
             "BUTTON",
-            if english { "Cancel" } else { "取消" },
+            btn_cancel_text,
             WS_TABSTOP,
             MARGIN,
             y,
-            CONTENT_W,
+            content_w,
             BTN_H,
             ID_CHOICE_PATH_CANCEL,
         );
         // 整窗尺寸按内容反推并居中（原来写死 460×220，且居中混用了物理与基准像素）。
-        let client_w = MARGIN * 2 + CONTENT_W;
+        let client_w = MARGIN * 2 + content_w;
         let client_h = y + BTN_H + 24;
         let mut frame = Rect {
             left: 0,

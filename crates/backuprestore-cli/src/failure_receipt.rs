@@ -1,3 +1,5 @@
+// Windows 专用模块——非 Windows 编译时仅作类型检查，调用方被 cfg 门控。
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 //! 失败回执的「错误码可见性」：让图形界面也能把 `BR-域-序号` 交到用户手里。
 //!
 //! ## 为什么需要这个模块

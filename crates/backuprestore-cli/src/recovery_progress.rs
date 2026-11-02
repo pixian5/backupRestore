@@ -13,7 +13,25 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+/// 恢复环境下的崩溃免疫互斥锁访问扩展。
+///
+/// 核心原则：恢复宿主运行在 WinRE/PE 极简环境中，若某个后台线程发生异常导致锁毒化（PoisonError），
+/// 主线程与其它线程绝对不能发生级联 panic，必须提取内部数据继续保障恢复主流程与 BCD 回滚。
+pub(crate) trait SafeLock<T> {
+    fn safe_lock(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> SafeLock<T> for Mutex<T> {
+    #[inline]
+    fn safe_lock(&self) -> MutexGuard<'_, T> {
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
 use std::thread;
 
 use crate::native_gui::Msg;
@@ -252,15 +270,15 @@ pub struct ProgressShared {
 impl ProgressShared {
     /// 切换监控的日志文件路径，并指定起始偏移（例如 0，或者累积日志的追加点）。
     pub fn switch_log_path(&self, new_path: PathBuf, initial_offset: u64) {
-        let mut path_guard = self.log_path.lock().unwrap();
+        let mut path_guard = self.log_path.safe_lock();
         *path_guard = new_path;
-        let mut offset_guard = self.log_offset.lock().unwrap();
+        let mut offset_guard = self.log_offset.safe_lock();
         *offset_guard = initial_offset;
     }
 
     /// 在第二阶段候选探测完成后发布引导修复会话，进度窗会显示按钮。
     pub fn set_boot_menu(&self, session: Arc<crate::boot_menu::BootMenuSession>) {
-        *self.boot_menu.lock().unwrap() = Some(session);
+        *self.boot_menu.safe_lock() = Some(session);
     }
 
     /// 恢复链在**每个步骤边界**调用：若用户点了「暂停」，就在这里原地等待，
@@ -289,7 +307,7 @@ impl ProgressShared {
         let deadline = if limit_secs == 0 {
             None
         } else {
-            let mut slot = self.pause_deadline.lock().unwrap();
+            let mut slot = self.pause_deadline.safe_lock();
             match *slot {
                 Some(deadline) => Some(deadline),
                 None => {
@@ -344,13 +362,13 @@ impl ProgressShared {
     /// 装载「BCD 回退」动作。恢复主流程在拿到任务目录与 ESP 身份后调用；
     /// 按钮点击时执行该闭包。重复调用会替换旧闭包。
     pub fn set_bcd_rollback(&self, action: BcdRollbackAction) {
-        *self.bcd_rollback.lock().unwrap() = Some(action);
+        *self.bcd_rollback.safe_lock() = Some(action);
     }
 
     /// 将已用时间的计时起点重置为当前时刻（在写入 STEP 1/4 时对齐）。
     pub fn reset_start_time(&self) {
         self.start_time_aligned.store(true, Ordering::SeqCst);
-        let mut guard = self.start_time.lock().unwrap();
+        let mut guard = self.start_time.safe_lock();
         *guard = std::time::Instant::now();
     }
 }
@@ -583,8 +601,8 @@ fn create_font(height: i32, _bold: bool) -> Hwnd {
 /// 格式化秒数为 hh:mm:ss 或 mm:ss。
 /// 读取日志增量新行并更新缓存状态与步骤跟踪器。
 fn read_log_delta(shared: &ProgressShared) {
-    let path = shared.log_path.lock().unwrap().clone();
-    let mut offset = shared.log_offset.lock().unwrap();
+    let path = shared.log_path.safe_lock().clone();
+    let mut offset = shared.log_offset.safe_lock();
     let mut file = match OpenOptions::new().read(true).open(&path) {
         Ok(file) => file,
         Err(_) => return, // 日志尚未出现，静默等待
@@ -623,11 +641,11 @@ fn read_log_delta(shared: &ProgressShared) {
         if crate::text_parsing::parse_step_marker(line).is_some() {
             // 新步骤不能继承上一条 DISM 命令的 100%。
             latest_percent = None;
-            *shared.cached_percent.lock().unwrap() = None;
+            *shared.cached_percent.safe_lock() = None;
         }
         // 当日志中首次出现 STEP 1/ 步骤时，将计时起点精确重置为当前时刻，确保已用时间与步骤时间戳分秒对齐
         if line.contains("STEP 1/") && !shared.start_time_aligned.swap(true, Ordering::SeqCst) {
-            let mut guard = shared.start_time.lock().unwrap();
+            let mut guard = shared.start_time.safe_lock();
             *guard = std::time::Instant::now();
         }
         let (stage, percent, detail) = classify_log_line(line);
@@ -642,20 +660,20 @@ fn read_log_delta(shared: &ProgressShared) {
         }
     }
     if let Some(stage) = latest_stage {
-        *shared.cached_stage.lock().unwrap() = Some(stage);
+        *shared.cached_stage.safe_lock() = Some(stage);
     }
     if let Some(percent) = latest_percent {
-        *shared.cached_percent.lock().unwrap() = Some(percent);
+        *shared.cached_percent.safe_lock() = Some(percent);
     }
     if !new_details.is_empty() {
-        let mut details = shared.cached_details.lock().unwrap();
+        let mut details = shared.cached_details.safe_lock();
         details.extend(new_details);
         while details.len() > TAIL_LINES {
             details.remove(0);
         }
     }
     // 编号步骤跨增量累积，并算出进度。
-    let mut tracker = shared.steps.lock().unwrap();
+    let mut tracker = shared.steps.safe_lock();
     tracker.feed(&lines);
     if let Some(percent) = latest_percent {
         tracker.set_current_percent(Some(percent));
@@ -669,14 +687,14 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
     read_log_delta(shared);
 
     // 2. 提取最新状态（无论是否有新日志，都确保每秒驱动 UI 刷新与呼吸动画）
-    let latest_stage = shared.cached_stage.lock().unwrap().clone();
-    let latest_percent = *shared.cached_percent.lock().unwrap();
-    let details = shared.cached_details.lock().unwrap().clone();
-    let progress = shared.steps.lock().unwrap().snapshot();
+    let latest_stage = shared.cached_stage.safe_lock().clone();
+    let latest_percent = *shared.cached_percent.safe_lock();
+    let details = shared.cached_details.safe_lock().clone();
+    let progress = shared.steps.safe_lock().snapshot();
 
     unsafe {
         // 只有第二阶段已经完成候选系统探测后才开放引导修复；无会话时隐藏，避免用户误点。
-        let boot_menu_ready = shared.boot_menu.lock().unwrap().is_some();
+        let boot_menu_ready = shared.boot_menu.safe_lock().is_some();
         ShowWindow(
             GetDlgItem(hwnd, ID_BOOT_MENU),
             if boot_menu_ready { SW_SHOW } else { SW_HIDE },
@@ -714,7 +732,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
 
         // 标题右侧增加一块显示已用时间/剩余时间、当前时间，靠右显示。
         // 关键：每秒钟调用一次，当前时间精确跳动！
-        let elapsed = shared.start_time.lock().unwrap().elapsed().as_secs();
+        let elapsed = shared.start_time.safe_lock().elapsed().as_secs();
         let elapsed_str = crate::progress_text::format_hms(elapsed);
         let remaining_str = crate::progress_text::estimate_remaining_secs(elapsed, pos as u32)
             .map_or_else(|| "--:--".to_string(), crate::progress_text::format_hms);
@@ -728,12 +746,11 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
         // 已完成/进行中/未开始；正文每个已开始阶段后面附上时间戳（时分秒）[HH:MM:SS]。
         let online = shared
             .operation
-            .lock()
-            .unwrap()
+            .safe_lock()
             .as_deref()
             .is_some_and(|s| s.starts_with("ONLINE_"));
         let is_backup = {
-            let op_guard = shared.operation.lock().unwrap();
+            let op_guard = shared.operation.safe_lock();
             op_guard
                 .as_deref()
                 .map(|s| {
@@ -792,7 +809,7 @@ fn refresh_from_log(shared: &ProgressShared, hwnd: Hwnd) {
 /// 所以能看出进程到底停在哪一行。DISM 用 `\r` 原地刷新且重定向到文件时不带 `\n`，
 /// 必须把 `\r` 也当换行，否则整段会挤成一行。
 fn read_log_tail_text(shared: &ProgressShared) -> Option<String> {
-    let path = shared.log_path.lock().unwrap().clone();
+    let path = shared.log_path.safe_lock().clone();
     let mut file = OpenOptions::new().read(true).open(&path).ok()?;
     let size = file.metadata().ok()?.len();
     let start = size.saturating_sub(LOG_VIEW_BYTES);
@@ -841,7 +858,7 @@ unsafe fn log_edit_is_at_bottom(edit: Hwnd) -> bool {
 
 /// 刷新详细日志弹窗内容；窗口不存在或已隐藏时直接跳过，避免无谓开销。
 fn refresh_log_window(shared: &ProgressShared) {
-    let handle = *shared.log_window.lock().unwrap();
+    let handle = *shared.log_window.safe_lock();
     let Some(raw) = handle else { return };
     if raw == 0 {
         return;
@@ -977,12 +994,12 @@ unsafe fn layout_controls(hwnd: Hwnd) {
 unsafe fn open_cmd_prompt(shared: &ProgressShared) {
     if crate::windows_command::spawn_detached_interactive("cmd.exe") {
         let _ = crate::append_log(
-            &*shared.log_path.lock().unwrap(),
+            &*shared.log_path.safe_lock(),
             crate::i18n::msg("re_cmd_opened"),
         );
     } else {
         let _ = crate::append_log(
-            &*shared.log_path.lock().unwrap(),
+            &*shared.log_path.safe_lock(),
             crate::i18n::msg("re_cmd_open_failed"),
         );
     }
@@ -993,7 +1010,7 @@ unsafe fn open_cmd_prompt(shared: &ProgressShared) {
 /// 关闭只隐藏不销毁，这样反复开关不会重复建窗；弹窗自身带最大化按钮和
 /// 双向滚动条，内容由 `refresh_log_window` 每秒跟随日志刷新。
 unsafe fn open_log_window(main_hwnd: Hwnd, shared: &ProgressShared) {
-    let existing = *shared.log_window.lock().unwrap();
+    let existing = *shared.log_window.safe_lock();
     if let Some(raw) = existing
         && raw != 0
     {
@@ -1051,7 +1068,7 @@ unsafe fn open_log_window(main_hwnd: Hwnd, shared: &ProgressShared) {
         // 避免第二份 Arc 裸指针带来的生命周期问题。
         SetWindowLongPtrW(window, GWL_USERDATA, main_hwnd as isize);
     }
-    *shared.log_window.lock().unwrap() = Some(window as usize);
+    *shared.log_window.safe_lock() = Some(window as usize);
     unsafe {
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
@@ -1164,7 +1181,7 @@ unsafe fn toggle_pause(hwnd: Hwnd, shared: &ProgressShared, via_key: bool) {
         (false, true) => "用户按 P 继续：恢复将立即推进",
         (false, false) => "用户点击继续：恢复将立即推进",
     };
-    let _ = crate::append_log(&shared.log_path.lock().unwrap(), message);
+    let _ = crate::append_log(&shared.log_path.safe_lock(), message);
 }
 
 /// 打开（或激活）引导修复编辑器。WM_COMMAND（点按钮）与全局 M 键共用。
@@ -1174,7 +1191,7 @@ unsafe fn toggle_pause(hwnd: Hwnd, shared: &ProgressShared, via_key: bool) {
 /// 状态，用户改哪一份都不直观。类名与 `boot_menu_window::open_editor` 注册的
 /// 一致；窗口类按进程实例隔离，同进程只会命中自家窗口。
 unsafe fn open_boot_menu_editor(hwnd: Hwnd, shared: &ProgressShared) {
-    let session = shared.boot_menu.lock().unwrap().clone();
+    let session = shared.boot_menu.safe_lock().clone();
     // 会话未就绪（第二阶段候选探测完成前）时静默无操作，与点击行为一致。
     let Some(session) = session else { return };
     let class = encode("BackupRestoreBootMenuClass");
@@ -1188,7 +1205,7 @@ unsafe fn open_boot_menu_editor(hwnd: Hwnd, shared: &ProgressShared) {
     let editor = unsafe { crate::boot_menu::open_editor(hwnd, session) };
     if editor.is_null() {
         let _ = crate::append_log(
-            &shared.log_path.lock().unwrap(),
+            &shared.log_path.safe_lock(),
             crate::i18n::msg("re_boot_editor_failed"),
         );
     }
@@ -1203,14 +1220,14 @@ unsafe fn open_boot_menu_editor(hwnd: Hwnd, shared: &ProgressShared) {
 /// 闭包调用结束后再弹（`bcd_rollback` 锁已释放）：模态阻塞的只是本窗口线程，
 /// 恢复主流程在另一条线程继续跑，任务不会因此停摆。
 unsafe fn trigger_bcd_rollback(hwnd: Hwnd, shared: &ProgressShared, via_key: bool) {
-    let log_path = shared.log_path.lock().unwrap().clone();
+    let log_path = shared.log_path.safe_lock().clone();
     // 【2026-10-18 缺陷修复 M5】取到闭包就**立刻放开锁**，回退动作丢工作线程跑。
     // 此前整段（含 `action()` 里挂 ESP + 跑 bcdedit，实测可达数十秒）都在
     // `bcd_rollback` 锁内、且就跑在**窗口线程**上 → 消息循环停转、定时器停更，
     // 进度窗整段「未响应」。现在窗口线程只负责派活，界面全程可响应；
     // 恢复主流程在另一条线程上照常推进，不会被回退拖住。
     let action = {
-        let guard = shared.bcd_rollback.lock().unwrap();
+        let guard = shared.bcd_rollback.safe_lock();
         guard.as_ref().cloned()
     };
     let Some(action) = action else {
@@ -1567,7 +1584,7 @@ unsafe extern "system" fn window_proc(
                 if !program_requested {
                     (*shared_ptr).pause_abandoned.store(true, Ordering::SeqCst);
                     if (*shared_ptr).paused.load(Ordering::SeqCst) {
-                        let log_path = (*shared_ptr).log_path.lock().unwrap().clone();
+                        let log_path = (*shared_ptr).log_path.safe_lock().clone();
                         let _ = crate::append_log(
                             &log_path,
                             crate::i18n::msg("re_window_closed_paused"),
@@ -1585,7 +1602,7 @@ unsafe extern "system" fn window_proc(
             // 再刷新会读到悬垂句柄。
             let shared_ptr = GetWindowLongPtrW(hwnd, GWL_USERDATA) as *const ProgressShared;
             if !shared_ptr.is_null() {
-                let taken = (*shared_ptr).log_window.lock().unwrap().take();
+                let taken = (*shared_ptr).log_window.safe_lock().take();
                 if let Some(raw) = taken
                     && raw != 0
                 {
@@ -1663,7 +1680,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         // 收不收得到无所谓（主线程可能已经超时放弃），故忽略返回值。
         let _ = thread_shared.window_done_tx.send(());
     });
-    *shared.window_thread.lock().unwrap() = Some(handle);
+    *shared.window_thread.safe_lock() = Some(handle);
     shared
 }
 
@@ -1676,7 +1693,7 @@ pub fn close_and_wait(shared: &ProgressShared) {
     /// 给窗口线程收尾的时间。正常关闭是毫秒级；这只是防止「永久阻塞」的闸门。
     const JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     request_close(shared);
-    let handle = shared.window_thread.lock().unwrap().take();
+    let handle = shared.window_thread.safe_lock().take();
     let Some(handle) = handle else {
         return;
     };
@@ -1709,7 +1726,7 @@ pub fn close_and_wait(shared: &ProgressShared) {
 /// 请求关闭进度窗口（主线程操作执行完毕后调用，避免窗口残留在前台）。
 pub fn request_close(shared: &ProgressShared) {
     shared.close_requested.store(true, Ordering::SeqCst);
-    if let Some(hwnd) = *shared.hwnd.lock().unwrap()
+    if let Some(hwnd) = *shared.hwnd.safe_lock()
         && hwnd != 0
     {
         unsafe {
@@ -1750,8 +1767,7 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
     // 就按 is_backup 分叉，标题此前是漏网的一处。
     let operation = shared
         .operation
-        .lock()
-        .unwrap()
+        .safe_lock()
         .as_deref()
         .map(|s| {
             s.eq_ignore_ascii_case("BACKUP") || s.eq_ignore_ascii_case("ONLINE_BACKUP")
@@ -1786,7 +1802,7 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
     unsafe {
         SetWindowLongPtrW(hwnd, GWL_USERDATA, raw);
     }
-    *shared.hwnd.lock().unwrap() = Some(hwnd as usize);
+    *shared.hwnd.safe_lock() = Some(hwnd as usize);
     shared.window_up.store(true, Ordering::SeqCst);
     unsafe {
         if shared.close_requested.load(Ordering::SeqCst) {
@@ -1816,7 +1832,7 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             // 弹窗，都在消息循环里拦截——焦点落在主窗口哪个子控件上都有效。
             if msg_message == WM_KEYDOWN {
                 if msg_wparam == VK_ESCAPE {
-                    let log = *shared.log_window.lock().unwrap();
+                    let log = *shared.log_window.safe_lock();
                     if let Some(raw) = log
                         && raw != 0
                     {
@@ -1903,8 +1919,31 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
             DispatchMessageW(msg.as_ptr());
         }
     }
-    *shared.hwnd.lock().unwrap() = None;
+    *shared.hwnd.safe_lock() = None;
     shared.window_up.store(false, Ordering::SeqCst);
     // 释放 GWL_USERDATA 持有的 Arc（窗口销毁后）
     let _ = unsafe { Arc::from_raw(raw as *const ProgressShared) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_lock_survives_thread_panic_and_recovers_state() {
+        let lock = Arc::new(Mutex::new(vec!["step1".to_string()]));
+        let lock_clone = Arc::clone(&lock);
+
+        // 模拟子线程持锁 panic 导致 Mutex 进入 poisoned 状态
+        let _ = std::thread::spawn(move || {
+            let mut guard = lock_clone.lock().unwrap();
+            guard.push("step2".to_string());
+            panic!("simulated panic inside worker thread");
+        })
+        .join();
+
+        // 验证主线程通过 safe_lock 能正常取回内部数据且绝不二次 panic
+        let guard = lock.safe_lock();
+        assert_eq!(guard.as_slice(), &["step1", "step2"]);
+    }
 }
