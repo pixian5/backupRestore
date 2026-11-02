@@ -10,7 +10,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     os::windows::fs::OpenOptionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -564,7 +564,8 @@ impl Engine {
                     .max(metadata.source.partition_size);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::read_dir(sidecar.parent().unwrap())?;
+                let parent = sidecar.parent().unwrap_or_else(|| Path::new("."));
+                fs::read_dir(parent)?;
             }
             Err(error) => return Err(error.into()),
         }

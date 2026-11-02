@@ -1,6 +1,8 @@
 //! 还原期间编辑引导方案，映像应用完成后才写入 BCD。
 
 use crate::error_code::ErrCode;
+#[cfg(windows)]
+use crate::recovery_progress::SafeLock;
 use backuprestore_core::{TaskError, VolumeIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
@@ -773,11 +775,11 @@ impl BootMenuSession {
         }))
     }
     pub(crate) fn snapshot(&self) -> (BootMenuPlan, bool) {
-        let state = self.state.lock().unwrap();
+        let state = self.state.safe_lock();
         (state.plan.clone(), state.editable)
     }
     pub(crate) fn edit(&self, change: impl FnOnce(&mut BootMenuPlan)) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.safe_lock();
         if !state.editable {
             return;
         }
@@ -804,7 +806,7 @@ impl BootMenuSession {
         }
     }
     pub(crate) fn freeze(&self) -> Result<BootMenuPlan, TaskError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.safe_lock();
         state.editable = false;
         if let Some(error) = &state.error {
             return Err(crate::errc_with(ErrCode::BootMenuFreezeBlocked, &[error]));

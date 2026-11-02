@@ -155,7 +155,10 @@ fn drive(value: &str) -> Result<char, TaskError> {
     if raw.len() != 1 || !raw.as_bytes()[0].is_ascii_alphabetic() {
         return Err(crate::err("invalid drive letter"));
     }
-    Ok(raw.chars().next().unwrap().to_ascii_uppercase())
+    raw.chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase())
+        .ok_or_else(|| crate::err("invalid drive letter"))
 }
 pub(crate) fn dism(args: &[String], log_path: &Path) -> Result<(), TaskError> {
     // 【2026-10-16 审查修订，卡死 6】等待上限可配置（`dism_timeout`），

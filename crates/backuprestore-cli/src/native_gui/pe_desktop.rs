@@ -5,6 +5,7 @@
 //! 以及安全的「返回 Windows」BCD 引导还原逻辑。
 
 use super::*;
+use crate::recovery_progress::SafeLock;
 use crate::{append_log, err, launch_background_console};
 use backuprestore_core::TaskError;
 
@@ -508,7 +509,7 @@ unsafe extern "system" fn window_proc_pe_dialog(
 ) -> LResult {
     if message == WM_CREATE {
         let (default_path, default_name, show_name, warning) = {
-            let guard = PE_DLG_DEFAULTS.lock().unwrap();
+            let guard = PE_DLG_DEFAULTS.safe_lock();
             guard.clone()
         };
         let width = 440;
@@ -536,7 +537,7 @@ unsafe extern "system" fn window_proc_pe_dialog(
             ID_PE_DLG_COMBO,
         );
         let volumes = {
-            let guard = PE_DLG_VOLUMES.lock().unwrap();
+            let guard = PE_DLG_VOLUMES.safe_lock();
             guard.clone()
         };
         for vol in &volumes {
@@ -650,10 +651,10 @@ unsafe extern "system" fn window_proc_pe_dialog(
                 } else {
                     get_text(name_edit)
                 };
-                let mut guard = PE_DLG_OUT.lock().unwrap();
+                let mut guard = PE_DLG_OUT.safe_lock();
                 *guard = Some((drive, path, name));
             } else {
-                let mut guard = PE_DLG_OUT.lock().unwrap();
+                let mut guard = PE_DLG_OUT.safe_lock();
                 *guard = None;
             }
             DestroyWindow(hwnd);
@@ -693,11 +694,11 @@ unsafe fn pe_dialog(
         let _ = RegisterClassExW(&class); // 已注册则忽略
         // 准备全局状态
         {
-            let mut vols = PE_DLG_VOLUMES.lock().unwrap();
+            let mut vols = PE_DLG_VOLUMES.safe_lock();
             *vols = pe_list_volumes();
         }
         {
-            let mut defs = PE_DLG_DEFAULTS.lock().unwrap();
+            let mut defs = PE_DLG_DEFAULTS.safe_lock();
             *defs = (
                 default_path.to_string(),
                 default_name.to_string(),
@@ -706,7 +707,7 @@ unsafe fn pe_dialog(
             );
         }
         {
-            let mut out = PE_DLG_OUT.lock().unwrap();
+            let mut out = PE_DLG_OUT.safe_lock();
             *out = None;
         }
         // ★ 2.6.79：PE 内对话框尺寸按 DPI 缩放，否则 200% 下它只有屏幕的 1/4 大。
@@ -748,7 +749,7 @@ unsafe fn pe_dialog(
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
                 if IsWindow(dlg) == 0 {
-                    let guard = PE_DLG_OUT.lock().unwrap();
+                    let guard = PE_DLG_OUT.safe_lock();
                     return guard.clone();
                 }
             }
