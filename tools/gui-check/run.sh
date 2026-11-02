@@ -67,14 +67,28 @@ sync_ps() {
   return 1
 }
 
-# 跑一个判据脚本，**必须看到 __END__** 才算真跑过。
-# ★ 这是硬要求：空输出既可能是"没发现问题"也可能是"命令根本没执行"，
-#   两者混在一起就等于把通道抽风记成通过。
+# 确保桌面提权常驻助手 helper.ps1 处于运行状态（整轮测试仅启动一次）。
+# 为什么：走 --current-user 启动 powershell 客户端会泄漏孤儿 conhost/OpenConsole。
+# 通过在测试开始前确保 helper 在桌面常驻，后续所有前台操作与测量均由 SYSTEM 通道
+# 派发给 helper 继承控制台运行，彻底实现全流程 0 孤儿控制台泄漏（闭环 B-2694）。
+ensure_helper() {
+  local out
+  # 必须在用户桌面会话中确保常驻助手运行（整轮测试仅此一处使用 --current-user）
+  for _ in 1 2 3; do
+    out=$(prlctl exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass \
+          -File "${DST}\\runas.ps1" -Name "clickenv.ps1" 2>&1)
+    case "$out" in *HELPER=resident*) return 0 ;; esac
+    sleep 2
+  done
+  return 1
+}
+
+# 跑一个无 GUI 交互的判据脚本（如写 ini 配置文件），走 SYSTEM 通道，必须看到 __END__。
 vmps() {
   local script="$1"; shift
   local out
   for _ in 1 2 3; do
-    out=$(prlctl exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass \
+    out=$(prlctl exec "$VM" powershell -NoProfile -ExecutionPolicy Bypass \
           -File "${DST}\\${script}" "$@" 2>&1)
     case "$out" in *__END__*) printf '%s' "$out"; return 0 ;; esac
     sleep 2
@@ -82,38 +96,29 @@ vmps() {
   printf ''; return 1
 }
 
-# 需要**投递输入**的脚本必须提权跑。
-#
-# ★ UIPI：程序是提权运行的，未提权进程向更高完整性级别的窗口投递鼠标输入会被
-#   **静默丢弃** —— SetCursorPos/mouse_event 全部正常返回，坐标也算对了，但页签
-#   一个都没切。2026-10-30 的实测证据：非提权点击后「可见控件 id 集合」DIFF=0；
-#   改提权后点 1101 → 集合从 17 个变 11 个（DIFF=14）、点 1106 → 14 个（DIFF=11）。
-#   所以：只读取窗口信息的脚本可以不提权，凡是要点的必须提权。
+# 需要前台桌面环境或投递输入的脚本（通过 runas.ps1 由常驻 helper 执行）。
+# 走 SYSTEM 通道派发，绝不新建前台客户端控制台，彻底杜绝孤儿窗口泄漏。
 vmps_elev() {
   local script="$1"; shift
   local extra="$*"
+  local cmd_args=("-Name" "$script")
+  if [ -n "$extra" ]; then
+    cmd_args+=("-Extra" "$extra")
+  fi
   local out
   for _ in 1 2 3; do
-    out=$(prlctl exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass \
-          -File "${DST}\\runas.ps1" -Name "$script" -Extra "$extra" 2>&1)
+    out=$(prlctl exec "$VM" powershell -NoProfile -ExecutionPolicy Bypass \
+          -File "${DST}\\runas.ps1" "${cmd_args[@]}" 2>&1)
     case "$out" in *__END__*) printf '%s' "$out"; return 0 ;; esac
     sleep 2
   done
   printf ''; return 1
 }
 
-# 一次 prlctl 调用里顺序跑多个探测（每个子进程 -NoNewWindow 继承控制台）。
-#
-# ★★ 为什么：每一次 `prlctl exec --current-user powershell` 都漏一对
-#   conhost/OpenConsole（实测 2026-11-01：+1/次，提权与否一样——漏的是**客户端进程**）。
-#   一个主窗口组合原来要 7 次调用、一个辅助窗口 5 次。合并成批以后次数直接除以 4，
-#   泄漏也跟着少 4 倍（收尾还有 SYSTEM 通道清扫兜底）。
-#
-# 参数：一组 "脚本名|参数串"，用 ~~ 连接。任一条的输出没给 __END__ 都算通道没跑通。
+# 一次 prlctl 调用里顺序跑多个探测（由常驻 helper 继承控制台在进程内执行）。
+# 参数：一组 "脚本名|参数串"。通过 SYSTEM 通道由 runas.ps1 派发给 helper。
 vmps_batch() {
   local args=() i=0 spec out
-  # ★ 每个任务一个独立参数（-J1..-J5）。不要用分隔符塞进一个参数：实测 prlctl exec
-  #   会把 "@@" 整个吃掉、把 "~~" 变成空格，三个任务会静默并成一个（2026-11-01 踩过）。
   for spec in "$@"; do
     i=$((i+1))
     args+=("-J$i" "$spec")
@@ -199,6 +204,11 @@ if ! sync_ps; then
   exit 2
 fi
 
+if ! ensure_helper; then
+  say "GUI_CHECK helper=FAIL -> ABORT（常驻助手启动失败，后续前台投递不可行）"
+  exit 2
+fi
+
 # ★ 字号档位取自产品本身：dpi.rs 的 FONT_SIZE_CHOICES = [12,14,16,18]。
 #   2.7.2 之前这里只跑 14/18 两档——**漏了 12 和 16**，是我自己工具的覆盖缺口。
 #   判据的档位不能靠人记，应当跟着产品的可选档位走。
@@ -237,7 +247,7 @@ for combo in "${COMBOS[@]}"; do
       *) say "  SKIP $tag (set-combo 没写成: $(printf '%s' "$o_set" | head -1))"; skipped=$((skipped+1)); continue ;;
     esac
 
-    o_launch=$(vmps launch.ps1) || { say "  SKIP $tag (launch 通道没跑)"; skipped=$((skipped+1)); continue; }
+    o_launch=$(vmps_elev launch.ps1) || { say "  SKIP $tag (launch 通道没跑)"; skipped=$((skipped+1)); continue; }
     # PID 后面必须是数字：PID=NONE / PID=MISSING 都算没起来
     pid=$(printf '%s' "$o_launch" | grep -oE 'PID=[0-9]+' | head -1)
     if [ -z "$pid" ]; then
