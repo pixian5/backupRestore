@@ -24,4 +24,4 @@ created: 2026-10-13
 | B-2696 | **全仓跨平台编译告警与死代码门控清理**：消除 `unused_mut`，规范 macOS 视角 `cfg_attr` 死代码标注，实现跨平台 0 warning 与 404 项单测全绿 | done (2.7.5) | | `docs/20261102-1715-弹窗实测算宽与去unwrap安全锁-v2.7.5-Gemini.md` |
 | B-2697 | **PE 安装镜像结构完整性门禁**：新增 `BR-PE-059`（缺 winpeshl.ini）与 `BR-PE-060`（启动目标程序不存在）错误码与弹窗拦截，杜绝坏镜像开机死循环 | done (2.7.5) | | `docs/20261102-1715-弹窗实测算宽与去unwrap安全锁-v2.7.5-Gemini.md` |
 | B-2698 | **准备阶段纯计算逻辑与 I/O 解耦抽离**：拆出 `prepare_plan.rs` 纯逻辑模块并补齐 17 个跨平台单测，加固核心路径健壮性 | done (2.7.5) | | `docs/20261102-1905-准备阶段纯逻辑抽离与单测加固-v2.7.5-Gemini.md` |
-| B-2699 | **`native_gui.rs` 巨石解耦**：抽离 `task_admin_window.rs`、`pe_desktop.rs`、`pe_installer.rs`，代码自 11,067 行降至 7,425 行（净减 3,642 行） | done (2.7.5) | | `docs/20261102-1915`、`docs/20261102-2020`、`docs/20261102-2030` |
+| B-2699 | **`native_gui.rs` 巨石解耦（七批次彻底重构）**：抽离 `task_admin_window.rs`、`pe_desktop.rs`、`pe_installer.rs`、`operation_tabs.rs`、`drive_selection.rs`、`task_executor.rs`、`environment.rs` 共 11 个自治子模块，代码自 11,067 行降至 **2,540 行**（净减 8,527 行，降幅 **77.1%**） | done (2.7.5) | | `docs/20261102-1915`、`2020`、`2030`、`2040`、`2045`、`2100` |
