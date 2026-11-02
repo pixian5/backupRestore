@@ -4605,7 +4605,7 @@ unsafe fn confirm_pe_image_shell(state: &State, image_path: &str) -> bool {
     );
     let (code_str, detail) = match &problem {
         crate::text_parsing::PeShellProblem::Missing => (
-            "BR-PE-059",
+            crate::error_code::ErrCode::PeImageMissingShellConfig.code(),
             if language == Language::English {
                 "[BR-PE-059] The image has no Windows\\System32\\winpeshl.ini, so WinPE would stop at a bare command prompt."
                     .to_string()
@@ -4615,7 +4615,7 @@ unsafe fn confirm_pe_image_shell(state: &State, image_path: &str) -> bool {
             },
         ),
         crate::text_parsing::PeShellProblem::Mismatch { bytes, actual } => (
-            "BR-PE-060",
+            crate::error_code::ErrCode::PeImageShellTargetNotFound.code(),
             if language == Language::English {
                 format!(
                     "[BR-PE-060] That file is {bytes} bytes and is not the expected shell (expected 61 bytes: one line, Recovery.exe,--pe-desktop). It reads: {actual}"
@@ -4627,7 +4627,7 @@ unsafe fn confirm_pe_image_shell(state: &State, image_path: &str) -> bool {
             },
         ),
         crate::text_parsing::PeShellProblem::RecoveryExeMissing => (
-            "BR-PE-060",
+            crate::error_code::ErrCode::PeImageShellTargetNotFound.code(),
             if language == Language::English {
                 "[BR-PE-060] The shell file is correct, but the Recovery.exe it points at is not inside this image."
                     .to_string()

@@ -7,12 +7,12 @@
 
 use backuprestore_core::{
     BootMode, DestinationSpec, ImageAcceptance, ImageSpec, Operation, PayloadManifest, TargetRole,
-    TargetSpec, Task, TaskError, TaskStore, VolumeIdentity, VolumeRoles, canonical_compression,
+    TargetSpec, Task, TaskError, TaskStore, VolumeIdentity, VolumeRoles,
     sha256_file, validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::c_void;
@@ -27,6 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::error_code::ErrCode;
+pub(crate) use crate::prepare_plan::*;
 use crate::{append_log, capture_logged, err, run_logged, winre_payload};
 
 #[link(name = "kernel32")]
@@ -99,52 +100,6 @@ pub(crate) const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
 const RECOVERY_TYPE: &str = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-#[derive(Debug, Clone)]
-pub(crate) struct PrepareOptions {
-    operation: Operation,
-    source_drive: char,
-    /// Only restore operations need a target. Keeping it optional prevents
-    /// hidden probe/backup UI fields from accidentally becoming destructive
-    /// validation inputs.
-    target_drive: Option<char>,
-    image_path: Option<String>,
-    wim_index: u32,
-    /// WIM 索引名（备份时 DISM /Name；默认 "Windows Backup"）。
-    image_name: Option<String>,
-    /// 保留最近 N 个 WIM 索引（备份追加成功后清理更旧索引；None=不清理）。
-    keep_indexes: Option<u32>,
-    boot_menu_name: String,
-    efi_drive: Option<char>,
-    test_fault: Option<String>,
-    allow_destructive: bool,
-    no_reboot: bool,
-    /// WIM 压缩率：fast/none，仅备份首次创建时生效。
-    compress: Option<String>,
-    /// 还原时跳过镜像哈希校验（GUI 已向用户确认档案缺失/不匹配仍继续）。
-    force_restore_hash: bool,
-    /// 还原时严格校验镜像哈希（GUI 勾选了对比哈希，默认未勾选仅对比大小）。
-    verify_hash: bool,
-    /// 还原前是否格式化目标卷（GUI「格式化目标分区」复选框，默认 true）。
-    /// false = 覆盖式应用（不格式化，卷上镜像没有的文件保留），落盘进
-    /// TargetSpec 供 RE 恢复链读取。
-    format_target: bool,
-    /// 恢复环境「连续失败 N 次后如何处理」策略（次数 + 行为）。
-    /// 来源优先级：CLI `--fail-threshold` / `--fail-action` > 程序目录的
-    /// `BackupRestore.settings.ini`（GUI 设置窗口写的）> 默认（3 次 + 自动逃出）。
-    /// 落盘进 `RecoveryTask.env`，由恢复环境 `main.rs::recover_env_interactive` 读取。
-    failure_policy: crate::failure_policy::FailurePolicy,
-    /// DISM 等待上限（秒；0 = 不限制 = 历史行为）。来源优先级：
-    /// CLI `--dism-timeout-secs` > 程序目录 `BackupRestore.settings.ini` 的
-    /// `dism_timeout_secs` > 默认 0。落盘进 `RecoveryTask.env` 的
-    /// `DISM_TIMEOUT_SECS`，恢复环境在入口把它灌进进程环境变量
-    /// （`crate::dism_timeout::ENV_VAR`），本进程内所有 DISM 调用都按它等待。
-    dism_timeout_secs: u32,
-    /// 创建任务时的界面语言（`zh` / `en`），落盘进 `RecoveryTask.env` 的
-    /// `UI_LANGUAGE`。恢复环境的提示文案跟着它走，避免英文界面用户在恢复
-    /// 环境里突然看到中文。
-    ui_language: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DriveReport {
@@ -168,16 +123,7 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     let options = parse_prepare_options(arguments)?;
     let executable_dir = executable_dir()?;
     let workspace_drive = drive_from_path(&executable_dir)?;
-    if matches!(
-        options.operation,
-        Operation::RestoreExisting | Operation::CreateSecondary
-    ) && options.target_drive == Some(workspace_drive)
-    {
-        // This must happen before the identity probe, UAC, task creation, or
-        // any WinRE/BCD work. The application never copies itself or picks a
-        // substitute volume on the user's behalf.
-        return Err(restore_workspace_target_error(workspace_drive));
-    }
+    validate_prepare_options_safety(&options, Some(workspace_drive))?;
     let workspace = volume_identity(workspace_drive)?;
     let target = if matches!(
         options.operation,
@@ -207,19 +153,6 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     // 还原目标的程序目录里。
     require_administrator(&crate::log_root::logs_dir().join("launcher-errors.log"))?;
     prepare_task(&executable_dir, &workspace, target, options)
-}
-
-/// Program and restore target must remain on different partitions. This is
-/// deliberately a local refusal: moving the entire program directory is the
-/// only supported resolution, never an automatic copy or volume selection.
-fn restore_workspace_target_error(workspace_drive: char) -> TaskError {
-    err(&format!(
-        "Cannot start restore: the program directory is on {workspace_drive}:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
-    ))
-}
-
-fn restore_reserved_target_error() -> TaskError {
-    err("EFI/MSR/Recovery partitions cannot be restore targets")
 }
 
 pub(crate) fn list_volumes() -> Result<(), TaskError> {
@@ -310,91 +243,6 @@ pub(crate) fn inspect_environment() -> Result<(), TaskError> {
         }))?
     );
     Ok(())
-}
-
-fn windows_version_summary(output: &str) -> String {
-    let mut candidate = String::new();
-    for character in output.chars() {
-        if character.is_ascii_digit() || character == '.' {
-            candidate.push(character);
-        } else {
-            if candidate.starts_with(|c: char| c.is_ascii_digit())
-                && candidate.matches('.').count() >= 2
-            {
-                return format!("Windows {candidate}");
-            }
-            candidate.clear();
-        }
-    }
-    if candidate.starts_with(|c: char| c.is_ascii_digit()) && candidate.matches('.').count() >= 2 {
-        return format!("Windows {candidate}");
-    }
-    "Windows version unavailable".to_string()
-}
-
-#[cfg(test)]
-mod environment_tests {
-    use super::windows_version_summary;
-
-    #[test]
-    fn windows_version_summary_discards_localized_ver_text() {
-        assert_eq!(
-            windows_version_summary("Microsoft Windows [版本 10.0.26200.9168]\r\n"),
-            "Windows 10.0.26200.9168"
-        );
-        assert_eq!(
-            windows_version_summary("Microsoft Windows [Version 10.0.26100.1]\r\n"),
-            "Windows 10.0.26100.1"
-        );
-        assert_eq!(
-            windows_version_summary("localized output without a version"),
-            "Windows version unavailable"
-        );
-    }
-}
-
-#[cfg(test)]
-mod sidecar_name_tests {
-    use super::sidecar_image_name;
-
-    #[test]
-    fn sidecar_image_name_fallback_chain() {
-        // 副档记了真名：直接采用（2.6.16 起备份必记）
-        assert_eq!(
-            sidecar_image_name(Some("Windows 11 26200.9550 20261018"), 1, None),
-            "Windows 11 26200.9550 20261018"
-        );
-        // 副档空白 + DISM 真名：用 DISM
-        assert_eq!(sidecar_image_name(Some("  "), 1, Some("Real")), "Real");
-        // 旧副档无此字段 + DISM 真名：用 DISM
-        assert_eq!(sidecar_image_name(None, 2, Some("Real")), "Real");
-        // 两者皆无：才落占位名，且带对索引号
-        assert_eq!(
-            sidecar_image_name(None, 3, None),
-            "Windows Backup (index 3)"
-        );
-        assert_eq!(
-            sidecar_image_name(None, 3, Some(" ")),
-            "Windows Backup (index 3)"
-        );
-    }
-}
-
-/// sidecar 索引名的回退链：副档记录 → DISM 真名 → 占位名。
-/// 占位名只允许出现在「副档没记、DISM 也没问到」的极端情况；正常情况下
-/// 调用方（GUI 下拉、BCD 描述预填）拿到的是前两者之一。
-fn clean_sidecar_name(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|name| !name.is_empty())
-}
-
-fn sidecar_image_name(recorded: Option<&str>, index: u32, dism_name: Option<&str>) -> String {
-    if let Some(name) = clean_sidecar_name(recorded) {
-        return name.to_string();
-    }
-    if let Some(name) = clean_sidecar_name(dism_name) {
-        return name.to_string();
-    }
-    format!("Windows Backup (index {index})")
 }
 
 /// 任一索引缺少副档记录的索引名时，用一次 `/Get-WimInfo` 补齐（返回 索引→真名）。
@@ -560,254 +408,6 @@ pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskEr
         }))?
     );
     Ok(())
-}
-
-pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOptions, TaskError> {
-    let mut operation = None;
-    let mut source_drive = None;
-    let mut target_drive = None;
-    let mut image_path = None;
-    let mut wim_index = 1_u32;
-    let mut image_name = None;
-    let mut keep_indexes = None;
-    let mut boot_menu_name = String::from("Windows Backup");
-    let mut efi_drive = None;
-    let mut test_fault = None;
-    let mut allow_destructive = false;
-    let mut no_reboot = false;
-    let mut compress = None;
-    let mut force_restore_hash = false;
-    let mut verify_hash = false;
-    let mut format_target = true;
-    // 失败处理策略：CLI 显式传参优先，缺省时读程序目录的设置文件（GUI 写的）。
-    let mut fail_threshold: Option<u32> = None;
-    let mut fail_action: Option<crate::failure_policy::FailureAction> = None;
-    let mut fail_pause_max_wait: Option<u32> = None;
-    let mut dism_timeout_secs: Option<u32> = None;
-    let mut ui_language: Option<String> = None;
-    let mut args = arguments.into_iter();
-    while let Some(flag) = args.next() {
-        let value = |name: &str, args: &mut std::vec::IntoIter<String>| {
-            args.next()
-                .ok_or_else(|| err(&format!("{name} requires a value")))
-        };
-        match flag.as_str() {
-            "--operation" => {
-                operation = Some(match value("--operation", &mut args)?.as_str() {
-                    "probe" => Operation::Probe,
-                    "backup" => Operation::Backup,
-                    "restore" | "restore-existing" => Operation::RestoreExisting,
-                    "create-secondary" => Operation::CreateSecondary,
-                    other => return Err(err(&format!("unsupported operation: {other}"))),
-                });
-            }
-            "--source-drive" => {
-                source_drive = Some(parse_drive(&value("--source-drive", &mut args)?)?)
-            }
-            "--target-drive" => {
-                target_drive = Some(parse_drive(&value("--target-drive", &mut args)?)?)
-            }
-            "--image-path" => image_path = Some(value("--image-path", &mut args)?),
-            "--wim-index" => {
-                wim_index = value("--wim-index", &mut args)?
-                    .parse()
-                    .map_err(|_| err("--wim-index must be a positive integer"))?;
-            }
-            "--image-name" => image_name = Some(value("--image-name", &mut args)?),
-            "--keep-indexes" => {
-                keep_indexes = Some(
-                    value("--keep-indexes", &mut args)?
-                        .parse()
-                        .map_err(|_| err("--keep-indexes must be a non-negative integer"))?,
-                );
-            }
-            "--boot-menu-name" => boot_menu_name = value("--boot-menu-name", &mut args)?,
-            "--test-efi-drive" => {
-                efi_drive = Some(parse_drive(&value("--test-efi-drive", &mut args)?)?)
-            }
-            "--test-fault" => {
-                let fault = value("--test-fault", &mut args)?;
-                if !matches!(
-                    fault.as_str(),
-                    "identity-env-mismatch"
-                        | "bcdboot-failure"
-                        | "power-loss-window"
-                        | "power-loss-target-erased"
-                        | "power-loss-image-applied"
-                        | "power-loss-boot-repaired"
-                ) && !crate::recovery_fault::valid(&fault)
-                {
-                    return Err(err(
-                        "--test-fault must be identity-env-mismatch, bcdboot-failure, power-loss-window, power-loss-target-erased, power-loss-image-applied, or power-loss-boot-repaired",
-                    ));
-                }
-                test_fault = Some(fault);
-            }
-            "--allow-destructive" => allow_destructive = true,
-            "--no-reboot" => no_reboot = true,
-            // v1.7.11 起载荷固定放镜像卷、注册位只读，没有「RE 暂存卷」可选。
-            // 旧脚本若还带这个开关，直接明确拒绝，避免调用方以为改选生效了。
-            "--re-scratch-drive" => {
-                return Err(err(
-                    "--re-scratch-drive is obsolete: v1.7.11 keeps the payload on the image \
-                     volume and never touches the registered WinRE",
-                ));
-            }
-            "--compress" => {
-                let level = value("--compress", &mut args)?;
-                let level = canonical_compression(&level).map_err(|_| {
-                    err("--compress must be fast or none; max compression is not supported")
-                })?;
-                compress = Some(level.to_string());
-            }
-            "--force-restore-hash" => force_restore_hash = true,
-            "--verify-hash" => verify_hash = true,
-            // `--json` 由 main 统一处理（收尾输出那行结构化结论），这里只须
-            // **接受**它——下面兜底是 `unknown prepare option` 硬报错，
-            // 漏了这一行就会让 prepare --json 直接失败（2026-10-24 实测踩到：
-            // online 用 `_ => {}` 忽略未知选项所以没事，prepare 是严格解析）。
-            "--json" => {}
-            // 取消「格式化目标分区」= 覆盖式应用（卷上镜像没有的文件保留）。
-            // GUI 取消勾选时就是推这个参数（native_gui.rs 的 prepare args）。
-            // 2026-10-14 漏接过一次：PrepareOptions/TargetSpec 两头都接好了，唯独少了
-            // 这一行解析分支，而下面的兜底是 `unknown prepare option` 硬报错——
-            // 于是「离线 + 取消格式化」整条通道在 prepare 阶段就直接失败。
-            "--skip-format" => format_target = false,
-            // 恢复环境失败处理策略（GUI 设置窗口 → 这两个参数 → RecoveryTask.env）。
-            // 复用 `failure_policy` 的解析与校验，错误文案与 GUI 侧同一来源。
-            "--fail-threshold" => {
-                let raw = value("--fail-threshold", &mut args)?;
-                fail_threshold = Some(
-                    crate::failure_policy::FailurePolicy::parse_threshold(
-                        &raw,
-                        crate::pe_safety::MessageLanguage::Chinese,
-                    )
-                    .map_err(|reason| err(&format!("--fail-threshold: {reason}")))?,
-                );
-            }
-            "--fail-action" => {
-                let raw = value("--fail-action", &mut args)?;
-                fail_action = Some(crate::failure_policy::FailureAction::parse(&raw).ok_or_else(
-                    || err("--fail-action must be auto-escape or pause"),
-                )?);
-            }
-            "--fail-pause-max-wait-secs" => {
-                let raw = value("--fail-pause-max-wait-secs", &mut args)?;
-                fail_pause_max_wait = Some(
-                    crate::failure_policy::parse_pause_max_wait_secs(&raw).ok_or_else(|| {
-                        err("--fail-pause-max-wait-secs must be 0..=86400 seconds (0 = unlimited)")
-                    })?,
-                );
-            }
-            "--dism-timeout-secs" => {
-                let raw = value("--dism-timeout-secs", &mut args)?;
-                dism_timeout_secs = Some(
-                    crate::dism_timeout::parse_secs(&raw)
-                        .map_err(|reason| err(&format!("--dism-timeout-secs: {reason}")))?,
-                );
-            }
-            "--ui-language" => {
-                let raw = value("--ui-language", &mut args)?.trim().to_ascii_lowercase();
-                // 只认 zh*/en* 前缀（`zh-CN`、`en-US` 都接受），其余明确拒绝，
-                // 避免写进 env 一个恢复环境看不懂的值。
-                if raw.starts_with("zh") {
-                    ui_language = Some("zh".to_string());
-                } else if raw.starts_with("en") {
-                    ui_language = Some("en".to_string());
-                } else {
-                    return Err(err("--ui-language must be zh or en"));
-                }
-            }
-            other => return Err(err(&format!("unknown prepare option: {other}"))),
-        }
-    }
-    let operation = operation.ok_or_else(|| err("--operation is required"))?;
-    let source_drive = source_drive.ok_or_else(|| err("--source-drive is required"))?;
-    let target_drive = if matches!(
-        operation,
-        Operation::RestoreExisting | Operation::CreateSecondary
-    ) {
-        Some(target_drive.ok_or_else(|| err("--target-drive is required for restore operations"))?)
-    } else {
-        target_drive
-    };
-    if wim_index == 0 {
-        return Err(err("--wim-index must be greater than zero"));
-    }
-    if boot_menu_name.trim().is_empty()
-        || boot_menu_name.chars().count() > 256
-        || boot_menu_name.chars().any(char::is_control)
-    {
-        return Err(err("--boot-menu-name is invalid"));
-    }
-    if let Some(name) = &image_name
-        && (name.trim().is_empty()
-            || name.chars().count() > 256
-            || name.chars().any(char::is_control))
-    {
-        return Err(err("--image-name is invalid"));
-    }
-    if let Some(keep) = keep_indexes {
-        // 0 = 全部保留（不清理），与 GUI 留空语义一致。
-        if keep == 0 {
-            keep_indexes = None;
-        }
-    }
-    if operation != Operation::Probe && image_path.is_none() {
-        return Err(err("--image-path is required for backup and restore"));
-    }
-    if matches!(
-        test_fault.as_deref(),
-        Some("identity-env-mismatch" | "bcdboot-failure")
-    ) && efi_drive.is_none()
-    {
-        return Err(err(
-            "identity-env-mismatch and bcdboot-failure require --test-efi-drive and are development-only",
-        ));
-    }
-    // 失败处理策略：CLI 传了就用 CLI 的，没传就读程序目录的设置文件
-    //（GUI 设置窗口写的；读不到 → 默认 3 次 + 自动逃出，与 v2.6.8 行为一致）。
-    // 两者都只在 prepare 期解析一次并落盘，恢复环境不再回读设置文件——
-    // 任务一旦创建，它的失败处理策略就固定了，事后改设置不会改变已有任务的行为。
-    let failure_policy = {
-        let base = executable_dir()
-            .map(|dir| crate::failure_policy::FailurePolicy::load_from_dir(&dir))
-            .unwrap_or_default();
-        crate::failure_policy::FailurePolicy {
-            threshold: fail_threshold.unwrap_or(base.threshold),
-            action: fail_action.unwrap_or(base.action),
-            pause_max_wait_secs: fail_pause_max_wait.unwrap_or(base.pause_max_wait_secs),
-        }
-    };
-    // DISM 等待上限：同一套优先级（CLI > 设置文件 > 默认 0=不限制）。
-    // `load_from_dir` 自己处理"设置文件不存在/读失败 → 默认"，键名与 GUI
-    // 设置窗口写入的一致（同一个 `BackupRestore.settings.ini`）。
-    let dism_timeout_secs = dism_timeout_secs.unwrap_or_else(|| {
-        executable_dir()
-            .map(|dir| crate::dism_timeout::load_from_dir(&dir))
-            .unwrap_or(crate::dism_timeout::DEFAULT_SECS)
-    });
-    Ok(PrepareOptions {
-        operation,
-        source_drive,
-        target_drive,
-        image_path,
-        wim_index,
-        boot_menu_name,
-        efi_drive,
-        test_fault,
-        allow_destructive,
-        no_reboot,
-        compress,
-        image_name,
-        keep_indexes,
-        force_restore_hash,
-        verify_hash,
-        format_target,
-        failure_policy,
-        dism_timeout_secs,
-        ui_language: ui_language.unwrap_or_else(|| "zh".to_string()),
-    })
 }
 
 /// 显式放弃或收口一个任务。
@@ -1889,52 +1489,6 @@ pub(crate) fn wim_full_windows_probe(
             Ok(ProbeOutcome::HeuristicPass)
         }
     }
-}
-
-/// 镜像显示名是否**明确**是完整 Windows 系统镜像——用来决定能不能跳过耗时的挂载探测。
-///
-/// 判据（故意偏保守，宁可多挂一次也不放过可疑镜像）：
-/// - 必须含 "windows"；
-/// - 不得含 PE 特征（"pe" / "preinstallation" / "recovery"）；
-/// - 名字不能太短（< 8 字符视为可疑）。
-///
-/// 本程序自己生成的备份索引名形如「Windows 11 26200.9550 20261015」，恒命中 →
-/// 常规路径零额外耗时；改过名的第三方/PE 镜像落回挂载权威判定。
-fn name_looks_like_full_windows(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    if lower.len() < 8 {
-        return false;
-    }
-    if lower.contains("pe") || lower.contains("preinstallation") || lower.contains("recovery") {
-        return false;
-    }
-    lower.contains("windows")
-}
-
-/// 探测结果：FullWindows=挂载后权威确认；QuickPass=镜像名明确是完整 Windows、
-/// 走快速通道放行；HeuristicPass=挂载不可用、按镜像名启发式放行
-/// （调用方应记录每一次降级，便于事后核查）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ProbeOutcome {
-    FullWindows,
-    QuickPass(String),
-    HeuristicPass,
-}
-
-/// `/Mount-Wim` 的完整参数。
-///
-/// 单独抽出来是为了让单测能锁死参数名：**`/Mount-Wim` 只认 `/WimFile`**，
-/// 写成 `/ImageFile`（那是 `/Apply-Image` 的选项）DISM 恒报 87。
-/// 历史事故：自 2.4.2 引入至 v2.6.21，本参数一直是错的，导致「完整 Windows
-/// 门禁」的权威探测从未生效、每次都静默降级为镜像名启发式（详见 docs/20261020-1025）。
-fn wim_mount_args(image_path: &str, index: u32, mount_dir: &Path) -> Vec<String> {
-    vec![
-        "/Mount-Wim".to_string(),
-        format!("/WimFile:{image_path}"),
-        format!("/Index:{index}"),
-        "/ReadOnly".to_string(),
-        format!("/MountDir:{}", mount_dir.display()),
-    ]
 }
 
 /// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
@@ -3187,15 +2741,6 @@ fn workspace_relative(path: &Path) -> Result<String, TaskError> {
     Ok(relative.to_string())
 }
 
-fn parse_drive(value: &str) -> Result<char, TaskError> {
-    let normalized = value.trim().trim_end_matches(':');
-    if normalized.len() == 1 && normalized.as_bytes()[0].is_ascii_alphabetic() {
-        Ok((normalized.as_bytes()[0] as char).to_ascii_uppercase())
-    } else {
-        Err(err("drive must be a single letter"))
-    }
-}
-
 fn capture(program: &str, args: &[&str]) -> Result<String, TaskError> {
     let output = Command::new(program)
         .args(args)
@@ -4194,215 +3739,6 @@ fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
     Ok(drives)
 }
 
-pub(crate) fn parse_dism_images(output: &str) -> Result<Vec<Value>, TaskError> {
-    let mut images = Vec::new();
-    let mut index = None;
-    let mut name = String::new();
-    let mut description = String::new();
-    let mut version = String::new();
-    let mut architecture = String::new();
-    let mut edition = String::new();
-    let mut installation_type = String::new();
-    let mut size_bytes = None;
-
-    // DISM's text output is the fallback used by the GUI when the optional
-    // Get-WindowsImage JSON command is unavailable.  Keep the parser scoped
-    // to an active image: the header's own `Version:` line must not become an
-    // image version.  Fields beyond Index/Name/Description are emitted when
-    // a particular DISM build provides them, while remaining optional for
-    // the standard `/Get-WimInfo` output.
-    let flush = |images: &mut Vec<Value>,
-                 index: &mut Option<u32>,
-                 name: &mut String,
-                 description: &mut String,
-                 version: &mut String,
-                 architecture: &mut String,
-                 edition: &mut String,
-                 installation_type: &mut String,
-                 size_bytes: &mut Option<u64>| {
-        let Some(index_value) = index.take() else {
-            return;
-        };
-        images.push(json!({
-            "ImageIndex": index_value,
-            "ImageName": std::mem::take(name),
-            "ImageDescription": std::mem::take(description),
-            "ImageVersion": std::mem::take(version),
-            "Architecture": std::mem::take(architecture),
-            "EditionId": std::mem::take(edition),
-            "InstallationType": std::mem::take(installation_type),
-            "ImageSize": size_bytes.take(),
-        }));
-    };
-
-    for line in output.lines() {
-        let line = line.trim();
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let key = key.trim().to_ascii_lowercase();
-        let value = value.trim();
-        match key.as_str() {
-            "index" => {
-                flush(
-                    &mut images,
-                    &mut index,
-                    &mut name,
-                    &mut description,
-                    &mut version,
-                    &mut architecture,
-                    &mut edition,
-                    &mut installation_type,
-                    &mut size_bytes,
-                );
-                index = value.parse::<u32>().ok().filter(|value| *value > 0);
-            }
-            // Ignore image fields before the first valid Index.  This also
-            // prevents a localized/header `Version:` from leaking into the
-            // first image's metadata.
-            "name" if index.is_some() => name = value.to_string(),
-            "description" if index.is_some() => description = value.to_string(),
-            "version" if index.is_some() => version = value.to_string(),
-            "architecture" if index.is_some() => architecture = value.to_string(),
-            "edition" | "edition id" if index.is_some() => edition = value.to_string(),
-            "installation type" if index.is_some() => installation_type = value.to_string(),
-            "size" | "image size" if index.is_some() => size_bytes = parse_dism_size(value),
-            _ => {}
-        }
-    }
-    flush(
-        &mut images,
-        &mut index,
-        &mut name,
-        &mut description,
-        &mut version,
-        &mut architecture,
-        &mut edition,
-        &mut installation_type,
-        &mut size_bytes,
-    );
-    if images.is_empty() {
-        Err(err("DISM returned no WIM indexes"))
-    } else {
-        Ok(images)
-    }
-}
-
-/// Parse DISM's size field, which is normally an integer followed by
-/// `bytes`, but can be formatted with comma separators or binary units by
-/// OEM/localized builds.  The GUI consumes a byte count, so normalize all
-/// supported forms to bytes and leave malformed values absent.
-fn parse_dism_size(value: &str) -> Option<u64> {
-    let value = value.trim();
-    let start = value.find(|character: char| character.is_ascii_digit())?;
-    let value = &value[start..];
-    let end = value
-        .find(|character: char| !(character.is_ascii_digit() || matches!(character, ',' | '.')))
-        .unwrap_or(value.len());
-    let number = value[..end].replace(',', "");
-    let numeric = number.parse::<f64>().ok()?;
-    let unit = value[end..].trim().to_ascii_lowercase();
-    let multiplier = if unit.starts_with("tib") || unit.starts_with("tb") {
-        1024_f64.powi(4)
-    } else if unit.starts_with("gib") || unit.starts_with("gb") {
-        1024_f64.powi(3)
-    } else if unit.starts_with("mib") || unit.starts_with("mb") {
-        1024_f64.powi(2)
-    } else if unit.starts_with("kib") || unit.starts_with("kb") {
-        1024_f64
-    } else {
-        1_f64
-    };
-    let bytes = numeric * multiplier;
-    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
-        return None;
-    }
-    Some(bytes.round() as u64)
-}
-
-#[cfg(test)]
-mod wim_parser_tests {
-    use super::parse_dism_images;
-
-    #[test]
-    fn parses_multiple_indexes_and_optional_metadata() {
-        let output = r#"
-Deployment Image Servicing and Management tool
-Version: 10.0.26100.1
-
-Details for image : install.wim
-
-Index : 1
-Name : Windows 11 Home
-Description : Windows 11 Home
-Size : 15,728,640 bytes
-Architecture : arm64
-Edition Id : Core
-Installation Type : Client
-
-Index : 2
-Name : Windows 11 Pro
-Description : Windows 11 Pro for testing
-Version : 10.0.26100.1
-Size : 16,384 MiB
-Architecture : arm64
-Edition : Professional
-Installation Type : Client
-"#;
-
-        let images = parse_dism_images(output).expect("DISM output should parse");
-        assert_eq!(images.len(), 2);
-        assert_eq!(images[0]["ImageIndex"], 1);
-        assert_eq!(images[0]["ImageName"], "Windows 11 Home");
-        assert_eq!(images[0]["ImageSize"], 15_728_640);
-        assert_eq!(images[0]["Architecture"], "arm64");
-        assert_eq!(images[0]["EditionId"], "Core");
-        assert_eq!(images[1]["ImageIndex"], 2);
-        assert_eq!(images[1]["ImageVersion"], "10.0.26100.1");
-        assert_eq!(images[1]["ImageSize"], 16_384_u64 * 1024 * 1024);
-        assert_eq!(images[1]["EditionId"], "Professional");
-    }
-
-    #[test]
-    fn ignores_header_version_and_rejects_missing_indexes() {
-        let output = "Version: 10.0.26100.1\nName: not an image\n";
-        assert!(parse_dism_images(output).is_err());
-    }
-}
-
-#[cfg(test)]
-mod prepare_safety_tests {
-    use super::{
-        parse_prepare_options, restore_reserved_target_error, restore_workspace_target_error,
-    };
-
-    #[test]
-    fn same_drive_restore_is_rejected_before_privileged_identity_queries() {
-        assert_eq!(
-            restore_workspace_target_error('C').to_string(),
-            "invalid task: Cannot start restore: the program directory is on C:, which is the restore target. Move the entire BackupRestore folder to another volume and run it again. No task, WinRE, BCD or reboot was requested."
-        );
-    }
-
-    #[test]
-    fn reserved_restore_target_error_names_the_role() {
-        assert_eq!(
-            restore_reserved_target_error().to_string(),
-            "invalid task: EFI/MSR/Recovery partitions cannot be restore targets"
-        );
-    }
-
-    #[test]
-    fn rejects_removed_auto_relocation_switch() {
-        let error = parse_prepare_options(vec!["--relocated".into()]).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("unknown prepare option: --relocated")
-        );
-    }
-}
-
 fn extract_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     text.split_once(marker).map(|(_, value)| value)
 }
@@ -4414,65 +3750,3 @@ fn native_architecture() -> String {
         .to_ascii_lowercase()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `/Mount-Wim` 只认 `/WimFile`；写成 `/ImageFile`（那是 `/Apply-Image` 的选项）
-    /// DISM 恒报 87。这条测试锁死参数名，防止「权威门禁静默失效」复发——
-    /// 该缺陷自 2.4.2 起存在了近两个月，期间每次探测都静默降级成镜像名启发式，
-    /// 直到 2026-10-20 逐字核对 DISM 参数才被发现（docs/20261020-1025）。
-    #[test]
-    fn wim_mount_args_use_wimfile_not_imagefile() {
-        let args = wim_mount_args(r"D:\images\win.wim", 2, Path::new(r"C:\temp\mount"));
-        assert_eq!(args.first().map(String::as_str), Some("/Mount-Wim"));
-        assert!(
-            args.iter().any(|a| a == r"/WimFile:D:\images\win.wim"),
-            "缺少 /WimFile 参数：{args:?}"
-        );
-        assert!(
-            !args.iter().any(|a| a.starts_with("/ImageFile:")),
-            "/Mount-Wim 不接受 /ImageFile：{args:?}"
-        );
-        assert!(args.iter().any(|a| a == "/Index:2"), "{args:?}");
-        assert!(args.iter().any(|a| a == "/ReadOnly"), "{args:?}");
-        assert!(
-            args.iter().any(|a| a == r"/MountDir:C:\temp\mount"),
-            "{args:?}"
-        );
-    }
-
-    /// 快速通道判据（v2.6.23）：常规备份名必须放行，任何 PE/短名/空名必须**落回挂载**。
-    /// 这条判据宁可多挂一次（慢）也不能放行可疑镜像，所以负例比正例重要。
-    #[test]
-    fn name_looks_like_full_windows_gate() {
-        // 正例：本程序默认索引名 + 常见系统镜像名
-        for ok in [
-            "Windows 11 26200.9550 20261015",
-            "Windows Backup",
-            "Windows 10 Enterprise",
-            "Windows Server 2022",
-            "Windows 11 Pro",
-        ] {
-            assert!(
-                name_looks_like_full_windows(ok),
-                "应当走快速通道：{ok}"
-            );
-        }
-        // 负例：PE 特征、恢复环境、太短、空、不含 windows
-        for bad in [
-            "Microsoft Windows PE (x64)",
-            "WinPE",
-            "Windows Recovery Environment",
-            "Windows Preinstallation Environment",
-            "Backup",
-            "",
-            "MyData",
-        ] {
-            assert!(
-                !name_looks_like_full_windows(bad),
-                "应当落回挂载探测：{bad:?}"
-            );
-        }
-    }
-}

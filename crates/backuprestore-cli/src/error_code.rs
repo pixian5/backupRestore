@@ -64,6 +64,7 @@ macro_rules! error_codes {
         ),* $(,)?
     ) => {
         /// 稳定的错误码枚举。变体名是给人看的，`code()` 是给契约看的。
+        #[allow(dead_code)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub(crate) enum ErrCode {
             $($(#[$meta])* $variant),*
