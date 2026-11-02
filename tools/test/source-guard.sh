@@ -40,9 +40,9 @@ say() { printf '%s\n' "$*"; }
 # ---------- A. 裸挂载调用只许出现在白名单文件里 ----------
 # 白名单与理由（新增条目必须写清楚为什么它是安全的）：
 #   windows_prepare.rs —— 唯一实现（mount_volume_guid / identity_from_diskpart）
-#   main.rs            —— RE 内的挂载助手（hive 是内存盘，不落盘、不跨重启）
+#   recovery_volume.rs —— RE 内的挂载助手（从 main.rs 抽离，hive 是内存盘，不落盘、不跨重启）
 #   pe_operation.rs    —— 测试夹具自建 VHD（同一文件里必须有 remove letter= 收尾）
-ALLOWED="windows_prepare.rs main.rs pe_operation.rs"
+ALLOWED="windows_prepare.rs recovery_volume.rs pe_operation.rs"
 
 hits=$(grep -rln -e 'assign letter=' -e 'Command::new("mountvol.exe")' "$SRC" 2>/dev/null | sort)
 say "--- A. 裸挂载调用分布 ---"
