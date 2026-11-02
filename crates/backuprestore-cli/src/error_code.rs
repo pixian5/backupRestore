@@ -209,6 +209,8 @@ error_codes! {
     MissingPreFormatBootState => ("BR-PE-056", "缺少格式化前引导状态", "The pre-format boot state is missing"),
     BootStateChangedAfterPrecheck => ("BR-PE-057", "预检后引导状态发生变化，停止引导写入", "Boot state changed after preflight; stopping boot writes"),
     SecondaryMenuOrderInvalid => ("BR-PE-058", "第二系统默认项或菜单顺序不符合约定，拒绝报成功", "The secondary-system default entry or menu order violates the contract; refusing to report success"),
+    PeImageMissingShellConfig => ("BR-PE-059", "PE 镜像缺少 Windows\\System32\\winpeshl.ini 引导配置", "PE image is missing Windows\\System32\\winpeshl.ini startup configuration"),
+    PeImageShellTargetNotFound => ("BR-PE-060", "winpeshl.ini 指定的前台启动程序在 PE 镜像中不存在：{0}", "The startup program specified in winpeshl.ini does not exist in the PE image: {0}"),
 
     // ── 卷身份与盘符（`windows_prepare` / `online_operation`）─────────────
     VolumeGuidMissing => ("BR-VOL-001", "目标卷缺少稳定 GUID 路径", "The target volume has no stable GUID path"),

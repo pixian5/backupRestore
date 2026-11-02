@@ -34,7 +34,7 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层（共 216 条）
+## CLI 层（共 218 条）
 
 ### `BR-APL` — 应用镜像（DISM / wimlib）（10 条）
 
@@ -107,7 +107,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-IMG-007` | `DeleteIndexReadbackMismatch` | 删除旧索引后回读的索引集合与期望不一致，已中止；镜像可能停在半删状态，请用 wim-info 核实后再试 | The index set read back after deleting old indexes does not match the expectation; aborted. The image may be left half-deleted - verify with wim-info before retrying |
 | `BR-IMG-008` | `BackupSpaceInsufficient` | 镜像所在卷可用空间不足以开始备份：可用 {0}，至少需要 {1}（源卷已用 {2}）。请换一个更大的卷或先清理镜像卷；本次未写入任何镜像数据。 | Not enough free space on the volume holding the image to start a backup: {0} available, at least {1} required (source volume uses {2}). Use a larger volume or free space on the image volume first; no image data was written this run. |
 
-### `BR-PE` — PE 通道与写盘契约（58 条）
+### `BR-PE` — PE 通道与写盘契约（60 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -169,6 +169,8 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-PE-056` | `MissingPreFormatBootState` | 缺少格式化前引导状态 | The pre-format boot state is missing |
 | `BR-PE-057` | `BootStateChangedAfterPrecheck` | 预检后引导状态发生变化，停止引导写入 | Boot state changed after preflight; stopping boot writes |
 | `BR-PE-058` | `SecondaryMenuOrderInvalid` | 第二系统默认项或菜单顺序不符合约定，拒绝报成功 | The secondary-system default entry or menu order violates the contract; refusing to report success |
+| `BR-PE-059` | `PeImageMissingShellConfig` | PE 镜像缺少 Windows\\System32\\winpeshl.ini 引导配置 | PE image is missing Windows\\System32\\winpeshl.ini startup configuration |
+| `BR-PE-060` | `PeImageShellTargetNotFound` | winpeshl.ini 指定的前台启动程序在 PE 镜像中不存在：{0} | The startup program specified in winpeshl.ini does not exist in the PE image: {0} |
 
 ### `BR-RE` — 恢复环境注册 / WinRE 关联（47 条）
 

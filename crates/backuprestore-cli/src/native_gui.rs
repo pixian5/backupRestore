@@ -4603,36 +4603,43 @@ unsafe fn confirm_pe_image_shell(state: &State, image_path: &str) -> bool {
             log.display()
         ),
     );
-    let detail = match &problem {
-        crate::text_parsing::PeShellProblem::Missing => {
+    let (code_str, detail) = match &problem {
+        crate::text_parsing::PeShellProblem::Missing => (
+            "BR-PE-059",
             if language == Language::English {
-                "The image has no Windows\\System32\\winpeshl.ini, so WinPE would stop at a bare command prompt."
+                "[BR-PE-059] The image has no Windows\\System32\\winpeshl.ini, so WinPE would stop at a bare command prompt."
                     .to_string()
             } else {
-                "镜像里没有 Windows\\System32\\winpeshl.ini 这个文件，PE 启动后只会停在一个黑命令行窗口。"
+                "[BR-PE-059] 镜像里没有 Windows\\System32\\winpeshl.ini 这个文件，PE 启动后只会停在一个黑命令行窗口。"
                     .to_string()
-            }
-        }
-        crate::text_parsing::PeShellProblem::Mismatch { bytes, actual } => {
+            },
+        ),
+        crate::text_parsing::PeShellProblem::Mismatch { bytes, actual } => (
+            "BR-PE-060",
             if language == Language::English {
                 format!(
-                    "That file is {bytes} bytes and is not the expected shell (expected 61 bytes: one line, Recovery.exe,--pe-desktop). It reads: {actual}"
+                    "[BR-PE-060] That file is {bytes} bytes and is not the expected shell (expected 61 bytes: one line, Recovery.exe,--pe-desktop). It reads: {actual}"
                 )
             } else {
                 format!(
-                    "这个文件是 {bytes} 字节，内容不是产品期望的那一份（期望 61 字节、只有一行 Recovery.exe,--pe-desktop）。它的实际内容是：{actual}"
+                    "[BR-PE-060] 这个文件是 {bytes} 字节，内容不是产品期望的那一份（期望 61 字节、只有一行 Recovery.exe,--pe-desktop）。它的实际内容是：{actual}"
                 )
-            }
-        }
-        crate::text_parsing::PeShellProblem::RecoveryExeMissing => {
+            },
+        ),
+        crate::text_parsing::PeShellProblem::RecoveryExeMissing => (
+            "BR-PE-060",
             if language == Language::English {
-                "The shell file is correct, but the Recovery.exe it points at is not inside this image."
+                "[BR-PE-060] The shell file is correct, but the Recovery.exe it points at is not inside this image."
                     .to_string()
             } else {
-                "启动配置写对了，但它指向的 Recovery.exe 不在这个镜像里。".to_string()
-            }
-        }
+                "[BR-PE-060] 启动配置写对了，但它指向的 Recovery.exe 不在这个镜像里。".to_string()
+            },
+        ),
     };
+    append_gui_log(
+        state,
+        &format!("PE image shell check code=[{code_str}]"),
+    );
     if TEST_AUTO_CONFIRM.load(std::sync::atomic::Ordering::SeqCst) {
         append_gui_log(
             state,
