@@ -5,6 +5,21 @@
 #   ./vmkey.sh enter|tab|esc|win|space|backspace|up|down|left|right|home|end|f4|f5|a..z|0..9
 # 键码表来自 Parallels 官方文档 List of Parallels Keyboard Key Codes（-k 用十进制）
 VM="Windows 11"
+is_f_key() {
+  case "$1" in
+    f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12) return 0;;
+    *) return 1;;
+  esac
+}
+# F 键在 Parallels 下必须走 PS/2 set 1 扫描码（-s 通道），-k 键码对 F 键有映射缺陷
+f_scancode() {
+  case "$1" in
+    f1) echo 59;; f2) echo 60;; f3) echo 61;; f4) echo 62;;
+    f5) echo 63;; f6) echo 64;; f7) echo 65;; f8) echo 66;;
+    f9) echo 67;; f10) echo 68;; f11) echo 87;; f12) echo 88;;
+    *) echo "";;
+  esac
+}
 keycode() {
   case "$1" in
     esc) echo 9;; 1) echo 10;; 2) echo 11;; 3) echo 12;; 4) echo 13;; 5) echo 14;;
@@ -14,9 +29,8 @@ keycode() {
     p) echo 33;; enter) echo 36;; a) echo 38;; s) echo 39;; d) echo 40;; f) echo 41;;
     g) echo 42;; h) echo 43;; j) echo 44;; k) echo 45;; l) echo 46;;
     z) echo 52;; x) echo 53;; c) echo 54;; v) echo 55;; b) echo 56;; n) echo 57;; m) echo 58;;
-    space) echo 65;; f1) echo 59;; f2) echo 60;; f3) echo 61;; f4) echo 62;; f5) echo 63;;
-    f6) echo 64;; f7) echo 66;; f8) echo 67;; f9) echo 68;; f10) echo 76;;
-    f11) echo 87;; f12) echo 88;; home) echo 97;; up) echo 98;; pgup) echo 99;;
+    space) echo 65;;
+    home) echo 97;; up) echo 98;; pgup) echo 99;;
     left) echo 100;; right) echo 102;; end) echo 103;; down) echo 104;; pgdn) echo 105;;
     insert) echo 106;; delete) echo 107;; ctrl) echo 37;; alt) echo 64;; shift) echo 50;; win) echo 115;;
     *) echo "";;
@@ -31,7 +45,11 @@ release_sc() { prlctl send-key-event "$VM" -s "$1" -e release; }
 # 解析组合：ctrl+p / alt+f4 / ctrl+shift+p
 IFS='+' read -ra PARTS <<< "$1"
 MAIN="${PARTS[${#PARTS[@]}-1]}"
-MAINC=$(keycode "$MAIN")
+if is_f_key "$MAIN"; then
+  MAINC=$(f_scancode "$MAIN")
+else
+  MAINC=$(keycode "$MAIN")
+fi
 if [ -z "$MAINC" ]; then echo "未知键: $MAIN"; exit 1; fi
 MODS=()
 for ((i=0; i<${#PARTS[@]}-1; i++)); do
@@ -40,11 +58,12 @@ for ((i=0; i<${#PARTS[@]}-1; i++)); do
   MODS+=("$MC")
 done
 for m in "${MODS[@]}"; do press "$m"; sleep 0.12; done
-if [ "$MAINC" -ge 59 ] && [ "$MAINC" -le 88 ]; then
-  # F 键：scancode 通道（见 press_sc 注释）
+if is_f_key "$MAIN"; then
+  # F 键：scancode 通道（走 PS/2 set 1 扫描码）
   press_sc "$MAINC"; sleep 0.15
   release_sc "$MAINC"; sleep 0.12
 else
+  # 普通键：Parallels -k 键码通道
   press "$MAINC"; sleep 0.15
   release "$MAINC"; sleep 0.12
 fi
