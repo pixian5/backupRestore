@@ -134,6 +134,25 @@ pub(crate) fn run_logged_timeout(
 }
 
 #[cfg(windows)]
+pub(crate) fn capture_output(program: &str, args: &[&str]) -> Result<String, TaskError> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(err(&format!(
+            "{program} failed with {}: {text}",
+            output.status
+        )))
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn capture_logged(program: &str, args: &[&str], log: &Path) -> Result<String, TaskError> {
     append_log(log, &format!("capturing {program} {}", args.join(" ")))?;
     let output = Command::new(program)

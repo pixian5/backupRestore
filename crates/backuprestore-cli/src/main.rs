@@ -389,18 +389,7 @@ fn main() {
         #[cfg(windows)]
         Some("inspect-environment") => windows_prepare::inspect_environment(),
         #[cfg(windows)]
-        Some("wim-info") => {
-            // 解析 wim-info 的参数：<absolute-wim> [--skip-hash]
-            // 注意：main() 返回 ()，不能用 ?；把剩余参数收集后检测 --skip-hash
-            let remaining: Vec<String> = args.collect();
-            let skip_hash = remaining.iter().any(|a| a == "--skip-hash");
-            // 第一个参数（非标志）为 WIM 路径
-            remaining
-                .into_iter()
-                .find(|a| !a.starts_with("--"))
-                .ok_or_else(|| err("WIM image path is required"))
-                .and_then(|image_path| windows_prepare::wim_info(image_path, skip_hash))
-        }
+        Some("wim-info") => crate::image_admin::cli_wim_info(args.collect()),
         #[cfg(windows)]
         Some("online") => online_operation::cli_online(args.collect()),
         #[cfg(windows)]

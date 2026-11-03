@@ -337,6 +337,165 @@ pub(crate) fn cli_delete(args: Vec<String>) -> Result<(), TaskError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn sidecar_dism_names(
+    image_path: &str,
+    entries: &[(u32, backuprestore_core::BackupMetadata)],
+) -> Result<std::collections::HashMap<u32, String>, TaskError> {
+    let needs = entries.iter().any(|(_, meta)| {
+        meta.image_name
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    });
+    if !needs {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut names = std::collections::HashMap::new();
+    if let Ok(output) = crate::process_runner::capture_output(
+        "dism.exe",
+        &[
+            "/English",
+            "/Get-WimInfo",
+            &format!("/WimFile:{image_path}"),
+        ],
+    ) && let Ok(parsed) = crate::prepare_plan::parse_dism_images(&output)
+    {
+        for image in &parsed {
+            let index = image.get("ImageIndex").and_then(|v| v.as_u64());
+            let name = image
+                .get("ImageName")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+            if let (Some(index), Some(name)) = (index, name) {
+                names.insert(index as u32, name.to_string());
+            }
+        }
+    }
+    Ok(names)
+}
+
+#[cfg(windows)]
+pub(crate) fn wim_info(image_path: String, skip_hash: bool) -> Result<(), TaskError> {
+    use backuprestore_core::{read_json, sha256_file, validate_absolute_path};
+
+    validate_absolute_path(&image_path)?;
+    let path = PathBuf::from(&image_path);
+    if !path.is_file() {
+        return Err(crate::err(&format!("WIM image does not exist: {image_path}")));
+    }
+
+    if let Some(parent) = path.parent() {
+        let wim_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut sidecar_entries: Vec<(u32, backuprestore_core::BackupMetadata)> = Vec::new();
+        if let Ok(dir) = std::fs::read_dir(parent) {
+            let prefix = format!("{wim_name}.index-");
+            let suffix = ".metadata.json";
+            for entry in dir.flatten() {
+                let fname = entry.file_name();
+                let fname_str = fname.to_string_lossy();
+                if fname_str.starts_with(&prefix) && fname_str.ends_with(suffix) {
+                    let mid = &fname_str[prefix.len()..fname_str.len() - suffix.len()];
+                    if let Ok(idx) = mid.parse::<u32>()
+                        && let Ok(meta) =
+                            read_json::<backuprestore_core::BackupMetadata>(entry.path())
+                    {
+                        sidecar_entries.push((idx, meta));
+                    }
+                }
+            }
+        }
+        if !sidecar_entries.is_empty() {
+            sidecar_entries.sort_by_key(|(idx, _)| *idx);
+            let dism_names = sidecar_dism_names(&image_path, &sidecar_entries)?;
+            let images: Vec<serde_json::Value> = sidecar_entries
+                .iter()
+                .map(|(idx, meta)| {
+                    let display_name = crate::prepare_plan::sidecar_image_name(
+                        meta.image_name.as_deref(),
+                        *idx,
+                        dism_names.get(idx).map(String::as_str),
+                    );
+                    serde_json::json!({
+                        "ImageIndex": idx,
+                        "ImageName": display_name.clone(),
+                        "ImageSize": meta.image_size,
+                        "ImageDescription": format!("Computer: {}, Build: {}", meta.computer, meta.windows_build),
+                        "ImageVersion": meta.windows_build,
+                        "Architecture": meta.architecture,
+                        "EditionId": meta.windows_edition,
+                        "InstallationType": "Client",
+                        "index": idx,
+                        "name": display_name,
+                        "imageSize": meta.image_size,
+                        "sha256": meta.image_sha256,
+                        "createdAt": meta.created,
+                        "computer": meta.computer,
+                        "windowsEdition": meta.windows_edition,
+                        "architecture": meta.architecture,
+                        "windowsBuild": meta.windows_build,
+                        "capturedUsedBytes": meta.captured_used_bytes,
+                        "minimumTargetSize": meta.minimum_target_size,
+                        "programVersion": meta.program_version,
+                        "source": "sidecar",
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "image": image_path,
+                    "sha256": sidecar_entries.first().map(|(_, m)| m.image_sha256.as_str()).unwrap_or(""),
+                    "images": images,
+                    "source": "sidecar",
+                }))?
+            );
+            return Ok(());
+        }
+    }
+
+    let output = crate::process_runner::capture_output(
+        "dism.exe",
+        &[
+            "/English",
+            "/Get-WimInfo",
+            &format!("/WimFile:{image_path}"),
+        ],
+    )?;
+    let images = crate::prepare_plan::parse_dism_images(&output)?;
+
+    let sha256 = if skip_hash {
+        "skipped".to_string()
+    } else {
+        sha256_file(&path)?
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "image": image_path,
+            "sha256": sha256,
+            "images": images,
+            "source": "dism",
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn cli_wim_info(args: Vec<String>) -> Result<(), TaskError> {
+    let skip_hash = args.iter().any(|a| a == "--skip-hash");
+    let image_path = args
+        .into_iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or_else(|| crate::err("WIM image path is required"))?;
+    wim_info(image_path, skip_hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
