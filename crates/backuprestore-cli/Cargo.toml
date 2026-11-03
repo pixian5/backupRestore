@@ -1,6 +1,6 @@
 [package]
 name = "backuprestore-cli"
-version = "2.9.5"
+version = "2.9.6"
 edition = "2024"
 
 [dependencies]
