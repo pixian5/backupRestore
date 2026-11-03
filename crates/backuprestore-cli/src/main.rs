@@ -28,7 +28,7 @@ mod boot_entry;
 /// `cargo check` 就 E0433（而 `cargo test` 因为带 `test` cfg 反而能过，
 /// v2.6.41 只跑单测所以没发现）。`MessageLanguage` 也随之从 `pe_safety`
 /// 搬到本模块（`pe_safety` 重导出，旧路径不变）。
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod i18n;
 /// 错误码与错误文案的单一来源（`BR-<域>-<序号>`）。
 /// 无条件编译：`pe_safety` / `boot_entry` 等被无条件引用，它们都要用 `errc`。

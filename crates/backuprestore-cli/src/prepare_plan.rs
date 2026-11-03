@@ -213,12 +213,13 @@ pub(crate) fn parse_prepare_options(arguments: Vec<String>) -> Result<PrepareOpt
             (Some(target), Some(image))
         }
     };
-    if let Some(fault) = test_fault.as_deref() {
-        if matches!(fault, "identity-env-mismatch" | "bcdboot-failure") && efi_drive.is_none() {
-            return Err(err(&format!(
-                "--test-fault {fault} requires --test-efi-drive"
-            )));
-        }
+    if let Some(fault) = test_fault.as_deref()
+        && matches!(fault, "identity-env-mismatch" | "bcdboot-failure")
+        && efi_drive.is_none()
+    {
+        return Err(err(&format!(
+            "--test-fault {fault} requires --test-efi-drive"
+        )));
     }
 
     let mut failure_policy = crate::failure_policy::FailurePolicy::default();
@@ -464,10 +465,11 @@ pub(crate) fn validate_prepare_options_safety(
     options: &PrepareOptions,
     workspace_drive: Option<char>,
 ) -> Result<(), TaskError> {
-    if let (Some(target), Some(workspace)) = (options.target_drive, workspace_drive) {
-        if target == workspace && matches!(options.operation, Operation::RestoreExisting | Operation::CreateSecondary) {
-            return Err(restore_workspace_target_error(workspace));
-        }
+    if let (Some(target), Some(workspace)) = (options.target_drive, workspace_drive)
+        && target == workspace
+        && matches!(options.operation, Operation::RestoreExisting | Operation::CreateSecondary)
+    {
+        return Err(restore_workspace_target_error(workspace));
     }
     Ok(())
 }

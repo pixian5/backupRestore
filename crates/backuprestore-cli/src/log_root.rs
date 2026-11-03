@@ -198,7 +198,7 @@ pub(crate) fn recent_log_files(root: &Path, limit: usize) -> Vec<LogFileEntry> {
     }
     let mut found: Vec<LogFileEntry> = Vec::new();
     collect_log_files(root, 0, &mut found);
-    found.sort_by(|left, right| right.modified.cmp(&left.modified));
+    found.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
     found.truncate(limit);
     found
 }

@@ -673,10 +673,10 @@ pub(crate) fn bcd_display_order(text: &str) -> Vec<String> {
                 // `toolsdisplayorder` 等后续字段必须隔离，否则会被当成菜单项。
                 reading = false;
             }
-            if reading {
-                if let Some(token) = braced_token(trimmed) {
-                    order.push(token.to_ascii_lowercase());
-                }
+            if reading
+                && let Some(token) = braced_token(trimmed)
+            {
+                order.push(token.to_ascii_lowercase());
             }
         }
         return order;
@@ -1129,11 +1129,11 @@ pub(crate) fn classify_log_line(line: &str) -> (Option<String>, Option<u32>, Opt
         //   （v2.6.39 起的 i18n / `BACKUPRESTORE_LANG`）。只认中文的话，
         //   英文模式下这一条永远不命中 → 终态识别不到，进度窗停在上一阶段。
         //   文案从 i18n 表取（单一来源），避免两处硬编码不同步。
-        || line.contains(&crate::i18n::msg_in(
+        || line.contains(crate::i18n::msg_in(
             crate::i18n::MessageLanguage::Chinese,
             "online_done",
         ))
-        || line.contains(&crate::i18n::msg_in(
+        || line.contains(crate::i18n::msg_in(
             crate::i18n::MessageLanguage::English,
             "online_done",
         ))
