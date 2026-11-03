@@ -78,13 +78,25 @@ Legacy BIOS、自动修改 BitLocker。
 crates/
 ├── backuprestore-core/     库：任务模型、载荷契约、元数据、SHA-256、错误类型
 └── backuprestore-cli/      可执行：原生 GUI + 准备 + WinRE 恢复环境
-    ├── native_gui.rs       原生 Win32 GUI（最大单文件，未拆完）
-    ├── main.rs             入口与任务分发、恢复环境主链
+    ├── main.rs             CLI 入口与参数分发（解耦后高内聚调度器，~1,600 行）
+    ├── native_gui/         原生 Win32 GUI 自治子系统（从旧巨石解耦为 11 个子模块，~2,500 行）
+    │   ├── task_executor.rs     任务调度执行与互斥原子门禁
+    │   ├── pe_desktop.rs        WinRE/WinPE 独立恢复桌面与软硬件信息
+    │   ├── pe_installer.rs      PE 引导安装、BCD 注册与独立重启
+    │   ├── environment.rs       环境探测、提权与常用系统工具拉起
+    │   ├── operation_tabs.rs    5 大入口路由与页签布局
+    │   └── ...                  （驱动选择、动态算宽、镜像/证据/日志窗口等）
+    ├── recovery_engine.rs  恢复宿主状态机、DISM/wimlib 还原流转与连续失败逃生
+    ├── recovery_volume.rs  恢复卷挂载、盘符分配、GPT 身份复核与 DiskPart 格式化
+    ├── recovery_bcd.rs     BCD 引导维护与双系统菜单编排
+    ├── pending_task.rs     开机中断任务接管探测与防反复重启双层闸门
+    ├── process_runner.rs   通用外部进程派生、超时控制与日志管道
+    ├── prepare_plan.rs     准备阶段纯计算逻辑与跨平台防御单测（macOS 可单测）
     ├── windows_prepare.rs  正常 Windows 侧准备：校验/注入载荷/设置一次性 WinRE 启动
-    ├── text_parsing.rs     命令行输出（DISM/bcdedit/mountvol）本地化解析（纯逻辑，macOS 可单测）
+    ├── text_parsing.rs     命令行输出本地化解析（纯逻辑，macOS 可单测）
     ├── online_operation.rs 在线候选镜像事务、回读及副档同步
     ├── windows_command.rs  作业对象约束的命令与进程树管理
-    ├── recovery_progress.rs WinRE/在线进度上报
+    ├── recovery_progress.rs WinRE/在线进度上报与 SafeLock 崩溃免疫
     ├── winre_payload.rs    WinRE 载荷组织
     └── winre_registration.rs 系统还原后的注册与恢复关联核验
 ```
