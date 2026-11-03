@@ -89,7 +89,9 @@ unsafe fn incomplete_task_choice(
     } else {
         "存在未完成任务"
     };
-    let task = tasks.into_iter().next().expect("tasks 非空");
+    let Some(task) = tasks.into_iter().next() else {
+        return None;
+    };
     Some((
         show_message(
             state.root,

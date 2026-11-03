@@ -53,7 +53,7 @@ pub(crate) fn pause_running_bcdboot(
     if !program.eq_ignore_ascii_case("bcdboot.exe") {
         return Ok(());
     }
-    let active = ACTIVE.lock().expect("验收配置锁").clone();
+    let active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some((value, dir)) = active else {
         return Ok(());
     };
@@ -91,13 +91,13 @@ pub(crate) fn pause_running_bcdboot(
 }
 
 pub(crate) fn configure(value: Option<&str>, task_dir: &Path) {
-    *ACTIVE.lock().expect("验收配置锁") = value
+    *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = value
         .filter(|v| valid(v))
         .map(|v| (v.to_owned(), task_dir.to_owned()));
 }
 
 pub(crate) fn checkpoint(point: &str, log: &Path) -> Result<(), TaskError> {
-    let active = ACTIVE.lock().expect("验收配置锁").clone();
+    let active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some((value, dir)) = active else {
         return Ok(());
     };

@@ -1310,8 +1310,7 @@ pub(crate) fn recover_windows(
         .as_ref()
         .map(|image| resolve_volume_path(&image.volume, &image.relative_path, log))
         .transpose()?;
-    if let Some(path) = &image_path {
-        let image = task.image.as_ref().expect("image path implies image");
+    if let (Some(path), Some(image)) = (&image_path, task.image.as_ref()) {
         let verify_hash = task.verify_hash.unwrap_or(false);
         if verify_hash {
             verify_image_file(path, image)?;
@@ -2073,12 +2072,16 @@ pub(crate) fn recover_windows(
                         .filter(|name| !name.is_empty());
                     let identifier =
                         set_secondary_boot_menu(&efi, &target_root, menu_name, log)?;
-                    preserve_primary_boot_manager(
-                        &efi,
-                        previous_boot_manager.as_ref().expect("secondary BCD state"),
-                        &identifier,
-                        log,
-                    )?;
+                    if let Some(ref prev_bm) = previous_boot_manager {
+                        preserve_primary_boot_manager(
+                            &efi,
+                            prev_bm,
+                            &identifier,
+                            log,
+                        )?;
+                    } else {
+                        return Err(crate::errc(ErrCode::BootManagerUnknownContinue));
+                    }
                 }
                 // 引导修复必须是**最后**一个写 BCD 的步骤：用户在弹窗里选的名字、
                 // 顺序、勾选与菜单秒数是最终意图。早先放在 bcdboot 之前时，

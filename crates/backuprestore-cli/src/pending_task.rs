@@ -248,7 +248,9 @@ pub(crate) fn find_pending_boot_task() -> Result<Option<PendingResume>, TaskErro
         return Ok(None);
     }
 
-    let (mut task, task_dir) = pending.pop().expect("pending length checked above");
+    let Some((mut task, task_dir)) = pending.pop() else {
+        return Ok(None);
+    };
     if task.status == backuprestore_core::Stage::RecoveryComplete {
         complete_recovery_cleanup(
             &TaskStore::new(workspace),

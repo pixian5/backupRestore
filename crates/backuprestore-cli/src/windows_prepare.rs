@@ -745,7 +745,9 @@ fn prepare_task(
             task.keep_indexes = options.keep_indexes;
         }
         Operation::RestoreExisting | Operation::CreateSecondary => {
-            let path = image_path.as_ref().expect("restore image path validated");
+            let Some(path) = image_path.as_ref() else {
+                return Err(crate::errc(ErrCode::ImageFileMissing));
+            };
             let file_size = fs::metadata(path)?.len();
             // 优先复用 sidecar metadata 里的权威 sha256；无 sidecar 镜像且未勾选 verify_hash 时填充合规占位，彻底避免重复读盘。
             // 例外：用户已显式接受"与副档不符的当前镜像"时，权威值改成**接受时读到的真实哈希**。
@@ -1107,7 +1109,7 @@ fn prepare_payload(
             "preparation failed: {error}; boot entry and payload rolled back (see prepare.log)"
         )));
     }
-    let mut boot_entry = boot_entry.expect("checked above");
+    let mut boot_entry = boot_entry?;
 
     let staged_hash = sha256_file(&staged)?;
     let manifest = PayloadManifest {
