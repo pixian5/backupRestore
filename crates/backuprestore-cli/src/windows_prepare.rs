@@ -3750,3 +3750,76 @@ fn native_architecture() -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_options_reject_missing_image_or_invalid_drive() {
+        assert!(
+            parse_prepare_options(vec![
+                "--operation".into(),
+                "probe".into(),
+                "--source-drive".into(),
+                "C".into(),
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse_prepare_options(vec![
+                "--operation".into(),
+                "restore-existing".into(),
+                "--source-drive".into(),
+                "C".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_prepare_options(vec![
+                "--operation".into(),
+                "probe".into(),
+                "--source-drive".into(),
+                "CC".into(),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prepare_fault_options_require_efi_only_for_efi_faults() {
+        let base = vec![
+            "--operation".into(),
+            "probe".into(),
+            "--source-drive".into(),
+            "P".into(),
+        ];
+        let mut power_loss = base.clone();
+        power_loss.extend(["--test-fault".into(), "power-loss-window".into()]);
+        assert!(
+            parse_prepare_options(power_loss).is_ok(),
+            "power-loss-window uses the real system EFI by default"
+        );
+
+        for fault in ["identity-env-mismatch", "bcdboot-failure"] {
+            let mut missing_efi = base.clone();
+            missing_efi.extend(["--test-fault".into(), fault.into()]);
+            assert!(
+                parse_prepare_options(missing_efi).is_err(),
+                "{fault} must require an explicit development EFI"
+            );
+        }
+        for fault in [
+            "power-loss-target-erased",
+            "power-loss-image-applied",
+            "power-loss-boot-repaired",
+        ] {
+            let mut system_efi_fault = base.clone();
+            system_efi_fault.extend(["--test-fault".into(), fault.into()]);
+            assert!(
+                parse_prepare_options(system_efi_fault).is_ok(),
+                "{fault} must use the current system EFI by default"
+            );
+        }
+    }
+}
+

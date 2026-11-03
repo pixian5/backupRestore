@@ -314,4 +314,19 @@ mod tests {
         );
         let _ = std::fs::remove_file(&log_path);
     }
+
+    #[test]
+    fn dispatch_failure_carries_its_code_even_without_json() {
+        let error = run_command("sh", vec!["-c".to_string(), "exit 3".to_string()])
+            .expect_err("非零退出必须报错");
+        assert_eq!(error.code(), Some("BR-APL-010"), "{error}");
+        assert!(
+            error.to_string().starts_with("[BR-APL-010]"),
+            "Display 必须带码前缀：{error}"
+        );
+        assert!(
+            !error.to_string().ends_with('\n'),
+            "文案不该以换行结尾：{error:?}"
+        );
+    }
 }

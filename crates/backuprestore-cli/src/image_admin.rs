@@ -357,4 +357,16 @@ mod tests {
             assert_eq!(total - clamped, total - clamp_keep(keep, total));
         }
     }
+
+    #[test]
+    fn format_size_handles_units_and_boundaries() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+        assert_eq!(format_size(1024), "1.0 KiB");
+        assert_eq!(format_size(1536), "1.5 KiB");
+        assert_eq!(format_size(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GiB");
+        assert_eq!(format_size(1024 * 1024 * 1024 * 1024), "1.0 TiB");
+    }
 }

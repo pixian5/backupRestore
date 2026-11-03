@@ -1172,3 +1172,19 @@ pub(crate) fn find_efi_root(override_root: Option<&Path>) -> Result<PathBuf, Tas
         .map(Path::to_path_buf)
         .ok_or_else(|| err("EFI root must be explicitly mounted before recovery"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diskpart_format_script_uses_verified_target_numbers() {
+        assert_eq!(
+            diskpart_format_script(Some(3), Some(2)).unwrap(),
+            "select disk 3\r\nselect partition 2\r\nformat fs=ntfs quick\r\n"
+        );
+        assert!(diskpart_format_script(None, Some(2)).is_err());
+        assert!(diskpart_format_script(Some(3), None).is_err());
+        assert!(diskpart_format_script(Some(3), Some(0)).is_err());
+    }
+}

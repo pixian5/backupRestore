@@ -409,7 +409,7 @@ pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<(), TaskEr
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TOTAL_RESUME_ATTEMPTS, allow_total_attempt};
+    use super::{MAX_TOTAL_RESUME_ATTEMPTS, allow_total_attempt, claim_boot_resume_attempt};
 
     #[test]
     fn allows_exactly_the_configured_number_of_reboots() {
@@ -427,5 +427,21 @@ mod tests {
     fn zero_max_forbids_every_attempt() {
         assert!(!allow_total_attempt(0, 0));
         assert!(!allow_total_attempt(5, 0));
+    }
+
+    #[test]
+    fn automatic_boot_resume_is_limited_to_once_per_durable_stage() {
+        let root = std::env::temp_dir().join(format!(
+            "backuprestore-resume-test-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(claim_boot_resume_attempt(&root, backuprestore_core::Stage::BootRequested).unwrap());
+        assert!(!claim_boot_resume_attempt(&root, backuprestore_core::Stage::BootRequested).unwrap());
+        assert!(claim_boot_resume_attempt(&root, backuprestore_core::Stage::RecoveryStarted).unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

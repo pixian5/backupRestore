@@ -524,3 +524,174 @@ pub(crate) fn verify_bcd_target(efi_root: &Path, target_root: &Path, log: &Path)
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secondary_menu_omits_deleted_objects_and_requires_primary() {
+        let primary = "{11111111-2222-4333-8444-555555555555}";
+        let removed = "{22222222-3333-4444-8555-666666666666}";
+        let secondary = "{33333333-4444-4555-8666-777777777777}";
+        let other = "{44444444-5555-4666-8777-888888888888}";
+        let previous = BcdBootManagerState {
+            default: primary.into(),
+            display_order: vec![primary.into(), removed.into(), other.into()],
+            resume_object: None,
+            loader_resume_objects: Vec::new(),
+        };
+        let live = format!("identifier {primary}\n\n标识符 {secondary}\n\nidentifier {other}");
+        assert_eq!(
+            secondary_boot_order(&previous, secondary, &live).unwrap(),
+            [primary, other, secondary]
+        );
+        assert!(
+            secondary_boot_order(&previous, secondary, &format!("identifier {secondary}"))
+                .is_err()
+        );
+        assert!(
+            secondary_boot_order(&previous, secondary, &format!("identifier {primary}"))
+                .is_err()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "需要 Windows 管理员（只读拒绝路径：BCD 存储不存在时必须拒绝且不写）"]
+    fn secondary_menu_repair_rejections() {
+        let tmp = std::env::temp_dir().join(format!(
+            "br-menu-reject-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let log = tmp.join("menu-reject.log");
+        let previous = BcdBootManagerState {
+            default: "{aaaaaaaa-0000-0000-0000-000000000001}".to_string(),
+            display_order: vec!["{aaaaaaaa-0000-0000-0000-000000000001}".to_string()],
+            resume_object: None,
+            loader_resume_objects: Vec::new(),
+        };
+        let secondary = "{aaaaaaaa-0000-0000-0000-000000000002}";
+        let error = preserve_primary_boot_manager(&tmp, &previous, secondary, &log)
+            .expect_err("BCD 存储不存在时必须拒绝");
+        assert_eq!(error.code(), Some("BR-APL-009"), "外部命令失败的稳定码：{error}");
+        assert!(
+            error.to_string().contains("bcdedit"),
+            "失败文案必须点名是哪个程序：{error}"
+        );
+        assert!(
+            !tmp.join("EFI").exists(),
+            "拒绝路径不得创建 EFI 目录：{}",
+            tmp.join("EFI").display()
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "需要已完成的第二系统任务、EFI 挂载点及新核验快照；真实修改启动菜单"]
+    fn secondary_menu_repair_native() {
+        use std::path::PathBuf;
+        let snapshot = std::env::var("BR_ACCEPTANCE_SNAPSHOT").expect("新快照");
+        assert!(bcd_identifier_from_line(&snapshot).is_some());
+        let root = std::env::var("BR_ACCEPTANCE_ROOT").expect("任务根目录");
+        let id = std::env::var("BR_ACCEPTANCE_TASK").expect("任务ID");
+        let efi = PathBuf::from(std::env::var("BR_ACCEPTANCE_EFI").expect("已挂载ESP"));
+        let secondary = std::env::var("BR_ACCEPTANCE_SECONDARY").expect("已核验第二加载器");
+        assert!(bcd_identifier_from_line(&secondary).is_some());
+        let store = backuprestore_core::TaskStore::new(root);
+        let task = store.load(&id).unwrap();
+        assert_eq!(task.status, backuprestore_core::Stage::Success);
+        assert_eq!(task.operation, backuprestore_core::Operation::CreateSecondary);
+        let log = store
+            .task_dir(&id)
+            .unwrap()
+            .join("menu-repair-acceptance.log");
+        let previous = boot_manager_state_from_task_snapshot(&store, &task, &log).unwrap();
+        preserve_primary_boot_manager(&efi, &previous, &secondary, &log).unwrap();
+        println!("SECONDARY_MENU_REPAIR_VERIFIED");
+    }
+
+    #[test]
+    fn bcd_identifier_parser_ignores_localized_field_labels() {
+        assert_eq!(
+            bcd_identifier_from_line(
+                "\u{fffd}\u{fffd}\u{fffd} {3f66f61e-a1ce-11f1-9d29-f5ba5ed7cdd2}"
+            ),
+            Some("{3f66f61e-a1ce-11f1-9d29-f5ba5ed7cdd2}")
+        );
+        assert_eq!(bcd_identifier_from_line("device partition=H:"), None);
+        assert_eq!(bcd_identifier_from_line("{not-a-bcd-guid}"), None);
+    }
+
+    #[test]
+    fn secondary_loader_selection_ignores_resume_object() {
+        let output = "Windows Boot Loader\nidentifier {11111111-2222-4333-8444-555555555555}\ndevice partition=Q:\nosdevice partition=Q:\npath \\Windows\\system32\\winload.efi\n\nWindows Resume Application\nidentifier {22222222-3333-4444-8555-666666666666}\ndevice partition=Q:\npath \\Windows\\system32\\winresume.efi";
+        let selected = output
+            .split("\n\n")
+            .filter_map(|block| {
+                let identifier = block.lines().find_map(bcd_identifier_from_line)?;
+                let lower = block.to_ascii_lowercase();
+                let targets_partition = lower.lines().any(|line| {
+                    let line = line.trim_start();
+                    (line.starts_with("device") || line.starts_with("osdevice"))
+                        && line.contains("partition=q:")
+                });
+                (lower.contains("winload.efi") && targets_partition).then_some(identifier)
+            })
+            .next();
+        assert_eq!(selected, Some("{11111111-2222-4333-8444-555555555555}"));
+    }
+
+    #[test]
+    fn boot_manager_state_parser_accepts_guid_and_alias_only() {
+        assert_eq!(
+            parse_boot_manager_state(
+                "Firmware Boot Manager\nidentifier {aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}\ndisplayorder {ffffffff-1111-4222-8333-444444444444}\n\nWindows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {11111111-2222-4333-8444-555555555555}\ndisplayorder {11111111-2222-4333-8444-555555555555}"
+            )
+            .unwrap()
+            .default,
+            "{11111111-2222-4333-8444-555555555555}"
+        );
+        assert_eq!(
+            parse_boot_manager_state(
+                "Windows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\n默认 {default}\n显示顺序 {default}"
+            )
+            .unwrap()
+            .display_order,
+            vec!["{default}"]
+        );
+        assert!(parse_boot_manager_state("default dangerous;value").is_none());
+    }
+
+    #[test]
+    fn boot_manager_state_parser_preserves_resume_object_and_loader_mapping() {
+        let state = parse_boot_manager_state(
+            "Windows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {11111111-2222-4333-8444-555555555555}\nresumeobject {aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}\ndisplayorder {11111111-2222-4333-8444-555555555555}\n\nWindows Boot Loader\nidentifier {11111111-2222-4333-8444-555555555555}\ndevice partition=C:\npath \\Windows\\system32\\winload.efi\nresumeobject {bbbbbbbb-2222-4333-8444-555555555555}",
+        )
+        .unwrap();
+        assert_eq!(
+            state.resume_object.as_deref(),
+            Some("{aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}")
+        );
+        assert_eq!(
+            state.loader_resume_objects,
+            vec![(
+                "{11111111-2222-4333-8444-555555555555}".into(),
+                "{bbbbbbbb-2222-4333-8444-555555555555}".into(),
+            )]
+        );
+    }
+
+    #[test]
+    fn boot_menu_does_not_absorb_tools_or_later_guid_fields() {
+        for field in ["displayorder", "显示顺序"] {
+            let state = parse_boot_manager_state(&format!(
+                "identifier {{9dea862c-5cdd-4e70-acc1-f32b344d4795}}\r\ndefault {{default}}\r\n{field} {{default}}\r\n                        {{current}}\r\ntoolsdisplayorder {{memdiag}}\r\n                        {{other}}\r\ntimeout 0"
+            )).unwrap();
+            assert_eq!(state.display_order, ["{default}", "{current}"]);
+        }
+    }
+}

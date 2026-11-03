@@ -2371,4 +2371,66 @@ pub(crate) fn cli_recover(mut args: impl Iterator<Item = String>) -> Result<(), 
     recover(root, id, options)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use backuprestore_core::TargetRole;
+
+    #[test]
+    fn recovery_boot_menu_gate_matches_finalize_routing() {
+        assert!(recovery_needs_boot_menu_session(
+            false,
+            TargetRole::NewWindows
+        ));
+        assert!(recovery_needs_boot_menu_session(
+            true,
+            TargetRole::ExistingWindows
+        ));
+        assert!(!recovery_needs_boot_menu_session(
+            false,
+            TargetRole::ExistingWindows
+        ));
+        assert!(recovery_needs_boot_menu_session(
+            true,
+            TargetRole::NewWindows
+        ));
+    }
+
+    #[test]
+    fn recover_options_accept_explicit_efi_root() {
+        let options =
+            parse_recover_options(vec!["--dry-run".into(), "--efi-root".into(), "E:\\".into()])
+                .expect("options should parse");
+        assert!(options.dry_run);
+        assert_eq!(options.efi_root.unwrap().to_string_lossy(), "E:\\");
+    }
+
+    #[test]
+    fn recover_options_reject_unknown_or_incomplete_flags() {
+        assert!(parse_recover_options(vec!["--unknown".into()]).is_err());
+        assert!(parse_recover_options(vec!["--efi-root".into()]).is_err());
+    }
+
+    /// 【2026-10-23 实机发现】按 B 回退后续跑链校验失败，文案要说明因果。
+    #[test]
+    fn chain_failure_note_only_for_bcd_rollback_sessions() {
+        let chain = "invalid task: 续跑启动链字段不符：device";
+        // 回退过 + 续跑链错 → 补说明，且原文不丢
+        let note = annotate_chain_failure(chain, true).expect("应补说明");
+        assert!(note.contains("续跑启动链字段不符：device"), "原文不能丢：{note}");
+        assert!(note.contains("按 B 回退过 BCD"), "要点明是用户按了 B：{note}");
+        assert!(
+            !note.starts_with("invalid task: "),
+            "前缀必须剥掉：{note}"
+        );
+        // 没回退过 → 不改写
+        assert_eq!(annotate_chain_failure(chain, false), None);
+        // 回退过但错误不是续跑链 → 保持原文，不能被说明糊住
+        assert_eq!(
+            annotate_chain_failure("payload WIM is missing", true),
+            None
+        );
+    }
+}
+
 
