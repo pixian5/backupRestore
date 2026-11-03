@@ -403,7 +403,7 @@ fn main() {
                 .and_then(|image_path| windows_prepare::wim_info(image_path, skip_hash))
         }
         #[cfg(windows)]
-        Some("online") => online_cli(args.collect()),
+        Some("online") => online_operation::cli_online(args.collect()),
         #[cfg(windows)]
         Some("list-images") => crate::image_admin::cli_list(args.collect()),
         #[cfg(windows)]
@@ -486,133 +486,6 @@ fn main() {
     // 退出前把盘符现状写进时间线（见 `letter_trace` 的模块注释）。
     #[cfg(windows)]
     crate::letter_trace::finish();
-}
-
-#[cfg(windows)]
-fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
-    let mut operation = String::new();
-    let mut source_drive = String::new();
-    let mut target_drive = String::new();
-    let mut image_path = String::new();
-    let mut index = String::new();
-    let mut compress = String::new();
-    let mut image_name = String::new();
-    let mut keep_indexes: Option<u32> = None;
-    // `--ui-language`：online 自己的语言开关。注意与 `prepare --ui-language` 的
-    // 区别——prepare 那个只写进任务 env 给恢复环境用；online 在 Windows 里直接跑，
-    // 旗标切的是**本进程**的日志与 CLI 结论文案。
-    let mut ui_language: Option<crate::i18n::MessageLanguage> = None;
-    // CLI 在线还原的「格式化目标分区」开关（与 GUI 复选框同语义，默认不格式化）
-    let mut format_target = false;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--format-target" => {
-                format_target = true;
-            }
-            "--operation" => {
-                i += 1;
-                operation = args.get(i).cloned().unwrap_or_default();
-            }
-            "--source-drive" => {
-                i += 1;
-                source_drive = args.get(i).cloned().unwrap_or_default();
-            }
-            "--target-drive" => {
-                i += 1;
-                target_drive = args.get(i).cloned().unwrap_or_default();
-            }
-            "--image-path" => {
-                i += 1;
-                image_path = args.get(i).cloned().unwrap_or_default();
-            }
-            "--index" => {
-                i += 1;
-                index = args.get(i).cloned().unwrap_or_default();
-            }
-            "--compress" => {
-                i += 1;
-                compress = args.get(i).cloned().unwrap_or_default();
-            }
-            "--image-name" => {
-                i += 1;
-                image_name = args.get(i).cloned().unwrap_or_default();
-            }
-            "--keep-indexes" => {
-                i += 1;
-                keep_indexes = args.get(i).and_then(|v| v.parse().ok());
-            }
-            "--ui-language" => {
-                // 与 `prepare --ui-language` 同口径：只认 zh*/en* 前缀（`zh-CN`、
-                // `en-US` 都接受），其余明确拒绝，避免把恢复环境看不懂的值放进来。
-                i += 1;
-                let raw = args
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_lowercase();
-                if raw.starts_with("zh") {
-                    ui_language = Some(crate::i18n::MessageLanguage::Chinese);
-                } else if raw.starts_with("en") {
-                    ui_language = Some(crate::i18n::MessageLanguage::English);
-                } else {
-                    return Err(err("--ui-language must be zh or en"));
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    if operation.is_empty() {
-        return Err(err("online requires --operation"));
-    }
-    // 不显式指定 = `fast`（与 GUI 压缩下拉「不选也是 fast」同口径）。空串原样下传
-    // 会被 core 的 `canonical_compression` 判 BR-CORE-034——可选旗标不该变成必填
-    // （2026-10-25 实机撞到：不带 --compress 的 T: 备份直接失败，冒烟一直显式传
-    // fast 所以没暴露）。
-    if compress.is_empty() {
-        compress = "fast".to_string();
-    }
-    // 显式旗标 > env `BACKUPRESTORE_LANG` > ini `ui_language` > 中文：
-    // 自动化要确定性，一次命令也能覆盖界面偏好。
-    if let Some(language) = ui_language {
-        crate::i18n::set(language);
-    }
-    let params = crate::online_operation::OnlineOpParams {
-        operation,
-        source_drive,
-        target_drive,
-        image_path,
-        index,
-        compress,
-        image_name,
-        keep_indexes,
-        // CLI 在线还原的「格式化目标分区」开关：与 GUI 复选框同语义，
-        // 默认不格式化保持旧行为，显式 --format-target 才清空目标卷。
-        format_target,
-    };
-    let result = crate::online_operation::execute(&params);
-    // `--json` 下只打印一行结构化结论（判据认字段），中文 detail 不再进 stdout；
-    // 否则保持旧行为（人类读中文摘要）。日志内容与 GUI 弹窗两种模式完全一致。
-    // 详情上报给 `main` 统一输出那一行结论（避免两行 JSON）。
-    crate::cli_json::set_detail(None, result.log_path.clone());
-    if !crate::cli_json::enabled() {
-        println!("{}", result.detail);
-    }
-    if result.success {
-        Ok(())
-    } else {
-        // 【2026-10-26 修复】此前无论内部是什么错，一律换成一句无码的 `err(...)`，
-        // 把 `dism()` 等真实带码错误吞掉，`--json` 的 `error_code` 恒为 `null`——
-        // 错误码体系在 `online` 这条主路径上从未生效。现在把码原样带出来；
-        // **文案一字不改**（历史判据可能 still 在匹配这句英文），只多一个码。
-        let message = "online operation did not complete successfully";
-        Err(match result.error_code {
-            Some(code) => TaskError::coded(code, message),
-            None => err(message),
-        })
-    }
 }
 
 /// Preparation can fail before a task directory exists, for example while the
