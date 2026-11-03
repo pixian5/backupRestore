@@ -10,9 +10,7 @@ use std::env;
 use std::fs;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::Stdio;
 #[cfg(windows)]
@@ -23,14 +21,16 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use chrono::Utc;
 
-use backuprestore_core::{Task, TaskError, TaskStore};
+use backuprestore_core::{Stage, Task, TaskError, TaskStore};
 #[cfg(windows)]
 use backuprestore_core::{
-    canonical_compression, BootMode, Operation, PayloadManifest, Stage, StatusRecord,
+    canonical_compression, BootMode, Operation, PayloadManifest, StatusRecord,
     read_json, verify_image_file,
 };
 
-#[cfg(windows)]
+use crate::append_log;
+use crate::err;
+#[allow(unused_imports)]
 use crate::error_code::{ErrCode, errc, errc_with};
 #[cfg(windows)]
 use crate::process_runner::{capture_logged, run_logged, run_logged_timeout};
@@ -42,10 +42,9 @@ use crate::recovery_bcd::*;
 use crate::text_parsing::MountedVolumes;
 #[cfg(windows)]
 use crate::{
-    append_log, boot_entry, pe_safety, recovery_fault, recovery_progress, resume_safety,
+    boot_entry, pe_safety, recovery_fault, recovery_progress, resume_safety,
     secondary_registry, windows_prepare, winre_registration,
 };
-use crate::err;
 #[cfg(windows)]
 use crate::{
     index_metadata_path, legacy_metadata_path, read_index_metadata,
@@ -2203,6 +2202,173 @@ pub(crate) fn wim_indexes(path: &Path, log: &Path) -> Result<Vec<u32>, TaskError
         return Err(err("DISM returned invalid WIM indexes"));
     }
     Ok(indexes)
+}
+
+#[derive(Default)]
+pub(crate) struct RecoverOptions {
+    pub(crate) dry_run: bool,
+    pub(crate) efi_root: Option<PathBuf>,
+}
+
+pub(crate) fn parse_recover_options(arguments: Vec<String>) -> Result<RecoverOptions, TaskError> {
+    let mut options = RecoverOptions::default();
+    let mut arguments = arguments.into_iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--dry-run" => options.dry_run = true,
+            "--efi-root" => {
+                let root = arguments
+                    .next()
+                    .ok_or_else(|| err("--efi-root requires a mounted EFI root path"))?;
+                if root.trim().is_empty() {
+                    return Err(err("--efi-root cannot be empty"));
+                }
+                options.efi_root = Some(PathBuf::from(root));
+            }
+            _ => return Err(err(&format!("unknown recover option: {argument}"))),
+        }
+    }
+    Ok(options)
+}
+
+pub(crate) fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), TaskError> {
+    let store = TaskStore::new(root);
+    let task_path = store
+        .task_path(&id)
+        .map_err(|error| errc_with(ErrCode::TaskIdInvalid, &[&id, &error.to_string()]))?;
+    if !task_path.is_file() {
+        return Err(errc_with(
+            ErrCode::TaskFileMissing,
+            &[&task_path.display().to_string()],
+        ));
+    }
+    let mut task = store.load(&id)?;
+    let log = store.log_path(&id)?;
+    append_log(
+        &log,
+        &format!(
+            "Recovery started operation={:?} task={}",
+            task.operation, task.task_id
+        ),
+    )?;
+    if task.status == Stage::Success {
+        append_log(&log, "Task already successful; refusing to run twice")?;
+        return Ok(());
+    }
+    if task.status == Stage::Failed {
+        return Err(err(
+            "task is failed; create a new task after reviewing recovery.log",
+        ));
+    }
+    if options.dry_run {
+        println!(
+            "dry-run: task={} operation={:?} stage={:?}",
+            task.task_id, task.operation, task.status
+        );
+        if let Some(image) = &task.image {
+            println!(
+                "image={} sha256={}",
+                image
+                    .absolute_path
+                    .as_deref()
+                    .unwrap_or(&image.relative_path),
+                image.sha256
+            );
+        }
+        if let Some(target) = &task.target {
+            println!(
+                "target partition={} role={:?}",
+                target.volume.partition_guid, target.role
+            );
+        }
+        append_log(&log, "Dry-run completed; no disk operation performed")?;
+        return Ok(());
+    }
+    if !cfg!(windows) {
+        return Err(err(
+            "real Recovery execution is only available on Windows/WinRE; use --dry-run on this host",
+        ));
+    }
+    if let Some(efi_root) = options.efi_root.as_deref() {
+        if !efi_root.is_dir() {
+            return Err(err("--efi-root must be an existing mounted EFI directory"));
+        }
+        append_log(
+            &log,
+            &format!(
+                "Using explicit EFI root for direct recovery: {}",
+                efi_root.display()
+            ),
+        )?;
+    }
+    #[cfg(windows)]
+    let metadata_values: Option<BTreeMap<String, String>> = {
+        let dir = store.task_dir(&id)?;
+        let env = dir.join("payload/RecoveryTask.env");
+        let values = if env.is_file() {
+            read_env_file(env)?
+        } else {
+            BTreeMap::new()
+        };
+        crate::recovery_fault::configure(values.get("TEST_FAULT").map(String::as_str), &dir);
+        if task.status == Stage::RecoveryComplete {
+            return complete_recovery_cleanup(&store, &mut task, &log);
+        }
+        Some(values)
+    };
+    #[cfg(not(windows))]
+    let metadata_values: Option<BTreeMap<String, String>> = None;
+    #[cfg(windows)]
+    let efi_root: Option<PathBuf> = match options.efi_root.clone() {
+        Some(root) => Some(root),
+        None => resolve_efi_root_for_recovery(&task, &log, metadata_values.as_ref())?,
+    };
+    #[cfg(not(windows))]
+    let efi_root: Option<PathBuf> = options.efi_root.clone();
+    let result = recover_windows(
+        &store,
+        &mut task,
+        &log,
+        efi_root.as_deref(),
+        metadata_values.as_ref(),
+        false,
+        None,
+    );
+    if let Err(error) = &result {
+        if let Err(log_error) = append_log(
+            &log,
+            &crate::i18n::msg_tpl("recovery_failed", &[&error.to_string()]),
+        ) {
+            let _ = append_log(
+                &log,
+                &crate::i18n::msg_tpl("recovery_failed_log_write", &[&error.to_string(), &log_error.to_string()]),
+            );
+        }
+        if let Err(write_error) =
+            store.write_recovery_error_coded(&task, error.code(), error.to_string())
+        {
+            let _ = append_log(
+                &log,
+                &crate::i18n::msg_tpl(
+                    "recovery_failed_status_write",
+                    &[&error.to_string(), &write_error.to_string()],
+                ),
+            );
+        }
+    }
+    #[cfg(windows)]
+    if result.is_ok() {
+        store.write_transition(&mut task, Stage::RecoveryComplete)?;
+        complete_recovery_cleanup(&store, &mut task, &log)?;
+    }
+    result
+}
+
+pub(crate) fn cli_recover(mut args: impl Iterator<Item = String>) -> Result<(), TaskError> {
+    let root = args.next().ok_or_else(|| err("task root is required"))?;
+    let id = args.next().ok_or_else(|| err("task id is required"))?;
+    let options = parse_recover_options(args.collect())?;
+    recover(root, id, options)
 }
 
 

@@ -168,6 +168,172 @@ pub(crate) fn delete_oldest_indexes(
     Ok((removed, keep))
 }
 
+/// 备份文件管理的默认目录：项目约定的镜像卷 `H:\BRImages`；不存在则退回程序目录。
+/// 只影响 `list-images` 的缺省值与 GUI 对话框初值，用户随时可以显式指定别的目录。
+pub(crate) fn default_image_dir() -> String {
+    let preferred = std::path::PathBuf::from("H:\\BRImages");
+    if preferred.is_dir() {
+        return preferred.to_string_lossy().into_owned();
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// 字节数的人类可读格式（二进制单位，与界面其它容量显示一致）。
+pub(crate) fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// `list-images`：打印镜像与索引清单。人类可读模式给人看；`--json` 模式每镜像一行
+/// 结构化结论（供自动化/排障），日志路径统一走 `cli_json` 单一出口。
+#[cfg(windows)]
+pub(crate) fn cli_list(args: Vec<String>) -> Result<(), TaskError> {
+    let dir = args
+        .into_iter()
+        .find(|a| !a.starts_with("--"))
+        .unwrap_or_else(default_image_dir);
+    let dir = std::path::PathBuf::from(dir);
+    let (log_dir, _note) = crate::online_log::resolve_dir("image-admin")
+        .map_err(|error| crate::err(&format!("cannot create log directory: {error}")))?;
+    let log_path = log_dir.join("admin.log");
+    let images = list_images(&dir, &log_path)?;
+    if crate::cli_json::enabled() {
+        for image in &images {
+            let indexes: Vec<_> = image
+                .indexes
+                .iter()
+                .map(|index| {
+                    let entry = image.entries.get(index);
+                    serde_json::json!({
+                        "index": index,
+                        "name": entry.and_then(|e| e.name.clone()),
+                        "created": entry.and_then(|e| e.created.clone()),
+                        "source": entry.and_then(|e| e.source.clone()),
+                        "image_size": entry.and_then(|e| e.image_size),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "command": "list-images",
+                    "success": true,
+                    "dir": dir.display().to_string(),
+                    "image": image.path.display().to_string(),
+                    "file_size": image.file_size,
+                    "index_count": image.indexes.len(),
+                    "indexes": indexes,
+                    "log_path": log_path.display().to_string(),
+                })
+            );
+        }
+        if images.is_empty() {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "command": "list-images",
+                    "success": true,
+                    "dir": dir.display().to_string(),
+                    "image": null,
+                    "index_count": 0,
+                    "indexes": [],
+                    "log_path": log_path.display().to_string(),
+                })
+            );
+        }
+    } else if images.is_empty() {
+        println!("目录下没有 WIM 镜像：{}", dir.display());
+    } else {
+        for image in &images {
+            println!(
+                "{}  ({}, {} 个索引)",
+                image.path.display(),
+                format_size(image.file_size),
+                image.indexes.len()
+            );
+            for index in &image.indexes {
+                let entry = image.entries.get(index);
+                let name = entry
+                    .and_then(|e| e.name.clone())
+                    .unwrap_or_else(|| "(无副档)".to_string());
+                let created = entry
+                    .and_then(|e| e.created.clone())
+                    .unwrap_or_else(|| "-".to_string());
+                let source = entry
+                    .and_then(|e| e.source.clone())
+                    .unwrap_or_else(|| "-".to_string());
+                let size = entry
+                    .and_then(|e| e.image_size)
+                    .map(format_size)
+                    .unwrap_or_else(|| "-".to_string());
+                println!("  索引 {index:<3} {name:<24} {created}  {size:<12} {source}");
+            }
+        }
+        println!("共 {} 个镜像：{}", images.len(), dir.display());
+    }
+    crate::cli_json::set_detail(None, Some(log_path.display().to_string()));
+    Ok(())
+}
+
+/// `delete-old-indexes`：破坏性操作。删除前后各记一行日志；结果同时进 `--json`。
+#[cfg(windows)]
+pub(crate) fn cli_delete(args: Vec<String>) -> Result<(), TaskError> {
+    let image = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
+        .ok_or_else(|| crate::err("WIM image path is required"));
+    let keep = args
+        .iter()
+        .position(|a| a == "--keep")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<u32>().ok())
+        .ok_or_else(|| crate::err("--keep <n> is required"));
+    let (image, keep) = image.and_then(|image| keep.map(|k| (image, k)))?;
+    let image = std::path::PathBuf::from(image);
+    let (log_dir, _note) = crate::online_log::resolve_dir("image-admin")
+        .map_err(|error| crate::err(&format!("cannot create log directory: {error}")))?;
+    let log_path = log_dir.join("admin.log");
+    crate::append_log(
+        &log_path,
+        &format!(
+            "delete-old-indexes started: image={} keep={keep}",
+            image.display()
+        ),
+    )?;
+    let (removed, kept) = delete_oldest_indexes(&image, keep, &log_path)?;
+    crate::append_log(
+        &log_path,
+        &format!(
+            "delete-old-indexes done: removed={removed} kept={kept} image={}",
+            image.display()
+        ),
+    )?;
+    if !crate::cli_json::enabled() {
+        println!(
+            "已删除 {removed} 个旧索引，保留最新 {kept} 个：{}",
+            image.display()
+        );
+    }
+    crate::cli_json::set_detail(None, Some(log_path.display().to_string()));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

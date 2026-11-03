@@ -6,10 +6,13 @@
 //! the recovery path as a command-line program also makes it usable from
 //! WinRE's `winpeshl.ini` without depending on a desktop runtime.
 
-use backuprestore_core::{Stage, StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
-use std::collections::BTreeMap;
+use backuprestore_core::{StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
+#[cfg(any(windows, test))]
+use backuprestore_core::Stage;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -84,6 +87,9 @@ mod online_operation;
 /// 单独 `#[cfg(windows)]`（与 `online_operation` 同门控）。
 #[cfg(any(windows, test))]
 mod image_admin;
+#[cfg(any(windows, test))]
+#[allow(unused_imports)]
+pub(crate) use image_admin::{default_image_dir, format_size};
 #[cfg(windows)]
 mod pe_operation;
 #[cfg(any(windows, test))]
@@ -399,42 +405,10 @@ fn main() {
         #[cfg(windows)]
         Some("online") => online_cli(args.collect()),
         #[cfg(windows)]
-        Some("list-images") => {
-            // 备份文件管理（P1-c）：列目录下的 WIM 及索引元数据，目录缺省 H:\BRImages。
-            let remaining: Vec<String> = args.collect();
-            let dir = remaining
-                .into_iter()
-                .find(|a| !a.starts_with("--"))
-                .unwrap_or_else(default_image_dir);
-            image_admin_cli_list(dir)
-        }
+        Some("list-images") => crate::image_admin::cli_list(args.collect()),
         #[cfg(windows)]
-        Some("delete-old-indexes") => {
-            // 备份文件管理（P1-c）：删最旧索引、保留最新 N 个（破坏性；GUI 侧有确认框）。
-            let remaining: Vec<String> = args.collect();
-            let image = remaining
-                .iter()
-                .find(|a| !a.starts_with("--"))
-                .cloned()
-                .ok_or_else(|| err("WIM image path is required"));
-            let keep = remaining
-                .iter()
-                .position(|a| a == "--keep")
-                .and_then(|i| remaining.get(i + 1))
-                .and_then(|v| v.parse::<u32>().ok())
-                .ok_or_else(|| err("--keep <n> is required"));
-            image
-                .and_then(|image| keep.map(|keep| (image, keep)))
-                .and_then(|(image, keep)| image_admin_cli_delete(image, keep))
-        }
-        Some("recover") => {
-            let root = args.next().ok_or_else(|| err("task root is required"));
-            let id = args.next().ok_or_else(|| err("task id is required"));
-            let options = parse_recover_options(args.collect());
-            root.and_then(|r| id.map(|i| (r, i)))
-                .and_then(|(r, i)| options.map(|options| (r, i, options)))
-                .and_then(|(r, i, options)| recover(r, i, options))
-        }
+        Some("delete-old-indexes") => crate::image_admin::cli_delete(args.collect()),
+        Some("recover") => cli_recover(args),
         #[cfg(windows)]
         Some("resume") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
@@ -641,158 +615,6 @@ fn online_cli(args: Vec<String>) -> Result<(), TaskError> {
     }
 }
 
-/// 备份文件管理的默认目录：项目约定的镜像卷 `H:\BRImages`；不存在则退回程序目录。
-/// 只影响 `list-images` 的缺省值与 GUI 对话框初值，用户随时可以显式指定别的目录。
-#[cfg(windows)]
-fn default_image_dir() -> String {
-    let preferred = std::path::PathBuf::from("H:\\BRImages");
-    if preferred.is_dir() {
-        return preferred.to_string_lossy().into_owned();
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// `list-images`：打印镜像与索引清单。人类可读模式给人看；`--json` 模式每镜像一行
-/// 结构化结论（供自动化/排障），日志路径统一走 `cli_json` 单一出口。
-#[cfg(windows)]
-fn image_admin_cli_list(dir: String) -> Result<(), TaskError> {
-    let dir = std::path::PathBuf::from(dir);
-    let (log_dir, _note) = crate::online_log::resolve_dir("image-admin")
-        .map_err(|error| err(&format!("cannot create log directory: {error}")))?;
-    let log_path = log_dir.join("admin.log");
-    let images = crate::image_admin::list_images(&dir, &log_path)?;
-    if crate::cli_json::enabled() {
-        for image in &images {
-            let indexes: Vec<_> = image
-                .indexes
-                .iter()
-                .map(|index| {
-                    let entry = image.entries.get(index);
-                    serde_json::json!({
-                        "index": index,
-                        "name": entry.and_then(|e| e.name.clone()),
-                        "created": entry.and_then(|e| e.created.clone()),
-                        "source": entry.and_then(|e| e.source.clone()),
-                        "image_size": entry.and_then(|e| e.image_size),
-                    })
-                })
-                .collect();
-            println!(
-                "{}",
-                serde_json::json!({
-                    "command": "list-images",
-                    "success": true,
-                    "dir": dir.display().to_string(),
-                    "image": image.path.display().to_string(),
-                    "file_size": image.file_size,
-                    "index_count": image.indexes.len(),
-                    "indexes": indexes,
-                    "log_path": log_path.display().to_string(),
-                })
-            );
-        }
-        if images.is_empty() {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "command": "list-images",
-                    "success": true,
-                    "dir": dir.display().to_string(),
-                    "image": null,
-                    "index_count": 0,
-                    "indexes": [],
-                    "log_path": log_path.display().to_string(),
-                })
-            );
-        }
-    } else if images.is_empty() {
-        println!("目录下没有 WIM 镜像：{}", dir.display());
-    } else {
-        for image in &images {
-            println!(
-                "{}  ({}, {} 个索引)",
-                image.path.display(),
-                format_size(image.file_size),
-                image.indexes.len()
-            );
-            for index in &image.indexes {
-                let entry = image.entries.get(index);
-                let name = entry
-                    .and_then(|e| e.name.clone())
-                    .unwrap_or_else(|| "(无副档)".to_string());
-                let created = entry
-                    .and_then(|e| e.created.clone())
-                    .unwrap_or_else(|| "-".to_string());
-                let source = entry
-                    .and_then(|e| e.source.clone())
-                    .unwrap_or_else(|| "-".to_string());
-                let size = entry
-                    .and_then(|e| e.image_size)
-                    .map(format_size)
-                    .unwrap_or_else(|| "-".to_string());
-                println!("  索引 {index:<3} {name:<24} {created}  {size:<12} {source}");
-            }
-        }
-        println!("共 {} 个镜像：{}", images.len(), dir.display());
-    }
-    crate::cli_json::set_detail(None, Some(log_path.display().to_string()));
-    Ok(())
-}
-
-/// `delete-old-indexes`：破坏性操作。删除前后各记一行日志；结果同时进 `--json`。
-#[cfg(windows)]
-fn image_admin_cli_delete(image: String, keep: u32) -> Result<(), TaskError> {
-    let image = std::path::PathBuf::from(image);
-    let (log_dir, _note) = crate::online_log::resolve_dir("image-admin")
-        .map_err(|error| err(&format!("cannot create log directory: {error}")))?;
-    let log_path = log_dir.join("admin.log");
-    crate::append_log(
-        &log_path,
-        &format!(
-            "delete-old-indexes started: image={} keep={keep}",
-            image.display()
-        ),
-    )?;
-    let (removed, kept) = crate::image_admin::delete_oldest_indexes(&image, keep, &log_path)?;
-    crate::append_log(
-        &log_path,
-        &format!(
-            "delete-old-indexes done: removed={removed} kept={kept} image={}",
-            image.display()
-        ),
-    )?;
-    if !crate::cli_json::enabled() {
-        println!(
-            "已删除 {removed} 个旧索引，保留最新 {kept} 个：{}",
-            image.display()
-        );
-    }
-    crate::cli_json::set_detail(None, Some(log_path.display().to_string()));
-    Ok(())
-}
-
-/// 字节数的人类可读格式（二进制单位，与界面其它容量显示一致）。
-#[cfg(windows)]
-fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
 /// Preparation can fail before a task directory exists, for example while the
 /// native volume identity preflight is opening a newly attached disk. Persist
 /// that diagnostic in the dedicated log root (see `crate::log_root`) without
@@ -888,33 +710,6 @@ pub(crate) fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> String
                 .map(|value| value.to_string())
         })
         .unwrap_or_else(|| "panic 载荷不是可打印文本（详见 panic.log）".to_string())
-}
-
-#[derive(Default)]
-struct RecoverOptions {
-    dry_run: bool,
-    efi_root: Option<PathBuf>,
-}
-
-fn parse_recover_options(arguments: Vec<String>) -> Result<RecoverOptions, TaskError> {
-    let mut options = RecoverOptions::default();
-    let mut arguments = arguments.into_iter();
-    while let Some(argument) = arguments.next() {
-        match argument.as_str() {
-            "--dry-run" => options.dry_run = true,
-            "--efi-root" => {
-                let root = arguments
-                    .next()
-                    .ok_or_else(|| err("--efi-root requires a mounted EFI root path"))?;
-                if root.trim().is_empty() {
-                    return Err(err("--efi-root cannot be empty"));
-                }
-                options.efi_root = Some(PathBuf::from(root));
-            }
-            _ => return Err(err(&format!("unknown recover option: {argument}"))),
-        }
-    }
-    Ok(options)
 }
 
 #[cfg(not(windows))]
@@ -1045,157 +840,6 @@ fn show_status(root: String, id: String) -> Result<(), TaskError> {
 /// `None`，行为与改动前逐字一致。
 pub(crate) fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
     crate::session_log::append(path, message)
-}
-
-fn recover(root: String, id: String, options: RecoverOptions) -> Result<(), TaskError> {
-    let store = TaskStore::new(root);
-    // 【2026-10-19 D1】`recover` 的第一个参数是**工作区根**，内部再拼 `tasks/<id>`。
-    // 传成 `...\tasks` 时旧代码只报 `os error 3`，连是哪个路径都看不出来——在 PE 里
-    // 排查这个代价极高（无 shell、无 tasklist，只能截图猜）。先做一次显式存在性
-    // 检查，把完整路径和正确用法一起写进错误。
-    let task_path = store
-        .task_path(&id)
-        .map_err(|error| errc_with(ErrCode::TaskIdInvalid, &[&id, &error.to_string()]))?;
-    if !task_path.is_file() {
-        return Err(errc_with(
-            ErrCode::TaskFileMissing,
-            &[&task_path.display().to_string()],
-        ));
-    }
-    let mut task = store.load(&id)?;
-    let log = store.log_path(&id)?;
-    append_log(
-        &log,
-        &format!(
-            "Recovery started operation={:?} task={}",
-            task.operation, task.task_id
-        ),
-    )?;
-    if task.status == Stage::Success {
-        append_log(&log, "Task already successful; refusing to run twice")?;
-        return Ok(());
-    }
-    if task.status == Stage::Failed {
-        return Err(err(
-            "task is failed; create a new task after reviewing recovery.log",
-        ));
-    }
-    if options.dry_run {
-        println!(
-            "dry-run: task={} operation={:?} stage={:?}",
-            task.task_id, task.operation, task.status
-        );
-        if let Some(image) = &task.image {
-            println!(
-                "image={} sha256={}",
-                image
-                    .absolute_path
-                    .as_deref()
-                    .unwrap_or(&image.relative_path),
-                image.sha256
-            );
-        }
-        if let Some(target) = &task.target {
-            println!(
-                "target partition={} role={:?}",
-                target.volume.partition_guid, target.role
-            );
-        }
-        append_log(&log, "Dry-run completed; no disk operation performed")?;
-        return Ok(());
-    }
-    if !cfg!(windows) {
-        return Err(err(
-            "real Recovery execution is only available on Windows/WinRE; use --dry-run on this host",
-        ));
-    }
-    if let Some(efi_root) = options.efi_root.as_deref() {
-        if !efi_root.is_dir() {
-            return Err(err("--efi-root must be an existing mounted EFI directory"));
-        }
-        append_log(
-            &log,
-            &format!(
-                "Using explicit EFI root for direct recovery: {}",
-                efi_root.display()
-            ),
-        )?;
-    }
-    // 【2026-10-18 缺陷修复 M7】手动 `recover` 也要把任务 env 交给恢复链。
-    // 此前这里传 `None`，于是：①擦除前**不重新武装**一次性启动项（中断后落回
-    // 原版 WinRE、无法续跑）；②不校验「续跑载荷卷 ≠ 擦除目标卷」（可能误擦
-    // 载荷所在卷）；③副档元数据拿不到 env 里的值，只能走兜底。
-    #[cfg(windows)]
-    let metadata_values: Option<BTreeMap<String, String>> = {
-        let dir = store.task_dir(&id)?;
-        let env = dir.join("payload/RecoveryTask.env");
-        let values = if env.is_file() {
-            read_env_file(env)?
-        } else {
-            BTreeMap::new()
-        };
-        recovery_fault::configure(values.get("TEST_FAULT").map(String::as_str), &dir);
-        if task.status == Stage::RecoveryComplete {
-            return complete_recovery_cleanup(&store, &mut task, &log);
-        }
-        Some(values)
-    };
-    #[cfg(not(windows))]
-    let metadata_values: Option<BTreeMap<String, String>> = None;
-    // 【2026-10-19 D3】EFI 根必须在这里（STEP 1 之前）就解析好。旧代码把它留到
-    // STEP 3，而 PE 里 ESP 默认没有盘符：镜像照灌 30GB 之后才发现没有 EFI 根，
-    // 等于白灌一遍（D3）。现在提前解析，并且不再强制 `--efi-root`——能自动挂载
-    // 就自动挂载，挂不上就在**任何写盘动作之前**失败。
-    #[cfg(windows)]
-    let efi_root: Option<PathBuf> = match options.efi_root.clone() {
-        Some(root) => Some(root),
-        None => resolve_efi_root_for_recovery(&task, &log, metadata_values.as_ref())?,
-    };
-    #[cfg(not(windows))]
-    let efi_root: Option<PathBuf> = options.efi_root.clone();
-    let result = recover_windows(
-        &store,
-        &mut task,
-        &log,
-        efi_root.as_deref(),
-        metadata_values.as_ref(),
-        false,
-        None,
-    );
-    if let Err(error) = &result {
-        // 【2026-10-16 审查修订，日志缺口 4】三处加固，都不改变主流程的成败：
-        // ① 先落 Recovery.log 再写 status.json——GUI 的错误文案引导用户"查看
-        //    Recovery.log"，而这条路径此前只写 status.json，日志里没有错误内容。
-        // ② 写盘失败不再 `?`——那会用**写盘错误**替换掉原始恢复错误向上传播，
-        //    把真正的失败原因顶掉（旧代码 `store.write_recovery_error(...)?`）。
-        // ③ 两个失败都各自记一行，事后能看出"恢复失败"与"连错误都没记上"的区别。
-        if let Err(log_error) = append_log(
-            &log,
-            &crate::i18n::msg_tpl("recovery_failed", &[&error.to_string()]),
-        ) {
-            let _ = append_log(
-                &log,
-                &crate::i18n::msg_tpl("recovery_failed_log_write", &[&error.to_string(), &log_error.to_string()]),
-            );
-        }
-        if let Err(write_error) =
-            store.write_recovery_error_coded(&task, error.code(), error.to_string())
-        {
-            let _ = append_log(
-                &log,
-                &crate::i18n::msg_tpl(
-                    "recovery_failed_status_write",
-                    &[&error.to_string(), &write_error.to_string()],
-                ),
-            );
-        }
-    }
-    #[cfg(windows)]
-    if result.is_ok() {
-        store.write_transition(&mut task, Stage::RecoveryComplete)?;
-        complete_recovery_cleanup(&store, &mut task, &log)?;
-    }
-    result
 }
 
 #[cfg(test)]
