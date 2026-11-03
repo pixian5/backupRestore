@@ -20,8 +20,10 @@ use std::path::PathBuf;
 use std::env;
 
 use backuprestore_core::TaskError;
+#[cfg(any(windows, test))]
+use backuprestore_core::Stage;
 #[cfg(windows)]
-use backuprestore_core::{Operation, Stage, StatusRecord, TaskStore, read_json};
+use backuprestore_core::{Operation, StatusRecord, TaskStore, read_json};
 
 #[cfg_attr(not(windows), allow(unused_imports))]
 use crate::err;
@@ -32,9 +34,26 @@ use crate::process_runner::{output_tail_summary, run_output_logged};
 #[cfg(windows)]
 use crate::recovery_engine::complete_recovery_cleanup;
 #[cfg(windows)]
-use crate::stage_resumable_after_interruption;
-#[cfg(windows)]
 use crate::windows_prepare;
+
+/// A prepared task may be a deliberate `--no-reboot` diagnostic and must not
+/// start WinRE by itself. Every later non-terminal stage, however, represents
+/// an already authorized recovery that was interrupted after WinRE staging;
+/// it is safe to re-request the one-time WinRE boot after artifact validation.
+#[cfg(any(windows, test))]
+pub(crate) fn stage_resumable_after_interruption(stage: Stage) -> bool {
+    matches!(
+        stage,
+        Stage::BootRequested
+            | Stage::RecoveryStarted
+            | Stage::Preflight
+            | Stage::Capturing
+            | Stage::TargetErased
+            | Stage::ImageApplied
+            | Stage::BootRepaired
+            | Stage::RecoveryComplete
+    )
+}
 
 /// marker per durable stage permits resuming after later progress, while a
 /// failed WinRE handoff cannot reboot Windows forever at the same stage.
@@ -445,5 +464,18 @@ mod tests {
         assert!(claim_boot_resume_attempt(&root, backuprestore_core::Stage::RecoveryStarted).unwrap());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interruption_resume_accepts_only_staged_nonterminal_tasks() {
+        use super::stage_resumable_after_interruption;
+        use backuprestore_core::Stage;
+        assert!(!stage_resumable_after_interruption(Stage::Prepared));
+        assert!(stage_resumable_after_interruption(Stage::BootRequested));
+        assert!(stage_resumable_after_interruption(Stage::TargetErased));
+        assert!(stage_resumable_after_interruption(Stage::ImageApplied));
+        assert!(stage_resumable_after_interruption(Stage::BootRepaired));
+        assert!(!stage_resumable_after_interruption(Stage::Success));
+        assert!(!stage_resumable_after_interruption(Stage::Failed));
     }
 }

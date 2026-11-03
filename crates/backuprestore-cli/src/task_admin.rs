@@ -16,7 +16,8 @@
 
 use crate::gui_text::Language;
 use crate::status_receipt;
-use backuprestore_core::{Operation, Stage, StatusRecord, Task};
+use backuprestore_core::{Operation, Stage, StatusRecord, Task, TaskError, TaskStore, read_json};
+use crate::err;
 
 /// 一个任务的界面表示。
 ///
@@ -250,6 +251,34 @@ pub(crate) fn detail_lines(row: &TaskRow, language: Language) -> Vec<String> {
     lines.push(join("prepare.log"));
     lines.push(join("recovery.log"));
     lines
+}
+
+pub(crate) fn cli_validate_task(path: String) -> Result<(), TaskError> {
+    let task: Task = read_json(&path)?;
+    task.validate()?;
+    println!(
+        "valid task {} operation={:?} status={:?}",
+        task.task_id, task.operation, task.status
+    );
+    Ok(())
+}
+
+pub(crate) fn cli_show_status(root: String, id: String) -> Result<(), TaskError> {
+    let store = TaskStore::new(root);
+    let task = store.load(&id)?;
+    let status: StatusRecord = read_json(store.status_path(&id)?)?;
+    if status.task_id != task.task_id {
+        return Err(err("status file task_id does not match task.json"));
+    }
+    if status.operation != task.operation {
+        return Err(err("status file operation does not match task.json"));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty::<backuprestore_core::StatusRecord>(&status)?
+    );
+    eprintln!("operation={:?} stage={:?}", task.operation, task.status);
+    Ok(())
 }
 
 #[cfg(test)]

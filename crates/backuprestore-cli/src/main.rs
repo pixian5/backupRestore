@@ -6,13 +6,9 @@
 //! the recovery path as a command-line program also makes it usable from
 //! WinRE's `winpeshl.ini` without depending on a desktop runtime.
 
-use backuprestore_core::{StatusRecord, Task, TaskError, TaskStore, read_json, sha256_file};
-#[cfg(any(windows, test))]
-use backuprestore_core::Stage;
+use backuprestore_core::{TaskError, sha256_file};
 use std::env;
 use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
 
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -89,7 +85,10 @@ mod online_operation;
 mod image_admin;
 #[cfg(any(windows, test))]
 #[allow(unused_imports)]
-pub(crate) use image_admin::{default_image_dir, format_size};
+pub(crate) use image_admin::{
+    default_image_dir, format_size, index_metadata_path, legacy_metadata_path,
+    read_index_metadata,
+};
 #[cfg(windows)]
 mod pe_operation;
 #[cfg(any(windows, test))]
@@ -366,7 +365,7 @@ fn main() {
         Some("validate-task") => args
             .next()
             .ok_or_else(|| err("task.json is required"))
-            .and_then(validate_task),
+            .and_then(crate::task_admin::cli_validate_task),
         Some("hash") => args
             .next()
             .ok_or_else(|| err("file is required"))
@@ -379,7 +378,7 @@ fn main() {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));
             root.and_then(|r| id.map(|i| (r, i)))
-                .and_then(|(r, i)| show_status(r, i))
+                .and_then(|(r, i)| crate::task_admin::cli_show_status(r, i))
         }
         #[cfg(windows)]
         Some("prepare") => windows_prepare::prepare(args.collect()),
@@ -612,96 +611,8 @@ fn launch_gui() -> Result<(), TaskError> {
 }
 
 
-/// A prepared task may be a deliberate `--no-reboot` diagnostic and must not
-/// start WinRE by itself. Every later non-terminal stage, however, represents
-/// an already authorized recovery that was interrupted after WinRE staging;
-/// it is safe to re-request the one-time WinRE boot after artifact validation.
-#[cfg(any(windows, test))]
-pub(crate) fn stage_resumable_after_interruption(stage: Stage) -> bool {
-    matches!(
-        stage,
-        Stage::BootRequested
-            | Stage::RecoveryStarted
-            | Stage::Preflight
-            | Stage::Capturing
-            | Stage::TargetErased
-            | Stage::ImageApplied
-            | Stage::BootRepaired
-            | Stage::RecoveryComplete
-    )
-}
-
 pub(crate) fn err(message: &str) -> TaskError {
     TaskError::Invalid(message.into())
-}
-
-/// Each WIM index owns a sidecar so appending a new capture never makes the
-/// target-size and source identity of earlier indexes ambiguous.  The legacy
-/// directory-level `metadata.json` remains a read fallback for images made by
-/// older releases.
-// sidecar（副档）簿记统一在 core 里实现，CLI / WinRE / GUI 三个入口共用同一套，
-// 避免「哪个入口备份的镜像」在元数据上产生差异（v2.0.1 修 P1-1）。
-#[cfg(windows)]
-pub(crate) fn index_metadata_path(image: &Path, index: u32) -> Result<PathBuf, TaskError> {
-    backuprestore_core::image_metadata::index_metadata_path(image, index)
-}
-
-#[cfg(windows)]
-pub(crate) fn legacy_metadata_path(image: &Path) -> Result<PathBuf, TaskError> {
-    backuprestore_core::image_metadata::legacy_metadata_path(image)
-}
-
-#[cfg(windows)]
-pub(crate) fn read_index_metadata(
-    image: &Path,
-    index: u32,
-) -> Result<backuprestore_core::BackupMetadata, TaskError> {
-    backuprestore_core::image_metadata::read_index_metadata(image, index)
-}
-
-/// 解析卷内工作区相对路径；从最后一个 tasks 分隔符切分，允许上层目录也叫 tasks。
-#[cfg(any(windows, test))]
-pub(crate) fn split_workspace_root_rel(value: &str, task_id: &str) -> Result<String, TaskError> {
-    backuprestore_core::validate_relative_path(value)?;
-    let normalized = value.replace('/', "\\");
-    let (store_rel, relative_id) = normalized
-        .rsplit_once("\\tasks\\")
-        .ok_or_else(|| err("WORKSPACE_ROOT_REL must contain \\tasks\\"))?;
-    if store_rel.is_empty() {
-        return Err(err("WORKSPACE_ROOT_REL has an empty workspace path"));
-    }
-    if relative_id != task_id {
-        return Err(err("WORKSPACE_ROOT_REL task id does not match TASK_ID"));
-    }
-    Ok(store_rel.to_string())
-}
-
-fn validate_task(path: String) -> Result<(), TaskError> {
-    let task: Task = read_json(&path)?;
-    task.validate()?;
-    println!(
-        "valid task {} operation={:?} status={:?}",
-        task.task_id, task.operation, task.status
-    );
-    Ok(())
-}
-
-fn show_status(root: String, id: String) -> Result<(), TaskError> {
-    let store = TaskStore::new(root);
-    let task = store.load(&id)?;
-    let status: StatusRecord = read_json(store.status_path(&id)?)?;
-    if status.task_id != task.task_id {
-        return Err(err("status file task_id does not match task.json"));
-    }
-    if status.operation != task.operation {
-        return Err(err("status file operation does not match task.json"));
-    }
-    println!(
-        "{}",
-        serde_json::to_string_pretty::<backuprestore_core::StatusRecord>(&status)?
-    );
-    eprintln!("operation={:?} stage={:?}", task.operation, task.status);
-    Ok(())
 }
 
 /// 写一行日志。
@@ -715,47 +626,3 @@ pub(crate) fn append_log(path: &Path, message: &str) -> Result<(), TaskError> {
     crate::session_log::append(path, message)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{split_workspace_root_rel, stage_resumable_after_interruption};
-    use backuprestore_core::Stage;
-
-    #[test]
-    fn workspace_path_allows_directory_named_tasks() {
-        let task_id = "11111111-1111-4111-8111-111111111111";
-        assert_eq!(
-            split_workspace_root_rel(&format!("tasks\\tasks\\{task_id}"), task_id).unwrap(),
-            "tasks"
-        );
-        assert_eq!(
-            split_workspace_root_rel(
-                &format!("Tools\\tasks\\BackupRestore\\tasks\\{task_id}"),
-                task_id
-            )
-            .unwrap(),
-            "Tools\\tasks\\BackupRestore"
-        );
-        assert!(
-            split_workspace_root_rel("..\\tasks\\11111111-1111-4111-8111-111111111111", task_id)
-                .is_err()
-        );
-        assert!(
-            split_workspace_root_rel(
-                "tasks\\tasks\\22222222-2222-4222-8222-222222222222",
-                task_id
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn interruption_resume_accepts_only_staged_nonterminal_tasks() {
-        assert!(!stage_resumable_after_interruption(Stage::Prepared));
-        assert!(stage_resumable_after_interruption(Stage::BootRequested));
-        assert!(stage_resumable_after_interruption(Stage::TargetErased));
-        assert!(stage_resumable_after_interruption(Stage::ImageApplied));
-        assert!(stage_resumable_after_interruption(Stage::BootRepaired));
-        assert!(!stage_resumable_after_interruption(Stage::Success));
-        assert!(!stage_resumable_after_interruption(Stage::Failed));
-    }
-}

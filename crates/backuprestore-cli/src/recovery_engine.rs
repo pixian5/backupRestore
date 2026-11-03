@@ -46,9 +46,10 @@ use crate::{
     secondary_registry, windows_prepare, winre_registration,
 };
 #[cfg(windows)]
+use crate::pending_task::stage_resumable_after_interruption;
+#[cfg(windows)]
 use crate::{
     index_metadata_path, legacy_metadata_path, read_index_metadata,
-    split_workspace_root_rel, stage_resumable_after_interruption,
 };
 
 #[cfg(windows)]
@@ -2374,6 +2375,23 @@ pub(crate) fn cli_recover(mut args: impl Iterator<Item = String>) -> Result<(), 
     recover(root, id, options)
 }
 
+/// 解析卷内工作区相对路径；从最后一个 tasks 分隔符切分，允许上层目录也叫 tasks。
+#[cfg(any(windows, test))]
+pub(crate) fn split_workspace_root_rel(value: &str, task_id: &str) -> Result<String, TaskError> {
+    backuprestore_core::validate_relative_path(value)?;
+    let normalized = value.replace('/', "\\");
+    let (store_rel, relative_id) = normalized
+        .rsplit_once("\\tasks\\")
+        .ok_or_else(|| err("WORKSPACE_ROOT_REL must contain \\tasks\\"))?;
+    if store_rel.is_empty() {
+        return Err(err("WORKSPACE_ROOT_REL has an empty workspace path"));
+    }
+    if relative_id != task_id {
+        return Err(err("WORKSPACE_ROOT_REL task id does not match TASK_ID"));
+    }
+    Ok(store_rel.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2432,6 +2450,34 @@ mod tests {
         assert_eq!(
             annotate_chain_failure("payload WIM is missing", true),
             None
+        );
+    }
+
+    #[test]
+    fn workspace_path_allows_directory_named_tasks() {
+        let task_id = "11111111-1111-4111-8111-111111111111";
+        assert_eq!(
+            split_workspace_root_rel(&format!("tasks\\tasks\\{task_id}"), task_id).unwrap(),
+            "tasks"
+        );
+        assert_eq!(
+            split_workspace_root_rel(
+                &format!("Tools\\tasks\\BackupRestore\\tasks\\{task_id}"),
+                task_id
+            )
+            .unwrap(),
+            "Tools\\tasks\\BackupRestore"
+        );
+        assert!(
+            split_workspace_root_rel("..\\tasks\\11111111-1111-4111-8111-111111111111", task_id)
+                .is_err()
+        );
+        assert!(
+            split_workspace_root_rel(
+                "tasks\\tasks\\22222222-2222-4222-8222-222222222222",
+                task_id
+            )
+            .is_err()
         );
     }
 }

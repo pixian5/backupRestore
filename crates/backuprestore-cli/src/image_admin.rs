@@ -30,6 +30,9 @@ use std::fs;
 use std::path::Path;
 #[cfg(windows)]
 use backuprestore_core::TaskError;
+pub(crate) use backuprestore_core::image_metadata::{
+    index_metadata_path, legacy_metadata_path, read_index_metadata,
+};
 
 /// 一个索引的展示信息（sidecar 缺失时字段为 None，不致命）。
 #[derive(Clone)]
