@@ -29,7 +29,13 @@ use std::fs;
 #[cfg(windows)]
 use std::path::Path;
 #[cfg(windows)]
+use std::process::Output;
+#[cfg(windows)]
 use backuprestore_core::TaskError;
+#[cfg(windows)]
+use crate::error_code::ErrCode;
+#[cfg(windows)]
+pub(crate) use crate::prepare_plan::{ProbeOutcome, name_looks_like_full_windows, wim_mount_args};
 pub(crate) use backuprestore_core::image_metadata::{
     index_metadata_path, legacy_metadata_path, read_index_metadata,
 };
@@ -494,6 +500,123 @@ pub(crate) fn cli_wim_info(args: Vec<String>) -> Result<(), TaskError> {
         .find(|a| !a.starts_with("--"))
         .ok_or_else(|| crate::err("WIM image path is required"))?;
     wim_info(image_path, skip_hash)
+}
+
+/// 权威挂载探测。安全判据并未回退——可疑的一律挂挂载判真，恢复阶段的离线注册
+/// 前置检查是所有路径的硬兜底。
+#[cfg(windows)]
+pub(crate) fn wim_full_windows_probe(
+    image_path: &str,
+    index: u32,
+    log: &Path,
+) -> Result<ProbeOutcome, TaskError> {
+    // 先取名字（/Get-WimInfo，约 2 秒）。取不到时按空名处理 → 落回权威挂载。
+    let name = wim_image_display_name(image_path, index, log).unwrap_or_default();
+    if name_looks_like_full_windows(&name) {
+        return Ok(ProbeOutcome::QuickPass(name));
+    }
+    match wim_mount_markers(image_path, index, log) {
+        // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝（此刻尚未格式化任何卷）。
+        Ok(false) => Err(crate::errc(ErrCode::ImageNotCompleteWindows)),
+        Ok(true) => Ok(ProbeOutcome::FullWindows),
+        Err(_) => {
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("windows pe") || lower.contains("winpe") {
+                return Err(crate::errc_with(ErrCode::ImageIsWindowsPe, &[&name]));
+            }
+            Ok(ProbeOutcome::HeuristicPass)
+        }
+    }
+}
+
+/// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
+/// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
+#[cfg(windows)]
+fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, TaskError> {
+    let mount_dir = std::env::temp_dir().join(format!("br-wimprobe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&mount_dir);
+    std::fs::create_dir_all(&mount_dir)?;
+    let run = |args: &[&str]| -> Result<Output, TaskError> {
+        crate::run_output_logged("dism.exe", args, log)
+            .map_err(|error| crate::errc_with(ErrCode::DismSpawnFailed, &[&error.to_string()]))
+    };
+    let mount_args = wim_mount_args(image_path, index, &mount_dir);
+    let mount_refs: Vec<&str> = mount_args.iter().map(String::as_str).collect();
+    let mounted = run(&mount_refs)?;
+    if !mounted.status.success() {
+        let _ = std::fs::remove_dir_all(&mount_dir);
+        let tail = crate::output_tail_summary(&mounted, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
+        return Err(crate::errc_with(
+            ErrCode::ImageMountProbeFailed,
+            &[&format!("{}", mounted.status), &detail],
+        ));
+    }
+    let has_reagentc = mount_dir.join(r"Windows\System32\reagentc.exe").is_file();
+    let has_system_hive = mount_dir
+        .join(r"Windows\System32\config\SYSTEM")
+        .is_file();
+    // 无论判定结果如何都先卸载；卸载失败会锁住镜像，必须如实报错。
+    let unmounted = run(&[
+        "/Unmount-Wim",
+        &format!("/MountDir:{}", mount_dir.display()),
+        "/Discard",
+    ])?;
+    let _ = std::fs::remove_dir_all(&mount_dir);
+    if !unmounted.status.success() {
+        let tail = crate::output_tail_summary(&unmounted, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
+        return Err(crate::errc_with(
+            ErrCode::ImageUnmountFailed,
+            &[&format!("{}", unmounted.status), &detail],
+        ));
+    }
+    Ok(has_reagentc && has_system_hive)
+}
+
+/// 读取镜像指定索引的显示名（Name 行；缺失时退回 Description）。
+#[cfg(windows)]
+fn wim_image_display_name(image_path: &str, index: u32, log: &Path) -> Result<String, TaskError> {
+    let output = crate::run_output_logged(
+        "dism.exe",
+        &[
+            "/English",
+            "/Get-WimInfo",
+            &format!("/WimFile:{image_path}"),
+            &format!("/Index:{index}"),
+        ],
+        log,
+    )?;
+    if !output.status.success() {
+        let tail = crate::output_tail_summary(&output, 6);
+        let detail = if tail.is_empty() {
+            String::new()
+        } else {
+            format!("：{tail}")
+        };
+        return Err(crate::errc_with(
+            ErrCode::ImageNameReadFailed,
+            &[&format!("{}", output.status), &detail],
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("name") && !value.trim().is_empty() {
+            return Ok(value.trim().to_string());
+        }
+    }
+    Ok(String::new())
 }
 
 #[cfg(test)]

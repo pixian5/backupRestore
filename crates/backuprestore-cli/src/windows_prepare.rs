@@ -11,7 +11,6 @@ use backuprestore_core::{
     sha256_file, validate_absolute_path, validate_volume_roles, write_json_atomic,
 };
 use chrono::Utc;
-use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::env;
@@ -19,12 +18,13 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
 use crate::error_code::ErrCode;
+pub(crate) use crate::image_admin::wim_full_windows_probe;
 pub(crate) use crate::prepare_plan::*;
 pub(crate) use crate::volume_device::*;
 use crate::{append_log, capture_logged, err, run_logged, winre_payload};
@@ -38,25 +38,6 @@ pub(crate) const EFI_TYPE: &str = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}";
 #[allow(dead_code)]
 const RECOVERY_TYPE: &str = "{de94bba4-06d1-4d40-a16a-bfd50179d6ac}";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DriveReport {
-    letter: String,
-    label: String,
-    filesystem: String,
-    size_bytes: u64,
-    free_bytes: u64,
-    volume_guid: String,
-    disk_number: u32,
-    partition_number: u32,
-    partition_type_guid: String,
-    /// True when the mounted volume contains a bootable Windows installation
-    /// (`\Windows\System32\Config\SYSTEM`). Lets the GUI label current and
-    /// offline Windows volumes so a user can tell them apart from plain data
-    /// partitions before choosing a source or restore target.
-    has_windows_installation: bool,
-}
 
 pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     let options = parse_prepare_options(arguments)?;
@@ -92,12 +73,6 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     // 还原目标的程序目录里。
     require_administrator(&crate::log_root::logs_dir().join("launcher-errors.log"))?;
     prepare_task(&executable_dir, &workspace, target, options)
-}
-
-pub(crate) fn list_volumes() -> Result<(), TaskError> {
-    let drives = discover_drives()?;
-    println!("{}", serde_json::to_string(&drives)?);
-    Ok(())
 }
 
 /// 列出当前 BCD 里所有分区 loader 的描述（S5 撞名预检，GUI 创建任务前调用）。
@@ -1079,147 +1054,6 @@ fn efi_bcd_store_path(
 /// （内存版/硬盘版，带 `winpe yes`、不做 WinRE 注册）。
 ///
 /// 挂载使用 `/ReadOnly`，探测后 `/Unmount /Discard`，不改动镜像文件。
-///
-/// `log` 必须传入任务自己的 `prepare.log`：DISM 调用的 stdout/stderr 全部落盘，
-/// 失败时错误消息里带输出尾部。此前的实现只取 `status`，挂载失败在日志里只剩
-/// "mount failed" 三个字，事后无法定位（该 87 的真因是参数名，见 `wim_mount_args`）。
-///
-/// 【v2.6.23 性能分级】32GB WIM 的只读挂载实测 6–7 分钟，每次 prepare 都付这笔账
-/// 太贵（用户点完「创建任务」要干等 8 分钟）。因此先花约 2 秒取镜像显示名：
-/// 名字明确是完整 Windows 系统镜像时**快速放行**，只有名字可疑或取不到时才做
-/// 权威挂载探测。安全判据并未回退——可疑的一律挂挂载判真，恢复阶段的离线注册
-/// 前置检查是所有路径的硬兜底。
-pub(crate) fn wim_full_windows_probe(
-    image_path: &str,
-    index: u32,
-    log: &Path,
-) -> Result<ProbeOutcome, TaskError> {
-    // 先取名字（/Get-WimInfo，约 2 秒）。取不到时按空名处理 → 落回权威挂载。
-    let name = wim_image_display_name(image_path, index, log).unwrap_or_default();
-    if name_looks_like_full_windows(&name) {
-        return Ok(ProbeOutcome::QuickPass(name));
-    }
-    match wim_mount_markers(image_path, index, log) {
-        // 挂载成功：权威判定。缺标记 = 纯 PE，拒绝（此刻尚未格式化任何卷）。
-        Ok(false) => Err(crate::errc(ErrCode::ImageNotCompleteWindows)),
-        Ok(true) => Ok(ProbeOutcome::FullWindows),
-        // 挂载本身失败：不硬拦，但调用方必须把这次降级写进日志。
-        // 【2026-10-22 更正归因】此前这里记的是「有 VHD 附加时 /Mount-Wim 一律报 87」，
-        // 属误判：真因是本函数把 `/Mount-Wim` 的参数写成了 `/ImageFile`（那是
-        // `/Apply-Image` 的选项），DISM 恒报 87 → 权威探测自 2.4.2 引入起**从未成功过**，
-        // 一直静默走下面的镜像名启发式。v2.6.22 起改用 `/WimFile:`（见 `wim_mount_args`）。
-        // 仍保留降级分支：环境因素（镜像被别的进程占用、权限、挂载点磁盘满）确实会让
-        // 挂载失败，此时硬拦会误杀合法还原；恢复阶段的离线注册前置检查仍是硬兜底。
-        Err(_) => {
-            let lower = name.to_ascii_lowercase();
-            if lower.contains("windows pe") || lower.contains("winpe") {
-                return Err(crate::errc_with(ErrCode::ImageIsWindowsPe, &[&name]));
-            }
-            Ok(ProbeOutcome::HeuristicPass)
-        }
-    }
-}
-
-/// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
-/// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
-///
-/// 失败的错误消息带 DISM 输出尾部，完整输出已落进 `log`。
-fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, TaskError> {
-    let mount_dir = std::env::temp_dir().join(format!("br-wimprobe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&mount_dir);
-    std::fs::create_dir_all(&mount_dir)?;
-    let run = |args: &[&str]| -> Result<Output, TaskError> {
-        crate::run_output_logged("dism.exe", args, log)
-            .map_err(|error| crate::errc_with(ErrCode::DismSpawnFailed, &[&error.to_string()]))
-    };
-    let mount_args = wim_mount_args(image_path, index, &mount_dir);
-    let mount_refs: Vec<&str> = mount_args.iter().map(String::as_str).collect();
-    let mounted = run(&mount_refs)?;
-    if !mounted.status.success() {
-        let _ = std::fs::remove_dir_all(&mount_dir);
-        let tail = crate::output_tail_summary(&mounted, 6);
-        let detail = if tail.is_empty() {
-            String::new()
-        } else {
-            format!("：{tail}")
-        };
-        return Err(crate::errc_with(
-            ErrCode::ImageMountProbeFailed,
-            &[&format!("{}", mounted.status), &detail],
-        ));
-    }
-    let has_reagentc = mount_dir.join(r"Windows\System32\reagentc.exe").is_file();
-    let has_system_hive = mount_dir
-        .join(r"Windows\System32\config\SYSTEM")
-        .is_file();
-    // 无论判定结果如何都先卸载；卸载失败会锁住镜像，必须如实报错。
-    let unmounted = run(&[
-        "/Unmount-Wim",
-        &format!("/MountDir:{}", mount_dir.display()),
-        "/Discard",
-    ])?;
-    let _ = std::fs::remove_dir_all(&mount_dir);
-    if !unmounted.status.success() {
-        let tail = crate::output_tail_summary(&unmounted, 6);
-        let detail = if tail.is_empty() {
-            String::new()
-        } else {
-            format!("：{tail}")
-        };
-        return Err(crate::errc_with(
-            ErrCode::ImageUnmountFailed,
-            &[&format!("{}", unmounted.status), &detail],
-        ));
-    }
-    Ok(has_reagentc && has_system_hive)
-}
-
-/// 读取镜像指定索引的显示名（Name 行；缺失时退回 Description）。
-///
-/// 失败时错误消息带 DISM 输出尾部（完整输出已落进 `log`），避免只留一句
-/// "Get-WimInfo failed"。
-fn wim_image_display_name(image_path: &str, index: u32, log: &Path) -> Result<String, TaskError> {
-    let output = crate::run_output_logged(
-        "dism.exe",
-        &[
-            "/English",
-            "/Get-WimInfo",
-            // 注意：/Get-WimInfo 的参数是 /WimFile（/ImageFile 是 Mount/Apply 的）。
-            &format!("/WimFile:{image_path}"),
-            &format!("/Index:{index}"),
-        ],
-        log,
-    )?;
-    if !output.status.success() {
-        let tail = crate::output_tail_summary(&output, 6);
-        let detail = if tail.is_empty() {
-            String::new()
-        } else {
-            format!("：{tail}")
-        };
-        return Err(crate::errc_with(
-            ErrCode::ImageNameReadFailed,
-            &[&format!("{}", output.status), &detail],
-        ));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        if key.trim().eq_ignore_ascii_case("name") && !value.trim().is_empty() {
-            return Ok(value.trim().to_string());
-        }
-    }
-    Ok(String::new())
-}
-
-/// 把一个卷的文件系统缓存强制落盘（打开卷设备句柄 + FlushFileBuffers）。
-///
-/// 2026-10-13 E2E 实测（docs/20261013-20xx 单变量矩阵 + 重武装复验）：prepare 在
-/// 722MB 载荷被 DISM 注入原地覆写、bootsequence 武装完成后 **25 秒内** `shutdown /r /t 0`，
-/// 首次引导 bootmgr 加载 ramdisk 失败而回落；**同一条目、同一载荷** 4 分钟后重新武装
-/// 再启（Windows 已完整运行、缓存自然落盘）一次成功。优雅关机理论上会刷缓存，但
 /// 原生枚举包括已挂载卷；验证 EFI 类型及 BCD，多个候选或探测错误均拒绝猜测。
 pub(crate) fn esp_identity_without_drive_letter() -> Result<VolumeIdentity, TaskError> {
     let mut matches: Vec<VolumeIdentity> = Vec::new();
@@ -3022,50 +2856,8 @@ fn ensure_volume_mounted_tracked(
     Ok((letter, true))
 }
 
-fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
-    let mut drives = Vec::new();
-    for letter in 'C'..='Z' {
-        if !Path::new(&format!(r"{}:\", letter)).is_dir() {
-            continue;
-        }
-        let identity = match volume_identity(letter) {
-            Ok(identity) => identity,
-            Err(error) => {
-                eprintln!("{letter}: {error}");
-                continue;
-            }
-        };
-        if identity.is_reserved_partition() {
-            continue;
-        }
-        drives.push(DriveReport {
-            letter: letter.to_string(),
-            label: String::new(),
-            filesystem: identity.filesystem,
-            size_bytes: identity.partition_size,
-            free_bytes: volume_free_bytes(letter)?,
-            volume_guid: identity.volume_guid,
-            disk_number: identity.disk_number.unwrap_or_default(),
-            partition_number: identity.partition_number.unwrap_or_default(),
-            partition_type_guid: identity.partition_type_guid,
-            has_windows_installation: Path::new(&format!(
-                r"{letter}:\Windows\System32\Config\SYSTEM"
-            ))
-            .is_file(),
-        });
-    }
-    Ok(drives)
-}
-
 fn extract_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     text.split_once(marker).map(|(_, value)| value)
-}
-
-fn native_architecture() -> String {
-    env::var("PROCESSOR_ARCHITEW6432")
-        .or_else(|_| env::var("PROCESSOR_ARCHITECTURE"))
-        .unwrap_or_else(|_| "unknown".into())
-        .to_ascii_lowercase()
 }
 
 #[cfg(test)]

@@ -497,3 +497,71 @@ pub(crate) fn flush_volume(letter: char, label: &str, log: &Path) -> Result<(), 
     append_log(log, &crate::i18n::msg_tpl("wp_volume_cache_flushed", &[&format!("{letter}"), label]))?;
     Ok(())
 }
+
+#[cfg(windows)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DriveReport {
+    pub letter: String,
+    pub label: String,
+    pub filesystem: String,
+    pub size_bytes: u64,
+    pub free_bytes: u64,
+    pub volume_guid: String,
+    pub disk_number: u32,
+    pub partition_number: u32,
+    pub partition_type_guid: String,
+    /// 包含有效 Windows 安装时为 true（`\Windows\System32\Config\SYSTEM`）。
+    pub has_windows_installation: bool,
+}
+
+#[cfg(windows)]
+pub(crate) fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
+    let mut drives = Vec::new();
+    for letter in 'C'..='Z' {
+        if !Path::new(&format!(r"{}:\", letter)).is_dir() {
+            continue;
+        }
+        let identity = match volume_identity(letter) {
+            Ok(identity) => identity,
+            Err(error) => {
+                eprintln!("{letter}: {error}");
+                continue;
+            }
+        };
+        if identity.is_reserved_partition() {
+            continue;
+        }
+        drives.push(DriveReport {
+            letter: letter.to_string(),
+            label: String::new(),
+            filesystem: identity.filesystem,
+            size_bytes: identity.partition_size,
+            free_bytes: volume_free_bytes(letter)?,
+            volume_guid: identity.volume_guid,
+            disk_number: identity.disk_number.unwrap_or_default(),
+            partition_number: identity.partition_number.unwrap_or_default(),
+            partition_type_guid: identity.partition_type_guid,
+            has_windows_installation: Path::new(&format!(
+                r"{letter}:\Windows\System32\Config\SYSTEM"
+            ))
+            .is_file(),
+        });
+    }
+    Ok(drives)
+}
+
+#[cfg(windows)]
+pub(crate) fn cli_list_volumes() -> Result<(), TaskError> {
+    let drives = discover_drives()?;
+    println!("{}", serde_json::to_string(&drives)?);
+    Ok(())
+}
+
+pub(crate) fn native_architecture() -> String {
+    std::env::var("PROCESSOR_ARCHITEW6432")
+        .or_else(|_| std::env::var("PROCESSOR_ARCHITECTURE"))
+        .unwrap_or_else(|_| "unknown".into())
+        .to_ascii_lowercase()
+}
+

@@ -385,7 +385,7 @@ fn main() {
         #[cfg(windows)]
         Some("prepare") => windows_prepare::prepare(args.collect()),
         #[cfg(windows)]
-        Some("list-volumes") => windows_prepare::list_volumes(),
+        Some("list-volumes") => volume_device::cli_list_volumes(),
         #[cfg(windows)]
         Some("list-boot-entries") => windows_prepare::list_boot_entries(),
         #[cfg(windows)]
