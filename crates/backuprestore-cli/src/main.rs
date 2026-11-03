@@ -113,6 +113,8 @@ mod settings_file;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod wim_parse;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod bcd_parse;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
 /// 进度窗的纯文本逻辑（时间格式化 / 剩余时间估算 / 4 阶段骨架）。
 /// **无条件编译**：`recovery_progress` 整份是 `#[cfg(windows)]`，逻辑留在那里

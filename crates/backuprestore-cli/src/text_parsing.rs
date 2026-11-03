@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 pub(crate) use crate::wim_parse::*;
+pub(crate) use crate::bcd_parse::*;
 
 /// Map the two-entry compression dropdown to DISM terms.
 ///
@@ -119,39 +120,6 @@ pub(crate) fn quote_argument(value: &str) -> String {
     }
 }
 
-/// Does this byte string look like UTF-16LE text?
-///
-/// bcdedit writes UTF-16LE on Chinese/Japanese systems, sometimes without a
-/// BOM, so the interleaved-NUL pattern is detected as well as the BOM.
-pub(crate) fn looks_like_utf16le(bytes: &[u8]) -> bool {
-    let nul_count = bytes.iter().filter(|&&b| b == 0).count();
-    bytes.starts_with(&[0xFF, 0xFE]) || (bytes.len() >= 2 && nul_count > bytes.len() / 4)
-}
-
-fn utf16le_to_string(bytes: &[u8]) -> String {
-    let body = if bytes.starts_with(&[0xFF, 0xFE]) {
-        &bytes[2..]
-    } else {
-        bytes
-    };
-    let units: Vec<u16> = body
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    String::from_utf16_lossy(&units)
-}
-
-/// Decode a bcdedit output file's bytes.
-pub(crate) fn decode_bcdedit_bytes(bytes: &[u8]) -> String {
-    if looks_like_utf16le(bytes) {
-        utf16le_to_string(bytes)
-    } else {
-        String::from_utf8_lossy(bytes).to_string()
-    }
-}
-
 /// Which character encoding a PE console tool's captured output actually uses.
 ///
 /// `systeminfo`, `diskpart`, `ipconfig`, `reagentc` and `manage-bde` all write
@@ -244,48 +212,6 @@ pub(crate) fn normalize_edit_newlines(value: &str) -> String {
         .replace('\n', "\r\n")
 }
 
-/// Whether a `bcdedit /enum {bootmgr}` listing still contains `bootsequence`.
-///
-/// The delete command returns non-zero when the value was already absent, so
-/// its exit code alone cannot distinguish a harmless no-op from a failed
-/// cleanup. Re-enumerating the entry and checking the field is locale-neutral
-/// for the two project-supported images: English prints `bootsequence`, while
-/// zh-CN prints `启动序列`.
-/// BCD **字段名**是否匹配（双语）。
-///
-/// 【2026-10-18 缺陷修复 M8】中文 Windows 的 `bcdedit` 会把字段名一并本地化，
-/// 而各解析器只认 ASCII（只有对象头的 `identifier`/`标识符` 早先补了双语）。
-/// 后果是：非英文/非中文 Windows 上，这些解析会在**破坏性写入之后**硬失败
-/// （`字段缺失或重复` / `续跑启动链字段不符` / `目标引导加载器不唯一`）。
-/// 沿用「只做双语匹配、不猜值形态」的最小改动，把这些点统一到一处。
-pub(crate) fn bcd_field_name_is(actual: &str, expected: &str) -> bool {
-    if actual.eq_ignore_ascii_case(expected) {
-        return true;
-    }
-    const PAIRS: [(&str, &str); 8] = [
-        ("device", "设备"),
-        ("osdevice", "操作系统设备"),
-        ("path", "路径"),
-        ("description", "描述"),
-        ("identifier", "标识符"),
-        ("default", "默认"),
-        ("bootsequence", "启动序列"),
-        ("recoverysequence", "恢复序列"),
-    ];
-    let want = expected.to_ascii_lowercase();
-    PAIRS
-        .iter()
-        .any(|(ascii, zh)| *ascii == want && actual.trim() == *zh)
-}
-
-pub(crate) fn bcd_output_has_bootsequence(text: &str) -> bool {
-    text.lines().any(|line| {
-        let key = line.trim_start();
-        let lower = key.to_ascii_lowercase();
-        lower.starts_with("bootsequence") || key.starts_with("启动序列")
-    })
-}
-
 // ---------------------------------------------------------------------------
 // 第一件：PE 镜像自带的启动配置（`Windows\System32\winpeshl.ini`）比对
 // ---------------------------------------------------------------------------
@@ -371,183 +297,6 @@ pub(crate) fn judge_pe_shell(facts: &PeShellFacts<'_>) -> Option<PeShellProblem>
     None
 }
 
-// ---------------------------------------------------------------------------
-// 第三件：从 `bcdedit /enum all /v` 的输出里认出「真正的 Windows 启动项」
-// ---------------------------------------------------------------------------
-
-/// `/enum all /v` 里的一条系统加载器摘要。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BcdLoader {
-    pub identifier: String,
-    /// `device partition=X:` 里的盘符；不是分区设备（ramdisk/unknown…）时为 `None`。
-    pub device_partition: Option<char>,
-    pub loader_path: String,
-    /// 条目里出现 `winpe` 字段即视为 PE 条目。
-    ///
-    /// 判据取「字段存在」而不是「值等于 Yes」是有意的**安全偏向**：值读错最多让
-    /// 候选集变空（于是我们不动 `default`），而把 PE 条目误认成 Windows 会直接
-    /// 把机器送回 PE——两种错的代价差一个数量级。
-    pub is_winpe: bool,
-}
-
-fn braced_token(line: &str) -> Option<&str> {
-    let start = line.find('{')?;
-    let end = line[start..].find('}')? + start + 1;
-    Some(&line[start..end])
-}
-
-fn identifier_of(line: &str) -> Option<&str> {
-    let trimmed = line.trim();
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("identifier") || trimmed.starts_with("标识符") {
-        braced_token(trimmed)
-    } else {
-        None
-    }
-}
-
-fn partition_letter(line: &str) -> Option<char> {
-    const KEY: &str = "partition=";
-    let lower = line.to_ascii_lowercase();
-    let start = lower.find(KEY)? + KEY.len();
-    let mut chars = line.get(start..)?.chars();
-    let letter = chars.next()?;
-    (letter.is_ascii_alphabetic() && chars.next() == Some(':')).then(|| letter.to_ascii_uppercase())
-}
-
-/// 把 `/enum all /v` 拆成一条条加载器摘要。空行是段分隔符。
-pub(crate) fn bcd_loader_entries(text: &str) -> Vec<BcdLoader> {
-    let normalized = text.replace("\r\n", "\n");
-    let mut loaders = Vec::new();
-    for block in normalized.split("\n\n") {
-        let mut identifier = None;
-        let mut device_partition = None;
-        let mut loader_path = String::new();
-        let mut is_winpe = false;
-        for line in block.lines() {
-            if let Some(found) = identifier_of(line) {
-                identifier = Some(found.to_owned());
-                continue;
-            }
-            let trimmed = line.trim();
-            let lower = trimmed.to_ascii_lowercase();
-            if lower.starts_with("device") {
-                device_partition = partition_letter(trimmed);
-            } else if lower.starts_with("path") {
-                loader_path = trimmed
-                    .split_whitespace()
-                    .skip(1)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-            } else if lower.starts_with("winpe") {
-                is_winpe = true;
-            }
-        }
-        if let Some(identifier) = identifier {
-            loaders.push(BcdLoader {
-                identifier,
-                device_partition,
-                loader_path,
-                is_winpe,
-            });
-        }
-    }
-    loaders
-}
-
-/// `{bootmgr}` 的 `displayorder`（启动菜单顺序，**可能是多行**）。
-///
-/// 只认 Windows Boot Manager 那一段：`/enum all` 里的固件启动管理器也有一个
-/// `displayorder`，混进来的话会把固件项排进候选顺序。
-pub(crate) fn bcd_display_order(text: &str) -> Vec<String> {
-    const WINDOWS_BOOT_MANAGER: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
-    let normalized = text.replace("\r\n", "\n");
-    for block in normalized.split("\n\n") {
-        let is_boot_manager = block.lines().any(|line| {
-            identifier_of(line).is_some_and(|found| found.eq_ignore_ascii_case(WINDOWS_BOOT_MANAGER))
-        });
-        if !is_boot_manager {
-            continue;
-        }
-        let mut order = Vec::new();
-        let mut reading = false;
-        for line in block.lines() {
-            let trimmed = line.trim();
-            let key = trimmed.split_whitespace().next().unwrap_or("");
-            if key.eq_ignore_ascii_case("displayorder") || key == "显示顺序" {
-                reading = true;
-            } else if !trimmed.starts_with('{') {
-                // `toolsdisplayorder` 等后续字段必须隔离，否则会被当成菜单项。
-                reading = false;
-            }
-            if reading
-                && let Some(token) = braced_token(trimmed)
-            {
-                order.push(token.to_ascii_lowercase());
-            }
-        }
-        return order;
-    }
-    Vec::new()
-}
-
-/// `{bootmgr}` 的 `default`（可能不存在，也可能指向一个已经删掉的条目）。
-///
-/// 只在 Windows Boot Manager 那一段里找，否则会把某个加载器自己段里的
-/// `默认` 之类的行误当默认项。
-pub(crate) fn bcd_boot_manager_default(text: &str) -> Option<String> {
-    const WINDOWS_BOOT_MANAGER: &str = "{9dea862c-5cdd-4e70-acc1-f32b344d4795}";
-    let normalized = text.replace("\r\n", "\n");
-    for block in normalized.split("\n\n") {
-        let is_boot_manager = block.lines().any(|line| {
-            identifier_of(line).is_some_and(|found| found.eq_ignore_ascii_case(WINDOWS_BOOT_MANAGER))
-        });
-        if !is_boot_manager {
-            continue;
-        }
-        for line in block.lines() {
-            let trimmed = line.trim();
-            let key = trimmed.split_whitespace().next().unwrap_or("");
-            if key.eq_ignore_ascii_case("default") || key == "默认" {
-                return braced_token(trimmed).map(|token| token.to_ascii_lowercase());
-            }
-        }
-    }
-    None
-}
-
-/// 认出「真正的 Windows 启动项」：非 PE、`path` 是 `winload.efi`、`device` 是
-/// 分区盘符、且该盘符上真的存在这个加载器文件（`loader_exists` 由调用方用
-/// `GetFileAttributesW` 之类去查——盘符是 **PE 视角**的，只有 PE 自己能判）。
-///
-/// 多条候选时按启动菜单顺序取第一条。认不出来就返回 `None`，调用方**不许**
-/// 自己编一个 GUID 写进去（那正是上一版把 `default` 写成悬空值的原因）。
-pub(crate) fn pick_windows_loader(
-    text: &str,
-    loader_exists: impl Fn(char) -> bool,
-) -> Option<String> {
-    let order = bcd_display_order(text);
-    let mut candidates: Vec<BcdLoader> = bcd_loader_entries(text)
-        .into_iter()
-        .filter(|loader| !loader.is_winpe)
-        .filter(|loader| {
-            loader
-                .loader_path
-                .to_ascii_lowercase()
-                .contains("winload.efi")
-        })
-        .filter(|loader| loader.device_partition.is_some_and(&loader_exists))
-        .collect();
-    candidates.sort_by_key(|loader| {
-        order
-            .iter()
-            .position(|item| item.eq_ignore_ascii_case(&loader.identifier))
-            .unwrap_or(usize::MAX)
-    });
-    candidates.into_iter().next().map(|loader| loader.identifier)
-}
-
-
 /// Keep only the value rows of a `reg query "<key>"` listing.
 ///
 /// Without `/v`, `reg` prints the key's values and then **every subkey path**.
@@ -581,14 +330,6 @@ pub(crate) fn reg_key_values(text: &str) -> String {
         return text.trim().to_string();
     }
     values.join("\n")
-}
-
-/// Return the first `{...}` GUID in `text` WITHOUT its braces; callers wrap
-/// with `{}` as needed.
-pub(crate) fn first_braced_guid(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let end = text[start..].find('}')? + start;
-    Some(text[start + 1..end].to_string())
 }
 
 /// Derive the progress window's stage caption, percentage and detail line
@@ -1092,152 +833,8 @@ pub(crate) fn format_system_info_report(
     .join("\n")
 }
 
-// ---- BCD GUID / ramdisk 设备串解析（v1.7.11 新启动通道；宿主也编译，便于单测） ----
+// ---- ESP 路径与卷判定（宿主也编译，便于单测） ----
 
-/// 从 bcdedit / reagentc 的输出里抽取 GUID，兼容「有花括号」与「无花括号」两种形态，
-/// 并统一补回花括号。抽不到一律返回 `None`（调用方必须当作致命错误）。
-pub(crate) fn parse_guid(text: &str) -> Option<String> {
-    let raw = text.find('{').and_then(|start| {
-        text[start..]
-            .find('}')
-            .map(|end| text[start..start + end + 1].to_string())
-    });
-    let candidate = raw.or_else(|| {
-        // 无花括号形态：`ccb31eed-bbb7-11f1-88f5-cbcfb69d515d`
-        let mut found = None;
-        for token in text.split(|c: char| c.is_whitespace() || c == ':' || c == ',') {
-            let is_guid = token.len() == 36
-                && token.as_bytes().get(8) == Some(&b'-')
-                && token.as_bytes().get(13) == Some(&b'-')
-                && token.as_bytes().get(18) == Some(&b'-')
-                && token.as_bytes().get(23) == Some(&b'-')
-                && token.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-            if is_guid {
-                found = Some(token.to_string());
-                break;
-            }
-        }
-        found
-    })?;
-    // 统一补回花括号后再做严格校验：无花括号形态（reagentc /info 就是这样）曾被
-    // 「要求花括号」的校验误杀，导致准备阶段直接失败。
-    let normalized = if candidate.starts_with('{') {
-        candidate
-    } else {
-        format!("{{{}}}", candidate)
-    };
-    if !is_guid(&normalized) {
-        return None;
-    }
-    Some(normalized)
-}
-
-pub(crate) fn is_guid(value: &str) -> bool {
-    let body = value.strip_prefix('{').and_then(|v| v.strip_suffix('}'));
-    let Some(body) = body else {
-        return false;
-    };
-    let parts: Vec<&str> = body.split('-').collect();
-    parts.len() == 5
-        && parts[0].len() == 8
-        && parts[1].len() == 4
-        && parts[2].len() == 4
-        && parts[3].len() == 4
-        && parts[4].len() == 12
-        && body.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-}
-
-/// `device`/`osdevice` 的值形态（2026-09-29 用 ProcMon 抓到真实命令行后校准）：
-///
-/// ```text
-/// ramdisk=[F:]\BackupRestoreRE\Winre.wim,{设备选项对象}
-/// ```
-///
-/// **方括号里只包「卷」，`]` 紧跟在卷后面闭合**，随后才是卷内绝对路径，最后逗号接设备
-/// 选项对象。这一点此前连错两轮：先写成 `[整条路径],{…}`（`]` 在逗号前），bcdedit 报
-/// 「按规定设备无效」；然后误判成「没有配对 `]`」，改成 `[整条路径,{…}`，于是稳定报
-/// 「指定的设备无效」。真正的形态以 `bcdedit /enum` 回显为准（见 `bcd-final.txt`：
-/// `device ramdisk=[C:]\Recovery\WindowsRE\Winre.wim,{…}`）。
-///
-/// 曾经因为这个畸形串，整整一轮把失败归因成「产品进程上下文导致 bcdedit 拒绝 ramdisk」，
-/// 并为此加了子进程代跑、句柄不继承、wmic 等一堆绕路——全是白做的。教训写在
-/// `docs/20260929-193000-...` 里：**先抓真实 argv，再谈进程上下文**。
-pub(crate) fn ramdisk_spec(wim_path: &str, devopts: &str) -> String {
-    let (volume, inside) = split_volume_and_path(wim_path);
-    format!("ramdisk=[{volume}]{inside},{devopts}")
-}
-
-/// 把 `F:\BackupRestoreRE\Winre.wim` 拆成 `("F:", "\\BackupRestoreRE\\Winre.wim")`。
-///
-/// 没有盘符前缀时退回 `("", 原串)`——调用方给的是卷内相对路径，补上开头反斜杠即可，
-/// 绝不自作主张猜一个盘符（猜错就是往别的卷上指启动项）。
-fn split_volume_and_path(wim_path: &str) -> (String, String) {
-    let bytes: Vec<char> = wim_path.chars().collect();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == ':' {
-        let volume: String = bytes[..2].iter().collect();
-        let mut inside: String = bytes[2..].iter().collect();
-        if !inside.starts_with('\\') {
-            inside.insert(0, '\\');
-        }
-        return (volume, inside);
-    }
-    let mut inside = wim_path.to_string();
-    if !inside.starts_with('\\') {
-        inside.insert(0, '\\');
-    }
-    (String::new(), inside)
-}
-
-/// 从 `bcdedit /enum <osloader> /v` 的输出里取**设备选项对象** GUID。
-///
-/// 必须从 `device`/`osdevice` 行里取：该输出第一个 GUID 是 **osloader 自己**，
-/// 直接「取第一个 GUID」会把它当成设备选项对象去 `/copy`，随后
-/// `bcdedit /set ramdisksdidevice` 报「指定的元素无法识别」（2026-09-29 实机踩坑）。
-pub(crate) fn ramdisk_device_options_guid(text: &str) -> Option<String> {
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        // M8：字段名按 token 双语匹配，不再只看 ASCII 前缀（`设备 ` / `操作系统设备 `）。
-        let key = trimmed.split_whitespace().next().unwrap_or("");
-        if (bcd_field_name_is(key, "device") || bcd_field_name_is(key, "osdevice"))
-            && let Some(guid) = parse_guid(trimmed)
-        {
-            return Some(guid);
-        }
-    }
-    None
-}
-
-/// 严格 GUID 形态校验（带花括号的 8-4-4-4-12）。空值/畸形一律 `Err`，
-/// 这是「绝不误伤 `{default}`」这条硬约束的守门人：bcdedit 在标识符参数为空时会
-/// 静默作用于 `{default}`（真实事故：曾把 Windows 11 启动项 device 改成 ramdisk）。
-/// 载荷 RE 的 `ramdisksdipath`：**必须以 `\` 开头**（绝对路径）。
-/// 少了开头反斜杠时 bcdedit 在接受 `device ramdisk=…` 这一步报「指定的设备无效」
-/// （2026-09-29 实机踩坑：少了 `\` 整整卡了一轮）。
-pub(crate) fn staging_sdi_path(staging_dir: &str) -> String {
-    let dir = staging_dir.trim_start_matches('\\');
-    format!("\\{dir}\\boot.sdi")
-}
-
-pub(crate) fn require_guid(value: &str, what: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(format!(
-            "BCD {what}: GUID is empty - refusing to touch {{default}}"
-        ));
-    }
-    if !is_guid(trimmed) {
-        return Err(format!("BCD {what}: not a valid GUID: {trimmed}"));
-    }
-    Ok(trimmed.to_string())
-}
-
-/// `bcdedit` 接受 `{bootmgr}` 这类**知名别名**（well-known identifier），它们不是
-/// 8-4-4-4-12 形态，过不了 [`require_guid`]。
-///
-/// 但**绝不**把 `require_guid` 整个放宽成接受任意别名：那条守门人是为「标识符参数为空时
-/// bcdedit 静默作用于 `{default}`」立的（真实事故：曾把 Windows 11 启动项 device 改成
-/// ramdisk）。放任别名进去，`{default}` 就从同一个口子混进来了。所以这里只认白名单里的
-/// 一个，且白名单里**故意不放 `{default}`/`{current}`/`{ntldr}` 这些指向用户启动项的东西**。
 /// ESP 上本项目取证/日志文件所在的子目录（相对卷根）。
 ///
 /// 2026-09-29 实测：ESP 根目录曾堆了 38 个 `.txt`/`.log`（约 93 KB，跨度 09-11~09-26）。
@@ -1394,15 +991,6 @@ pub(crate) fn esp_log_path_on(volume_root: &str, name: &str) -> String {
     format!("{dir}\\{name}")
 }
 
-pub(crate) fn is_well_known_identifier(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case("{bootmgr}")
-}
-
-/// BCD 标识符校验：GUID，或白名单里的知名别名（当前只有 `{bootmgr}`）。
-///
-/// 之所以单独开这一个口子而不是散着判断：`boot_entry.rs` 整个模块是 `#[cfg(windows)]`，
-/// 那里的单测在 macOS 上一次都不编译（2026-09-29 `ramdisk=` 值畸形就是这么漏过去的）。
-/// 校验放本模块，单测就跟着 `cargo test` 在 macOS 上跑。
 /// `mountvol X: /L` 的输出是否说明该盘符上**有**卷。
 ///
 /// 这是「ESP 挂载成功」的唯一可靠判据。2026-09-29 在提权会话里实测
@@ -1412,14 +1000,6 @@ pub(crate) fn is_well_known_identifier(value: &str) -> bool {
 /// 空输出（只有空白行）＝没挂上；有一行卷路径（`\\?\Volume{...}\`）＝挂上了。
 pub(crate) fn mountvol_listing_has_volume(listing: &str) -> bool {
     listing.lines().map(str::trim).any(|line| !line.is_empty())
-}
-
-pub(crate) fn require_identifier(value: &str, what: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if is_well_known_identifier(trimmed) {
-        return Ok(trimmed.to_string());
-    }
-    require_guid(trimmed, what)
 }
 
 // ---------- 盘符时间线（纯逻辑；Windows 侧由 `letter_trace` 调用）----------
@@ -1721,20 +1301,6 @@ Possible values for VolumeName along with current mount points are:
     }
 
     #[test]
-    fn bootsequence_detection_handles_english_chinese_and_absent_values() {
-        assert!(bcd_output_has_bootsequence(
-            "Windows Boot Manager\nidentifier {bootmgr}\nbootsequence {12345678-1234-1234-1234-123456789abc}"
-        ));
-        assert!(bcd_output_has_bootsequence(
-            "Windows 启动管理器\n标识符 {bootmgr}\n启动序列 {12345678-1234-1234-1234-123456789abc}"
-        ));
-        assert!(!bcd_output_has_bootsequence(
-            "Windows Boot Manager\nidentifier {bootmgr}\ndefault {current}"
-        ));
-        assert!(!bcd_output_has_bootsequence(""));
-    }
-
-    #[test]
     fn reg_key_values_drops_the_subkey_listing() {
         let listing = [
             r#"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion"#,
@@ -1814,50 +1380,7 @@ Possible values for VolumeName along with current mount points are:
         );
     }
 
-    fn utf16le(text: &str, bom: bool) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        if bom {
-            bytes.extend_from_slice(&[0xFF, 0xFE]);
-        }
-        for unit in text.encode_utf16() {
-            bytes.extend_from_slice(&unit.to_le_bytes());
-        }
-        bytes
-    }
 
-    #[test]
-    fn bcdedit_output_decodes_utf8_and_utf16_with_or_without_bom() {
-        let guid = "{d2264b2f-1111-2222-3333-444455556666}";
-        let line = format!("标识符                  {guid}");
-
-        assert_eq!(decode_bcdedit_bytes(line.as_bytes()), line);
-        assert_eq!(decode_bcdedit_bytes(&utf16le(&line, true)), line);
-        assert_eq!(decode_bcdedit_bytes(&utf16le(&line, false)), line);
-
-        for bytes in [
-            line.as_bytes().to_vec(),
-            utf16le(&line, true),
-            utf16le(&line, false),
-        ] {
-            let decoded = decode_bcdedit_bytes(&bytes);
-            assert_eq!(
-                first_braced_guid(&decoded).as_deref(),
-                Some("d2264b2f-1111-2222-3333-444455556666")
-            );
-        }
-    }
-
-    #[test]
-    fn braced_guid_extraction_handles_missing_and_partial_braces() {
-        assert_eq!(first_braced_guid("no braces here"), None);
-        assert_eq!(first_braced_guid("{unterminated"), None);
-        assert_eq!(first_braced_guid("{}"), Some(String::new()));
-        // Only the first GUID is returned.
-        assert_eq!(
-            first_braced_guid("{first} {second}").as_deref(),
-            Some("first")
-        );
-    }
 
     #[test]
     fn wimlib_progress_drives_the_progress_bar_and_gets_a_readable_detail() {
@@ -2036,118 +1559,6 @@ Hotfix(s):                 1 Hotfix(s) Installed.
         assert_eq!(systeminfo_cpu_memory(""), "");
     }
 
-    #[test]
-    fn guid_parsing_accepts_both_shapes() {
-        assert_eq!(
-            parse_guid("已将该项成功复制到 {ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}。").as_deref(),
-            Some("{ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}")
-        );
-        assert_eq!(
-            parse_guid("引导配置数据(BCD)标识符: ccb31eed-bbb7-11f1-88f5-cbcfb69d515d").as_deref(),
-            Some("{ccb31eed-bbb7-11f1-88f5-cbcfb69d515d}")
-        );
-        assert_eq!(parse_guid("Windows RE 状态: Enabled"), None);
-        assert_eq!(parse_guid(""), None);
-    }
-
-    #[test]
-    fn empty_guid_is_refused_before_any_bcd_write() {
-        // 这条是硬约束：空 GUID 会让 bcdedit 作用于 {default}（真实事故）。
-        let error = require_guid("", "test").unwrap_err();
-        assert!(error.contains("refusing to touch"), "{error}");
-        assert!(require_guid("{bootmgr}", "test").is_err());
-        assert!(require_guid("{ccb31ee5-bbb7-11f1-88f5-cbcfb69d515d}", "test").is_ok());
-    }
-
-    #[test]
-    fn device_options_guid_comes_from_the_device_line_not_the_first_guid() {
-        // 实机形态：第一个 GUID 是 osloader 自己，设备选项对象只在 device/osdevice 行里。
-        let enum_text = "Windows 启动加载器\r\n-------------------\r\n标识符                  {ccb31eed-bbb7-11f1-88f5-cbcfb69d515d}\r\ndevice                  ramdisk=[P:]\\Recovery\\WindowsRE\\Winre.wim,{ccb31eee-bbb7-11f1-88f5-cbcfb69d515d}\r\nosdevice                ramdisk=[P:]\\Recovery\\WindowsRE\\Winre.wim,{ccb31eee-bbb7-11f1-88f5-cbcfb69d515d}\r\n";
-        assert_eq!(
-            ramdisk_device_options_guid(enum_text).as_deref(),
-            Some("{ccb31eee-bbb7-11f1-88f5-cbcfb69d515d}")
-        );
-        assert_eq!(ramdisk_device_options_guid("device partition=C:"), None);
-        assert_eq!(ramdisk_device_options_guid(""), None);
-    }
-
-    #[test]
-    fn staging_sdi_path_always_starts_with_a_backslash() {
-        assert_eq!(
-            staging_sdi_path("BackupRestoreRE"),
-            r"\BackupRestoreRE\boot.sdi"
-        );
-        assert_eq!(
-            staging_sdi_path(r"\BackupRestoreRE"),
-            r"\BackupRestoreRE\boot.sdi"
-        );
-        // 载荷按任务隔离后，SDI 也落在任务自己的子目录里；
-        // 实际传入的始终是 boot_cleanup::staging_relative_dir 的返回值。
-        const TASK: &str = "11111111-2222-4333-8444-555555555555";
-        assert_eq!(
-            staging_sdi_path(&crate::boot_cleanup::staging_relative_dir(TASK).unwrap()),
-            format!(r"\BackupRestoreRE\{TASK}\boot.sdi")
-        );
-    }
-
-    /// 这条断言直接照抄实机 `bcdedit /enum` 回显：方括号只包卷，`]` 紧跟卷后闭合。
-    /// 参照物是当前注册的 WinRE 条目：
-    /// `device ramdisk=[C:]\Recovery\WindowsRE\Winre.wim,{b69adf6a-…}`。
-    #[test]
-    fn ramdisk_spec_closes_the_bracket_right_after_the_volume() {
-        let spec = ramdisk_spec(
-            r"F:\BackupRestoreRE\Winre.wim",
-            "{11111111-2222-3333-4444-555555555555}",
-        );
-        assert_eq!(
-            spec,
-            r"ramdisk=[F:]\BackupRestoreRE\Winre.wim,{11111111-2222-3333-4444-555555555555}"
-        );
-        assert_eq!(spec.matches('[').count(), 1);
-        assert_eq!(spec.matches(']').count(), 1);
-    }
-
-    /// 两种历史畸形形态都必须不再出现：
-    /// * `[整条路径],{…}`  —— bcdedit 报「按规定设备无效」
-    /// * `[整条路径,{…}`   —— bcdedit 报「指定的设备无效」（2026-09-29 ProcMon 实锤）
-    #[test]
-    fn ramdisk_spec_rejects_both_historical_malformed_shapes() {
-        let spec = ramdisk_spec(
-            r"F:\BackupRestoreRE\Winre.wim",
-            "{dead0000-0000-0000-0000-000000000000}",
-        );
-        assert!(!spec.contains(r"[F:\"), "方括号里不能出现路径：{spec}");
-        assert!(spec.contains("[F:]"), "方括号里必须正好是卷：{spec}");
-        assert!(!spec.contains("],{"), "`]` 不能落在逗号前：{spec}");
-    }
-
-    /// 卷内相对路径（没有盘符）时不许瞎猜盘符，只补开头反斜杠。
-    #[test]
-    fn ramdisk_spec_without_a_drive_letter_keeps_the_volume_empty() {
-        assert_eq!(
-            ramdisk_spec(r"BackupRestoreRE\Winre.wim", "{1-1}"),
-            r"ramdisk=[]\BackupRestoreRE\Winre.wim,{1-1}"
-        );
-    }
-
-    /// 锁死「`{bootmgr}` 是知名别名、不是 GUID」这条实测结论（2026-09-29 实机报错：
-    /// `BCD enum: not a valid GUID: {bootmgr}`，卡在 v1.7.12 第一次 verify）。
-    #[test]
-    fn require_identifier_accepts_the_bootmgr_alias() {
-        assert_eq!(
-            require_identifier("{bootmgr}", "enum").unwrap(),
-            "{bootmgr}"
-        );
-        assert_eq!(
-            require_identifier(" {BOOTMGR} ", "enum").unwrap(),
-            "{BOOTMGR}"
-        );
-    }
-
-    /// 守门人不能被别名白名单连带废掉：`{default}` 之类**一律拒**。
-    /// bcdedit 在标识符参数为空/不可解析时会静默作用于 `{default}`
-    /// （真实事故：曾把 Windows 11 启动项 device 改成 ramdisk）。
-    /// 锁死「挂载成功只能看 `/L`，不能看 `/S` 退出码」这条实测结论。
     /// 卷路径 → 设备路径的转换（方案 A 的实机坑）。
     ///
     /// 2026-09-29 实机报 `CreateFileW failed while reading volume identity (Windows error 161)`
@@ -2510,28 +1921,6 @@ Hotfix(s):                 1 Hotfix(s) Installed.
             assert_eq!(esp_log_path_on("Q:", log), esp_log_path_on(r"Q:\", log));
         }
     }
-
-    #[test]
-    fn require_identifier_still_rejects_default_and_other_aliases() {
-        for rejected in [
-            "{default}",
-            "{current}",
-            "{ntldr}",
-            "{fwbootmgr}",
-            "{ramdiskoptions}",
-        ] {
-            assert!(
-                require_identifier(rejected, "enum").is_err(),
-                "{rejected} 必须被拒，否则可能误伤用户启动项"
-            );
-        }
-        assert!(require_identifier("", "enum").is_err());
-        assert!(require_identifier("  ", "enum").is_err());
-        assert!(
-            require_guid("{bootmgr}", "enum").is_err(),
-            "旧入口仍然只认 GUID"
-        );
-    }
 }
 
 /// 多字节安全回归（H-GUI-1 / H-GUI-2）。
@@ -2576,13 +1965,12 @@ mod multibyte_safety {
     }
 }
 
-/// PE 镜像启动配置的比对，以及「从 BCD 输出里认出真正的 Windows 启动项」。
+/// PE 镜像启动配置的比对。
 ///
-/// 这两组逻辑都必须留在这里（而不是 `native_gui.rs`）：后者只在 Windows 上编译，
-/// 放进去就等于在开发机上零覆盖——而这两处恰恰都是「判据错了会静默放行/把机器
-/// 送回 PE」的地方，属于绝不能靠肉眼保证的一类。
+/// 这组逻辑必须留在这里（而不是 `native_gui.rs`）：后者只在 Windows 上编译，
+/// 放进去就等于在开发机上零覆盖。
 #[cfg(test)]
-mod pe_shell_and_loader {
+mod pe_shell {
     use super::*;
 
     /// 与真机 `T:\Windows\System32\winpeshl.ini` 一致的那 61 字节。
@@ -2677,83 +2065,6 @@ mod pe_shell_and_loader {
             }),
             Some(PeShellProblem::RecoveryExeMissing)
         );
-    }
-
-    /// 真机 `bcdedit /enum all /v` 的节选（2026-10-29 抓取，中文标签）：
-    /// 我们的 PE 项 `winpe Yes`，真实 Windows 项没有 `winpe` 字段。
-    const MACHINE_ENUM: &str = "Windows 启动管理器\n--------------------\n标识符                  {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault                 {a6273652-d15f-11f1-aa4b-ff70ff0b7794}\ndisplayorder            {a6273652-d15f-11f1-aa4b-ff70ff0b7794}\n                        {831787dd-d2e1-11f1-89db-f371a71018a0}\ntoolsdisplayorder       {b2721d73-1db4-4c62-bf78-c548a880142d}\ntimeout                 10\n\nWindows 启动加载器\n-------------------\n标识符                  {831787dd-d2e1-11f1-89db-f371a71018a0}\ndevice                  partition=T:\npath                    \\Windows\\system32\\winload.efi\ndescription             BR-PE-DISK\nosdevice                partition=T:\nsystemroot              \\Windows\nnx                      OptIn\ndetecthal               Yes\nwinpe                   Yes\n\nWindows 启动加载器\n-------------------\n标识符                  {a6273652-d15f-11f1-aa4b-ff70ff0b7794}\ndevice                  partition=C:\npath                    \\Windows\\system32\\winload.efi\ndescription             本次还原的 Windows\nosdevice                partition=C:\nsystemroot              \\Windows\nnx                      OptIn\n";
-
-    #[test]
-    fn display_order_is_read_across_continuation_lines_and_stops_at_toolsdisplayorder() {
-        assert_eq!(
-            bcd_display_order(MACHINE_ENUM),
-            vec![
-                "{a6273652-d15f-11f1-aa4b-ff70ff0b7794}".to_string(),
-                "{831787dd-d2e1-11f1-89db-f371a71018a0}".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn boot_manager_default_is_read_and_kept_lowercase() {
-        assert_eq!(
-            bcd_boot_manager_default(MACHINE_ENUM).as_deref(),
-            Some("{a6273652-d15f-11f1-aa4b-ff70ff0b7794}")
-        );
-        assert_eq!(bcd_boot_manager_default("Windows Boot Loader\nidentifier {1}"), None);
-    }
-
-    #[test]
-    fn windows_loader_is_picked_and_the_pe_entry_is_skipped() {
-        let picked = pick_windows_loader(MACHINE_ENUM, |letter| letter == 'C' || letter == 'T');
-        assert_eq!(
-            picked.as_deref(),
-            Some("{a6273652-d15f-11f1-aa4b-ff70ff0b7794}")
-        );
-    }
-
-    /// 最危险的错法：把 PE 条目当成 Windows 写进 default → 重启又回 PE。
-    #[test]
-    fn pe_only_store_yields_nothing_instead_of_the_pe_entry() {
-        let pe_only = MACHINE_ENUM
-            .split("\n\n")
-            .filter(|block| !block.contains("{a6273652"))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        assert_eq!(pick_windows_loader(&pe_only, |_| true), None);
-    }
-
-    /// 盘符在 PE 里可能不指同一个卷：加载器文件不存在就不能当选。
-    #[test]
-    fn candidate_needs_the_loader_file_to_exist_on_that_letter() {
-        assert_eq!(pick_windows_loader(MACHINE_ENUM, |letter| letter == 'T'), None);
-    }
-
-    /// 多候选时按启动菜单顺序取第一条（而不是输出里的顺序）。
-    #[test]
-    fn display_order_decides_between_two_candidates() {
-        let two_windows = "Windows 启动管理器\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {11111111-1111-1111-1111-111111111111}\ndisplayorder {22222222-2222-2222-2222-222222222222}\n             {11111111-1111-1111-1111-111111111111}\n\nWindows Boot Loader\nidentifier {11111111-1111-1111-1111-111111111111}\ndevice partition=C:\npath \\Windows\\system32\\winload.efi\n\nWindows Boot Loader\nidentifier {22222222-2222-2222-2222-222222222222}\ndevice partition=D:\npath \\Windows\\system32\\winload.efi\n";
-        assert_eq!(
-            pick_windows_loader(two_windows, |_| true).as_deref(),
-            Some("{22222222-2222-2222-2222-222222222222}")
-        );
-    }
-
-    /// 英文标签同样要认（同一台机器换了系统语言就不能瞎）。
-    #[test]
-    fn english_labels_and_ramdisk_entries_are_handled() {
-        let english = "Windows Boot Manager\nidentifier {9dea862c-5cdd-4e70-acc1-f32b344d4795}\ndefault {aaaaaaaa-1111-1111-1111-111111111111}\ndisplayorder {aaaaaaaa-1111-1111-1111-111111111111}\n\nWindows Boot Loader\nidentifier {aaaaaaaa-1111-1111-1111-111111111111}\ndevice partition=C:\npath \\Windows\\system32\\winload.efi\n\nWindows Boot Loader\nidentifier {bbbbbbbb-1111-1111-1111-111111111111}\ndevice ramdisk=[C:]\\Recovery\\WindowsRE\\Winre.wim,{cccccccc-1111-1111-1111-111111111111}\npath \\windows\\system32\\winload.efi\nwinpe Yes\n";
-        assert_eq!(
-            pick_windows_loader(english, |_| true).as_deref(),
-            Some("{aaaaaaaa-1111-1111-1111-111111111111}")
-        );
-    }
-
-    /// ramdisk 条目（恢复环境的典型形态）没有 `partition=X:`，不能被当成候选。
-    #[test]
-    fn ramdisk_entries_are_not_candidates() {
-        let ramdisk_only = "Windows Boot Loader\nidentifier {bbbbbbbb-1111-1111-1111-111111111111}\ndevice ramdisk=[C:]\\Recovery\\WindowsRE\\Winre.wim,{cccccccc-1111-1111-1111-111111111111}\npath \\windows\\system32\\winload.efi\n";
-        assert_eq!(pick_windows_loader(ramdisk_only, |_| true), None);
     }
 }
 
