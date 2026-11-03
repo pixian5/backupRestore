@@ -23,6 +23,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::error_code::ErrCode;
+#[allow(unused_imports)]
+pub(crate) use crate::environment_admin::*;
 pub(crate) use crate::image_admin::wim_full_windows_probe;
 pub(crate) use crate::prepare_bcd::*;
 pub(crate) use crate::prepare_env::*;
@@ -77,209 +79,6 @@ pub(crate) fn prepare(arguments: Vec<String>) -> Result<(), TaskError> {
     prepare_task(&executable_dir, &workspace, target, options)
 }
 
-/// 列出当前 BCD 里所有分区 loader 的描述（S5 撞名预检，GUI 创建任务前调用）。
-///
-/// 刻意**不带 /store、不挂 ESP**：`bcdedit /enum` 是读操作，普通用户权限即可
-/// 完成，而 GUI 常态未提权（package 自启副本）；提权 prepare 侧的消解发生在
-/// 任务创建之后，用户看不到结果——这里让 GUI 在创建任务前就能预检并回显。
-///
-/// 失败不报错、输出空列表：调用方（GUI）按「无法预检」处理并记日志，
-/// 真正的承重消解在 prepare 侧（挂 ESP 读 /store，必然可用）。
-/// 输出 GBK 的本地化字段名用 `decode_windows_bytes` 解，中文菜单名才不会
-/// 被 from_utf8_lossy 弄花（弄花等于撞名检查对中文系统全废）。
-///
-/// 【2026-10-16 审查修订，日志缺口 10】失败原因写进输出的 `error` 字段：
-/// 此前失败与"真的没有启动项"都表现为**空列表**，调用方无法区分——
-/// 撞名预检会静默失效，而用户看到的菜单名重名问题要到任务创建时才炸。
-#[cfg(windows)]
-pub(crate) fn list_boot_entries() -> Result<(), TaskError> {
-    let output = std::process::Command::new("bcdedit.exe")
-        .args(["/enum", "all", "/v"])
-        .stdin(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    let (descriptions, probe_error) = match &output {
-        Ok(output) if output.status.success() => (
-            crate::boot_menu::all_loader_descriptions(&crate::text_parsing::decode_windows_bytes(
-                &output.stdout,
-            )),
-            None,
-        ),
-        Ok(output) => {
-            // 退出码非零：把 stderr 尾部一起带出来，让 GUI 能记下真实原因
-            //（BCD 存储不可访问 / 权限不足 / 系统无 UEFI 等）。
-            let mut text = crate::text_parsing::decode_windows_bytes(&output.stdout);
-            text.push_str(&crate::text_parsing::decode_windows_bytes(&output.stderr));
-            let tail: Vec<&str> = text
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect();
-            let start = tail.len().saturating_sub(4);
-            (
-                Vec::new(),
-                Some(format!(
-                    "bcdedit /enum exited with {}: {}",
-                    output.status,
-                    tail[start..].join(" | ")
-                )),
-            )
-        }
-        Err(error) => (Vec::new(), Some(format!("bcdedit could not be started: {error}"))),
-    };
-    let mut report = serde_json::json!({ "descriptions": descriptions });
-    if let Some(error) = probe_error {
-        report["error"] = serde_json::json!(error);
-    }
-    println!("{}", report);
-    Ok(())
-}
-
-pub(crate) fn inspect_environment() -> Result<(), TaskError> {
-    let output = capture("cmd.exe", &["/d", "/c", "ver"])?;
-    // `ver` is localized and may use the active Windows code page.  The
-    // status panel is UTF-8 Rust text, so retain only its invariant ASCII
-    // version token instead of leaking mojibake such as `�本` into Chinese UI.
-    let windows = windows_version_summary(&output);
-    let architecture = native_architecture();
-    // 同 `assert_environment`：`reagentc /info` 有上下文级失败模式（退出码 9），
-    // 失败不代表 WinRE 不可用；这里只用于**显示**，失败时退回 BCD 判是否有 WinRE，
-    // 绝不因为日志 ACL 问题就让整个「刷新环境」动作失败。
-    let winre_available = match capture("reagentc.exe", &["/info"]) {
-        Ok(reagent) => reagent.contains("GLOBALROOT") || reagent.contains("Recovery\\WindowsRE"),
-        Err(_) => recovery_identity_from_bcd().is_ok(),
-    };
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "windows": windows,
-            "architecture": architecture,
-            "winreAvailable": winre_available,
-            "volumes": discover_drives()?,
-        }))?
-    );
-    Ok(())
-}
-
-/// 显式放弃或收口一个任务。
-///
-/// 两条路径：
-/// - **未写入目标卷**（Prepared/BootRequested/RecoveryStarted/Preflight）：走完整准备期补偿
-///   （清启动请求 → 删对象 → 删载荷 → 恢复 BCD 快照）。
-/// - **已终结**（Failed，2026-10-16 用户拍板新增）：走终态收口——只清本任务的引导对象与载荷、
-///   删掉大工作目录，**保留**证据记录。擦除后失败的任务以前既不能续也不能清（永久悬置）。
-///
-/// 仍拒绝的情形：**非终态且已越过破坏性边界**（TargetErased 之后但未标终态）——那说明恢复链
-/// 还在进行中，需要先继续原任务或人工恢复，不能从清理入口直接抹掉。
-#[cfg(windows)]
-pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskError> {
-    // 先拿到日志路径再查提权：这样「不是管理员」这件事本身也能落进任务日志，
-    // 而不是只留一句弹框文案。
-    let log = TaskStore::new(root.clone()).log_path(&task_id)?;
-    require_administrator(&log)?;
-    let store = TaskStore::new(root);
-    let mut task = store.load(&task_id)?;
-    let dir = store.task_dir(&task_id)?;
-    let status: backuprestore_core::StatusRecord =
-        backuprestore_core::read_json(store.status_path(&task_id)?)?;
-    if status.task_id != task.task_id
-        || status.stage != task.status
-        || status.operation != task.operation
-    {
-        return Err(crate::errc(ErrCode::TaskStateInconsistent));
-    }
-    // 【终态收口，2026-10-16 用户拍板】已终结（Failed）的任务允许收口：
-    // 只清本任务的引导对象与载荷、删掉大工作目录，**保留** task.json / status.json /
-    // manifest.json / 日志等证据记录，供人工诊断。
-    //
-    // 为什么需要这条入口：任务在擦除后失败会停在 TargetErased；恢复环境的自动逃出
-    // 现在会把它标成 Failed（见 `main.rs::auto_escape_to_windows`），但在此之前
-    // （以及任何人工介入的场景）用户既不能续跑、也不能清理——这正是 2026-10-16
-    // 实机暴露的「非终态任务永久悬置」。收口时**必须同时清 bootsequence**
-    // （`disarm` 已含，且只认本任务的 GUID），否则等于把「下次启动又进恢复环境」
-    // 的锁原样留给下一次启动。
-    if task.status == backuprestore_core::Stage::Failed {
-        append_log(
-            &log,
-            &format!(
-                "Collecting terminal (Failed) task; operation={:?} — disarm boot objects, \
-                 remove payload, keep evidence",
-                task.operation
-            ),
-        )?;
-        match crate::boot_entry::ReBootEntry::read(&dir)? {
-            Some(entry) => {
-                crate::boot_entry::disarm(&entry, &log)?;
-                append_log(&log, "terminal cleanup: one-shot boot entry disarmed")?;
-            }
-            None => append_log(
-                &log,
-                "terminal cleanup: no boot entry record on disk; nothing to disarm",
-            )?,
-        }
-        store.cleanup_task_artifacts(&task.task_id)?;
-        append_log(
-            &log,
-            "Terminal (Failed) task collected; evidence records retained",
-        )?;
-        return Ok(());
-    }
-    if !task.status.can_abandon_before_target_write() {
-        return Err(crate::errc_with(
-            ErrCode::TaskAlreadyAdvanced,
-            &[&format!("{:?}", task.status)],
-        ));
-    }
-    append_log(
-        &log,
-        &format!(
-            "User explicitly abandoned task before target writes; operation={:?} stage={:?}",
-            task.operation, task.status
-        ),
-    )?;
-    let efi = efi_identity(None)?;
-    // 【2026-10-18 缺陷修复：ef71fccc 三按钮死锁（续）】补偿失败**不再中断收口**。
-    // 能走到这里的任务都在破坏性边界之前（目标卷还没动过），补偿只是尽量把准备期
-    // 对 BCD 的改动还原。ESP 上的 BCD 被系统占用（错误 32，BFSVC 持锁）时还原不了，
-    // 此时中断整个放弃流程 = 用户又被卡住——和刚修好的阶段闸门是同一个死锁，
-    // 只是换了个位置复发。改为记 ERROR 后继续：BCD 保持现状（可用「引导修复(M)」
-    // 或 bcdedit 手工处理），任务照样标终态、一次性启动项照样撤销。
-    if let Err(cleanup) = compensate_prepare_failure(&dir, &efi, &log) {
-        append_log(
-            &log,
-            &format!(
-                "[ERROR] abandon: BCD compensation incomplete ({cleanup}); continuing to close the task"
-            ),
-        )?;
-    }
-    // create_entry can copy the WIM to staging before its final boot-entry
-    // record is durable. Re-check by stable volume identity and remove only
-    // this task's directory, even if no ReBootEntry record survived.
-    let staging_volume = task.image.as_ref().map(|image| &image.volume).or_else(|| {
-        task.destination
-            .as_ref()
-            .map(|destination| &destination.volume)
-    });
-    if let Some(volume) = staging_volume {
-        let root_path = crate::boot_cleanup::staging_volume_root(volume)?;
-        let actual =
-            volume_identity_at_path(&root_path.to_string_lossy(), volume.volume_guid.clone())?;
-        if !actual.same_partition(volume)
-            || actual.partition_offset != volume.partition_offset
-            || actual.partition_size != volume.partition_size
-        {
-            return Err(crate::errc(ErrCode::AbandonPayloadVolumeMismatch));
-        }
-        crate::boot_cleanup::remove_staging(&root_path, &task.task_id)?;
-    }
-    store.write_failure(&mut task, 2, "用户在创建新任务前明确放弃")?;
-    store.cleanup_task_artifacts(&task.task_id)?;
-    append_log(
-        &log,
-        "Abandoned task cleanup completed; evidence records retained",
-    )?;
-    Ok(())
-}
 
 fn prepare_task(
     executable_dir: &Path,
@@ -1114,7 +913,7 @@ pub(crate) fn recovery_identity_from_bcd() -> Result<VolumeIdentity, TaskError> 
     volume_identity(letter.to_ascii_uppercase())
 }
 
-fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskError> {
+pub(crate) fn efi_identity(override_drive: Option<char>) -> Result<VolumeIdentity, TaskError> {
     if let Some(letter) = override_drive {
         let identity = volume_identity(letter)?;
         if !identity.partition_type_guid.eq_ignore_ascii_case(EFI_TYPE) {

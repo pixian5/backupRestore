@@ -33,8 +33,6 @@ use crate::append_log;
 use crate::process_runner::{output_tail_summary, run_output_logged};
 #[cfg(windows)]
 use crate::recovery_engine::complete_recovery_cleanup;
-#[cfg(windows)]
-use crate::windows_prepare;
 
 /// A prepared task may be a deliberate `--no-reboot` diagnostic and must not
 /// start WinRE by itself. Every later non-terminal stage, however, represents
@@ -422,7 +420,7 @@ pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<(), TaskEr
             &[&pending.task_id, &format!("{:?}", pending.stage)],
         ),
     )?;
-    windows_prepare::abandon_task(
+    crate::environment_admin::abandon_task(
         pending.workspace.to_string_lossy().into_owned(),
         pending.task_id.clone(),
     )

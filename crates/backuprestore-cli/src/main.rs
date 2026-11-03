@@ -134,6 +134,8 @@ pub(crate) mod prepare_env;
 #[cfg(windows)]
 pub(crate) mod prepare_validation;
 #[cfg(windows)]
+pub(crate) mod environment_admin;
+#[cfg(windows)]
 mod windows_prepare;
 /// wimlib 覆盖式应用通道（任务 #110，2026-10-22 用户裁定「换 wimlib」；
 /// 2026-10-23 产品化「保留安全描述符还原」）。
@@ -393,9 +395,9 @@ fn main() {
         #[cfg(windows)]
         Some("list-volumes") => volume_device::cli_list_volumes(),
         #[cfg(windows)]
-        Some("list-boot-entries") => windows_prepare::list_boot_entries(),
+        Some("list-boot-entries") => environment_admin::list_boot_entries(),
         #[cfg(windows)]
-        Some("inspect-environment") => windows_prepare::inspect_environment(),
+        Some("inspect-environment") => environment_admin::inspect_environment(),
         #[cfg(windows)]
         Some("wim-info") => crate::image_admin::cli_wim_info(args.collect()),
         #[cfg(windows)]
@@ -415,7 +417,7 @@ fn main() {
         Some("abandon-task") => {
             let root = args.next().ok_or_else(|| err("task root is required"));
             let id = args.next().ok_or_else(|| err("task id is required"));
-            root.and_then(|r| id.and_then(|id| windows_prepare::abandon_task(r, id)))
+            root.and_then(|r| id.and_then(|id| environment_admin::abandon_task(r, id)))
         }
         Some("recover-env") => args
             .next()
