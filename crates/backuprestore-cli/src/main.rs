@@ -128,6 +128,8 @@ pub(crate) mod prepare_plan;
 #[cfg(windows)]
 pub(crate) mod volume_device;
 #[cfg(windows)]
+pub(crate) mod prepare_bcd;
+#[cfg(windows)]
 mod windows_prepare;
 /// wimlib 覆盖式应用通道（任务 #110，2026-10-22 用户裁定「换 wimlib」；
 /// 2026-10-23 产品化「保留安全描述符还原」）。
