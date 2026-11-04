@@ -22,6 +22,8 @@ pub mod volume_role;
 pub use volume_role::*;
 pub mod capacity_plan;
 pub use capacity_plan::*;
+pub mod stage;
+pub use stage::*;
 
 
 pub const TASK_VERSION: u32 = 1;
@@ -81,117 +83,6 @@ impl TaskError {
             code,
             rendered: message.into(),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Operation {
-    /// Non-destructive wiring/WinRE probe used by Phase 0 and diagnostics.
-    Probe,
-    Backup,
-    RestoreExisting,
-    CreateSecondary,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Stage {
-    Prepared,
-    BootRequested,
-    RecoveryStarted,
-    Preflight,
-    Capturing,
-    TargetErased,
-    ImageApplied,
-    BootRepaired,
-    /// 磁盘、引导与恢复注册已验证；只剩任务启动项清理。
-    RecoveryComplete,
-    Success,
-    Failed,
-}
-
-impl Stage {
-    pub fn can_transition_to(self, next: Self) -> bool {
-        use Stage::*;
-        matches!(
-            (self, next),
-            (Prepared, BootRequested)
-                | (Prepared, RecoveryStarted)
-                | (Prepared, Failed)
-                | (BootRequested, RecoveryStarted)
-                | (BootRequested, Failed)
-                | (RecoveryStarted, Preflight)
-                | (RecoveryStarted, Failed)
-                | (Preflight, Capturing)
-                | (Preflight, TargetErased)
-                | (Preflight, Success)
-                | (Preflight, Failed)
-                | (Capturing, Success)
-                | (Capturing, Failed)
-                | (TargetErased, ImageApplied)
-                | (TargetErased, Failed)
-                | (ImageApplied, BootRepaired)
-                | (ImageApplied, Failed)
-                | (BootRepaired, Success)
-                | (BootRepaired, Failed)
-                | (Preflight, RecoveryComplete)
-                | (Capturing, RecoveryComplete)
-                | (BootRepaired, RecoveryComplete)
-                | (RecoveryComplete, Success)
-                // 【2026-10-18 缺陷修复 H2】允许从 RecoveryComplete 标失败。
-                // 此前这条边缺失，而 `write_failure` 第一行就是
-                // `if !task.status.can_transition_to(Stage::Failed) { return Err(…) }`：
-                // 任务在 STEP 4 清理阶段失败 → 自动逃出写失败被拒 → 只记一行日志 →
-                // 任务**永远停在 RecoveryComplete**。而该阶段仍在
-                // `can_resume_after_interruption` 里 → 下次启动又被发现 → 再提示重启
-                // → 再失败，`abandon-task` 在该阶段同样被拒：**用户没有任何自救出口**。
-                // 此刻磁盘/引导/恢复注册都已验证完毕，标失败只影响清理的记账口径。
-                | (RecoveryComplete, Failed)
-        )
-    }
-    /// A task at one of these stages has not begun modifying its restore target,
-    /// so an explicit user abandonment may remove only its task-owned boot entry
-    /// and recovery payload before another task is prepared.
-    pub fn can_abandon_before_target_write(self) -> bool {
-        matches!(
-            self,
-            Self::Prepared
-                | Self::BootRequested
-                | Self::RecoveryStarted
-                | Self::Preflight
-                // 【2026-10-18 缺陷修复：ef71fccc 三按钮死锁】`Capturing` 也要可放弃。
-                // 该阶段是「把源卷捕获成暂存 WIM」——**还原目标卷还没被碰过**
-                // （目标擦除发生在后面的 `TargetErased`，故它不在
-                // `is_destructive_boundary` 里）。此前它不在这个集合里，于是
-                // 「存在未完成任务」对话框的三条路全部走不通：是=重启续跑
-                // （状态机不推进）、否=放弃清理（被本函数拒）、取消=不建新任务
-                // → 任务永久卡在 Capturing，还会被 DISM 烘进备份镜像。
-                | Self::Capturing
-        )
-    }
-    /// A task past preparation may be resumed through its persisted boot entry.
-    pub fn can_resume_after_interruption(self) -> bool {
-        matches!(
-            self,
-            Self::BootRequested
-                | Self::RecoveryStarted
-                | Self::Preflight
-                | Self::Capturing
-                | Self::TargetErased
-                | Self::ImageApplied
-                | Self::BootRepaired
-                | Self::RecoveryComplete
-        )
-    }
-    pub fn is_destructive_boundary(self) -> bool {
-        matches!(
-            self,
-            Self::TargetErased | Self::ImageApplied | Self::BootRepaired
-        )
-    }
-    pub fn is_incomplete(self) -> bool {
-        !matches!(self, Self::Success | Self::Failed)
     }
 }
 
@@ -705,21 +596,6 @@ impl Task {
     }
 }
 
-pub(crate) fn default_progress(stage: Stage) -> u8 {
-    match stage {
-        Stage::Prepared => 0,
-        Stage::BootRequested => 2,
-        Stage::RecoveryStarted => 5,
-        Stage::Preflight => 10,
-        Stage::Capturing => 20,
-        Stage::TargetErased => 35,
-        Stage::ImageApplied => 75,
-        Stage::BootRepaired => 90,
-        Stage::RecoveryComplete => 95,
-        Stage::Success => 100,
-        Stage::Failed => 0,
-    }
-}
 fn missing(name: &str) -> TaskError {
     TaskError::coded("BR-CORE-033", format!("missing {name}"))
 }
@@ -758,16 +634,6 @@ mod tests {
             relative_path: "MyBackup/Windows.wim".into(),
         });
         task
-    }
-    #[test]
-    fn state_machine_accepts_recovery_paths() {
-        assert!(Stage::Prepared.can_transition_to(Stage::BootRequested));
-        assert!(Stage::Prepared.can_transition_to(Stage::Failed));
-        assert!(Stage::Preflight.can_transition_to(Stage::Capturing));
-        assert!(Stage::Preflight.can_transition_to(Stage::TargetErased));
-        assert!(Stage::Preflight.can_transition_to(Stage::Success));
-        assert!(Stage::ImageApplied.can_transition_to(Stage::BootRepaired));
-        assert!(!Stage::Prepared.can_transition_to(Stage::Success));
     }
     #[test]
     fn backup_rejects_same_partition() {
