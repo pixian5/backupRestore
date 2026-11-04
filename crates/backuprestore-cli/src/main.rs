@@ -116,6 +116,11 @@ mod wim_parse;
 mod bcd_parse;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod step_progress;
+/// 卷挂载判定、设备路径规范化与盘符时间线追踪（v2.9.9 从 `text_parsing` 抽离）。
+/// **无条件编译**：调用方（`recovery_volume` / `letter_trace` / `prepare_bcd` 等）
+/// 多为 Windows 专属，判断逻辑集中在这里才能被 macOS 单测覆盖。
+#[cfg_attr(not(windows), allow(dead_code))]
+mod volume_parse;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod text_parsing;
 /// 进度窗的纯文本逻辑（时间格式化 / 剩余时间估算 / 4 阶段骨架）。
