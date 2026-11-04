@@ -20,6 +20,8 @@ pub mod task_store;
 pub use task_store::*;
 pub mod volume_role;
 pub use volume_role::*;
+pub mod capacity_plan;
+pub use capacity_plan::*;
 
 
 pub const TASK_VERSION: u32 = 1;
@@ -724,111 +726,6 @@ fn missing(name: &str) -> TaskError {
 fn valid_menu_name(value: &str) -> bool {
     value.chars().count() <= 256 && !value.chars().any(char::is_control)
 }
-/// Normalize the only two supported WIM compression choices.
-///
-/// `fast` is the product's "压缩" choice and `none` is "不压缩". The former
-/// maximum-compression mode is deliberately rejected here so GUI, CLI and old
-/// task files cannot accidentally pass it to DISM through a fallback path.
-pub fn canonical_compression(value: &str) -> Result<&'static str, TaskError> {
-    match value {
-        "fast" => Ok("fast"),
-        "none" => Ok("none"),
-        _ => Err(TaskError::coded("BR-CORE-034", "compression must be fast or none; max compression is not supported")),
-    }
-}
-/// 备份开始前对「镜像所在卷」可用空间的**硬闸**下限（字节）。
-///
-/// 为什么比例定得这么低：WIM 的压缩比随内容变化极大——实测系统盘 fast 压缩产出
-/// 约为源已用量的 13%（249 GiB 源 → 31.96 GiB 镜像），而装满已压缩媒体的数据卷
-/// 可能接近 100%。任何按固定压缩比预估的硬闸都会误拒真实可行的备份，所以这里
-/// **只挡明显不可能的情形**（源已用量的 5%，且绝对下限 1 GiB）：宁可放过，
-/// 也不误拒。真正的「够不够」交给捕获过程中的失败与回滚来处理。
-pub fn backup_space_floor(source_used_bytes: u64) -> u64 {
-    const MIN_FLOOR: u64 = 1024 * 1024 * 1024; // 1 GiB
-    (source_used_bytes / 20).max(MIN_FLOOR)
-}
-
-/// 硬闸的**判定**本身：`Some(下限)` = 拦下（可用空间不足，附需要多少）；`None` = 放行。
-///
-/// 为什么把它抽成函数：判定原来在两条链（`windows_prepare` 的离线准备、
-/// `online_operation` 的在线捕获）里各自写了一遍 `if free < floor`。
-/// 同一个不等式抄两遍，就没法写「拦下」的判据——2026-10-27 之前
-/// `BR-IMG-008` **只验过「不误拦」（可用空间够时放过），从未构造过「拦下」**：
-/// 一个只在一边实现的守卫，测试只能测到它那一半。
-///
-/// 边界语义写死在这里：`available == floor` 放行（`<` 而非 `<=`），
-/// 与文档「低于硬闸才拒绝」一致。
-pub fn backup_space_shortfall(available_bytes: u64, source_used_bytes: u64) -> Option<u64> {
-    let floor = backup_space_floor(source_used_bytes);
-    (available_bytes < floor).then_some(floor)
-}
-
-/// 新索引大小的保守估计（字节），**只用于日志警告，永不用于拒绝**。
-///
-/// `none` 时 WIM 与源已用量基本 1:1（略高：文件头与目录结构）；`fast` 取 0.7，
-/// 对系统盘偏保守（实际常低于 0.2）、对含大量媒体的数据卷可能偏低——这正是它
-/// 只能当警告、不能当闸门的原因。未识别的压缩值按 `fast` 处理。
-pub fn estimate_backup_bytes(source_used_bytes: u64, compression: &str) -> u64 {
-    let percent = match compression {
-        "none" => 105,
-        _ => 70,
-    };
-    source_used_bytes
-        .saturating_mul(percent)
-        .saturating_div(100)
-}
-
-pub fn validate_operation(
-    operation: Operation,
-    source: &VolumeIdentity,
-    image: &VolumeIdentity,
-    target: &VolumeIdentity,
-) -> Result<(), TaskError> {
-    require_complete("source", source)?;
-    require_complete("image", image)?;
-    require_complete("target", target)?;
-    if source.same_partition(image) {
-        return Err(TaskError::coded("BR-CORE-013", "image volume must differ from source volume"));
-    }
-    if matches!(
-        operation,
-        Operation::RestoreExisting | Operation::CreateSecondary
-    ) && image.same_partition(target)
-    {
-        return Err(TaskError::coded("BR-CORE-019", "image volume must differ from restore target"));
-    }
-    if target.is_reserved_partition() {
-        return Err(TaskError::coded("BR-CORE-061", "reserved partition cannot be target"));
-    }
-    Ok(())
-}
-pub fn ensure_capacity(target_size: u64, metadata: &BackupMetadata) -> Result<(), TaskError> {
-    let required = metadata.required_target_size();
-    if target_size < required {
-        return Err(TaskError::coded("BR-CORE-062", format!(
-            "target disk space insufficient: {target_size} < {required}"
-        )));
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BitLockerState {
-    Disabled,
-    Unlocked,
-    Protected,
-    Unknown,
-}
-pub fn ensure_bitlocker_accessible(states: &[BitLockerState]) -> Result<(), TaskError> {
-    if states
-        .iter()
-        .any(|s| matches!(s, BitLockerState::Protected | BitLockerState::Unknown))
-    {
-        return Err(TaskError::coded("BR-CORE-063", "BitLocker is enabled or volume accessibility is unknown; suspend/unlock manually before V1 recovery"));
-    }
-    Ok(())
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -879,69 +776,7 @@ mod tests {
         assert!(task.validate().is_err());
     }
     #[test]
-    fn backup_space_floor_is_a_last_resort_gate_not_a_prediction() {
-        const GIB: u64 = 1024 * 1024 * 1024;
-        // 空源卷也至少要求 1 GiB——镜像容器本身有开销。
-        assert_eq!(backup_space_floor(0), GIB);
-        // 小源卷（10 GiB）按比例算只有 0.5 GiB，被绝对下限抬到 1 GiB。
-        assert_eq!(backup_space_floor(10 * GIB), GIB);
-        // 大源卷按比例：249 GiB 系统盘 → 硬闸 12.45 GiB，低于它实测的 31.96 GiB
-        // 镜像，也就是**永远不会误拒**那次真实备份。
-        assert_eq!(backup_space_floor(249 * GIB), 249 * GIB / 20);
-        assert!(backup_space_floor(249 * GIB) < 32 * GIB);
-        // 单调不减。
-        assert!(backup_space_floor(100 * GIB) <= backup_space_floor(200 * GIB));
-    }
-
-    #[test]
-    fn backup_space_gate_blocks_below_floor_and_allows_at_floor() {
-        const GIB: u64 = 1024 * 1024 * 1024;
-        // 【2026-10-27】`BR-IMG-008` 此前只验过「不误拦」，**从未构造过「拦下」**：
-        // 判定（`free < floor`）在两条链里各写一遍，测试只能测到阈值本身。
-        // 抽成 `backup_space_shortfall` 后，这里把「拦下」这个产品承诺变成判据。
-
-        // ① 拦下：可用比下限少 1 字节 → 必须报，且回报的正是那个下限。
-        assert_eq!(backup_space_shortfall(GIB - 1, 0), Some(GIB));
-        assert_eq!(backup_space_shortfall(0, 100 * GIB), Some(100 * GIB / 20));
-
-        // ② 边界：恰好等于下限 → 放行（文档写的是「低于硬闸才拒绝」，是 `<` 不是 `<=`）。
-        assert_eq!(backup_space_shortfall(GIB, 0), None);
-        assert_eq!(
-            backup_space_shortfall(100 * GIB / 20, 100 * GIB),
-            None
-        );
-
-        // ③ 充裕：远高于下限 → 放行。
-        assert_eq!(backup_space_shortfall(200 * GIB, 100 * GIB), None);
-
-        // ④ 与阈值函数必须是同一套语义（两条链共用，不允许各算一套）。
-        for used in [0u64, GIB, 10 * GIB, 249 * GIB, 4096 * GIB] {
-            let floor = backup_space_floor(used);
-            assert_eq!(backup_space_shortfall(floor - 1, used), Some(floor), "used={used}");
-            assert_eq!(backup_space_shortfall(floor, used), None, "used={used}");
-        }
-    }
-
-    #[test]
-    fn estimate_backup_bytes_is_conservative_and_only_informative() {
-        const GIB: u64 = 1024 * 1024 * 1024;
-        let used = 100 * GIB;
-        assert_eq!(estimate_backup_bytes(used, "fast"), 70 * GIB);
-        assert_eq!(estimate_backup_bytes(used, "none"), 105 * GIB);
-        // 未识别值按 fast，绝不 panic。
-        assert_eq!(estimate_backup_bytes(used, "max"), 70 * GIB);
-        assert_eq!(estimate_backup_bytes(used, ""), 70 * GIB);
-        // 估计值恒大于硬闸：警告先于硬闸触发（硬闸是极端兜底，不是常规阈值）。
-        assert!(estimate_backup_bytes(used, "fast") > backup_space_floor(used));
-        assert!(estimate_backup_bytes(0, "none") == 0);
-    }
-
-    #[test]
-    fn compression_supports_fast_and_none_but_rejects_max() {
-        assert_eq!(canonical_compression("fast").unwrap(), "fast");
-        assert_eq!(canonical_compression("none").unwrap(), "none");
-        assert!(canonical_compression("max").is_err());
-
+    fn task_validation_checks_compression() {
         let mut task = backup_task();
         task.compress = Some("fast".into());
         assert!(task.validate().is_ok());
