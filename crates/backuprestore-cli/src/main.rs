@@ -177,6 +177,9 @@ pub(crate) use recovery_engine::*;
 mod recovery_interactive;
 #[allow(unused_imports)]
 pub(crate) use recovery_interactive::*;
+mod recovery_backup;
+#[allow(unused_imports)]
+pub(crate) use recovery_backup::*;
 mod pending_task;
 #[allow(unused_imports)]
 pub(crate) use pending_task::*;
