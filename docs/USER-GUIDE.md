@@ -194,14 +194,16 @@ BackupRestore.exe prepare --operation probe --source-drive C --no-reboot
 | 命令 | 用途 |
 |---|---|
 | `online --operation backup\|restore-existing\|create-secondary --source-drive <字母> [--target-drive <字母>] [--image-path <绝对路径>] [--index <n>] [--compress <fast\|none>] [--image-name <名>] [--keep-indexes <n>] [--format-target] [--ui-language <zh\|en>]` | 在线链：数据卷备份/还原、第二系统。`--compress` 不填 = fast |
-| `prepare --operation probe\|backup\|restore-existing\|create-secondary --source-drive <字母> [--target-drive <字母>] [--image-path <路径>] [--wim-index <n>] [--boot-menu-name <名>] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape\|pause>] [--ui-language <zh\|en>] …` | 准备期：校验、写任务、注入恢复环境载荷、设一次性启动 |
+| `prepare --operation probe\|backup\|restore-existing\|create-secondary --source-drive <字母> [--target-drive <字母>] [--image-path <路径>] [--wim-index <n>] [--boot-menu-name <名>] [--skip-format] [--allow-destructive] [--fail-threshold <1-20>] [--fail-action <auto-escape\|pause>] [--ui-language <zh\|en>] …` | 准备期：校验、写任务、注入恢复环境载荷、设一次性启动 |
 | `resume <task-root> <task-id>` | 续跑/清理一个已有任务（`<task-root>` 是**工作区根**，如 `H:\brwork`，不是 tasks 目录） |
 | `recover <task-root> <task-id> [--dry-run] [--efi-root <挂载的 EFI 根>]` | 恢复环境/PE 内手工续跑通道 |
 | `wim-info <绝对路径> [--skip-hash]` | 只读解析镜像索引与元数据 |
 | `status <task-root> <task-id>` / `hash <文件>` / `list-volumes` / `inspect-environment` | 查任务状态 / 算文件 SHA-256 / 列卷 / 环境自检 |
 | `--json` | 任何命令加它：结论打成**一行 JSON**（`command/operation/success/task_id/log_path/error/error_code`） |
 
-**自动化请用 `--json`**：判据只认字段（`success`、`error_code`），不要解析日志文案——日志文案有多语言版本。
+**自动化请用 `--json`**
+
+**还原类操作必须带 `--allow-destructive`**（`restore-existing`、`create-secondary`）：不带会被拒绝，报 `restore requires --allow-destructive`。备份不需要。：判据只认字段（`success`、`error_code`），不要解析日志文案——日志文案有多语言版本。
 
 **语言**：优先级 `--ui-language` 旗标 > 环境变量 `BACKUPRESTORE_LANG` > 设置文件 `ui_language` > 中文。
 例：`set BACKUPRESTORE_LANG=en` 后任何命令的日志与结论都走英文。

@@ -211,7 +211,10 @@ fi
 # ★ 判据必须能区分「真的 0 个标记」与「扫描命令没跑」（`prlctl exec` 约 1/8 不执行）：
 #   所以命令尾部加 `__END__` 哨兵，**连哨兵都没有就是仪器故障**，不能当成「0 个」。
 marker_cleared=0
-for marker_root in "$BR_ACCEPTANCE_ROOT" "$BR_BOOT_FAULT_ROOT"; do
+# 2026-11-24 修复：脚本开头有 `set -u`，宿主上没设这两个变量时直接引用会报
+# 「unbound variable」并让整个门禁退出——四条不需要它们的用例也一起跑不了。
+# 加 `:-` 默认空值：为空时循环体本来就跳过（下一行），语义不变。
+for marker_root in "${BR_ACCEPTANCE_ROOT:-}" "${BR_BOOT_FAULT_ROOT:-}"; do
     [ -n "$marker_root" ] || continue
     scan=$(vm "dir /b /s \"$marker_root\\tasks\\.fault-*.triggered\" 2>nul & echo __END__")
     if ! printf '%s' "$scan" | grep -q '__END__'; then

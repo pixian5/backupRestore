@@ -244,7 +244,7 @@ difference is told to you rather than silently dropped.
 | Command | Purpose |
 |---|---|
 | `online --operation backup\|restore-existing\|create-secondary --source-drive <letter> [--target-drive <letter>] [--image-path <abs path>] [--index <n>] [--compress <fast\|none>] [--image-name <name>] [--keep-indexes <n>] [--format-target] [--ui-language <zh\|en>]` | Online path: data-volume backup/restore, second system. Omitting `--compress` means fast |
-| `prepare --operation probe\|backup\|restore-existing\|create-secondary --source-drive <letter> [--target-drive <letter>] [--image-path <path>] [--wim-index <n>] [--boot-menu-name <name>] [--skip-format] [--fail-threshold <1-20>] [--fail-action <auto-escape\|pause>] [--ui-language <zh\|en>] …` | Preparation phase: validate, write the task, inject the recovery payload, set the one-shot boot entry |
+| `prepare --operation probe\|backup\|restore-existing\|create-secondary --source-drive <letter> [--target-drive <letter>] [--image-path <path>] [--wim-index <n>] [--boot-menu-name <name>] [--skip-format] [--allow-destructive] [--fail-threshold <1-20>] [--fail-action <auto-escape\|pause>] [--ui-language <zh\|en>] …` | Preparation phase: validate, write the task, inject the recovery payload, set the one-shot boot entry |
 | `resume <task-root> <task-id>` | Resume or clean up an existing task (`<task-root>` is the **workspace root**, e.g. `H:\brwork`, not the tasks directory) |
 | `recover <task-root> <task-id> [--dry-run] [--efi-root <mounted EFI root>]` | Manual resume channel inside the recovery environment / PE |
 | `wim-info <abs path> [--skip-hash]` | Read-only parse of image indexes and metadata |
@@ -252,6 +252,8 @@ difference is told to you rather than silently dropped.
 | `--json` | Any command: emit the verdict as **one line of JSON** (`command/operation/success/task_id/log_path/error/error_code`) |
 
 **For automation always use `--json`:** judge on fields (`success`, `error_code`) and never parse log
+
+**Restore operations require `--allow-destructive`** (`restore-existing`, `create-secondary`): without it the command is rejected with `restore requires --allow-destructive`. Backups do not need it.
 text — log text exists in several languages.
 
 **Language:** the `--ui-language` flag wins, then the `BACKUPRESTORE_LANG` environment variable, then
