@@ -103,7 +103,7 @@ Windows 11（默认终端是 Windows Terminal）下，几乎每次都会漏下�
 - ★★ **但助手解决不了根本那一层**：`prlctl exec --current-user powershell` **每调用一次**就漏一对
   `conhost`/`OpenConsole`（提权与否一样，泄漏的是客户端进程本身；SYSTEM 通道则零泄漏）。
   所以 `run.sh` 收尾会用 SYSTEM 通道扫一次：实测一轮 `--quick` 自己漏 41 对，扫完归零
-  （输出 `GUI_CHECK sweep=ACTION=kill_orphan_console targets=N`）。这是收尾，不是根治，见 BACKLOG B-2694。
+  （输出 `GUI_CHECK sweep=ACTION=kill_orphan_console targets=N`）。这是收尾兜底；根治 B-2694 已于 2026-11-24 实测成立（两轮完整矩阵后孤儿控制台为 0）。
 - 附带收益：`--quick` 从约 2.5 分钟降到 **66 秒**（少了几十次提权等待）。
 
 ## 退出码
