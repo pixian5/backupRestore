@@ -276,10 +276,24 @@ pub struct ProgressShared {
 impl ProgressShared {
     /// 切换监控的日志文件路径，并指定起始偏移（例如 0，或者累积日志的追加点）。
     pub fn switch_log_path(&self, new_path: PathBuf, initial_offset: u64) {
-        let mut path_guard = self.log_path.safe_lock();
-        *path_guard = new_path;
+        {
+            let mut path_guard = self.log_path.safe_lock();
+            *path_guard = new_path.clone();
+        }
         let mut offset_guard = self.log_offset.safe_lock();
         *offset_guard = initial_offset;
+        // 【2026-11-24 实机订正】窗口建好时写的那次「本操作是否兑现暂停」的声明，落在恢复环境的临时
+        // 早期日志里；主链往往在窗口建好之前就把早期日志拷进了任务目录，那一行随临时盘丢失
+        // （实测三份落盘日志里都没有）。所以每切一次日志就往新文件里补一次声明，
+        // 事后拿到日志的人不必靠「按过 P」才知道这个操作会不会停。
+        let operation = self.operation.safe_lock().clone().unwrap_or_default();
+        let _ = crate::append_log(
+            &new_path,
+            &format!(
+                "Pause support: operation={operation} supported={}",
+                self.pause_supported
+            ),
+        );
     }
 
     /// 在第二阶段候选探测完成后发布引导修复会话，进度窗会显示按钮。
@@ -1669,8 +1683,23 @@ unsafe fn is_boot_menu_window(hwnd: Hwnd) -> bool {
 
 /// 启动恢复进度窗口线程，返回共享状态句柄（主线程用于切换日志路径）。
 pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShared> {
+    let shared = new_shared(initial_log, operation);
+    let thread_shared = Arc::clone(&shared);
+    let handle = thread::spawn(move || {
+        // 窗口线程：创建 Win32 进度窗口并进入消息循环。
+        unsafe { run_window(&thread_shared) };
+        // 退出前发信号，让 `close_and_wait` 能区分「已结束」与「还卡着」。
+        // 收不收得到无所谓（主线程可能已经超时放弃），故忽略返回值。
+        let _ = thread_shared.window_done_tx.send(());
+    });
+    *shared.window_thread.safe_lock() = Some(handle);
+    shared
+}
+
+/// 只建共享状态，不起窗口线程（`spawn` 用它；单元测试直接用它，不必拉起窗口）。
+fn new_shared(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShared> {
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    let shared = Arc::new(ProgressShared {
+    Arc::new(ProgressShared {
         log_path: Mutex::new(initial_log),
         steps: Mutex::new(crate::text_parsing::StepTracker::new()),
         log_offset: Mutex::new(0),
@@ -1693,17 +1722,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         pause_abandoned: AtomicBool::new(false),
         bcd_rollback: Mutex::new(None),
         pause_deadline: Mutex::new(None),
-    });
-    let thread_shared = Arc::clone(&shared);
-    let handle = thread::spawn(move || {
-        // 窗口线程：创建 Win32 进度窗口并进入消息循环。
-        unsafe { run_window(&thread_shared) };
-        // 退出前发信号，让 `close_and_wait` 能区分「已结束」与「还卡着」。
-        // 收不收得到无所谓（主线程可能已经超时放弃），故忽略返回值。
-        let _ = thread_shared.window_done_tx.send(());
-    });
-    *shared.window_thread.safe_lock() = Some(handle);
-    shared
+    })
 }
 
 /// 等旧窗口彻底退出，再显示重试窗口，避免异步销毁抢走新窗口焦点。
@@ -1987,5 +2006,37 @@ mod tests {
         // 验证主线程通过 safe_lock 能正常取回内部数据且绝不二次 panic
         let guard = lock.safe_lock();
         assert_eq!(guard.as_slice(), &["step1", "step2"]);
+    }
+
+    /// 【2026-11-24 实机订正】窗口建好时写的那次声明会随恢复环境的临时早期日志丢失，
+    /// 所以每切一次日志都要往新文件里补一次。变异验证：删掉 `switch_log_path` 里的补写，本用例必须变红。
+    #[test]
+    fn switching_the_log_path_restates_whether_pause_is_honoured() {
+        let dir = std::env::temp_dir().join(format!(
+            "backuprestore-pause-support-{}-{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let backup = new_shared(dir.join("early.log"), Some("backup"));
+        backup.switch_log_path(dir.join("backup.log"), 0);
+        let written = std::fs::read_to_string(dir.join("backup.log")).unwrap();
+        assert!(
+            written.contains("Pause support: operation=backup supported=false"),
+            "备份不兑现暂停，必须写进新日志；实际写了：{written}"
+        );
+
+        let restore = new_shared(dir.join("early2.log"), Some("restore-existing"));
+        restore.switch_log_path(dir.join("restore.log"), 0);
+        let written = std::fs::read_to_string(dir.join("restore.log")).unwrap();
+        assert!(
+            written.contains("Pause support: operation=restore-existing supported=true"),
+            "还原兑现暂停，必须写进新日志；实际写了：{written}"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
