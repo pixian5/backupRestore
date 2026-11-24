@@ -4,7 +4,7 @@
 //! - 宿主开机/程序启动时探测是否存在中断未完成的恢复任务（`find_pending_boot_task`）；
 //! - 单阶段单次重试防打转标记（`claim_boot_resume_attempt` / `release_boot_resume_attempt`）；
 //! - 跨阶段自动续跑总次数闸门（`allow_total_attempt` / `bump_total_attempt`）；
-//! - 孤儿僵尸任务自动收口清理（`collect_orphan_tasks`）；
+//! - 孤儿僵尸任务自动收口清理（`collect_orphan_tasks`；正在准备中的任务不算孤儿，见 `prepare_lock`）；
 //! - 立即续跑、延后处置与放弃任务的生命周期调度。
 
 #[cfg(any(windows, test))]
@@ -138,12 +138,22 @@ pub(crate) fn collect_orphan_tasks() -> Result<usize, TaskError> {
     let workspace = executable
         .parent()
         .ok_or_else(|| err("executable has no workspace directory"))?;
+    collect_orphan_tasks_in(workspace, &crate::log_root::logs_dir().join("gui.log"))
+}
+
+/// 在指定工作区（里面有 `tasks\` 目录）里收口孤儿任务。工作区单列成参数是为了能写单元测试
+/// （`collect_orphan_tasks` 用的是可执行程序所在目录，测试里指不到临时目录）。
+///
+/// 【2026-11-24 实机缺陷】原来这里的判据只有三条（非终态 + 没写目标卷 + 没有启动项记录），
+/// 「正在准备中的任务」三条全中：准备流程先落盘任务、最后才写启动项记录。现在多一条——
+/// **在办的不动**（判据见 `prepare_lock::in_flight`），并留下一行日志说明为什么没动。
+#[cfg(windows)]
+pub(crate) fn collect_orphan_tasks_in(workspace: &Path, log: &Path) -> Result<usize, TaskError> {
     let tasks_root = workspace.join("tasks");
     if !tasks_root.is_dir() {
         return Ok(0);
     }
     let store = TaskStore::new(workspace);
-    let log = crate::log_root::logs_dir().join("gui.log");
     let mut collected = 0usize;
     for entry in fs::read_dir(&tasks_root)? {
         let entry = match entry {
@@ -167,8 +177,21 @@ pub(crate) fn collect_orphan_tasks() -> Result<usize, TaskError> {
         {
             continue;
         }
+        // ★ 正在准备中的任务：另一个进程（命令行准备、另一个界面实例派出的准备子进程）还在写
+        //   它的材料，启动项记录要到最后才写。这时候收口 = 那边随后报莫名其妙的错，甚至
+        //   一次性启动已经武装（2026-11-24 两次实机复现，见 prepare_lock.rs）。一律不动。
+        if crate::prepare_lock::in_flight(&entry.path()) {
+            let _ = crate::append_log(
+                log,
+                &format!(
+                    "orphan task guard: task {task_id} stage={:?} is still being prepared; left alone",
+                    task.status
+                ),
+            );
+            continue;
+        }
         let _ = crate::append_log(
-            &log,
+            log,
             &format!(
                 "orphan task guard: task {task_id} stage={:?} has no boot entry and cannot resume; marking Failed",
                 task.status
@@ -475,5 +498,99 @@ mod tests {
         assert!(stage_resumable_after_interruption(Stage::BootRepaired));
         assert!(!stage_resumable_after_interruption(Stage::Success));
         assert!(!stage_resumable_after_interruption(Stage::Failed));
+    }
+
+    /// 守卫对「正在准备中的任务」的处理（2026-11-24 实机缺陷的回归测试，只能在 Windows 上跑）。
+    /// 变异验证：把 `collect_orphan_tasks_in` 里的在办检查删掉，第一条断言必须变红。
+    #[cfg(windows)]
+    mod orphan_guard {
+        use super::super::collect_orphan_tasks_in;
+        use backuprestore_core::{
+            BootMode, BootPlan, DestinationSpec, Operation, Stage, Task, TaskStore, VolumeIdentity,
+        };
+
+        fn identity(value: &str, size: u64) -> VolumeIdentity {
+            let mut i = VolumeIdentity::new("disk", value);
+            i.volume_guid = format!("volume-{value}");
+            i.partition_type_guid = "{00000000-0000-0000-0000-000000000000}".into();
+            i.disk_number = Some(0);
+            i.partition_number = Some(1);
+            i.partition_size = size;
+            i.filesystem = "NTFS".into();
+            i
+        }
+
+        fn backup_task() -> Task {
+            let mut task = Task::new(
+                Operation::Backup,
+                BootPlan {
+                    mode: BootMode::ReturnExisting,
+                    previous_bcd_sha256: Some("a".repeat(64)),
+                    menu_name: None,
+                    boot_sequence_requested: true,
+                },
+            );
+            task.source = Some(identity("source", 100));
+            task.workspace_volume = Some(identity("task", 100));
+            task.destination = Some(DestinationSpec {
+                volume: identity("image", 100),
+                absolute_path: None,
+                relative_path: "MyBackup/Windows.wim".into(),
+            });
+            task
+        }
+
+        #[test]
+        fn a_task_that_is_still_being_prepared_is_left_alone_and_collected_only_afterwards() {
+            let root = std::env::temp_dir().join(format!(
+                "backuprestore-orphan-guard-{}-{}",
+                std::process::id(),
+                chrono::Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap_or_default()
+            ));
+            let store = TaskStore::new(&root);
+            let task = backup_task();
+            store.create(&task).unwrap();
+            let dir = store.task_dir(&task.task_id).unwrap();
+            // 准备做到一半的样子：目录都建了、载荷拷了一部分、启动项记录还没写。
+            for name in ["mount", "original", "payload", "stage"] {
+                std::fs::create_dir_all(dir.join(name)).unwrap();
+            }
+            std::fs::write(dir.join("payload").join("Recovery.exe"), b"half-written").unwrap();
+            let log = root.join("gui.log");
+
+            // 有进程握着在办锁：守卫必须一个都不收，任务与材料原样保留。
+            let guard = crate::prepare_lock::hold(&dir).unwrap();
+            assert_eq!(
+                collect_orphan_tasks_in(&root, &log).unwrap(),
+                0,
+                "在办任务不能被收口"
+            );
+            assert_eq!(store.load(&task.task_id).unwrap().status, Stage::Prepared);
+            assert!(dir.join("payload").join("Recovery.exe").is_file());
+            assert!(dir.join("mount").is_dir());
+            let written = std::fs::read_to_string(&log).unwrap();
+            assert!(
+                written.contains("is still being prepared; left alone"),
+                "守卫必须留下「仍在准备、没动」的日志，实际写了：{written}"
+            );
+            assert!(
+                !written.contains("marking Failed"),
+                "在办任务不得被标失败，实际写了：{written}"
+            );
+
+            // 准备结束（进程崩溃时系统同样会放手）：没人握锁的孤儿必须照旧收口。
+            drop(guard);
+            assert_eq!(
+                collect_orphan_tasks_in(&root, &log).unwrap(),
+                1,
+                "没人握锁的孤儿必须照旧收口"
+            );
+            assert_eq!(store.load(&task.task_id).unwrap().status, Stage::Failed);
+            assert!(!dir.join("payload").exists());
+            assert!(!dir.join("mount").exists());
+            std::fs::remove_dir_all(&root).unwrap();
+        }
     }
 }

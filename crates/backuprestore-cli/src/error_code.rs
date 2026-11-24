@@ -362,6 +362,7 @@ error_codes! {
     ReStagingPathNotPlainDir => ("BR-TSK-033", "RE 暂存路径不是普通目录：{0}", "RE staging path is not a plain directory: {0}"),
     ReStagingStillExists => ("BR-TSK-034", "RE 暂存目录仍然存在：{0}", "RE staging directory still exists: {0}"),
     PreparationCompensationIncomplete => ("BR-TSK-035", "准备阶段补偿未完成：{0}", "Preparation compensation incomplete: {0}"),
+    TaskStillBeingPrepared => ("BR-TSK-036", "任务 {0} 正在准备中，另一个程序正在写它的材料；现在不能放弃，请等它结束", "Task {0} is still being prepared by another program; it cannot be abandoned now, wait for that to finish"),
 
     // ── 引导方案（`boot_menu`）─────────────────────────────────────────
     BootMenuTargetLoaderMissing => ("BR-BOOT-030", "缺少必选目标加载器", "Missing required target loader"),

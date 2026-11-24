@@ -124,6 +124,19 @@ unsafe fn cleanup_incomplete_tasks_from_gui(
             task.task_id, task.status
         ));
     }
+    // 【2026-11-24 实机缺陷】正在准备中的任务也不能从这个对话框清理（另一个程序实例正在写它的
+    // 材料，启动项记录要到最后才写）。同样放在动手之前整体预检：有一个在办就一个都不清。
+    for task in &tasks {
+        let dir = store
+            .task_dir(&task.task_id)
+            .map_err(|error| error.to_string())?;
+        if crate::prepare_lock::in_flight(&dir) {
+            return Err(format!(
+                "任务 {} 正在准备中（另一个程序实例正在写它的材料），现在不能清理；请等它结束。",
+                task.task_id
+            ));
+        }
+    }
     for task in tasks {
         let dir = store
             .task_dir(&task.task_id)

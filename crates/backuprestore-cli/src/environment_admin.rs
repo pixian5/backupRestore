@@ -123,6 +123,19 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
     {
         return Err(errc(ErrCode::TaskStateInconsistent));
     }
+    // 【2026-11-24 实机缺陷】正在准备中的任务不能放弃：另一个进程（命令行准备、另一个界面实例
+    // 派出的准备子进程）还在写它的材料。这时候清掉 = 那边随后报莫名其妙的错，甚至一次性启动
+    // 已经武装（孤儿任务守卫那边的同一种竞态，实机复现两次，见 prepare_lock.rs）。
+    if crate::prepare_lock::in_flight(&dir) {
+        append_log(
+            &log,
+            &format!(
+                "Abandon refused: task {} is still being prepared by another process",
+                task.task_id
+            ),
+        )?;
+        return Err(errc_with(ErrCode::TaskStillBeingPrepared, &[&task.task_id]));
+    }
     // 【终态收口，2026-10-16 用户拍板】已终结（Failed）的任务允许收口：
     // 只清本任务的引导对象与载荷、删掉大工作目录，**保留** task.json / status.json /
     // manifest.json / 日志等证据记录，供人工诊断。

@@ -51,6 +51,11 @@ pub(crate) fn prepare_payload(
     let stage = task_dir.join("stage");
     let mount = task_dir.join("mount");
     store.create(task)?;
+    // ★ 2026-11-24 实机缺陷：从任务落盘这一刻起，到本函数结束（或提前 `?` 返回）为止，独占握住在办锁。
+    // 没有它，「孤儿任务守卫」会把这段还在准备的窗口当成孤儿任务清掉——界面程序每次启动都先跑
+    // 守卫，开机自启恰好落在这个窗口里就触发（两种时序、两种后果，见 prepare_lock.rs 的说明）。
+    // 本函数里的三段失败补偿也都在锁的保护之下。
+    let _preparing = crate::prepare_lock::hold(&task_dir)?;
     fs::create_dir_all(&payload)?;
     fs::create_dir_all(&original)?;
     fs::create_dir_all(&stage)?;

@@ -81,6 +81,8 @@ ITEMS = {
     "doc-gates": "文档：tools/doc/check-doc-links.py --strict 三个字段归零 + tools/doc/stale-claims.sh",
     "table-unit": "错误码与日志文案两张表：macOS 与 Windows 两处单元测试（码唯一、中英占位一致）；改了错误码要重新生成 docs/ERROR-CODES.md",
     "cli-probe": "命令行探测命令的冒烟：list-volumes、inspect-environment、wim-info、list-images 各跑一次，核对输出字段",
+    "orphan-race": "守卫竞态：准备进行中启动界面程序，守卫不动、准备成功（开机自启落在准备窗口里的场景，实机复现过两次）",
+    "guard-unit": "准备锁与孤儿任务守卫：Windows 两处单元测试 + 变异验证（删掉在办检查必须变红）",
 }
 
 # ── 规则：(编号, 匹配模式（| 分隔，fnmatch 语法）, [(条目, 前提或 None), ...], 备注) ──
@@ -103,11 +105,13 @@ RULES = [
     ("R08", f"{CLI}recovery_progress.rs",
      [("win-backup", None), ("win-restore", None), ("progress-pe", None)], "进度窗与后台控制台"),
     ("R09", f"{CLI}pending_task.rs|{CLI}boot_entry.rs|{CLI}boot_cleanup.rs|{CLI}boot_record.rs",
-     [("win-backup", None), ("win-restore", None), ("power-resume", None)], "启动项与续跑"),
+     [("win-backup", None), ("win-restore", None), ("power-resume", None),
+      ("orphan-race", "改到孤儿任务守卫时"), ("guard-unit", "改到孤儿任务守卫时")], "启动项与续跑"),
     ("R10", f"{CLI}boot_menu.rs",
      [("win-restore", None), ("bcd-roundtrip", None)], "启动菜单与默认项"),
     ("R11", f"{CLI}prepare_*.rs|{CLI}windows_prepare.rs|{CLI}windows_command.rs|{CLI}process_runner.rs",
-     [("win-backup", None), ("win-restore", None), ("gate-pair", "改到门禁时")], "准备链（备份、还原都要经过）"),
+     [("win-backup", None), ("win-restore", None), ("gate-pair", "改到门禁时"),
+      ("orphan-race", "改到任务落盘、启动项记录、失败补偿的先后时")], "准备链（备份、还原都要经过）"),
     ("R12", f"{CLI}winre_registration.rs",
      [("reagentc", None), ("missing-re-047", None)], "恢复环境注册"),
     ("R13", f"{CLI}online_operation.rs|{CLI}wimlib_apply.rs",
@@ -141,6 +145,10 @@ RULES = [
      [("cli-probe", None), ("gate-pair", "改到卷身份或驱动器类型的判定时")], "列卷与卷身份（2026-11-24 补：此前是表外文件）"),
     ("R27", f"{CLI}image_admin.rs",
      [("cli-probe", None), ("gate-pair", "改到镜像完整性探测时")], "镜像信息与镜像完整性探测（2026-11-24 补：此前是表外文件）"),
+    ("R28", f"{CLI}prepare_lock.rs",
+     [("orphan-race", None), ("guard-unit", None)], "准备期在办锁（2026-11-24 实机缺陷后新增的模块）"),
+    ("R29", f"{CLI}environment_admin.rs",
+     [("cli-probe", None), ("orphan-race", "改到放弃任务的入口时")], "环境探测、启动项枚举与放弃任务（2026-11-24 补：此前是表外文件）"),
 ]
 
 
@@ -177,9 +185,16 @@ def changed_files(since: str, head: str, worktree: bool) -> list[str]:
     return ordered
 
 
-def resolve(files: list[str], rules: list = RULES) -> tuple[dict[str, set], list[str], list[str]]:
-    """把改动文件对照规则。返回（条目 → 前提集合，空集合表示无条件必跑；命中的规则编号；没覆盖到的文件）。"""
+def resolve(files: list[str], rules: list = RULES, unconditional_wins: bool = True) -> tuple[dict[str, set], list[str], list[str]]:
+    """把改动文件对照规则。返回（条目 → 前提集合，空集合表示无条件必跑；命中的规则编号；没覆盖到的文件）。
+
+    ★ 同一条目只要有一条规则说「无条件必跑」，它就是无条件必跑，别的规则给它加的前提不再输出
+      （`unconditional_wins=True`，默认）。此前是「有前提的集合非空就按有前提输出」：一条必跑项会被
+      另一条规则降级成「要人判断前提」，而降级正是这张表要防的那种遗漏
+      （2026-11-24 第二次补规则时发现并订正）。开关只给自检的变异验证用：关掉它就是旧行为。
+    """
     items: dict[str, set] = {}
+    forced: set[str] = set()
     hit_rules: list[str] = []
     unmapped: list[str] = []
     for path in files:
@@ -189,12 +204,17 @@ def resolve(files: list[str], rules: list = RULES) -> tuple[dict[str, set], list
                 matched.append(rule_id)
                 for item, condition in entries:
                     items.setdefault(item, set())
-                    if condition is not None:
+                    if condition is None:
+                        forced.add(item)
+                    else:
                         items[item].add(condition)
         if matched:
             hit_rules.extend(r for r in matched if r not in hit_rules)
         else:
             unmapped.append(path)
+    if unconditional_wins:
+        for item in forced:
+            items[item] = set()
     return items, hit_rules, unmapped
 
 
@@ -246,6 +266,13 @@ SELFTEST_CASES = [
     ("表里没有的文件", [f"{CLI}some_new_module.rs"], set(), {f"{CLI}some_new_module.rs"}),
     ("错误码表、日志文案表与卷设备模块", [f"{CLI}error_code.rs", f"{CLI}i18n.rs", f"{CLI}volume_device.rs", f"{CLI}image_admin.rs"],
      {"table-unit", "cli-probe"}, set()),
+    ("同一条目既被无条件规则命中、又被有前提规则命中（无条件必须胜出）",
+     [f"{CLI}recovery_progress.rs", f"{CLI}text_parsing.rs"],
+     {"win-backup", "win-restore", "progress-pe", "parse-unit"}, set()),
+    ("改了孤儿任务守卫与准备锁（2026-11-24 第二次）",
+     [f"{CLI}pending_task.rs", f"{CLI}prepare_lock.rs", f"{CLI}prepare_payload.rs", f"{CLI}environment_admin.rs",
+      f"{CLI}error_code.rs", f"{CLI}main.rs"],
+     {"win-backup", "win-restore", "power-resume", "orphan-race", "guard-unit", "table-unit", "cli-probe"}, set()),
     ("没有任何改动", [], set(), set()),
 ]
 
@@ -273,7 +300,36 @@ def selftest() -> int:
     print(f"SELFTEST mutation=drop_R04 {'PASS' if ok else 'FAIL'} gone={gone} kept={kept} restored={back}")
     failed += 0 if ok else 1
 
-    print(f"SELFTEST_CASES={len(SELFTEST_CASES) + 1} SELFTEST_FAILED={failed}")
+    # 变异验证二：关掉「无条件胜出」开关（= 旧行为：有前提的集合非空就按有前提输出），
+    # 「无条件必须胜出」那条用例必须变红——必跑项 progress-pe 被降级成有前提；开关打开时必须绿。
+    demoted_case = next(c for c in SELFTEST_CASES if c[0].startswith("同一条目"))
+    good_u, _r, _u = resolve(demoted_case[1])
+    good_ok = {item for item, conditions in good_u.items() if not conditions} == demoted_case[2]
+    old_u, _r2, _u2 = resolve(demoted_case[1], RULES, unconditional_wins=False)
+    old_got = {item for item, conditions in old_u.items() if not conditions}
+    red = "progress-pe" not in old_got and old_got != demoted_case[2]
+    ok = good_ok and red
+    print(f"SELFTEST mutation=unconditional_loses {'PASS' if ok else 'FAIL'} green_with_fix={good_ok} red_without_fix={red}")
+    failed += 0 if ok else 1
+
+    # 变异验证三：拆掉「准备锁」那条规则，守卫竞态与它的单元测试必须不再是「无条件必跑」
+    # （别的规则还以「有前提」的形式提到它们，所以查的是无条件身份，不是条目还在不在）；
+    # 备份与还原由别的规则提供，必须还在。
+    guard_case = next(c for c in SELFTEST_CASES if c[0].startswith("改了孤儿任务守卫"))
+    before_g, _r, _u = resolve(guard_case[1])
+    mutated_g = [rule for rule in RULES if rule[0] != "R28"]
+    after_g, _r2, _u2 = resolve(guard_case[1], mutated_g)
+    def unconditional(items: dict[str, set]) -> set[str]:
+        return {item for item, conditions in items.items() if not conditions}
+    gone_g = {"orphan-race", "guard-unit"}.issubset(unconditional(before_g)) and not ({"orphan-race", "guard-unit"} & unconditional(after_g))
+    kept_g = "win-backup" in unconditional(after_g) and "table-unit" in unconditional(after_g)
+    restored_g, _r3, _u3 = resolve(guard_case[1])
+    back_g = {"orphan-race", "guard-unit"}.issubset(unconditional(restored_g))
+    ok = gone_g and kept_g and back_g
+    print(f"SELFTEST mutation=drop_R28 {'PASS' if ok else 'FAIL'} gone={gone_g} kept={kept_g} restored={back_g}")
+    failed += 0 if ok else 1
+
+    print(f"SELFTEST_CASES={len(SELFTEST_CASES) + 3} SELFTEST_FAILED={failed}")
     print("SELFTEST=PASS" if failed == 0 else "SELFTEST=FAIL")
     return 1 if failed else 0
 

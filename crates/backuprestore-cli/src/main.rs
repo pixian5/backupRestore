@@ -149,6 +149,8 @@ pub(crate) mod environment_admin;
 #[cfg(windows)]
 pub(crate) mod prepare_payload;
 #[cfg(windows)]
+pub(crate) mod prepare_lock;
+#[cfg(windows)]
 pub(crate) mod prepare_mount;
 #[cfg(windows)]
 mod windows_prepare;

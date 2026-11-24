@@ -34,7 +34,7 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层（共 220 条）
+## CLI 层（共 221 条）
 
 ### `BR-APL` — 应用镜像（DISM / wimlib）（10 条）
 
@@ -226,7 +226,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-RE-046` | `BcdRecoveryRamdiskUnrecognized` | BCD 恢复对象的 ramdisk 卷形态无法识别 | The ramdisk volume form of the BCD recovery object is unrecognized |
 | `BR-RE-047` | `WinreComponentsMissing` | 目标卷缺少恢复环境注册组件（{0}），无法注册恢复环境；系统虽可启动，但日后无法从恢复环境检修，按裁定拒绝继续 | The target volume lacks a recovery component ({0}); refusing to continue |
 
-### `BR-TSK` — 任务、状态机、续跑（34 条）
+### `BR-TSK` — 任务、状态机、续跑（35 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -264,6 +264,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-TSK-033` | `ReStagingPathNotPlainDir` | RE 暂存路径不是普通目录：{0} | RE staging path is not a plain directory: {0} |
 | `BR-TSK-034` | `ReStagingStillExists` | RE 暂存目录仍然存在：{0} | RE staging directory still exists: {0} |
 | `BR-TSK-035` | `PreparationCompensationIncomplete` | 准备阶段补偿未完成：{0} | Preparation compensation incomplete: {0} |
+| `BR-TSK-036` | `TaskStillBeingPrepared` | 任务 {0} 正在准备中，另一个程序正在写它的材料；现在不能放弃，请等它结束 | Task {0} is still being prepared by another program; it cannot be abandoned now, wait for that to finish |
 
 ### `BR-VOL` — 卷身份与盘符（26 条）
 
