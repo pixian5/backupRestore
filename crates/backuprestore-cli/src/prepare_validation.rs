@@ -19,7 +19,7 @@ use chrono::Utc;
 
 use crate::error_code::ErrCode;
 use crate::image_admin::{wim_full_windows_probe, ProbeOutcome};
-use crate::prepare_plan::PrepareOptions;
+use crate::prepare_plan::{OfflineTargetImageNature, PrepareOptions, classify_offline_target_image};
 use crate::process_runner::capture_output;
 use crate::volume_device::{
     active_system_volume_identity, disk_free_space, volume_free_bytes,
@@ -141,14 +141,83 @@ pub(crate) fn validate_operation_inputs(
             // 前提：`prepare` 只在线上 Windows 会话里跑（GUI/CLI 建任务阶段），
             // 故 `%SystemDrive%` 就是那套正在运行的 Windows；RE 侧执行的是
             // recover/resume，不走本函数。
-            if options.operation == Operation::RestoreExisting && !target_is_active {
-                return Err(err(
-                    "restore-existing target must be the active Windows volume",
-                ));
-            }
             let path = image_path.ok_or_else(|| err("restore image is missing"))?;
             if !Path::new(path).is_file() {
                 return Err(err("restore image does not exist"));
+            }
+            let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
+            // 【2026-11-24 缺陷 1 修复】restore-existing 的目标不是当前系统卷时，只放行「数据镜像」。
+            //
+            // 10-18 的 H1 第二层闸在这里**无条件**拒绝（防 A 入口的目标下拉静默失效后
+            // 「系统镜像被灌进数据盘」），却把合法的「数据镜像 → 数据卷」（界面
+            // 「还原数据到非 C 盘」的离线方式）也一并封死了：那条路 10-14 明确放行过，
+            // 从 10-18 起没人能走通。现在按**镜像是什么**来分，而不是按目标卷：
+            // 两种情况下目标都是数据卷，目标卷分不开它们。
+            // 判据与理由见 `classify_offline_target_image`；它排在「镜像文件存在」之后，
+            // 因为要读副档、要挂载镜像。
+            if options.operation == Operation::RestoreExisting && !target_is_active {
+                let active_system = active_system_volume_identity()?;
+                let target_letter = target
+                    .drive_letter
+                    .ok_or_else(|| crate::errc(ErrCode::TargetLetterMissing))?;
+                let target_text = format!("{target_letter}:");
+                // 「副档指认」只采信**这份镜像自己的**副档（按索引命名的那一个）。
+                // `read_index_metadata` 在它不存在时会回退去读同目录的旧式 `metadata.json`
+                // ——那可能属于别的镜像（2026-11-24 实测：镜像目录里留着一份 10 月份的旧副档，
+                // 让一份没有副档的镜像被「指认」成了系统盘的备份）。指认错了会把合法的
+                // 数据镜像当成 Windows 镜像拒掉，所以这里没有自己的副档就当作没有副档，
+                // 交给挂载探测去判定。
+                let own_sidecar_exists = backuprestore_core::image_metadata::index_metadata_path(
+                    Path::new(path),
+                    options.wim_index,
+                )
+                .is_ok_and(|sidecar_path| sidecar_path.is_file());
+                let sidecar_source = if own_sidecar_exists {
+                    metadata.as_ref().map(|metadata| &metadata.source)
+                } else {
+                    None
+                };
+                // 副档指认「源卷就是当前系统卷」时不必挂载：系统镜像通常几十 GB，
+                // 挂载要不少时间。这一步与 `classify_offline_target_image` 的第一条
+                // 判据相同——那里负责判定，这里只是省掉一次挂载。
+                let sidecar_names_the_system_volume = sidecar_source
+                    .is_some_and(|source| source.same_partition(&active_system));
+                let mount_markers = if sidecar_names_the_system_volume {
+                    append_log(
+                        log,
+                        &crate::i18n::msg_tpl(
+                            "wp_offline_image_sidecar_names_system",
+                            &[&target_text],
+                        ),
+                    )?;
+                    // 不会被用到：判定函数看到副档指认就直接下结论。
+                    Err(String::from("skipped: the sidecar names the current system volume"))
+                } else {
+                    append_log(
+                        log,
+                        &crate::i18n::msg_tpl("wp_offline_image_mounting", &[&target_text]),
+                    )?;
+                    crate::image_admin::wim_mount_markers(path, options.wim_index, log)
+                        .map_err(|error| error.to_string())
+                };
+                match classify_offline_target_image(sidecar_source, &active_system, mount_markers) {
+                    OfflineTargetImageNature::Data => append_log(
+                        log,
+                        &crate::i18n::msg_tpl("wp_offline_data_image_allowed", &[&target_text]),
+                    )?,
+                    OfflineTargetImageNature::Windows => {
+                        return Err(crate::errc_with(
+                            ErrCode::ImageIsWindowsForDataTarget,
+                            &[&target_text],
+                        ));
+                    }
+                    OfflineTargetImageNature::Unknown(reason) => {
+                        return Err(crate::errc_with(
+                            ErrCode::ImageNatureUnknown,
+                            &[&reason],
+                        ));
+                    }
+                }
             }
             let _ = capture_output(
                 "dism.exe",
@@ -244,7 +313,6 @@ pub(crate) fn validate_operation_inputs(
             // 优先比对物理文件大小，避免在提权准备阶段对 58GB 镜像再次耗时 2 分钟重复读盘计算哈希。
             // 缺失时视为第三方/PE WIM（如安装 WinRE/PE 为第二系统），跳过
             // 哈希校验与目标大小预检——DISM /Get-WimInfo 已确认 WIM 可读。
-            let metadata = crate::read_index_metadata(Path::new(path), options.wim_index).ok();
             // 用户显式接受当前镜像时在这里产生例外记录；只有真正越过了副档判据才记，
             // 正常通过校验的镜像不写例外（避免例外退化成默认状态）。
             let mut acceptance: Option<ImageAcceptance> = None;

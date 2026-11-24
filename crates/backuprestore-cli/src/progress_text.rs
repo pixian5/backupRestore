@@ -106,9 +106,76 @@ pub(crate) fn stage_skeleton(input: &SkeletonInput<'_>) -> Vec<String> {
     body
 }
 
+/// 进度窗的「暂停」对哪些操作真的有效。
+///
+/// # 为什么要这个函数（2026-11-24 缺陷 4）
+///
+/// 进度窗的暂停按钮与 P 键对所有操作都显示，但真正在步骤边界检查暂停标志的
+/// **只有恢复环境里的还原链**（`recovery_engine.rs` 里两处 `wait_if_paused`）。
+/// 恢复环境备份、在线备份、在线还原、PE 的全部操作都不检查：按钮翻成「继续(P)」、
+/// 日志写「将在下一个步骤边界挂起」，而任务一路跑完——实机坐实
+/// （任务 `37eb3aa2`：登记了暂停之后捕获又跑了 88.5 秒，直到完成并重启）。
+///
+/// 所以这里用**白名单**：只有名字对得上、并且确实实现了暂停检查的操作才提供暂停；
+/// 其余（含认不出的名字）一律不提供。以后新增操作默认没有暂停，
+/// 要用就得先实现检查、再加进来。
+///
+/// 认的名字是任务里记录的写法：`prepare_env.rs` 的 `operation_name` 写进任务、再由
+/// `recovery_engine.rs` 交给进度窗的 `OPERATION`——小写、带连字符（`backup`、
+/// `restore-existing`、`create-secondary`）。**不是**恢复环境日志首行里那种
+/// `operation=RestoreExisting`：那一行打印的是枚举的调试格式，不是传给进度窗的字符串
+/// （2026-11-24 实机教训：第一版白名单照着日志首行写成了不带连字符的 `restoreexisting`，
+/// 结果一个都匹配不上，把唯一支持暂停的还原链也禁用了；是恢复环境日志里一行
+/// `Pause ignored: operation=backup` 暴露的）。也不是 PE 请求里的 `restore` / `secondary`
+/// ——那两个不检查暂停。
+pub(crate) fn pause_supported_for(operation: Option<&str>) -> bool {
+    matches!(
+        operation.map(|name| name.trim().to_ascii_lowercase()).as_deref(),
+        Some("restore-existing") | Some("create-secondary")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pause_is_offered_only_where_the_chain_actually_checks_it() {
+        use backuprestore_core::Operation;
+
+        // 恢复环境还原链：全仓只有它两处 wait_if_paused，是唯一兑现「暂停」的地方。
+        // 名字不在这里另写一份，直接取任务里真正记录的那个：`Operation` 序列化成
+        // kebab-case，与 `prepare_env.rs` 的 `operation_name` 逐字一致。
+        let recorded = |operation: backuprestore_core::Operation| {
+            serde_json::to_value(operation)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .expect("operation serializes to a string")
+        };
+        assert_eq!(recorded(Operation::RestoreExisting), "restore-existing");
+        assert_eq!(recorded(Operation::CreateSecondary), "create-secondary");
+        assert_eq!(recorded(Operation::Backup), "backup");
+        assert!(pause_supported_for(Some(&recorded(Operation::RestoreExisting))));
+        assert!(pause_supported_for(Some(&recorded(Operation::CreateSecondary))));
+        assert!(pause_supported_for(Some(" Restore-Existing ")));
+        // 恢复环境备份（任务里记的就是小写 `backup`）、在线备份、在线还原：都不检查暂停
+        assert!(!pause_supported_for(Some(&recorded(Operation::Backup))));
+        assert!(!pause_supported_for(Some(&recorded(Operation::Probe))));
+        assert!(!pause_supported_for(Some("ONLINE_BACKUP")));
+        assert!(!pause_supported_for(Some("ONLINE_RESTORE")));
+        // PE 的四种操作名，与上面两个不是一回事，也不检查暂停
+        assert!(!pause_supported_for(Some("restore")));
+        assert!(!pause_supported_for(Some("secondary")));
+        assert!(!pause_supported_for(Some("backup")));
+        assert!(!pause_supported_for(Some("data")));
+        // 枚举的调试格式（恢复环境日志首行里那种）不是任务记录的写法，不能被认成支持暂停：
+        // 第一版就是把它当成了真名字。
+        assert!(!pause_supported_for(Some("RestoreExisting")));
+        assert!(!pause_supported_for(Some("CreateSecondary")));
+        // 认不出的名字、空名字、没有名字：默认不提供
+        assert!(!pause_supported_for(Some("")));
+        assert!(!pause_supported_for(None));
+    }
 
     fn progress(total: u32, current: u32, steps: &[(u32, &str, Option<&str>)]) -> StepProgress {
         StepProgress {

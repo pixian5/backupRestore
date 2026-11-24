@@ -34,7 +34,10 @@ mod settings_dialog;
 use settings_dialog::ask_settings_dialog;
 
 mod choice_dialogs;
-use choice_dialogs::{ask_invalid_image_path, ask_system_drive_handler, CHOICE_GENERIC_OFFLINE};
+use choice_dialogs::{
+    ask_invalid_image_path, ask_system_drive_handler, CHOICE_GENERIC_OFFLINE,
+    CHOICE_OFFLINE_KEEP_FILES,
+};
 
 mod image_admin_window;
 use image_admin_window::open_image_admin;
@@ -1130,6 +1133,9 @@ pub(crate) struct DriveInfo {
     partition_number: Option<u32>,
     partition_type_guid: String,
     has_windows_installation: bool,
+    /// 驱动器类型的小写名称（`fixed` / `removable` / `cdrom` …）；旧版「列卷」输出里
+    /// 没有这个字段时为空串，此时 `is_optical` 靠文件系统名做后备。
+    drive_type: String,
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -2491,6 +2497,7 @@ mod p4_precise_drive_tests {
             partition_number: Some(1),
             partition_type_guid: partition_type_guid.to_string(),
             has_windows_installation: false,
+            drive_type: "fixed".to_string(),
         }
     }
 

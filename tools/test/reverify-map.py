@@ -79,6 +79,8 @@ ITEMS = {
     "deploy": "虚拟机内重新构建部署，并通过 tools/vm/preflight.sh",
     "mutation": "判据脚本自身：变异验证（拆守卫或改值后新判据变红，恢复后变绿）",
     "doc-gates": "文档：tools/doc/check-doc-links.py --strict 三个字段归零 + tools/doc/stale-claims.sh",
+    "table-unit": "错误码与日志文案两张表：macOS 与 Windows 两处单元测试（码唯一、中英占位一致）；改了错误码要重新生成 docs/ERROR-CODES.md",
+    "cli-probe": "命令行探测命令的冒烟：list-volumes、inspect-environment、wim-info、list-images 各跑一次，核对输出字段",
 }
 
 # ── 规则：(编号, 匹配模式（| 分隔，fnmatch 语法）, [(条目, 前提或 None), ...], 备注) ──
@@ -133,6 +135,12 @@ RULES = [
      [("core-unit", "工具链或持续集成配置变了"), ("parse-unit", "工具链或持续集成配置变了")], "工具链与持续集成"),
     ("R24", "*.md|docs/*|经验/*|日记/*|.gitignore|.gitattributes",
      [("doc-gates", None)], "文档与仓库配置：没有实机项"),
+    ("R25", f"{CLI}error_code.rs|{CLI}i18n.rs",
+     [("table-unit", None)], "错误码表与日志文案表（2026-11-24 补：此前是表外文件）"),
+    ("R26", f"{CLI}volume_device.rs",
+     [("cli-probe", None), ("gate-pair", "改到卷身份或驱动器类型的判定时")], "列卷与卷身份（2026-11-24 补：此前是表外文件）"),
+    ("R27", f"{CLI}image_admin.rs",
+     [("cli-probe", None), ("gate-pair", "改到镜像完整性探测时")], "镜像信息与镜像完整性探测（2026-11-24 补：此前是表外文件）"),
 ]
 
 
@@ -236,6 +244,8 @@ SELFTEST_CASES = [
     ("只改文档", ["README.md", "docs/20261124-x.md", "经验/02-VM操作与传输纪律.md"], {"doc-gates"}, set()),
     ("只改界面", [f"{CLI}native_gui/task_executor.rs"], {"gui-matrix", "gui-confirm"}, set()),
     ("表里没有的文件", [f"{CLI}some_new_module.rs"], set(), {f"{CLI}some_new_module.rs"}),
+    ("错误码表、日志文案表与卷设备模块", [f"{CLI}error_code.rs", f"{CLI}i18n.rs", f"{CLI}volume_device.rs", f"{CLI}image_admin.rs"],
+     {"table-unit", "cli-probe"}, set()),
     ("没有任何改动", [], set(), set()),
 ]
 

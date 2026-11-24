@@ -34,7 +34,7 @@ core 的码由 `TaskError::coded("BR-CORE-NNN", …)` 直接写在构造点，
 grep -rn "BR-CORE-" crates/backuprestore-core/src/
 ```
 
-## CLI 层（共 218 条）
+## CLI 层（共 220 条）
 
 ### `BR-APL` — 应用镜像（DISM / wimlib）（10 条）
 
@@ -94,7 +94,7 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-GUI-001` | `ImageIndexInvalid` | 镜像索引无效 | The image index is invalid |
 | `BR-GUI-002` | `ImageIndexNotPositive` | 镜像索引必须是正整数 | The image index must be a positive integer |
 
-### `BR-IMG` — 镜像文件与 DISM 探测（8 条）
+### `BR-IMG` — 镜像文件与 DISM 探测（10 条）
 
 | 码 | 变体 | 中文 | English |
 |---|---|---|---|
@@ -106,6 +106,8 @@ grep -rn "BR-CORE-" crates/backuprestore-core/src/
 | `BR-IMG-006` | `ImageNameReadFailed` | 读取镜像名失败（dism /Get-WimInfo 退出码 {0}{1}）。请确认镜像文件可访问且未被占用。 | Failed to read the image name (dism /Get-WimInfo exit code {0}{1}). Make sure the image file is accessible and not in use. |
 | `BR-IMG-007` | `DeleteIndexReadbackMismatch` | 删除旧索引后回读的索引集合与期望不一致，已中止；镜像可能停在半删状态，请用 wim-info 核实后再试 | The index set read back after deleting old indexes does not match the expectation; aborted. The image may be left half-deleted - verify with wim-info before retrying |
 | `BR-IMG-008` | `BackupSpaceInsufficient` | 镜像所在卷可用空间不足以开始备份：可用 {0}，至少需要 {1}（源卷已用 {2}）。请换一个更大的卷或先清理镜像卷；本次未写入任何镜像数据。 | Not enough free space on the volume holding the image to start a backup: {0} available, at least {1} required (source volume uses {2}). Use a larger volume or free space on the image volume first; no image data was written this run. |
+| `BR-IMG-009` | `ImageIsWindowsForDataTarget` | 这是一份完整 Windows 镜像，不能按「还原到原卷」离线写入非系统卷 {0}。要把系统装到另一块盘，请用「新增非 C 盘第二系统」；要还原系统盘，请用「还原系统到 C 盘」。本次未创建任务、未写入任何卷。 | This is a complete Windows image and cannot be written offline to the non-system volume {0} as an in-place restore. To put Windows on another drive, use \"Add 2nd system (non-C:)\"; to restore the system drive, use \"Restore C:\". No task was created and no volume was written this run. |
+| `BR-IMG-010` | `ImageNatureUnknown` | 无法判定这份镜像是不是完整 Windows（{0}），已拒绝把它离线写入非系统卷：宁可拒绝，也不冒险把系统镜像灌进数据盘。本次未创建任务、未写入任何卷。 | Cannot determine whether this image is a complete Windows image ({0}), so writing it offline to a non-system volume was refused: refusing is safer than risking a Windows image on a data volume. No task was created and no volume was written this run. |
 
 ### `BR-PE` — PE 通道与写盘契约（60 条）
 

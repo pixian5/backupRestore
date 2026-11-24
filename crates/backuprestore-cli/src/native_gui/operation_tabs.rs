@@ -1087,13 +1087,16 @@ pub(crate) unsafe fn select_operation(state: &mut State, index: usize) {
     }
     if matches!(operation, "restore-data" | "create-secondary") {
         // 目标若还停在初始默认的系统盘（B/C 都禁止的目标），自动跳到第一个
-        // 合法卷：B=非系统且非 Windows 卷；C=非系统卷。找不到就保持原样，
-        // 由「创建任务」时的目标闸门给出明确报错（不做静默猜测）。
+        // 合法卷：B=非系统、非 Windows 卷、非光驱；C=非系统卷、非光驱。
+        // 找不到就保持原样，由「创建任务」时的目标闸门给出明确报错（不做静默猜测）。
+        // 【2026-11-24 缺陷 2】光驱不是任何一种还原的合法目标，却按字母序排在
+        // 数据盘前面：不排除的话，这一步会停在光驱上（基线实测选中了 `D: | UDF`）。
         let system = active_system_letter();
         if let Some(current) = selected_drive_letter(state, state.controls.target)
             && current.eq_ignore_ascii_case(&system)
             && let Some(candidate) = state.drives.iter().find(|drive| {
                 !drive.letter.eq_ignore_ascii_case(&system)
+                    && !drive.is_optical()
                     && (operation == "create-secondary" || !drive.has_windows_installation)
             })
         {

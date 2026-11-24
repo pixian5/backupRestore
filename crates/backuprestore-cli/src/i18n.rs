@@ -816,6 +816,24 @@ image-name heuristic; the offline registration pre-check during recovery is the 
 (reagentc.exe and SYSTEM present)",
     ),
     (
+        "wp_offline_image_sidecar_names_system",
+        "离线数据还原核对镜像：副档记录的备份源卷就是当前系统卷，这是一份完整 Windows 镜像（不需要挂载确认），目标 {0}",
+        "Offline data restore image check: the sidecar records the current system volume as the \
+backup source, so this is a complete Windows image (no mount needed); target {0}",
+    ),
+    (
+        "wp_offline_image_mounting",
+        "离线数据还原核对镜像：只读挂载确认镜像是不是完整 Windows（不采信镜像的索引名），目标 {0}",
+        "Offline data restore image check: read-only mounting decides whether the image is a \
+complete Windows image (the image name is not trusted); target {0}",
+    ),
+    (
+        "wp_offline_data_image_allowed",
+        "离线数据还原放行：只读挂载已确认镜像不是完整 Windows（缺 reagentc.exe 或 SYSTEM），目标为非系统卷 {0}",
+        "Offline data restore allowed: read-only mounting confirmed the image is not a complete \
+Windows image (reagentc.exe or SYSTEM missing); target is the non-system volume {0}",
+    ),
+    (
         "wp_volume_cache_flushed",
         "卷缓存已强制落盘：{0}:（{1}）",
         "Volume cache flushed: {0}: ({1})",

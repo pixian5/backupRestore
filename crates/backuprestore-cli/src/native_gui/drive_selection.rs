@@ -375,6 +375,13 @@ pub(crate) unsafe fn selected_wim_index(state: &State) -> Option<u32> {
         .filter(|value| *value > 0)
 }
 
+impl DriveInfo {
+    /// 是不是光驱。判据与理由见 `wim_parse::is_optical_drive`（跨平台，有单测）。
+    pub(crate) fn is_optical(&self) -> bool {
+        crate::wim_parse::is_optical_drive(&self.drive_type, &self.filesystem)
+    }
+}
+
 pub(crate) fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> {
     let value: serde_json::Value = serde_json::from_str(output)
         .map_err(|error| format!("volume metadata JSON parse failed: {error}"))?;
@@ -406,6 +413,7 @@ pub(crate) fn parse_drive_infos(output: &str) -> Result<Vec<DriveInfo>, String> 
             partition_type_guid: json_text(&item, "partitionTypeGuid"),
             has_windows_installation: json_text(&item, "hasWindowsInstallation")
                 .eq_ignore_ascii_case("true"),
+            drive_type: json_text(&item, "driveType"),
         });
     }
     drives.sort_by(|left, right| left.letter.cmp(&right.letter));

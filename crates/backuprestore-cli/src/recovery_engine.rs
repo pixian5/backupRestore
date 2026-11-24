@@ -1203,6 +1203,15 @@ pub(crate) fn recover_windows(
                     log,
                     "data-volume restore: target has no SYSTEM hive; skipping BCDBoot",
                 )?;
+                // 【2026-11-24】数据卷分支的暂停点。系统卷分支在「修引导前」有一个，
+                // 这里原来没有：于是应用镜像期间按下的暂停永远不会被处理——进度窗已经翻成
+                // 「继续(P)」、日志写着「将在下一个步骤边界挂起」，任务却一路做完
+                // （实机任务 14e5ca33：登记了暂停，10 秒后照常完成）。这条路自 10-18 起
+                // 走不通，所以之前没人碰到。放的位置与系统卷分支对称：目标卷已经写入、
+                // 启动配置还没碰。没人按暂停时这一步直接通过。
+                if let Some(p) = progress {
+                    p.wait_if_paused(log, "STEP 3/4 校验（数据卷收尾前）")?;
+                }
                 if task.status == Stage::ImageApplied {
                     store.write_transition(task, Stage::BootRepaired)?;
                 }

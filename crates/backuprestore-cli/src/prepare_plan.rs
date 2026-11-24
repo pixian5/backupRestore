@@ -4,7 +4,7 @@
 // 完全不依赖任何 Win32 FFI 或 Windows 系统调用，在 macOS / Linux 测试目标下可直接运行单元测试。
 #![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
-use backuprestore_core::{canonical_compression, Operation, TaskError};
+use backuprestore_core::{canonical_compression, Operation, TaskError, VolumeIdentity};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::err;
@@ -309,6 +309,58 @@ pub(crate) enum ProbeOutcome {
     HeuristicPass,
 }
 
+/// 「还原到原卷」的离线任务目标不是当前系统卷时，对镜像性质的判定结果
+/// （2026-11-24 缺陷 1 修复）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OfflineTargetImageNature {
+    /// 数据镜像：挂载后确认没有完整 Windows 的两个标记。可以还原到非系统卷。
+    Data,
+    /// 完整 Windows 镜像：不能走「还原到原卷」这条离线路径灌进非系统卷。
+    Windows,
+    /// 判定不了（挂载探测失败，副档也指认不了）。调用方按拒绝处理，并把原因带给用户。
+    Unknown(String),
+}
+
+/// 判定「要把镜像离线写入一个非系统卷」时，这份镜像是不是完整 Windows。
+///
+/// # 为什么要这个函数（2026-11-24 缺陷 1）
+///
+/// 10-18 加的安全闸规定「还原到原卷的目标必须是当前系统卷」，防的是 A 入口的目标下拉
+/// 静默失效后「系统镜像被灌进数据盘」。但它拦得太宽，把合法的「数据镜像 → 数据卷」
+/// （界面「还原数据到非 C 盘」的离线方式）也一并封死了。这里把两种情况分开：
+/// **看镜像是什么，而不是看目标卷是什么**——两种情况下目标都是数据卷。
+///
+/// # 两条判据，为什么是这两条
+///
+/// - **副档指认**：产品自己备份时会把源卷身份写进副档。源卷就是当前系统卷的镜像，
+///   一定是完整 Windows。它让最常见的误选（拿系统盘的备份去还原数据盘）不必挂载就被拦下。
+///   它只负责「认定是 Windows」，认定不了就交给挂载探测。
+/// - **挂载探测**：只认挂载之后看到的结果（`reagentc.exe` 与 `SYSTEM` 两个标记）。
+///   **不看镜像的索引名**——在线备份写进镜像的默认索引名就是 `Windows Backup`
+///   （`online_operation.rs` 的 `capture`），数据镜像照样「像」；上面那个
+///   `name_looks_like_full_windows` 的快速通道在这里不能用。
+///
+/// 判定不了时返回 [`OfflineTargetImageNature::Unknown`]，由调用方保守拒绝：
+/// 错放一份 Windows 镜像进数据卷，比让用户换一台能挂载的机器更贵。
+pub(crate) fn classify_offline_target_image(
+    sidecar_source: Option<&VolumeIdentity>,
+    active_system: &VolumeIdentity,
+    mount_markers: Result<bool, String>,
+) -> OfflineTargetImageNature {
+    // 比的是分区身份（磁盘 GUID + 分区 GUID），不比序列号：系统盘还原过之后序列号会变，
+    // 而分区身份不变。
+    if let Some(source) = sidecar_source
+        && source.same_partition(active_system)
+    {
+        return OfflineTargetImageNature::Windows;
+    }
+    match mount_markers {
+        Ok(true) => OfflineTargetImageNature::Windows,
+        Ok(false) => OfflineTargetImageNature::Data,
+        Err(reason) => OfflineTargetImageNature::Unknown(reason),
+    }
+}
+
 pub(crate) fn windows_version_summary(output: &str) -> String {
     let mut candidate = String::new();
     for character in output.chars() {
@@ -477,6 +529,77 @@ pub(crate) fn validate_prepare_options_safety(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 离线还原到非系统卷：镜像性质判定（2026-11-24 缺陷 1 修复）──────────
+
+    fn volume(disk: &str, partition: &str) -> VolumeIdentity {
+        VolumeIdentity::new(disk, partition)
+    }
+
+    #[test]
+    fn offline_target_image_follows_the_mounted_probe() {
+        let active = volume("{disk-0}", "{part-c}");
+        let other = volume("{disk-0}", "{part-f}");
+        // 挂载后确认缺标记 → 数据镜像（放行）；有没有副档都一样
+        assert_eq!(
+            classify_offline_target_image(Some(&other), &active, Ok(false)),
+            OfflineTargetImageNature::Data
+        );
+        assert_eq!(
+            classify_offline_target_image(None, &active, Ok(false)),
+            OfflineTargetImageNature::Data
+        );
+        // 挂载后标记齐全 → 完整 Windows（拒绝）；有没有副档都一样
+        assert_eq!(
+            classify_offline_target_image(Some(&other), &active, Ok(true)),
+            OfflineTargetImageNature::Windows
+        );
+        assert_eq!(
+            classify_offline_target_image(None, &active, Ok(true)),
+            OfflineTargetImageNature::Windows
+        );
+    }
+
+    #[test]
+    fn offline_target_image_sidecar_of_the_system_volume_is_windows_without_mounting() {
+        let active = volume("{disk-0}", "{part-c}");
+        // 副档的源卷就是当前系统卷：不用挂载就认定是完整 Windows，
+        // 挂载失败、甚至挂载说「缺标记」都不改判（副档是产品自己写的事实）。
+        assert_eq!(
+            classify_offline_target_image(Some(&active), &active, Err("mount failed".into())),
+            OfflineTargetImageNature::Windows
+        );
+        assert_eq!(
+            classify_offline_target_image(Some(&active), &active, Ok(false)),
+            OfflineTargetImageNature::Windows
+        );
+    }
+
+    #[test]
+    fn offline_target_image_is_unknown_when_the_probe_fails() {
+        let active = volume("{disk-0}", "{part-c}");
+        let other = volume("{disk-2}", "{part-f}");
+        // 挂载失败、副档也指认不了：判定不了，原因原样带出去给调用方拒绝时展示
+        assert_eq!(
+            classify_offline_target_image(Some(&other), &active, Err("exit code 5".into())),
+            OfflineTargetImageNature::Unknown("exit code 5".into())
+        );
+        assert_eq!(
+            classify_offline_target_image(None, &active, Err("cannot mount".into())),
+            OfflineTargetImageNature::Unknown("cannot mount".into())
+        );
+    }
+
+    #[test]
+    fn offline_target_image_compares_partition_identity_case_insensitively() {
+        // 磁盘 GUID 与分区 GUID 的大小写不应当影响「是不是同一个分区」
+        let active = volume("{DISK-0}", "{PART-C}");
+        let same_partition_other_case = volume("{disk-0}", "{part-c}");
+        assert_eq!(
+            classify_offline_target_image(Some(&same_partition_other_case), &active, Ok(false)),
+            OfflineTargetImageNature::Windows
+        );
+    }
 
     #[test]
     fn parse_drive_handles_various_formats() {

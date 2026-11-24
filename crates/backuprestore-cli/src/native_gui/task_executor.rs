@@ -1203,10 +1203,20 @@ pub(crate) unsafe fn create_task(state: &mut State) {
         // PE=排队 PE 任务，RE=确认后走提权 prepare 链。
         if operation == "restore-data" {
             CHOICE_GENERIC_OFFLINE.store(true, std::sync::atomic::Ordering::SeqCst);
+            // 【2026-11-24 缺陷 3】没勾「格式化目标分区」时实际是不格式化的覆盖式应用，
+            // 弹窗正文要按这个说，不能再固定写「将被格式化」。
+            let format_target =
+                IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
+            CHOICE_OFFLINE_KEEP_FILES.store(
+                !format_target,
+                std::sync::atomic::Ordering::SeqCst,
+            );
             let choice = match state.test_drive_choice {
                 Some(c) => c,
                 None => ask_system_drive_handler(state.root, language),
             };
+            // 与下面那个标志一样：弹窗创建时已消费；测试钩子跳过弹窗时在这里复位。
+            CHOICE_OFFLINE_KEEP_FILES.store(false, std::sync::atomic::Ordering::SeqCst);
             // 弹窗在 WM_CREATE 里已 swap(false) 消费；测试钩子跳过弹窗时手动复位，
             // 防止标志泄漏到下一次系统盘弹窗（文案错成通用版）。
             CHOICE_GENERIC_OFFLINE.store(false, std::sync::atomic::Ordering::SeqCst);

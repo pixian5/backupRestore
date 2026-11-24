@@ -532,7 +532,7 @@ pub(crate) fn wim_full_windows_probe(
 /// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
 /// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
 #[cfg(windows)]
-fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, TaskError> {
+pub(crate) fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, TaskError> {
     let mount_dir = std::env::temp_dir().join(format!("br-wimprobe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&mount_dir);
     std::fs::create_dir_all(&mount_dir)?;

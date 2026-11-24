@@ -241,6 +241,12 @@ pub struct ProgressShared {
     /// 为 true 则原地等待（不推进、不退出），让用户能停下来查看/处理。
     /// 用 AtomicBool 而不是 Mutex：检查非常频繁，且只需要一个布尔语义。
     pub paused: AtomicBool,
+    /// 本操作是否真的兑现「暂停」（2026-11-24 缺陷 4）。
+    ///
+    /// 进度窗对所有操作都显示暂停按钮，但全仓只有恢复环境还原链在步骤边界检查
+    /// `paused`。这里是 false 时按钮禁用、P 键只记一行日志，不再给出「已暂停」的假象。
+    /// 取值见 `progress_text::pause_supported_for`（白名单）。
+    pub pause_supported: bool,
     /// 【2026-10-16 审查修订，卡死 4】暂停期间用户关掉了进度窗口。
     ///
     /// 为什么必须有：主进度窗口此前**没有 `WM_CLOSE` 分支**（落到
@@ -459,6 +465,7 @@ unsafe extern "system" {
     fn UpdateWindow(hwnd: Hwnd) -> i32;
     fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> i32;
     fn GetDlgItem(hwnd: Hwnd, id: i32) -> Hwnd;
+    fn EnableWindow(hwnd: Hwnd, enable: i32) -> i32;
     fn GetStockObject(index: i32) -> Hwnd;
     fn GetModuleHandleW(name: *const u16) -> *mut c_void;
     fn LoadCursorW(instance: *mut c_void, name: *const u16) -> Hwnd;
@@ -1170,6 +1177,18 @@ unsafe extern "system" fn log_window_proc(
 /// WM_COMMAND（点按钮）与消息循环里的全局 P 键共用同一实现，避免两处逻辑漂移。
 /// `via_key` 只用于日志措辞（点击 vs 按 P），文案与 2026-10-18 之前逐字一致。
 unsafe fn toggle_pause(hwnd: Hwnd, shared: &ProgressShared, via_key: bool) {
+    if !shared.pause_supported {
+        // 本操作不在步骤边界检查暂停标志：按钮已禁用，P 键仍可能被按下。
+        // 不翻转状态（翻了下一条链也不会停，只会留下「已暂停」的假象），只记一行日志。
+        // 日志用英文与结构化字段，实机上可以直接拿来当判据。
+        let operation = shared.operation.safe_lock().clone().unwrap_or_default();
+        let via = if via_key { "key P" } else { "button" };
+        let _ = crate::append_log(
+            &shared.log_path.safe_lock(),
+            &format!("Pause ignored: operation={operation} does not support pause (via {via})"),
+        );
+        return;
+    }
     let paused = shared.toggle_paused();
     let label = encode(if paused { "继续(P)" } else { "暂停(P)" });
     unsafe {
@@ -1485,8 +1504,10 @@ unsafe extern "system" fn window_proc(
             if !cmd_button.is_null() {
                 SendMessageW(cmd_button, WM_SETFONT, create_font(-14, true) as usize, 1);
             }
-            // 「暂停(P)」按钮：常显。恢复链在步骤边界检查 paused 标志并挂起，
+            // 「暂停(P)」按钮：常显。恢复环境**还原链**在步骤边界检查 paused 标志并挂起，
             // 让用户能停下来查看日志 / 用命令提示符处理，再按一次继续。
+            // 其余操作（恢复环境备份、在线备份与还原、PE 全部）不检查这个标志：
+            // 窗口创建后由 `run_window` 把按钮禁用并改掉文字（2026-11-24 缺陷 4）。
             let pause_button = CreateWindowExW(
                 0,
                 encode("Button").as_ptr(),
@@ -1665,6 +1686,7 @@ pub fn spawn(initial_log: PathBuf, operation: Option<&str>) -> Arc<ProgressShare
         start_time: Mutex::new(std::time::Instant::now()),
         hwnd: Mutex::new(None),
         operation: Mutex::new(operation.map(|s| s.to_string())),
+        pause_supported: crate::progress_text::pause_supported_for(operation),
         log_window: Mutex::new(None),
         boot_menu: Mutex::new(None),
         paused: AtomicBool::new(false),
@@ -1803,6 +1825,26 @@ unsafe fn run_window(shared: &Arc<ProgressShared>) {
         SetWindowLongPtrW(hwnd, GWL_USERDATA, raw);
     }
     *shared.hwnd.safe_lock() = Some(hwnd as usize);
+    // 【2026-11-24 缺陷 4】不兑现「暂停」的操作：按钮禁用并改掉文字（去掉热键提示），
+    // 免得用户以为能停下来。P 键仍可能被按下，由 `toggle_pause` 记一行日志后忽略。
+    unsafe {
+        let pause_button = GetDlgItem(hwnd, ID_PAUSE_BUTTON);
+        if !shared.pause_supported && !pause_button.is_null() {
+            let label = encode("暂停不可用");
+            SetWindowTextW(pause_button, label.as_ptr());
+            EnableWindow(pause_button, 0);
+        }
+    }
+    {
+        let operation = shared.operation.safe_lock().clone().unwrap_or_default();
+        let _ = crate::append_log(
+            &shared.log_path.safe_lock(),
+            &format!(
+                "Pause support: operation={operation} supported={}",
+                shared.pause_supported
+            ),
+        );
+    }
     shared.window_up.store(true, Ordering::SeqCst);
     unsafe {
         if shared.close_requested.load(Ordering::SeqCst) {

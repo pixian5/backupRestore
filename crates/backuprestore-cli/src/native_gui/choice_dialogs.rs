@@ -35,6 +35,13 @@ static CHOICE_LANGUAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU
 // true=用户在 B（还原数据到非 C 盘）显式选择离线通道——目标是数据卷，不涉及系统盘，
 // 文案改为通用离线说明。调用方在 ask_system_drive_handler 前置位，弹窗创建时消费。
 pub(super) static CHOICE_GENERIC_OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// B 入口离线弹窗的正文要不要按「不格式化」来说（2026-11-24 缺陷 3）。
+///
+/// 「格式化目标分区」没勾时，进入 Windows RE 后实际是**不格式化的覆盖式应用**，
+/// 而这里的正文原来固定写「目标卷将被格式化并写入镜像」，与实际做的事相反。
+/// 调用方在弹框前按复选框状态置位，弹窗创建时消费；只在 `CHOICE_GENERIC_OFFLINE`
+/// 也为 true 时才有意义。
+pub(super) static CHOICE_OFFLINE_KEEP_FILES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "system" fn window_proc_system_choice(
     hwnd: Hwnd,
@@ -47,6 +54,8 @@ unsafe extern "system" fn window_proc_system_choice(
         // B 入口离线通道用通用文案（目标是数据卷，不是系统盘）；消费后立即复位，
         // 下一次（如备份/还原系统盘）回到默认系统盘文案。
         let generic_offline = CHOICE_GENERIC_OFFLINE.swap(false, std::sync::atomic::Ordering::SeqCst);
+        // 【2026-11-24 缺陷 3】正文跟着「格式化目标分区」走：没勾时说不格式化。
+        let keep_files = CHOICE_OFFLINE_KEEP_FILES.swap(false, std::sync::atomic::Ordering::SeqCst);
         // ★ 2.6.87：删掉「用系统字体覆盖」的那两行（原来在这里取
         //   `GetStockObject(DEFAULT_GUI_FONT)` 再对每个控件 WM_SETFONT）。
         //   `create_control` 内部已经用 `gui_font()`（雅黑 + 用户选定字号）设过字体，
@@ -54,11 +63,20 @@ unsafe extern "system" fn window_proc_system_choice(
         //   字体族也跟其它窗口不一致（中文看着像宋体、笔画发虚）。
         //   2026-10-30 截图确认：18 号设置下这个框仍是老样子。
         let body_text = if english {
-            if generic_offline {
+            if generic_offline && keep_files {
+                // 进入 PE 仍然会格式化：PE 通道对任何目标都是「先格式化再应用」。
+                "Offline channel selected with 'Format target volume' unchecked: after rebooting into \
+Windows RE, the image is applied to the target volume without formatting it. Files that are \
+not in the image are kept; files and folders with the same names as image entries are \
+overwritten. Entering PE always formats the target volume. Choose how to proceed:"
+            } else if generic_offline {
                 "Offline channel selected: the target volume will be formatted and receive the image after rebooting into PE or Windows RE. Choose how to proceed:"
             } else {
                 "The target volume is the currently running system. Backing up or restoring the system partition must run offline in PE or Windows RE. Choose how to proceed:"
             }
+        } else if generic_offline && keep_files {
+            // 进入 PE 仍然会格式化：PE 通道对任何目标都是「先格式化再应用」。
+            "已选择离线通道，且未勾选「格式化目标分区」：进入 Windows RE 后，镜像会写入目标卷但不格式化——目标卷上镜像之外的文件会保留，与镜像同名的文件和文件夹会被覆盖。进入 PE 则仍会格式化目标卷。请选择处理方式："
         } else if generic_offline {
             "已选择离线通道：重启进入 PE 或 Windows RE 后，目标卷将被格式化并写入镜像。请选择处理方式："
         } else {

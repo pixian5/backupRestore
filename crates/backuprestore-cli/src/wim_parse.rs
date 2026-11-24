@@ -21,6 +21,30 @@ pub(crate) fn json_text(value: &Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// `GetDriveTypeW` 的返回值 → 稳定的小写名称（写进「列卷」输出，界面据此判断）。
+pub(crate) fn drive_type_name(code: u32) -> &'static str {
+    match code {
+        2 => "removable",
+        3 => "fixed",
+        4 => "remote",
+        5 => "cdrom",
+        6 => "ramdisk",
+        _ => "unknown",
+    }
+}
+
+/// 这个卷是不是光驱（2026-11-24 缺陷 2）。
+///
+/// 两个信号任一命中即算：驱动器类型是 `cdrom`；或者文件系统是光盘文件系统
+/// `UDF` / `CDFS`。前者只有新版程序的「列卷」输出才给；后者是后备——旧版输出里
+/// 没有类型字段，但只要光盘放着，文件系统名就是这两个。空光盘的文件系统名是空的，
+/// 所以只靠后备会漏，类型字段才是正判。
+pub(crate) fn is_optical_drive(drive_type: &str, filesystem: &str) -> bool {
+    drive_type.eq_ignore_ascii_case("cdrom")
+        || filesystem.eq_ignore_ascii_case("udf")
+        || filesystem.eq_ignore_ascii_case("cdfs")
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct WimImageInfo {
     pub(crate) index: u32,
@@ -322,6 +346,30 @@ pub(crate) fn parse_percent(line: &str) -> Option<u32> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn optical_drives_are_recognised_from_type_or_from_the_disc_filesystem() {
+        assert_eq!(drive_type_name(5), "cdrom");
+        assert_eq!(drive_type_name(3), "fixed");
+        assert_eq!(drive_type_name(2), "removable");
+        assert_eq!(drive_type_name(4), "remote");
+        assert_eq!(drive_type_name(6), "ramdisk");
+        assert_eq!(drive_type_name(0), "unknown");
+        assert_eq!(drive_type_name(1), "unknown");
+        // 新版输出给了类型：直接认，包括空光盘（文件系统名为空）
+        assert!(is_optical_drive("cdrom", ""));
+        assert!(is_optical_drive("CDROM", "UDF"));
+        // 旧版输出没有类型字段：拿光盘文件系统名做后备
+        assert!(is_optical_drive("", "UDF"));
+        assert!(is_optical_drive("", "cdfs"));
+        // 固定磁盘上的普通卷、可移动盘：都不是光驱
+        assert!(!is_optical_drive("fixed", "NTFS"));
+        assert!(!is_optical_drive("removable", "exFAT"));
+        assert!(!is_optical_drive("fixed", "exFAT"));
+        // 什么都不知道：不当作光驱
+        assert!(!is_optical_drive("unknown", ""));
+        assert!(!is_optical_drive("", ""));
+    }
 
     #[test]
     fn json_text_reads_string_number_and_boolean_values() {

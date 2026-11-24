@@ -42,6 +42,7 @@ unsafe extern "system" {
         file_system_name_buffer: *mut u16,
         file_system_name_size: u32,
     ) -> i32;
+    fn GetDriveTypeW(root_path_name: *const u16) -> u32;
     fn GetVolumeNameForVolumeMountPointW(
         volume_mount_point: *const u16,
         volume_name: *mut u16,
@@ -513,6 +514,10 @@ pub(crate) struct DriveReport {
     pub partition_type_guid: String,
     /// 包含有效 Windows 安装时为 true（`\Windows\System32\Config\SYSTEM`）。
     pub has_windows_installation: bool,
+    /// 驱动器类型的小写名称（`fixed` / `removable` / `cdrom` / `remote` / `ramdisk` /
+    /// `unknown`），来自 `GetDriveTypeW`。2026-11-24 加（缺陷 2）：界面据此不让
+    /// 光驱成为数据还原的默认目标。旧版界面读不到这个字段，另有文件系统名做后备。
+    pub drive_type: String,
 }
 
 #[cfg(windows)]
@@ -546,9 +551,18 @@ pub(crate) fn discover_drives() -> Result<Vec<DriveReport>, TaskError> {
                 r"{letter}:\Windows\System32\Config\SYSTEM"
             ))
             .is_file(),
+            drive_type: crate::wim_parse::drive_type_name(drive_type(letter)).to_string(),
         });
     }
     Ok(drives)
+}
+
+/// 问系统：这个盘符是什么类型的驱动器（`GetDriveTypeW`）。
+#[cfg(windows)]
+fn drive_type(letter: char) -> u32 {
+    let root = wide_null(&format!("{letter}:\\"));
+    // SAFETY: 入参是以 0 结尾的宽字符串根路径（如 `D:\`），长度为 4 个单元。
+    unsafe { GetDriveTypeW(root.as_ptr()) }
 }
 
 #[cfg(windows)]
