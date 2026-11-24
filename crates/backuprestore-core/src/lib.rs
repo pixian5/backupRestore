@@ -11,10 +11,12 @@ use std::io;
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod capture_exclusion;
 pub mod image_metadata;
 pub mod operation_safety;
-pub mod capture_exclusion;
 pub use capture_exclusion::*;
+mod fast_hash;
+pub use fast_hash::sha256_backend;
 pub mod task_store;
 pub use task_store::*;
 pub mod volume_role;

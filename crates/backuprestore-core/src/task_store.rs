@@ -130,19 +130,74 @@ pub fn validate_absolute_path(value: &str) -> Result<(), TaskError> {
     Ok(())
 }
 
+/// 给文件算 SHA-256，返回 64 个小写十六进制字符。全仓所有「算镜像哈希」的地方都走这里。
+///
+/// Windows 上优先用系统自带的加密接口（硬件加速，见 [`crate::fast_hash`]）；
+/// 接口不可用时回落到纯软件实现 [`sha256_file_software`]。两条路径结果逐位相同。
+/// 实际用的是哪一条见 [`crate::sha256_backend`]。
 pub fn sha256_file(path: impl AsRef<Path>) -> Result<String, TaskError> {
-    let mut file = File::open(path)?;
+    Ok(sha256_file_with_backend(path)?.0)
+}
+
+/// 同 [`sha256_file`]，另外返回**这一次实际用到**的实现：`"bcrypt"`（系统加密接口）
+/// 或 `"software"`（纯软件）。调用方把它写进日志，恢复环境里就能看出快速路径
+/// 是否真的走到了——那里跑不了单元测试，日志是唯一的实机证据。
+/// 注意它与 [`crate::sha256_backend`] 不同：那个问的是「哪种实现可用」，
+/// 接口中途报错回落时两者会不一致，以这里返回的为准。
+pub fn sha256_file_with_backend(
+    path: impl AsRef<Path>,
+) -> Result<(String, &'static str), TaskError> {
+    #[cfg(windows)]
+    if let Some(digest) = crate::fast_hash::windows::sha256_file(path.as_ref())? {
+        return Ok((digest, "bcrypt"));
+    }
+    Ok((sha256_file_software(path)?, "software"))
+}
+
+/// 纯软件实现的 SHA-256（跨平台）；也是 Windows 上系统接口不可用时的回落路径。
+pub fn sha256_file_software(path: impl AsRef<Path>) -> Result<String, TaskError> {
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
+    read_file_chunks(path.as_ref(), |chunk| {
+        hasher.update(chunk);
+        Ok(())
+    })?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 顺序读文件时每次取多少字节。4 MiB：系统调用比原先的 1 MiB 少四分之三，
+/// 又不至于在内存紧张的恢复环境里占太多。
+const HASH_READ_CHUNK: usize = 4 * 1024 * 1024;
+
+#[cfg(windows)]
+const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+
+/// 按 [`HASH_READ_CHUNK`] 顺序读整个文件，每读到一块就交给 `consume`。
+///
+/// Windows 上带「顺序读」提示：要读的都是几十 GB 的整份镜像，让系统按顺序预读，
+/// 而不是像随机访问那样只读够用的那一部分。
+pub(crate) fn read_file_chunks(
+    path: &Path,
+    mut consume: impl FnMut(&[u8]) -> Result<(), TaskError>,
+) -> Result<(), TaskError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(FILE_FLAG_SEQUENTIAL_SCAN);
+    }
+    let mut file = options.open(path)?;
+    let mut buffer = vec![0_u8; HASH_READ_CHUNK];
     loop {
         let count = file.read(&mut buffer)?;
         if count == 0 {
             break;
         }
-        hasher.update(&buffer[..count]);
+        consume(&buffer[..count])?;
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(())
 }
+
 
 pub fn verify_sha256(path: impl AsRef<Path>, expected: &str) -> Result<(), TaskError> {
     let actual = sha256_file(path)?;
@@ -1232,6 +1287,49 @@ mod tests {
         write_json_atomic(store.task_path(&task.task_id).unwrap(), &replacement).unwrap();
         let error = store.load(&task.task_id).unwrap_err().to_string();
         assert!(error.contains("does not match requested task id"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sha256_file_matches_known_vectors_and_crosses_read_chunk_boundary() {
+        use sha2::{Digest, Sha256};
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-sha256-{suffix}"));
+        fs::create_dir_all(&root).unwrap();
+
+        // 空文件与 "abc" 是 SHA-256 的标准测试向量：值来自规范，不来自任何一条被测路径。
+        let empty = root.join("empty.bin");
+        fs::write(&empty, []).unwrap();
+        assert_eq!(
+            sha256_file(&empty).unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let abc = root.join("abc.bin");
+        fs::write(&abc, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&abc).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        // 跨过 4 MiB 读块的边界：文件路径的结果必须等于整块读进内存算出来的。
+        // 这条对快速路径与软件路径都成立，所以两个入口都比一次。
+        let mut data = vec![0_u8; 5 * 1024 * 1024 + 123];
+        for (index, slot) in data.iter_mut().enumerate() {
+            *slot = (index * 31 % 251) as u8;
+        }
+        let big = root.join("big.bin");
+        fs::write(&big, &data).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let expected = format!("{:x}", hasher.finalize());
+        assert_eq!(sha256_file(&big).unwrap(), expected);
+        assert_eq!(sha256_file_software(&big).unwrap(), expected);
+
+        // 读不存在的文件必须是错误，不能给出「算出来了」的摘要。
+        assert!(sha256_file(root.join("missing.bin")).is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

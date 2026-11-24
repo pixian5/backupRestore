@@ -112,9 +112,11 @@ pub(crate) fn execute_recovery_backup(
     if existing && !destination_path.is_file() {
         return Err(err("backup image path exists but is not a regular file"));
     }
-    let previous_hash = existing
-        .then(|| backuprestore_core::sha256_file(&destination_path))
-        .transpose()?;
+    let previous_hash = if existing {
+        Some(hash_image_logged(&destination_path, log)?)
+    } else {
+        None
+    };
     let previous_indexes = if existing {
         wim_indexes(&destination_path, log)?
     } else {
@@ -247,7 +249,7 @@ pub(crate) fn execute_recovery_backup(
         ),
     )?;
     append_log(log, crate::i18n::msg("step_verify"))?;
-    let image_sha256 = backuprestore_core::sha256_file(&destination_path)?;
+    let image_sha256 = hash_image_logged(&destination_path, log)?;
     let source_volume_serial = source.volume_serial.clone();
     let source_partition_size = source.partition_size;
     let context_value = |key: &str, fallback: &str| {
@@ -390,6 +392,26 @@ pub(crate) fn parse_wim_indexes_output(output: &str) -> Result<Vec<u32>, TaskErr
         return Err(err("DISM returned invalid WIM indexes"));
     }
     Ok(indexes)
+}
+
+/// 给镜像算 SHA-256，并把「实际用的是哪种实现、花了多久」写进日志。
+///
+/// 这一步的时长取决于用的是系统加密接口（硬件加速）还是纯软件实现，相差数倍；
+/// 恢复环境里跑不了单元测试，所以这一行就是「快速路径确实走到了」的实机证据。
+/// 日志只用英文与结构化字段（`backend=` / `seconds=`），判据可以直接匹配。
+#[cfg(windows)]
+fn hash_image_logged(path: &Path, log: &Path) -> Result<String, TaskError> {
+    let started = std::time::Instant::now();
+    let (digest, backend) = backuprestore_core::sha256_file_with_backend(path)?;
+    append_log(
+        log,
+        &format!(
+            "Image hash computed: backend={backend} seconds={} sha256={digest} file={}",
+            started.elapsed().as_secs(),
+            path.display()
+        ),
+    )?;
+    Ok(digest)
 }
 
 #[cfg(test)]
