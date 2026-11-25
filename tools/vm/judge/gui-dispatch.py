@@ -34,6 +34,17 @@
 #   GUI_LOG_CHANNEL_ONLINE=<n>              「channel split: op=restore-data online=true」的行数（数据入口分流到了在线通道）
 #   GUI_LOG_ONLINE_PARAMS_NO_FORMAT=<n>     「online params: format_target=false」的行数（在线通道收到的是「不格式化」）
 #   GUI_LOG_ONLINE_RESTORE_STARTED=<n>      「online started: op=restore-existing」的行数（在线还原已开始）
+#   —— 界面「说不」矩阵（tools/vm/gui-negative.sh）——
+#   GUI_LOG_CANCELLED_RESTORE_EXISTING=<n>  「GUI action cancelled: destructive confirmation; operation=restore-existing」
+#   GUI_LOG_CANCELLED_RESTORE_DATA=<n>      同上，operation=restore-data
+#   GUI_LOG_CANCELLED_CREATE_SECONDARY=<n>  同上，operation=create-secondary
+#   GUI_LOG_OVERLAY_DECLINED=<n>            「GUI action blocked: overlay restore (wimlib route) declined by the user」
+#   GUI_LOG_OFFLINE_CONFIRM_NO=<n>          「offline data restore: Windows RE confirm result=7 (6=yes)」
+#   GUI_LOG_OFFLINE_CONFIRM_DECLINED=<n>    「offline data restore: Windows RE confirm declined」
+#   GUI_LOG_METADATA_DECLINED=<n>           「restore cancelled: metadata check declined」
+#   GUI_LOG_IMAGE_ON_SOURCE_BLOCKED=<n>     「GUI action blocked: image volume matches source volume」
+#   GUI_LOG_PATH_GUIDANCE_CANCELLED=<n>     「GUI image path guidance: user choice=0」（引导框上点了「取消」）
+#   GUI_LOG_SYSTEM_CHOICE_CANCELLED=<n>     「system drive operation cancelled by user」
 #   GUI_EVIDENCE_LINE <原文>                上面几类里最先出现的几行（供人看）
 import sys
 
@@ -61,6 +72,17 @@ KEYS = {
     "GUI_LOG_CHANNEL_ONLINE": "channel split: op=restore-data online=true",             # 数据入口分流到了在线通道
     "GUI_LOG_ONLINE_PARAMS_NO_FORMAT": "online params: format_target=false",            # 在线通道收到的是「不格式化」
     "GUI_LOG_ONLINE_RESTORE_STARTED": "online started: op=restore-existing",            # 在线还原已开始
+    # ---- 界面「说不」矩阵（tools/vm/gui-negative.sh）：用户点「否」或「取消」之后界面自己记下的那一行 ----
+    "GUI_LOG_CANCELLED_RESTORE_EXISTING": "GUI action cancelled: destructive confirmation; operation=restore-existing",
+    "GUI_LOG_CANCELLED_RESTORE_DATA": "GUI action cancelled: destructive confirmation; operation=restore-data",
+    "GUI_LOG_CANCELLED_CREATE_SECONDARY": "GUI action cancelled: destructive confirmation; operation=create-secondary",
+    "GUI_LOG_OVERLAY_DECLINED": "GUI action blocked: overlay restore (wimlib route) declined by the user",
+    "GUI_LOG_OFFLINE_CONFIRM_NO": "offline data restore: Windows RE confirm result=7 (6=yes)",
+    "GUI_LOG_OFFLINE_CONFIRM_DECLINED": "offline data restore: Windows RE confirm declined",
+    "GUI_LOG_METADATA_DECLINED": "restore cancelled: metadata check declined",
+    "GUI_LOG_IMAGE_ON_SOURCE_BLOCKED": "GUI action blocked: image volume matches source volume",
+    "GUI_LOG_PATH_GUIDANCE_CANCELLED": "GUI image path guidance: user choice=0",
+    "GUI_LOG_SYSTEM_CHOICE_CANCELLED": "system drive operation cancelled by user",
 }
 
 

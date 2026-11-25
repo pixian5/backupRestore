@@ -165,6 +165,23 @@ check "gui-dispatch judge: the online channel got format_target=false" "1" "$(li
 check "gui-dispatch judge mutation: the online restore start is counted, the backup start count does not change" "1" "$(line "$out" GUI_LOG_ONLINE_RESTORE_STARTED)"
 check "gui-dispatch judge: backup start and restore start are told apart (backup count stays 1)" "1" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
 check "gui-dispatch judge: a cancel on any entry is counted regardless of the entry" "1" "$(line "$out" GUI_LOG_CANCELLED_ANY)"
+# 界面「说不」矩阵（gui-negative.sh）用到的十个键：人工拼一遍每个「说不」的出口留下的那一行，逐键核对。
+printf '[2026-11-25T13:00:50.000000000+00:00] GUI action cancelled: destructive confirmation; operation=restore-existing\n[2026-11-25T13:00:51.000000000+00:00] GUI action blocked: overlay restore (wimlib route) declined by the user\n[2026-11-25T13:00:52.000000000+00:00] offline data restore: Windows RE confirm result=7 (6=yes)\n[2026-11-25T13:00:52.500000000+00:00] offline data restore: Windows RE confirm declined\n[2026-11-25T13:00:53.000000000+00:00] restore cancelled: metadata check declined; operation=restore-existing\n[2026-11-25T13:00:54.000000000+00:00] GUI action blocked: image volume matches source volume\n[2026-11-25T13:00:55.000000000+00:00] GUI image path guidance: user choice=0 (1=browse 0=cancel)\n[2026-11-25T13:00:56.000000000+00:00] system drive operation cancelled by user\n' >> "$TMP/guib.log"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
+check "gui-dispatch judge: the cancelled line names the entry (restore-existing)" "1" "$(line "$out" GUI_LOG_CANCELLED_RESTORE_EXISTING)"
+check "gui-dispatch judge: another entry's cancelled line is not counted yet" "0" "$(line "$out" GUI_LOG_CANCELLED_RESTORE_DATA)"
+check "gui-dispatch judge: overlay restore declined" "1" "$(line "$out" GUI_LOG_OVERLAY_DECLINED)"
+check "gui-dispatch judge: the last confirmation answered NO" "1" "$(line "$out" GUI_LOG_OFFLINE_CONFIRM_NO)"
+check "gui-dispatch judge: then declined" "1" "$(line "$out" GUI_LOG_OFFLINE_CONFIRM_DECLINED)"
+check "gui-dispatch judge: missing-metadata prompt declined" "1" "$(line "$out" GUI_LOG_METADATA_DECLINED)"
+check "gui-dispatch judge: image on the source volume is blocked" "1" "$(line "$out" GUI_LOG_IMAGE_ON_SOURCE_BLOCKED)"
+check "gui-dispatch judge: guidance dialog cancelled" "1" "$(line "$out" GUI_LOG_PATH_GUIDANCE_CANCELLED)"
+check "gui-dispatch judge: handler-choice dialog cancelled" "1" "$(line "$out" GUI_LOG_SYSTEM_CHOICE_CANCELLED)"
+check "gui-dispatch judge: none of the negative paths left an error line" "0" "$(line "$out" GUI_LOG_ERROR)"
+# 变异：界线之后再补一行另一个入口的「已取消」→ 那个键必须被数到（证明上面的 0 是读出来的，不是读不到）。
+printf '[2026-11-25T13:00:57.000000000+00:00] GUI action cancelled: destructive confirmation; operation=restore-data\n' >> "$TMP/guib.log"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
+check "gui-dispatch judge mutation: the data entry's cancelled line is counted once it appears" "1" "$(line "$out" GUI_LOG_CANCELLED_RESTORE_DATA)"
 
 # judge/combo-selected.py：人工拼一份「读取下拉框」的输出。
 printf 'COMBO id=1202 count=4 selected=2 visible=True\n  ITEM[0]=C: | NTFS\n  ITEM[1]=D: | UDF\n  ITEM[2]=F: | NTFS | more\n__END__\n' > "$TMP/combo.txt"
@@ -221,7 +238,7 @@ check "wim-info judge mutation: no images field -> not read, exits non-zero" "1"
 check_in "wim-info judge mutation: no images field is named" "WIM_INFO_READ=False reason=no_images_field" "$out"
 
 for f in run-kept.sh orphan-race.sh cli-probe.sh data-guard.sh pause-backup.sh pause-restore.sh data-restore.sh \
-         gui-fix-check.sh gui-choice-text.sh gui-matrix.sh gui-data-restore.sh gui-backup.sh vm-unit.sh mutate.sh \
+         gui-fix-check.sh gui-choice-text.sh gui-matrix.sh gui-data-restore.sh gui-backup.sh gui-negative.sh vm-unit.sh mutate.sh \
          mutation-guard.sh mutation-progress.sh rebuild-deploy.sh clean-fixtures.sh lib/vm.sh lib/common.sh \
          ../gui-check/restore-confirm.sh; do
   bash -n "$HERE/$f" 2>/dev/null || { echo "SELFTEST syntax $f FAIL"; failed=$((failed+1)); }

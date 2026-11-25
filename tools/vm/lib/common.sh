@@ -494,15 +494,7 @@ gui_wait_window() {
 }
 
 # gui_set_image_path <镜像路径>：把控件 1203 的文字直接写成路径（不模拟打字，避开中文输入法），写入后必须回读一致。
-gui_set_image_path() {
-  local st="" attempt
-  for attempt in 1 2 3 4; do
-    st=$(elev uitext2.ps1 -Id 1203 -Text "$1")
-    printf '%s' "$st" | grep -a -q 'match=True' && { printf '%s\n' "$st" | grep -a -E '^SETTEXT' | head -1; return 0; }
-    sleep 2
-  done
-  printf '%s\n' "$st" | grep -a -E '^SETTEXT|RESULT=' | tail -1; return 1
-}
+gui_set_image_path() { gui_set_control_text 1203 "$1"; }
 
 # gui_combo_items <控件编号>：输出下拉框的选中项与全部条目（已解码）
 gui_combo_items() { elev comboitems.ps1 -Id "$1" 2>/dev/null | decode_text; }
@@ -525,12 +517,46 @@ gui_select_combo() {
   case "$out" in *SELECT=OK*) return 0 ;; *) return 1 ;; esac
 }
 
+# gui_select_source <盘符>：备份页签的源卷下拉框（1202）选中的必须是指定的卷——不是就用消息直选，再读回核对。
+# 输出读回的条目文字；不是指定的卷返回非零（调用方必须中止：源卷错了，后面每一步都在错误的卷上）。
+gui_select_source() {
+  local out
+  out=$(gui_combo_selected 1202)
+  printf '%s' "$out" | grep -a -q -i "^$1:" && { echo "$out"; return 0; }
+  gui_select_combo 1202 "$1:" | sed 's/^/  COMBO /'
+  out=$(gui_combo_selected 1202)
+  echo "$out"
+  printf '%s' "$out" | grep -a -q -i "^$1:"
+}
+
+# gui_set_control_text <控件编号> <文字>：把控件的文字直接写成给定内容（不模拟打字，避开中文输入法），写入后必须回读一致。
+# ★ 值里不要有空格（参数是按空白切开的），也不要以冒号结尾（见 gui_select_combo 的说明）。
+gui_set_control_text() {
+  local st="" attempt
+  for attempt in 1 2 3 4; do
+    st=$(elev uitext2.ps1 -Id "$1" -Text "$2")
+    printf '%s' "$st" | grep -a -q 'match=True' && { printf '%s\n' "$st" | grep -a -E '^SETTEXT' | head -1; return 0; }
+    sleep 2
+  done
+  printf '%s\n' "$st" | grep -a -E '^SETTEXT|RESULT=' | tail -1; return 1
+}
+
 # gui_windows <证据文件名>：列出界面进程当前**全部**可见顶层窗口（任意类名，已解码），
 # 同时写进证据文件。用来回答「点完某个按钮之后，界面上是不是多出了一个窗口」。
 gui_windows() { elev uidlglist.ps1 -Class ANY 2>/dev/null | decode_text | tee "$EV/$1"; }
 
-# gui_window_count <类名>：界面进程当前该类的可见顶层窗口个数（已解码；读不到输出空串）。
-gui_window_count() { elev uidlglist.ps1 -Class "$1" 2>/dev/null | decode_text | sed -n 's/^WINDOWS=\([0-9][0-9]*\).*/\1/p' | head -1; }
+# gui_window_count <类名>：界面进程当前该类的可见顶层窗口个数（已解码）。读不到输出空串并返回非零——
+# 连续三次都读不到才算读不到；调用方不许把空串当成「有窗口」或「没窗口」。
+gui_window_count() {
+  local i out
+  for i in 1 2 3; do
+    out=$(elev uidlglist.ps1 -Class "$1" 2>/dev/null | decode_text | sed -n 's/^WINDOWS=\([0-9][0-9]*\).*/\1/p' | head -1)
+    [ -n "$out" ] && { echo "$out"; return 0; }
+    sleep 2
+  done
+  echo ""
+  return 1
+}
 
 # windows_judge <标签>：对 <标签>-windows-before.txt 与 <标签>-windows-after.txt 两份清单做判读（judge/windows.py），
 # 输出键值行：WINDOWS_READ / MESSAGE_BOXES_AFTER / NEW_WINDOW_CLASSES_AFTER …
