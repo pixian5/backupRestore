@@ -281,7 +281,14 @@ online)
   l=$(gui_wait_window MSGBOX 1500) || { verdict GUI_BACKUP_ONLINE FAIL "no result box within 1500 s"; exit 1; }
   printf '%s\n' "$l" > "$EV/$NAME-result-box.txt"
   printf '%s\n' "$l" | grep -a -E '^WIN|id=1 ' | cut -c1-200 | sed 's/^/  RESULT_BOX /'
-  printf '%s\n' "$l" | grep -a -q 'id=1 ' && gui_must_click onl MSGBOX 1
+  # 结果框只有一个按钮；它的控件编号从清单里读出来再点——实测是 2，不是消息框惯用的 1（第一版写死了 1，
+  # 结果框没被点掉，留在桌面上被判成残留）。不是恰好一颗按钮就不点，直接判失败。
+  ok_ids=$(printf '%s\n' "$l" | sed -n 's/^  id=\([0-9]*\) class=Button visible=True .*/\1/p' | tr '\n' ' ')
+  if [ "$(printf '%s' "$ok_ids" | wc -w | tr -d ' ')" = 1 ]; then
+    say "RESULT_BOX_BUTTON_ID=$ok_ids"; gui_must_click onl MSGBOX "$ok_ids"
+  else
+    say "ABORT: the result box does not have exactly one button (ids: [$ok_ids]); not clicking anything"; verdict GUI_WINDOWS_CLEAN FAIL "result box buttons=[$ok_ids]"; fail=1
+  fi
   settle_windows onl 5
 
   say "STEP=6 collect evidence verbatim"

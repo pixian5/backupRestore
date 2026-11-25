@@ -195,6 +195,7 @@ check "windows judge: an unreadable before-listing exits non-zero too (it would 
 cp "$HERE/fixtures/cli-probe-sample-wim-info.txt" "$TMP/wi.txt"
 out=$(python3 -I "$HERE/judge/wim-info.py" "$TMP/wi.txt" 2.10.6); rc=$?
 check "wim-info judge: the real sample is read" "0" "$rc"
+check "wim-info judge: the command's own success flag (it is in the second JSON line)" "True" "$(line "$out" WIM_INFO_SUCCESS)"
 check "wim-info judge: the sample has one index" "1" "$(line "$out" WIM_IMAGE_COUNT)"
 check "wim-info judge: the sample was written by 2.10.6" "2.10.6" "$(line "$out" WIM_PROGRAM_VERSION)"
 check "wim-info judge: version equal to the expected one" "True" "$(line "$out" WIM_VERSION_MATCH)"

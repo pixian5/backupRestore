@@ -31,7 +31,17 @@ def judge(path, expected=None, out=print):
         out("WIM_INFO_READ=False reason=no_images_field")
         return False
     out("WIM_INFO_READ=True")
-    out("WIM_INFO_SUCCESS=%s" % value.get("success"))
+    # 「自陈成功」在输出的第二行 JSON 里（命令的结论行）；第一行是结果对象，没有这个字段。
+    success = value.get("success")
+    for other in raw.splitlines():
+        if success is not None:
+            break
+        if other.strip().startswith("{"):
+            try:
+                success = json.loads(other).get("success")
+            except ValueError:
+                pass
+    out("WIM_INFO_SUCCESS=%s" % ("<missing>" if success is None else success))
     out("WIM_IMAGE_COUNT=%d" % len(images))
     first = images[0] if images and isinstance(images[0], dict) else {}
     size = first.get("imageSize", first.get("ImageSize"))
