@@ -38,7 +38,9 @@ want=$(wc -c < "$HERE/ps/build-wrapper.ps1" | tr -d ' ')
 have=$("$PRL" exec "$VM" powershell -NoProfile -Command "(Get-Item -LiteralPath '$SHARE_VM_PS\\build-wrapper.ps1' -ErrorAction SilentlyContinue).Length" 2>/dev/null | tr -d '\r\n ')
 say "BUILD_WRAPPER_BYTES host=$want vm=${have:-<unreadable>}"
 [ "$want" = "$have" ] || { say "ABORT: tools/vm/ps/build-wrapper.ps1 is not readable from the VM with the same byte count"; exit 2; }
-"$PRL" exec "$VM" --current-user cmd /d /c "if exist X:\\windows\\build-windows.ps1 (echo BUILD_SCRIPT_THERE) else (echo BUILD_SCRIPT_MISSING)" 2>/dev/null | tr -cd '\11\12\40-\176' | grep -a -o 'BUILD_SCRIPT_[A-Z]*' | head -1 | sed 's/^/  /'
+# 构建脚本在不在必须核对，不能只打印：不在就中止（原来只打印一行，构建随后会在「没有结束标记」上失败，原因隔了一层）。
+# 这里按共享盘的 UNC 路径查：系统身份通道看不到 X: 这个盘符。
+need_guest_file '\\Mac\backupRestore\windows\build-windows.ps1' "windows/build-windows.ps1 is not readable through the share"
 
 process_count() { vrun "tasklist /fi \"IMAGENAME eq BackupRestore.exe\" /fo csv /nh" 3 | tr -cd '\11\12\40-\176' | grep -a -c 'BackupRestore.exe'; }
 if [ "$CHECK_ONLY" = 1 ]; then

@@ -22,7 +22,7 @@ require_idle "$NAME-idle.txt" 120
 
 say "STEP=2 resident elevated helper in the desktop session; helper scripts staged"
 gui_ready
-[ -n "$(vrun "dir /b $SYS_IMAGE" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a '\.wim')" ] || { say "ABORT: the system image for item C is missing: $SYS_IMAGE"; exit 3; }
+need_guest_file "$SYS_IMAGE" "the system image for item C is missing: $SYS_IMAGE"
 
 say "STEP=3 readings before"
 TASKS0=$(gui_task_list); echo "  TASKS_BEFORE=$(printf '%s' "$TASKS0" | wc -w | tr -d ' ')" | tee "$EV/$NAME-tasks.txt"

@@ -54,7 +54,13 @@ for i in 1 2 3; do
 done
 say "LAUNCH: $(printf '%s' "$launch" | tr '\n' ' ') filter=${FILTER:-<all>}"
 sleep 3
-[ -n "$(vrun "dir /b $LOG" 2 | tr -cd '\11\12\40-\176' | grep -a "test-$TAG.log")" ] || { say "ABORT: the test log does not exist 3 s after launch -- the test did not start"; exit 2; }
+# 启动后 3 秒核对日志文件确实出现了——「启动回显」不算数。不在与读不到分开报。
+guest_exists "$LOG"; rc=$?
+case $rc in
+  0) say "TEST_LOG=created" ;;
+  1) say "ABORT: the test log does not exist 3 s after launch -- the test did not start"; exit 2 ;;
+  *) say "ABORT: could not read whether the test log exists after launch (reading failed is not the same as not started)"; exit 2 ;;
+esac
 
 say "STEP=3 wait for the end marker"
 t=0; end=""

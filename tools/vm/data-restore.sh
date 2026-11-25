@@ -23,12 +23,9 @@ say "STEP=0 deployed binaries"
 deployed_hashes
 
 say "STEP=1 preconditions"
-vrun "dir /b $DATA_WIM" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a '\.wim' | sed 's/^/  DATA_IMAGE /'
-imgn=$(vrun "dir /b $DATA_WIM" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -c '\.wim')
-[ "$imgn" -ge 1 ] || { say "ABORT: the data image is missing"; exit 3; }
-brdata=$(vrun "if exist F:\\BRDATA\\sub\\file1.txt (echo BRDATA_THERE) else (echo BRDATA_ABSENT)" 2 | tr -cd '\11\12\40-\176' | grep -a -o 'BRDATA_[A-Z]*' | head -1)
-say "FIXTURE_DIR=${brdata:-<unreadable>}"
-[ "$brdata" = "BRDATA_THERE" ] || { say "ABORT: F:\\BRDATA (the sentinel-method fixture) is missing"; exit 3; }
+need_guest_file "$DATA_WIM" "the data image is missing"
+need_guest_file 'F:\BRDATA\sub\file1.txt' "F:\\BRDATA (the sentinel-method fixture) is missing"
+say "PRECONDITIONS_OK"
 
 say "STEP=2 boot configuration: file-level backup, verified it reads offline; readings before"
 bcd_backup "$NAME" | tee "$EV/$NAME-bcd-file.txt"
@@ -61,31 +58,12 @@ bcd_readings > "$EV/$NAME-bcd-after.txt"
 TASKS1=$(task_count)
 
 say "STEP=9 judge"
-python3 -I - "$EV" "$NAME" "$PREPARE_TASK" <<'PY' | tee "$EV/$NAME-readings.txt"
-import json, os, re, sys
-ev, name, task = sys.argv[1], sys.argv[2], sys.argv[3]
-def read(f):
-    p = os.path.join(ev, f)
-    return open(p, 'rb').read().decode('utf-8', 'replace').splitlines() if os.path.exists(p) else []
-try:
-    s = json.loads(''.join(read(name + '-status.json')).lstrip('\ufeff'))
-    print("FINAL_STAGE=%s" % s.get('stage')); print("FINAL_PROGRESS=%s" % s.get('progress'))
-except (OSError, ValueError) as e:
-    print("FINAL_STAGE=<unreadable>"); print("FINAL_PROGRESS=<unreadable>")
-log = read(name + '-Recovery.raw.log')
-idx = [i for i, l in enumerate(log) if task in l and 'Recovery.exe started' in l]
-start = idx[0] if idx else None
-end = next((j for j in range((start or 0) + 1, len(log)) if 'Recovery.exe started' in log[j]), len(log)) if start is not None else 0
-seg = log[start:end] if start is not None else []
-print("RECOVERY_SEGMENT_FOUND=%s" % (start is not None))
-# ★ 判「四个步骤都出现过」，不判「恰好四行」（与 pause-restore 同一条规则）。
-print("RECOVERY_STEP_LABELS=%s" % ",".join(sorted(set(re.findall(r'STEP (\d)/4', "\n".join(seg))))))
-for l in seg:
-    if ('STEP ' in l and '/4' in l) or 'SELFCHECK' in l or 'ERROR' in l or 'BR-' in l:
-        print("RECOVERY_LINE " + l[:200])
-sc = [l for l in seg if 'RESTORE_SELFCHECK' in l]
-print("SELFCHECK_LINE=" + (sc[0][sc[0].find('RESTORE_SELFCHECK'):][:160] if sc else '<missing>'))
-PY
+# 读数分两处：任务状态文件（两个键各一行）与恢复环境日志（判读程序 judge/restore-log.py，三个还原用例共用）。
+{
+  status_field "$EV/$NAME-status.json" stage | sed 's/^/FINAL_STAGE=/'
+  status_field "$EV/$NAME-status.json" progress | sed 's/^/FINAL_PROGRESS=/'
+  python3 -I "$HERE/judge/restore-log.py" "$EV/$NAME-Recovery.raw.log" "$PREPARE_TASK"
+} | tee "$EV/$NAME-readings.txt"
 rd() { sed -n "s/^$1=\(.*\)$/\1/p" "$EV/$NAME-readings.txt" | tail -1; }
 chk() { fixture_field "$2" "$1"; }
 STAGE=$(rd FINAL_STAGE); PROGRESS=$(rd FINAL_PROGRESS); LABELS=$(rd RECOVERY_STEP_LABELS); SC=$(rd SELFCHECK_LINE)

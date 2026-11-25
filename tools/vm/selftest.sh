@@ -63,6 +63,71 @@ check "fixture_field of a missing field is empty" "" "$(fixture_field "$TMP/fixt
 : > "$TMP/empty-fixture.txt"
 check "fixture_field of an empty file is empty (the caller must not compare empty with empty)" "" "$(fixture_field "$TMP/empty-fixture.txt" serial)"
 
+printf '\xef\xbb\xbf{"stage":"success","progress":100,"error":null}\n' > "$TMP/status.json"
+check "status_field reads through a byte-order mark" "success" "$(status_field "$TMP/status.json" stage)"
+check "status_field reads a number" "100" "$(status_field "$TMP/status.json" progress)"
+check "status_field of a null field" "<missing>" "$(status_field "$TMP/status.json" error)"
+check "status_field of an unreadable file" "<unreadable>" "$(status_field "$TMP/no-such-status.json" stage)"
+
+# judge/restore-log.py：人工拼一份「跨任务累积」的恢复环境日志。两个任务，第一个带一次跨过午夜的暂停。
+cat > "$TMP/rl.log" <<'LOG'
+[2026-11-24T23:59:58.100000000+00:00] Pause support: operation=restore-existing supported=true
+[2026-11-24T23:59:59.000000000+00:00] Recovery.exe started from env task=aaaaaaaa-0000-0000-0000-000000000001 operation=RestoreExisting
+[2026-11-24T23:59:59.100000000+00:00] STEP 1/4 挂载卷、校验
+[2026-11-24T23:59:59.200000000+00:00] STEP 2/4 还原镜像
+[2026-11-25T00:00:02.000000000+00:00] 恢复已暂停（用户请求），停在：STEP 2/4 还原镜像
+[2026-11-25T00:01:32.000000000+00:00] 用户按 P 继续：恢复将立即推进
+[2026-11-25T00:01:33.000000000+00:00] 恢复已继续（用户请求）
+[2026-11-25T00:01:33.100000000+00:00] STEP 3/4 校验
+[2026-11-25T00:01:33.200000000+00:00] STEP 4/4 清理恢复启动项/配置
+[2026-11-25T00:01:33.300000000+00:00] RESTORE_SELFCHECK target=E serial_before=A4129DAC serial_after=A4129DAC ntoskrnl=false
+[2026-11-25T00:02:00.000000000+00:00] Recovery.exe started from env task=aaaaaaaa-0000-0000-0000-000000000002 operation=Backup
+[2026-11-25T00:02:01.000000000+00:00] STEP 1/4 挂载卷、校验
+LOG
+printf 'Pause support: operation=restore-existing supported=true\n__END__\n' > "$TMP/early.log"
+out=$(python3 -I "$HERE/judge/restore-log.py" "$TMP/rl.log" aaaaaaaa-0000-0000-0000-000000000001 --pause --early-log "$TMP/early.log")
+check_in "restore-log judge: four step labels although the paused step is logged once" "RECOVERY_STEP_LABELS=1,2,3,4" "$out"
+check_in "restore-log judge: the segment stops at the next task (its self-check line is found)" "SELFCHECK_LINE=RESTORE_SELFCHECK target=E serial_before=A4129DAC serial_after=A4129DAC ntoskrnl=false" "$out"
+check_in "restore-log judge: seconds paused across midnight" "SECONDS_PAUSED=91" "$out"
+check_in "restore-log judge: the declaration written just before the start line" "DECLARATION_IN_FORMAL_LOG=Pause support: operation=restore-existing supported=true" "$out"
+check_in "restore-log judge: declaration lines in the task early log" "DECLARATION_IN_TASK_EARLY_LOG=1" "$out"
+check_in "restore-log judge: paused and resumed lines are counted" "PAUSED_LINES=1" "$out"
+check_in "restore-log judge: resumed line" "RESUMED_LINES=1" "$out"
+out=$(python3 -I "$HERE/judge/restore-log.py" "$TMP/rl.log" aaaaaaaa-0000-0000-0000-000000000002); rc=$?
+check "restore-log judge: the second task is found" "0" "$rc"
+check_in "restore-log judge: the second task's labels do not leak from the first" "RECOVERY_STEP_LABELS=1" "$out"
+python3 -I "$HERE/judge/restore-log.py" "$TMP/rl.log" aaaaaaaa-0000-0000-0000-000000000009 >/dev/null 2>&1; check "restore-log judge: an unknown task exits non-zero" "1" "$?"
+# 变异：把「恢复已继续」那一行拿掉（模拟按了继续却没恢复）→ 继续行数必须变 0、停顿时长必须读成未知，不能沿用旧值。
+grep -a -v '恢复已继续' "$TMP/rl.log" > "$TMP/rl-mutated.log"
+out=$(python3 -I "$HERE/judge/restore-log.py" "$TMP/rl-mutated.log" aaaaaaaa-0000-0000-0000-000000000001 --pause --early-log "$TMP/early.log")
+check_in "restore-log judge mutation: resume line removed -> no resumed line" "RESUMED_LINES=0" "$out"
+check_in "restore-log judge mutation: resume line removed -> seconds paused unknown" "SECONDS_PAUSED=<unknown>" "$out"
+
+# judge/gui-dispatch.py：人工拼一份「跨天累积」的界面日志（带一行没有时间戳的、一行只有一位小数秒的）。
+cat > "$TMP/gui.log" <<'LOG'
+[2026-11-23T20:59:38.430604700+00:00] offline data restore: Windows RE confirm result=6 (6=yes)
+[2026-11-23T20:59:38.431049400+00:00] prepare args: --skip-format (overlay restore)
+[2026-10-30T07:16:48.999457800+00:00] GUI action blocked: PE WIM file does not exist
+[2026-11-25T12:33:46.000000000+00:00] GUI started; elevated native Rust window initialized
+tooltips installed: added=37 missing=0
+[2026-11-25T12:33:48.150828100+00:00] offline data restore: Windows RE confirm result=6 (6=yes)
+[2026-11-25T12:33:48.152660600+00:00] prepare args: --skip-format (overlay restore)
+[2026-11-25T12:33:49.5] task directory created
+LOG
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/gui.log" 2026-11-25T12:33:46)
+check_in "gui-dispatch judge: lines after the boundary (a line without a timestamp is not counted)" "GUI_LOG_LINES_AFTER=4" "$out"
+check_in "gui-dispatch judge: only this run's records are counted" "GUI_LOG_SKIP_FORMAT_ARGS=1" "$out"
+check_in "gui-dispatch judge: a two-day-old block is not this run's" "GUI_LOG_BLOCKED=0" "$out"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/gui.log" 2026-10-01T00:00:00)
+check_in "gui-dispatch judge: an early boundary sees the history (the reading channel is proven to see it)" "GUI_LOG_BLOCKED=1" "$out"
+check_in "gui-dispatch judge: history count of confirmations" "GUI_LOG_CONFIRM_YES=2" "$out"
+python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/gui.log" 2027-01-01T00:00:00 >/dev/null 2>&1
+check "gui-dispatch judge: a boundary in the future reads no line and exits non-zero" "1" "$?"
+# 变异：界线之后出现一行「已拦截」→ 必须数到 1（模拟本次真的被拦了）。
+printf '[2026-11-25T12:33:50.000000000+00:00] GUI action blocked: something\n' >> "$TMP/gui.log"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/gui.log" 2026-11-25T12:33:46)
+check_in "gui-dispatch judge mutation: a block after the boundary is counted" "GUI_LOG_BLOCKED=1" "$out"
+
 for f in run-kept.sh orphan-race.sh cli-probe.sh data-guard.sh pause-backup.sh pause-restore.sh data-restore.sh \
          gui-fix-check.sh gui-choice-text.sh gui-matrix.sh vm-unit.sh mutate.sh mutation-guard.sh mutation-progress.sh \
          rebuild-deploy.sh clean-fixtures.sh lib/vm.sh lib/common.sh ../gui-check/restore-confirm.sh; do

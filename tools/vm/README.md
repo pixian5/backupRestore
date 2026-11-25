@@ -25,6 +25,7 @@
 | `pause-backup.sh` | 备份时按 P 只记「已忽略」；声明行落盘；产出测试镜像 | 约 4 分钟 | 重启两次；产生测试镜像与占位文件 |
 | `pause-restore.sh` | 数据卷离线还原：按 P 停住、再按才继续；占位文件回来、被改坏的文件复原 | 约 5 分钟 | 重启两次；先跑过 `pause-backup.sh` 或 `orphan-race.sh new both` |
 | `data-restore.sh` | 数据卷离线还原（不按键）的哨兵法 | 约 2 分钟 | 重启两次；测试卷上要有夹具目录 `F:\BRDATA` |
+| `gui-data-restore.sh` | **界面驱动**的「还原数据到非 C 盘」离线全链（不格式化）：从点按钮、界面自己派发准备，到回到 Windows | 约 4 分钟 | 重启两次；会真的下发任务；同样要有 `F:\BRDATA` |
 | `gui-fix-check.sh` | 进入「还原数据到非 C 盘」默认目标不是光驱；A 入口三道确认最后点否、零副作用 | 约 3 分钟 | 只走到对话框为止，不创建任务 |
 | `gui-choice-text.sh` | 离线选择框的正文跟着「格式化目标分区」变 | 约 2 分钟 | 读到正文后点取消，不创建任务 |
 | `gui-matrix.sh [--quick]` | 界面全矩阵（`tools/gui-check/run.sh` 套保活，结束后恢复 14 号字、中文） | 15 分钟（`--quick` 约 1 分钟） | 改界面设置，结束时会恢复 |
@@ -42,7 +43,11 @@
 - `lib/vm.sh`：通道函数（`vrun` / `vrun_user` / `vps` / `elev` / `ensure_helper` / `stage_gui_helpers` …）。
 - `lib/common.sh`：用例公共函数（`fetch` / `json_field` / `bcd_readings` / `require_idle` / `wait_terminal` /
   `decode_text` / `control_text` / `run_prepare` / `verdict` …）。用例脚本开头 `source "$HERE/lib/common.sh"`。
-- `judge/`：判读程序（从脚本里抽出来的 Python，可离线验证）。
+  三条硬约定写在函数注释里：文件在不在一律走 `guest_exists`（在 / 不在 / **读不到**是三种结果）；
+  有副作用的命令只在「客户端已退出、输出为空、再等几秒也没有新任务目录」时才重新下发；
+  靠变量传结果的函数（`run_prepare`）调用处不接管道。
+- `judge/`：判读程序（从脚本里抽出来的 Python，可离线验证）：`cli-probe.py` 命令行冒烟的输出；
+  `restore-log.py` 恢复环境日志里某一个任务的段落（三个还原用例共用）；`gui-dispatch.py` 界面日志里某一时点之后的记录。
 - `fixtures/`：真实抓到的输出样本，供 `selftest.sh` 用。
 - `ps/`：在虚拟机里执行的包装脚本（测试、构建、同步界面辅助脚本）。**保持纯 ASCII**（PowerShell 5 对无签名的非通用编码文件会读错）。
 - 界面辅助脚本（点击、枚举控件、读写控件文字、哨兵法的前后置检查）在 `tools/gui-check/ps/`；

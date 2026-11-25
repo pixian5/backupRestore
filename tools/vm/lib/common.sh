@@ -208,22 +208,43 @@ task_stage() { # $1 任务编号 → 输出阶段（success / failed / 其它）
     | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -E '^[a-z-]+$' | tail -1
 }
 
-# run_prepare <输出文件名> <prepare 的参数……>：执行**一次** prepare 并辨认它建出的任务。
+# run_prepare <输出文件名> <prepare 的参数……>：执行 prepare 并辨认它建出的任务。
 # 结果放在三个变量里：PREPARE_SUCCESS（True / False / 空串 = 读不到）、PREPARE_TASK、PREPARE_TASK_SOURCE。
 # ★ 为什么不用 vraw：vraw 找不到回显标记会重试，而 prepare 有副作用——准备成功时它会自己请求重启，
-#   通道在输出回显标记之前断开是常态；重试等于在重启过程中再下发一次准备。
+#   通道在输出回显标记之前断开是常态；盲目重试等于在重启过程中再下发一次准备。
 # ★ 输出里没有任务编号时（通道在输出之前就断了），用「最新的任务目录在调用前后变了」来辨认：
 #   调用之前先记下最新的编号，之后如果多出一个更新的，那就是本次的。
+# ★★ 唯一可以重新下发的情形：**客户端进程已经退出、输出是空的、再等 8 秒也没有新任务目录**。
+#   prlctl exec 的客户端在命令执行期间是一直阻塞的；它退出了、又什么都没输出，才是「命令没有执行」
+#   （prlctl exec 会静默不执行；2026-11-25 实测：虚拟机刚重启回来的一分钟里，连续两次准备的输出文件都是 0 字节）。
+#   ★★ 「等了几秒没有输出、没有新目录」**不能**证明没执行：命令可能只是起得慢。2026-11-25 实测：后台下发后
+#   2.5 秒没见到任务目录就判成没执行并重发，结果第一次其实执行了（任务目录 4 秒后才出现），第二次被产品的
+#   「存在未终结任务」闸门拦下（BR-TSK-005，无害）；而且杀掉宿主上的客户端并不会停掉虚拟机里的命令。
+#   有任何输出、或出现了新任务目录，就绝不重新下发。
+#   如果重新下发的那一次被闸门拦下、而任务目录是本次调用之后新出现的：在办的就是前一次下发的任务，按它去等终态。
 # ★★ 调用处不要给本函数接管道（`run_prepare … | tee …`）：那样函数跑在子进程里，
 #   PREPARE_SUCCESS / PREPARE_TASK 传不回主脚本，严格模式下直接报「未定义变量」——而此时准备已经成功、
 #   机器正要重启（2026-11-25 收脚本时实测）。摘要行本来就输出到标准输出，需要留档用 prepare_summary。
 run_prepare() {
-  local out="$1" before after; shift
+  local out="$1" before after attempt w code; shift
   before=$(newest_task)
-  rm -f "$EV/$out"
-  "$PRL" exec "$VM" cmd /d /v:on /c "$EXE prepare $* & echo VM_DONE=!ERRORLEVEL!" > "$EV/$out" 2>/dev/null
+  for attempt in 1 2 3; do
+    rm -f "$EV/$out"
+    # 这里是前台调用：客户端会一直阻塞到命令结束（或机器重启、通道断开）才返回。
+    "$PRL" exec "$VM" cmd /d /v:on /c "$EXE prepare $* & echo VM_DONE=!ERRORLEVEL!" > "$EV/$out" 2>/dev/null
+    [ -s "$EV/$out" ] && break                      # 有任何输出 = 执行过了
+    after=""
+    for w in 1 2 3 4; do                            # 客户端已退出而输出为空：再给它 8 秒，任务目录出现就说明它在跑
+      after=$(newest_task)
+      [ -n "$after" ] && [ "$after" != "$before" ] && break
+      sleep 2
+    done
+    [ -n "$after" ] && [ "$after" != "$before" ] && break
+    say "PREPARE_ATTEMPT $attempt: the client exited with no output and no task directory appeared within 8 s -- the command did not run$( [ $attempt -lt 3 ] && echo '; sending it again' || echo '' )"
+  done
   PREPARE_SUCCESS=$(json_field "$EV/$out" success)
   PREPARE_TASK=$(json_field "$EV/$out" task_id)
+  code=$(json_field "$EV/$out" error_code)
   if [ -n "$PREPARE_TASK" ]; then
     PREPARE_TASK_SOURCE=output
   else
@@ -231,7 +252,11 @@ run_prepare() {
     if [ -n "$after" ] && [ "$after" != "$before" ]; then PREPARE_TASK="$after"; PREPARE_TASK_SOURCE="newest task directory"
     else PREPARE_TASK=""; PREPARE_TASK_SOURCE=none; fi
   fi
-  printf 'PREPARE_SUCCESS=%s PREPARE_TASK=%s PREPARE_TASK_SOURCE=%s\n' "${PREPARE_SUCCESS:-<unreadable>}" "${PREPARE_TASK:-<none>}" "$PREPARE_TASK_SOURCE"
+  if [ "$PREPARE_SUCCESS" = "False" ] && [ "$code" = "BR-TSK-005" ] && [ "$PREPARE_TASK_SOURCE" = "newest task directory" ]; then
+    say "PREPARE_NOTE: this attempt was refused by the unfinished-task gate (BR-TSK-005); the task $PREPARE_TASK appeared after this call began, so it is the one in progress"
+    PREPARE_SUCCESS=""                               # 当作读不到：让调用方按任务目录去等终态
+  fi
+  printf 'PREPARE_SUCCESS=%s PREPARE_TASK=%s PREPARE_TASK_SOURCE=%s ATTEMPTS=%s\n' "${PREPARE_SUCCESS:-<unreadable>}" "${PREPARE_TASK:-<none>}" "$PREPARE_TASK_SOURCE" "$attempt"
 }
 
 # prepare 的输出摘要 + 错误开头（写进 <前缀>-prepare-summary.txt）
@@ -306,6 +331,102 @@ verdict() {
   local k="$1" v="$2"; shift 2
   printf '%s=%s%s\n' "$k" "$v" "${*:+ $*}" | tee -a "$EV/${NAME:-run}-verdict.txt"
   [ "$v" = PASS ]
+}
+
+# guest_exists <客体路径>：客体里这个文件（或目录）在不在。退出码 0 = 在；1 = 不在；2 = 读不到。
+# ★★ 「读不到」必须单独成一种结果，不能并进「不在」：通道抽风时「在不在」的读数是空的。
+#   2026-11-25 实测：占位文件明明建成了（创建命令成功返回，直接读也看得到），紧接着的读数两次都没读到，
+#   脚本却报「占位文件缺失，可能空间不够」并中止——读不到被写成了不在，还附了一个错误的原因。
+#   判据只认两个回显标记之一；连续 6 次都读不到才返回 2，由调用方点名中止。
+guest_exists() {
+  local i out
+  for i in 1 2 3 4 5 6; do
+    out=$("$PRL" exec "$VM" cmd /d /c "if exist $1 (echo BR_EXISTS_YES) else (echo BR_EXISTS_NO)" 2>/dev/null | tr -cd '\11\12\40-\176\r' | tr -d '\r')
+    case "$out" in
+      *BR_EXISTS_YES*) return 0 ;;
+      *BR_EXISTS_NO*)  return 1 ;;
+    esac
+    sleep 2
+  done
+  return 2
+}
+
+# need_guest_file <客体路径> <不在时的中止说明>：这个文件必须在。不在 → 按给的说明中止；读不到 → 单独中止并点名。
+need_guest_file() {
+  guest_exists "$1"
+  local rc=$?
+  case $rc in
+    0) return 0 ;;
+    1) say "ABORT: $2"; exit 3 ;;
+    *) say "ABORT: could not read whether $1 exists (reading failed is not the same as missing)"; exit 3 ;;
+  esac
+}
+
+# require_clean_fixture [strict=yes|no]：**出测试镜像之前**夹具必须是干净的（file1 是原版内容）。不干净就中止。
+# 为什么：测试镜像是从测试卷当前的状态备份出来的。夹具要是带着「被改坏」的内容进了镜像，之后的还原就会
+#   忠实地把坏内容写回去，「被改坏的文件回到原版」这条判据必然失败——而产品与判读都没有错
+#   （2026-11-25 实测：一次意外续跑的准备把当时已被改坏的 file1 备份进了镜像，下一轮还原把它写了回来）。
+#   strict=no：夹具目录不存在时放行（该用例自己不用夹具，这道检查只是为了保护它产出的镜像）。
+#   把夹具放回干净状态的办法：tools/vm/data-restore.sh（从基线数据镜像还原测试卷）。
+require_clean_fixture() {
+  local strict="${1:-yes}" f file1 exists
+  f="${TMPDIR:-/tmp}/br-fixture-check.$$.txt"
+  ps1 "$SHARE_PS\\c5check.ps1" -Tag fx > "$f"
+  file1=$(fixture_field "$f" file1); exists=$(fixture_field "$f" brdata_exists)
+  rm -f "$f"
+  if [ "$file1" = "BRDATA file1 v1" ]; then
+    say "FIXTURE_CLEAN=yes (file1 is the original content)"
+  elif [ "$exists" = "False" ] && [ "$strict" = no ]; then
+    say "FIXTURE_CLEAN=not applicable (the test volume has no fixture directory)"
+  elif [ -z "$file1" ] && [ -z "$exists" ]; then
+    say "ABORT: could not read the fixture state on the test volume (reading failed is not the same as damaged)"; exit 3
+  else
+    say "ABORT: the fixture on the test volume is not clean (file1=[$file1], fixture directory exists=$exists);"
+    say "       a backup taken now would capture this state and every later restore would write it back."
+    say "       Put it back first: tools/vm/data-restore.sh"
+    exit 3
+  fi
+}
+
+# ensure_pad_file：测试卷上的 20 GB 占位文件不在就造一个；最后必须读到「在」。
+# 在不在一律走 guest_exists（读不到单独中止，不猜）。
+ensure_pad_file() {
+  local rc
+  guest_exists "$PAD"; rc=$?
+  [ $rc -ne 2 ] || { say "ABORT: could not read whether the pad file exists (reading failed is not the same as missing)"; exit 3; }
+  if [ $rc -eq 1 ]; then
+    say "creating the 20 GB zero pad file on the test volume"
+    vrun "fsutil file createnew $PAD $PAD_BYTES" 3 | grep -a 'VM_DONE' | sed 's/^/  PAD_CREATE /'
+    sleep 2
+  fi
+  guest_exists "$PAD"; rc=$?
+  case $rc in
+    0) say "PAD_FILE=there" ;;
+    1) say "ABORT: the pad file was not created (free space on the test volume?)"; exit 3 ;;
+    *) say "ABORT: could not read whether the pad file exists after creating it"; exit 3 ;;
+  esac
+}
+
+# guest_utc_now：虚拟机自己的当前时间（世界时，形如 2026-11-25T12:33:46，精确到秒）。读不到输出空串。
+# 用途：界面日志等文件是跨天累积的，要数「本次运行之后」的记录，就得用**客体自己的时钟**划界——
+# 用宿主时钟去对客体的日志，两边的钟差多少就错多少。可与日志行里的时间戳直接按字符串比较。
+guest_utc_now() {
+  vrun "powershell -NoProfile -Command \"(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss')\"" 3 \
+    | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$' | tail -1
+}
+
+# status_field <原样取回的 status.json> <字段>：读任务状态文件的一个字段。读不到输出 <unreadable>，缺字段输出 <missing>。
+# 用 utf-8-sig 解码：取回的文件可能带字节序标记。
+status_field() {
+  python3 -I -c '
+import json, sys
+try:
+    s = json.loads(open(sys.argv[1], "rb").read().decode("utf-8-sig"))
+    v = s.get(sys.argv[2])
+    print("<missing>" if v is None else v)
+except (OSError, ValueError):
+    print("<unreadable>")
+' "$1" "$2"
 }
 
 # fixture_field <夹具检查文件> <字段>：从 c5check.ps1 的输出里取一个字段（哨兵法还原的前后置检查）。

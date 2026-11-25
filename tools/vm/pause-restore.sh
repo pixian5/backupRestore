@@ -25,16 +25,13 @@ fail=0
 say "STEP=0 deployed binaries"
 deployed_hashes
 
-say "STEP=1 preconditions: test image with sidecar, pad file on the test volume"
+say "STEP=1 preconditions: test image with sidecar, pad file on the test volume, fixture directory"
 vrun "dir /b $IMAGE*" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a 'br-vm-tools-test' | sed 's/^/  IMAGE_FILE /'
-imgn=$(vrun "dir /b $IMAGE*" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -c 'br-vm-tools-test')
-[ "$imgn" -ge 2 ] || { say "ABORT: the test image or its sidecar is missing; run tools/vm/pause-backup.sh first"; exit 3; }
-pad=$(vrun "if exist $PAD (echo PAD_THERE) else (echo PAD_ABSENT)" 2 | tr -cd '\11\12\40-\176' | grep -a -o 'PAD_[A-Z]*' | head -1)
-say "PAD_FILE=${pad:-<unreadable>}"
-[ "$pad" = "PAD_THERE" ] || { say "ABORT: the pad file is not on the test volume; the image made without it cannot prove anything here"; exit 3; }
-brdata=$(vrun "if exist F:\\BRDATA\\sub\\file1.txt (echo BRDATA_THERE) else (echo BRDATA_ABSENT)" 2 | tr -cd '\11\12\40-\176' | grep -a -o 'BRDATA_[A-Z]*' | head -1)
-say "FIXTURE_DIR=${brdata:-<unreadable>}"
-[ "$brdata" = "BRDATA_THERE" ] || { say "ABORT: F:\\BRDATA (the sentinel-method fixture) is missing"; exit 3; }
+need_guest_file "$IMAGE" "the test image is missing; run tools/vm/pause-backup.sh first"
+need_guest_file "$IMAGE.index-1.metadata.json" "the sidecar of the test image is missing; run tools/vm/pause-backup.sh first"
+need_guest_file "$PAD" "the pad file is not on the test volume; an image made without it cannot prove anything here"
+need_guest_file 'F:\BRDATA\sub\file1.txt' "F:\\BRDATA (the sentinel-method fixture) is missing"
+say "PRECONDITIONS_OK"
 
 say "STEP=2 boot configuration: file-level backup, verified it reads offline; readings before"
 bcd_backup "$NAME" | tee "$EV/$NAME-bcd-file.txt"
@@ -45,7 +42,13 @@ require_idle "$NAME-idle.txt" 120
 
 say "STEP=4 pre-state: remove the pad file (it is in the image), put a sentinel and an extra file, damage file1"
 vrun "del /f /q $PAD" 2 | grep -a 'VM_DONE' | sed 's/^/  PAD_DELETE /'
-vrun "if exist $PAD (echo PAD_STILL_THERE) else (echo PAD_ABSENT)" 2 | grep -a -o 'PAD_[A-Z_]*' | head -1 | sed 's/^/  PAD_AFTER_DELETE=/'
+# 占位文件必须真的删掉了（它是还原的物理判据：还原后它必须回来）；读不到不算删掉了。
+guest_exists "$PAD"; rc=$?
+case $rc in
+  1) say "  PAD_AFTER_DELETE=absent" ;;
+  0) say "ABORT: the pad file is still there after deleting it; the restore could not be proven by its return"; exit 3 ;;
+  *) say "ABORT: could not read whether the pad file is gone"; exit 3 ;;
+esac
 ps1 "$SHARE_PS\\c5prep.ps1" -Tag "$TAG" | grep -a -E '^PREP|__END__'
 ps1 "$SHARE_PS\\c5check.ps1" -Tag "$TAG" | grep -a -E '^CHECK' | tee "$EV/$NAME-pre-check.txt"
 
@@ -107,55 +110,12 @@ ps1 "$SHARE_PS\\c5check.ps1" -Tag "$TAG" | grep -a -E '^CHECK' | tee "$EV/$NAME-
 bcd_readings > "$EV/$NAME-bcd-after.txt"
 
 say "STEP=12 judge"
-python3 -I - "$EV" "$NAME" "$PREPARE_TASK" "$HOLD_SECONDS" <<'PY' | tee "$EV/$NAME-readings.txt"
-import json, os, re, sys
-from datetime import datetime
-ev, name, task, hold = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-def read(f):
-    p = os.path.join(ev, f)
-    return open(p, 'rb').read().decode('utf-8', 'replace').splitlines() if os.path.exists(p) else []
-def moment(text):
-    m = re.search(r'T(\d\d:\d\d:\d\d)', text)
-    return datetime.strptime(m.group(1), '%H:%M:%S') if m else None
-try:
-    s = json.loads(''.join(read(name + '-status.json')).lstrip('\ufeff'))
-    print("FINAL_STAGE=%s" % s.get('stage')); print("FINAL_PROGRESS=%s" % s.get('progress'))
-except (OSError, ValueError) as e:
-    print("FINAL_STAGE=<unreadable>"); print("FINAL_PROGRESS=<unreadable>")
-log = read(name + '-Recovery.raw.log')
-idx = [i for i, l in enumerate(log) if task in l and 'Recovery.exe started' in l]
-start = idx[0] if idx else None
-# 声明行在切换日志的瞬间补写，排在本任务「启动」那一行的前面：往前找最近的一行
-decl = next((l for l in reversed(log[max(0, (start or 0) - 6):start or 0]) if 'Pause support' in l), '') if start is not None else ''
-print("DECLARATION_IN_FORMAL_LOG=" + (decl[decl.find('Pause support'):][:80] or '<missing>'))
-early = [l for l in read(name + '-task-early.raw.log') if 'Pause support' in l]
-print("DECLARATION_IN_TASK_EARLY_LOG=%d" % len(early))
-end = next((j for j in range((start or 0) + 1, len(log)) if 'Recovery.exe started' in log[j]), len(log)) if start is not None else 0
-seg = log[start:end] if start is not None else []
-# ★ 判「四个步骤都出现过」，不判「恰好四行」：暂停后恢复会再把当前步骤记一遍（2026-11-25 实测 5 行，判成了失败）。
-print("RECOVERY_STEP_LABELS=%s" % ",".join(sorted(set(re.findall(r'STEP (\d)/4', "\n".join(seg))))))
-for l in seg:
-    if ('STEP ' in l and '/4' in l) or 'Pause' in l or 'SELFCHECK' in l or 'ERROR' in l or 'BR-' in l:
-        print("RECOVERY_LINE " + l[:200])
-paused = [l for l in seg if '恢复已暂停' in l]
-resumed = [l for l in seg if '恢复已继续' in l]
-print("PAUSED_LINES=%d" % len(paused))
-print("RESUMED_LINES=%d" % len(resumed))
-# ★ 停了多久：直接量「恢复已暂停」到「恢复已继续」两行的时间差。暂停可能落在任何一个检查点
-#   （应用镜像之前 / 校验之前）；只量某两个步骤之间的间隔会漏掉前一种（2026-11-25 实测：停在第 2 步，步骤间隔为 0）。
-paused_at = moment(paused[0]) if paused else None
-resumed_at = moment(resumed[0]) if resumed else None
-print("SECONDS_PAUSED=%s" % (int((resumed_at - paused_at).total_seconds()) if paused_at and resumed_at else "<unknown>"))
-for l in paused[:1]:
-    print("PAUSED_LINE " + l[:200])
-s3 = [l for l in seg if 'STEP 3/4' in l]; s4 = [l for l in seg if 'STEP 4/4' in l]
-gap = None
-if s3 and s4:
-    gap = (moment(s4[0]) - moment(s3[0])).total_seconds()
-print("SECONDS_BETWEEN_STEP3_AND_STEP4=%s" % (int(gap) if gap is not None else '<unknown>'))
-sc = [l for l in seg if 'RESTORE_SELFCHECK' in l]
-print("SELFCHECK_LINE=" + (sc[0][sc[0].find('RESTORE_SELFCHECK'):][:160] if sc else '<missing>'))
-PY
+# 读数分两处：任务状态文件（两个键各一行）与恢复环境日志（判读程序 judge/restore-log.py，三个还原用例共用）。
+{
+  status_field "$EV/$NAME-status.json" stage | sed 's/^/FINAL_STAGE=/'
+  status_field "$EV/$NAME-status.json" progress | sed 's/^/FINAL_PROGRESS=/'
+  python3 -I "$HERE/judge/restore-log.py" "$EV/$NAME-Recovery.raw.log" "$PREPARE_TASK" --pause --early-log "$EV/$NAME-task-early.raw.log"
+} | tee "$EV/$NAME-readings.txt"
 rd() { sed -n "s/^$1=\(.*\)$/\1/p" "$EV/$NAME-readings.txt" | tail -1; }
 chk() { fixture_field "$2" "$1"; }
 STAGE=$(rd FINAL_STAGE); PROGRESS=$(rd FINAL_PROGRESS); LABELS=$(rd RECOVERY_STEP_LABELS)

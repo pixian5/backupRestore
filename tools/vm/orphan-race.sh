@@ -57,12 +57,9 @@ if [ "$DO_GUI" = 1 ]; then
 fi
 
 say "STEP=4 fixtures: a 20 GB zero pad file on the test volume (so the capture lasts long enough to press P); old test image removed"
-if vrun "if exist $PAD (echo PAD_THERE) else (echo PAD_ABSENT)" 2 | grep -a -q 'PAD_ABSENT'; then
-  vrun "fsutil file createnew $PAD $PAD_BYTES" 2 | grep -a 'VM_DONE' | sed 's/^/  PAD_CREATE /'
-fi
-pad=$(vrun "if exist $PAD (echo PAD_THERE) else (echo PAD_ABSENT)" 2 | tr -cd '\11\12\40-\176' | grep -a -o 'PAD_[A-Z]*' | head -1)
-say "PAD_FILE=${pad:-<unreadable>}"
-[ "$pad" = "PAD_THERE" ] || { say "ABORT: the pad file is missing (not enough free space on the test volume?)"; exit 3; }
+# 这个用例自己不用夹具，但它备份测试卷、产出的镜像会被 pause-restore.sh 拿来用：夹具脏了就不出镜像。
+require_clean_fixture no
+ensure_pad_file
 vrun "dir $PAD" 2 | tr -s ' ' | grep -a 'br-vm-tools-pad' | sed 's/^/  PAD_FILE /'
 vrun "del /q $IMAGE $IMAGE.index-1.metadata.json" 2 | grep -a 'VM_DONE' | sed 's/^/  OLD_IMAGE_REMOVED /'
 vrun "dir /b $IMAGE*" 2 | tr -cd '\11\12\40-\176' | grep -a -c 'br-vm-tools-test' | sed 's/^/  IMAGE_FILES_BEFORE=/'
@@ -73,18 +70,57 @@ say "GUI_PROCESSES_RUNNING=${n:-<unreadable>}"
 [ "${n:-1}" = "0" ] || { say "ABORT: a BackupRestore process is still running; the race test needs a quiet start"; exit 3; }
 TASKS0=$(task_count); say "TASK_COUNT_BEFORE=${TASKS0:-<unreadable>}"
 
-say "STEP=6 start a backup prepare from the command line (background)"
+say "STEP=6 start a backup prepare from the command line (background); the task being prepared must be a NEW task directory"
+# ★ 「在办任务」必须是准备启动之后**新出现**的任务目录。第一版直接取「最新的目录」：准备命令因通道静默没有执行时，
+#   最新的目录是上一次任务留下的，脚本把它当成了在办任务、对它执行放弃命令（2026-11-25 实测；产品以 BR-TSK-003 拒绝，无害）。
+# ★★ 什么时候才算「这次下发没有执行」：**客户端进程已经退出、输出是空的、再等 8 秒也没有新任务目录**。
+#   客户端在命令执行期间是一直阻塞的；它还在等，就说明命令在跑（哪怕任务目录几秒后才出现）。
+#   2026-11-25 实测：启动后 2.5 秒没见到任务目录就判成没执行并重发——其实第一次执行了（目录 4 秒后才出现），
+#   第二次被产品的「存在未终结任务」闸门拦下（BR-TSK-005，无害）；而杀掉宿主上的客户端并不会停掉虚拟机里的命令，
+#   那次准备继续走完并重启了机器。所以这里不杀任何进程，只看客户端是否已退出。
+TASK_BEFORE=$(newest_task)
+say "NEWEST_TASK_BEFORE=${TASK_BEFORE:-<unreadable>}"
+TASK=""; PREPARE_PID=""; T0=0; attempt=0; STARTED=0
+while [ $attempt -lt 3 ]; do
+  attempt=$((attempt+1))
+  rm -f "$EV/$NAME-prepare.json"
+  "$PRL" exec "$VM" cmd /d /v:on /c "$EXE prepare --operation backup --source-drive $SOURCE_DRIVE --image-path $IMAGE --boot-menu-name BR-RACE-$MODE --json & echo VM_DONE=!ERRORLEVEL!" > "$EV/$NAME-prepare.json" 2>/dev/null &
+  PREPARE_PID=$!
+  say "PREPARE_LAUNCHED pid=$PREPARE_PID attempt=$attempt"
+  t=0
+  while [ $t -lt 40 ]; do                                   # 等新任务目录出现，最多 40 秒
+    TASK=$(newest_task)
+    if [ -n "$TASK" ] && [ "$TASK" != "$TASK_BEFORE" ]; then STARTED=1; break; fi
+    if ! kill -0 "$PREPARE_PID" 2>/dev/null; then            # 客户端已经退出
+      [ -s "$EV/$NAME-prepare.json" ] && break               # 有输出 = 执行过了（在建任务之前就失败了），交给后面的判读
+      sleep 4                                                # 输出为空：多半是通道静默失效；再等 8 秒看任务目录
+      TASK=$(newest_task)
+      if [ -n "$TASK" ] && [ "$TASK" != "$TASK_BEFORE" ]; then STARTED=1; break; fi
+      sleep 4
+      TASK=$(newest_task)
+      if [ -n "$TASK" ] && [ "$TASK" != "$TASK_BEFORE" ]; then STARTED=1; break; fi
+      break                                                  # 这次确实没有执行：出去重发
+    fi
+    sleep 1; t=$((t+1))
+  done
+  [ "$STARTED" = 1 ] && break
+  if kill -0 "$PREPARE_PID" 2>/dev/null; then
+    say "PREPARE_NOTE: the client is still waiting after ${t}s but no task directory appeared; not sending it again"
+    break
+  fi
+  [ -s "$EV/$NAME-prepare.json" ] && break
+  say "PREPARE_ATTEMPT $attempt: the client exited with no output and no task directory appeared -- the command did not run; sending it again"
+done
 T0=$(date +%s)
-"$PRL" exec "$VM" cmd /d /v:on /c "$EXE prepare --operation backup --source-drive $SOURCE_DRIVE --image-path $IMAGE --boot-menu-name BR-RACE-$MODE --json & echo VM_DONE=!ERRORLEVEL!" > "$EV/$NAME-prepare.json" 2>/dev/null &
-PREPARE_PID=$!
-say "PREPARE_LAUNCHED pid=$PREPARE_PID"
 
 say "STEP=7 inside the prepare window: identify the task being prepared, then abandon it and/or start the GUI"
-sleep 2.5
-# ★ 不靠宿主与虚拟机的时钟对齐：直接取最新的任务目录当「在办任务」，之后所有日志都按这个编号去对。
-TASK=$(newest_task)
-say "TASK_BEING_PREPARED=${TASK:-<unreadable>} at +$(( $(date +%s) - T0 ))s"
-[ -n "$TASK" ] || { say "ABORT: could not read the newest task directory (reading failed is not a verdict)"; exit 3; }
+# ★ 不靠宿主与虚拟机的时钟对齐：直接取新出现的任务目录当「在办任务」，之后所有日志都按这个编号去对。
+say "TASK_BEING_PREPARED=${TASK:-<none>} attempt=$attempt"
+if [ "$STARTED" != 1 ] || [ -z "$TASK" ] || [ "$TASK" = "$TASK_BEFORE" ]; then
+  say "ABORT: no new task directory appeared -- the prepare did not run or failed before creating a task; nothing was poked"
+  printf 'PREPARE_ERROR_HEAD=%s\n' "$(json_field "$EV/$NAME-prepare.json" error | head -c 300 | tr '\n' ' ')"
+  exit 3
+fi
 ABANDON_ATTEMPTED=0; ABANDON_SUCCESS=""; ABANDON_CODE=""
 if [ "$DO_ABANDON" = 1 ]; then
   vraw "$EXE abandon-task H:\\brwork $TASK --json" "$NAME-abandon.json" || say "WARNING: the abandon command gave no output marker"
@@ -108,6 +144,11 @@ SUCCESS=$(json_field "$EV/$NAME-prepare.json" success)
 OUT_TASK=$(json_field "$EV/$NAME-prepare.json" task_id)
 printf 'PREPARE success=%s error_code=%s task_id=%s\n' "$SUCCESS" "$(json_field "$EV/$NAME-prepare.json" error_code)" "$OUT_TASK" | tee "$EV/$NAME-prepare-summary.txt"
 printf 'PREPARE_ERROR_HEAD=%s\n' "$(json_field "$EV/$NAME-prepare.json" error | head -c 300 | tr '\n' ' ')" | tee -a "$EV/$NAME-prepare-summary.txt"
+# 重新下发的那一次被「存在未终结任务」闸门拦下：在办的就是前一次下发的任务（它只是起得慢）。按它去等终态。
+if [ "$SUCCESS" = "False" ] && [ "$(json_field "$EV/$NAME-prepare.json" error_code)" = "BR-TSK-005" ] && [ "$OUT_TASK" != "$TASK" ]; then
+  say "PREPARE_NOTE: this attempt was refused by the unfinished-task gate (BR-TSK-005); task $TASK from an earlier attempt is the one in progress"
+  SUCCESS=""
+fi
 if [ "$MODE" = new ] && [ -n "$OUT_TASK" ] && [ "$OUT_TASK" != "$TASK" ]; then
   say "ABORT: the prepare reported task $OUT_TASK but the newest task directory was $TASK; the readings cannot be tied together"; exit 3
 fi

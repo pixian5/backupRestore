@@ -83,6 +83,7 @@ ITEMS = {
     "cli-probe": "命令行探测命令的冒烟（list-volumes、inspect-environment、wim-info、list-images）：跑 tools/vm/cli-probe.sh",
     "orphan-race": "守卫竞态：准备进行中放弃被拒、启动界面程序守卫不动、准备成功：跑 tools/vm/orphan-race.sh new both（约 4 分钟，重启两次）",
     "guard-unit": "准备锁与孤儿任务守卫：Windows 单元测试 + 变异验证：跑 tools/vm/mutation-guard.sh",
+    "gui-data-restore": "界面驱动的离线数据卷还原全链（不格式化，从点按钮到回到 Windows）：跑 tools/vm/gui-data-restore.sh（约 4 分钟，重启两次）",
 }
 
 # ── 规则：(编号, 匹配模式（| 分隔，fnmatch 语法）, [(条目, 前提或 None), ...], 备注) ──
@@ -111,7 +112,8 @@ RULES = [
      [("win-restore", None), ("bcd-roundtrip", None)], "启动菜单与默认项"),
     ("R11", f"{CLI}prepare_*.rs|{CLI}windows_prepare.rs|{CLI}windows_command.rs|{CLI}process_runner.rs",
      [("win-backup", None), ("win-restore", None), ("gate-pair", "改到门禁时"),
-      ("orphan-race", "改到任务落盘、启动项记录、失败补偿的先后时")], "准备链（备份、还原都要经过）"),
+      ("orphan-race", "改到任务落盘、启动项记录、失败补偿的先后时"),
+      ("gui-data-restore", "改到数据卷放行或镜像性质判断时")], "准备链（备份、还原都要经过）"),
     ("R12", f"{CLI}winre_registration.rs",
      [("reagentc", None), ("missing-re-047", None)], "恢复环境注册"),
     ("R13", f"{CLI}online_operation.rs|{CLI}wimlib_apply.rs",
@@ -119,7 +121,8 @@ RULES = [
     ("R14", f"{CLI}pe_operation.rs|{CLI}pe_safety.rs|{CLI}pe_desktop.rs|{CLI}pe_installer.rs|{CLI}native_gui/pe_desktop.rs|{CLI}native_gui/pe_installer.rs",
      [("pe-chain", None)], "预安装环境链"),
     ("R15", f"{CLI}native_gui.rs|{CLI}native_gui/*.rs|{CLI}dpi.rs",
-     [("gui-matrix", None), ("gui-confirm", None), ("dpi-200", "动了坐标或字号时")], "界面与缩放"),
+     [("gui-matrix", None), ("gui-confirm", None), ("dpi-200", "动了坐标或字号时"),
+      ("gui-data-restore", "改到任务下发的参数、离线通道选择或数据入口的校验时")], "界面与缩放"),
     ("R16", f"{CLI}text_parsing.rs|{CLI}*_parse.rs|{CLI}step_progress.rs|{CLI}progress_text.rs",
      [("parse-unit", None), ("progress-pe", "解析结果影响进度显示时")], "解析类"),
     ("R17", f"{CLI}main.rs",

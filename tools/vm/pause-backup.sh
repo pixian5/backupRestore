@@ -30,13 +30,9 @@ bcd_readings > "$EV/$NAME-bcd-before.txt"
 say "STEP=2 nobody is using the desktop"
 require_idle "$NAME-idle.txt" 120
 
-say "STEP=3 fixtures: the 20 GB zero pad file (created if missing) and no stale test image"
-if vrun "if exist $PAD (echo PAD_THERE) else (echo PAD_ABSENT)" 2 | grep -a -q 'PAD_ABSENT'; then
-  vrun "fsutil file createnew $PAD $PAD_BYTES" 2 | grep -a 'VM_DONE' | sed 's/^/  PAD_CREATE /'
-fi
-pad=$(vrun "if exist $PAD (echo PAD_THERE) else (echo PAD_ABSENT)" 2 | tr -cd '\11\12\40-\176' | grep -a -o 'PAD_[A-Z]*' | head -1)
-say "PAD_FILE=${pad:-<unreadable>}"
-[ "$pad" = "PAD_THERE" ] || { say "ABORT: the pad file is missing (not enough free space on the test volume?)"; exit 3; }
+say "STEP=3 fixtures: the fixture on the test volume must be clean (this backup becomes the test image); the 20 GB zero pad file (created if missing); no stale test image"
+require_clean_fixture yes
+ensure_pad_file
 vrun "del /q $IMAGE $IMAGE.index-1.metadata.json" 2 | grep -a 'VM_DONE' | sed 's/^/  OLD_IMAGE_REMOVED /'
 
 say "STEP=4 prepare a backup of the test volume (reboots into WinRE by itself)"
