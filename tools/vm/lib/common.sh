@@ -529,6 +529,32 @@ gui_select_combo() {
 # 同时写进证据文件。用来回答「点完某个按钮之后，界面上是不是多出了一个窗口」。
 gui_windows() { elev uidlglist.ps1 -Class ANY 2>/dev/null | decode_text | tee "$EV/$1"; }
 
+# gui_window_count <类名>：界面进程当前该类的可见顶层窗口个数（已解码；读不到输出空串）。
+gui_window_count() { elev uidlglist.ps1 -Class "$1" 2>/dev/null | decode_text | sed -n 's/^WINDOWS=\([0-9][0-9]*\).*/\1/p' | head -1; }
+
+# windows_judge <标签>：对 <标签>-windows-before.txt 与 <标签>-windows-after.txt 两份清单做判读（judge/windows.py），
+# 输出键值行：WINDOWS_READ / MESSAGE_BOXES_AFTER / NEW_WINDOW_CLASSES_AFTER …
+windows_judge() { python3 -I "$HERE_VM/judge/windows.py" "$EV/$NAME-$1-windows-before.txt" "$EV/$NAME-$1-windows-after.txt"; }
+
+# settle_windows <标签> <最多轮数>：点掉结果框之后，反复列窗口直到「没有消息框、也没有新窗口类」为止
+# （每轮之间隔 3 秒；轮数用尽就用最后一次的清单）。进度窗口关得慢一点不该被判成残留，但一直不关必须判出来。
+# 之前的那份清单取自 <标签>-windows-before.txt（点按钮之前列的）。
+settle_windows() {
+  local i out
+  for i in $(seq 1 "$2"); do
+    gui_windows "$NAME-$1-windows-after.txt" >/dev/null
+    out=$(windows_judge "$1")
+    if printf '%s\n' "$out" | grep -a -q '^MESSAGE_BOXES_AFTER=0$' && printf '%s\n' "$out" | grep -a -q '^NEW_WINDOW_CLASSES_AFTER=$'; then break; fi
+    sleep 3
+  done
+  grep -a -E '^WIN' "$EV/$NAME-$1-windows-after.txt" | cut -c1-170 | sed 's/^/  WINDOW_AFTER /'
+  say "WINDOWS_SETTLED_AFTER=$i round(s)"
+}
+
+# result_box_button_id <已解码的窗口清单>：结果框里**唯一**那颗可见按钮的控件编号（空格分隔；没有或不止一颗时调用方自己判断）。
+# ★ 实测「执行完成」框的「确定」编号是 2，不是消息框惯用的 1——要点的编号从清单里读，不要猜。
+result_box_button_id() { printf '%s\n' "$1" | sed -n 's/^  id=\([0-9]*\) class=Button visible=True .*/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
+
 # gui_close：结束界面程序（以系统身份结束进程；不弹任何窗口）。
 gui_close() { vrun "taskkill /im BackupRestore.exe /f" 3 | grep -a 'VM_DONE'; }
 

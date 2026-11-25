@@ -157,6 +157,14 @@ out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:
 check "gui-dispatch judge mutation: an online start after the boundary is counted" "1" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
 check "gui-dispatch judge mutation: the split to the online branch is counted" "1" "$(line "$out" GUI_LOG_ONLINE_SPLIT)"
 check "gui-dispatch judge mutation: the cancelled line is counted" "1" "$(line "$out" GUI_LOG_CANCELLED)"
+# 「还原数据到非 C 盘」在线、不格式化（gui-data-restore.sh online）用到的四个键：备份开始与在线还原开始必须分得清。
+printf '[2026-11-25T13:00:30.000000000+00:00] GUI action started: create task; operation=restore-data\n[2026-11-25T13:00:31.000000000+00:00] channel split: op=restore-data online=true\n[2026-11-25T13:00:31.500000000+00:00] online params: format_target=false\n[2026-11-25T13:00:32.000000000+00:00] online started: op=restore-existing source=F target=F\n[2026-11-25T13:00:40.000000000+00:00] online completed: success=true\n' >> "$TMP/guib.log"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
+check "gui-dispatch judge: the data entry split to the online channel" "1" "$(line "$out" GUI_LOG_CHANNEL_ONLINE)"
+check "gui-dispatch judge: the online channel got format_target=false" "1" "$(line "$out" GUI_LOG_ONLINE_PARAMS_NO_FORMAT)"
+check "gui-dispatch judge mutation: the online restore start is counted, the backup start count does not change" "1" "$(line "$out" GUI_LOG_ONLINE_RESTORE_STARTED)"
+check "gui-dispatch judge: backup start and restore start are told apart (backup count stays 1)" "1" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
+check "gui-dispatch judge: a cancel on any entry is counted regardless of the entry" "1" "$(line "$out" GUI_LOG_CANCELLED_ANY)"
 
 # judge/combo-selected.py：人工拼一份「读取下拉框」的输出。
 printf 'COMBO id=1202 count=4 selected=2 visible=True\n  ITEM[0]=C: | NTFS\n  ITEM[1]=D: | UDF\n  ITEM[2]=F: | NTFS | more\n__END__\n' > "$TMP/combo.txt"
@@ -258,6 +266,21 @@ if [ -n "$piped" ]; then
   failed=$((failed+1))
 else
   echo "SELFTEST run_prepare is never piped PASS"
+fi
+
+# 三道确认的驱动（restore-confirm.sh）：真正会下发的那一次「是」之前必须有授权闸。
+# 离线流程的闸在最后一道确认之前；纯在线流程（选择框 = none）没有第二道确认，破坏性确认上的「是」就是下发，
+# 所以闸必须在 `click_ok MSGBOX 6` 之前。2026-11-26 发现「none」原本是个绕过授权的口子。
+rc_driver="$HERE/../gui-check/restore-confirm.sh"
+gate_line=$(grep -n 'online_yes_requires_BR_ALLOW_RESTORE' "$rc_driver" | head -1 | cut -d: -f1)
+first_yes_line=$(grep -n '^click_ok MSGBOX 6$' "$rc_driver" | head -1 | cut -d: -f1)
+final_gate_line=$(grep -n 'yes_requires_BR_ALLOW_RESTORE' "$rc_driver" | grep -v online_yes | head -1 | cut -d: -f1)
+final_yes_line=$(grep -n '^  say "点击最后确认框的按钮' "$rc_driver" | head -1 | cut -d: -f1)
+if [ -n "$gate_line" ] && [ -n "$first_yes_line" ] && [ "$gate_line" -lt "$first_yes_line" ] \
+   && [ -n "$final_gate_line" ] && [ -n "$final_yes_line" ] && [ "$final_gate_line" -lt "$final_yes_line" ]; then
+  echo "SELFTEST restore-confirm driver: both real dispatches are gated by BR_ALLOW_RESTORE PASS"
+else
+  echo "SELFTEST restore-confirm driver: both real dispatches are gated by BR_ALLOW_RESTORE FAIL gate=$gate_line first_yes=$first_yes_line final_gate=$final_gate_line final_yes=$final_yes_line"; failed=$((failed+1))
 fi
 
 # ---- 1b. 日志解析：按 PowerShell 5 的三段结构人工拼一份日志，解析后必须读得到结束标记与结束码 ---------------

@@ -33,7 +33,7 @@
 | `pause-backup.sh` | 备份时按 P 只记「已忽略」；声明行落盘；产出测试镜像 | 约 4 分钟 | 重启两次；产生测试镜像与占位文件 |
 | `pause-restore.sh` | 数据卷离线还原：按 P 停住、再按才继续；占位文件回来、被改坏的文件复原 | 约 5 分钟 | 重启两次；先跑过 `pause-backup.sh` 或 `orphan-race.sh new both` |
 | `data-restore.sh` | 数据卷离线还原（不按键）的哨兵法 | 约 2 分钟 | 重启两次；测试卷上要有夹具目录 `F:\BRDATA` |
-| `gui-data-restore.sh` | **界面驱动**的「还原数据到非 C 盘」离线全链（不格式化）：从点按钮、界面自己派发准备，到回到 Windows | 约 4 分钟 | 重启两次；会真的下发任务；同样要有 `F:\BRDATA` |
+| `gui-data-restore.sh [镜像] [offline\|online]` | **界面驱动**的「还原数据到非 C 盘」（不格式化）全链。`offline`（默认）：从点按钮、界面自己派发准备，到回到 Windows；`online`：通道保持默认的「在线」，破坏性确认答「是」后界面当场还原，等到「执行完成」并点掉 | offline 约 4 分钟；online 约 2 分钟 | 都会真的还原（不格式化）；offline 重启两次；同样要有 `F:\BRDATA` |
 | `gui-fix-check.sh` | 进入「还原数据到非 C 盘」默认目标不是光驱；A 入口三道确认最后点否、零副作用 | 约 3 分钟 | 只走到对话框为止，不创建任务 |
 | `gui-choice-text.sh` | 离线选择框的正文跟着「格式化目标分区」变 | 约 2 分钟 | 读到正文后点取消，不创建任务 |
 | `gui-backup.sh cancel` | **备份入口**的「破坏性确认」点「否」必须停下：系统盘分支不得弹处理方式选择框、在线分支不得开始备份 | 约 3 分钟 | 不建任务、不写镜像。v2.10.11 之前的二进制上必须判失败（缺陷复现；弹出来的窗口会被收掉） |
@@ -64,7 +64,9 @@
 - `fixtures/`：真实抓到的输出样本，供 `selftest.sh` 用。
 - `ps/`：在虚拟机里执行的包装脚本（测试、构建、同步界面辅助脚本）。**保持纯 ASCII**（PowerShell 5 对无签名的非通用编码文件会读错）。
 - 界面辅助脚本（点击、枚举控件、读写控件文字、选下拉项、哨兵法的前后置检查）在 `tools/gui-check/ps/`；
-  三道确认的驱动是 `tools/gui-check/restore-confirm.sh`。`lib/common.sh` 里对应的函数：`gui_click` / `gui_must_click` /
+  三道确认的驱动是 `tools/gui-check/restore-confirm.sh`——**凡是会真正下发的那一次「是」，之前都必须有 `BR_ALLOW_RESTORE=yes`**
+  （离线流程是最后一道确认；纯在线流程没有第二道确认，破坏性确认上的「是」就是下发，同样要授权；离线自检里有这条的静态检查与变异验证）。
+  `lib/common.sh` 里对应的函数：`gui_click` / `gui_must_click` /
   `gui_wait_window` / `gui_windows` / `gui_set_image_path` / `gui_combo_items` / `gui_combo_selected` / `gui_select_combo`。
   ★ 清单里的输入框文字读不到是常态（跨进程读不到编辑框的文字），不能拿「文字是空的」下结论。
 

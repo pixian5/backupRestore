@@ -10,6 +10,8 @@
 # ★★ 最后一个确认框答 yes = **真的下发任务并重启**（还原系统盘会抹掉系统盘上的改动）。
 #    答 yes 必须同时设置环境变量 BR_ALLOW_RESTORE=yes，否则脚本在最后一步之前停下并判为中止。
 #    日常验证用 no：走完三道确认、最后点「否」，任务列表与启动配置都必须不变（由调用方核对副作用）。
+# ★★ 纯在线流程（选择框 = none）没有第二道确认：**破坏性确认上的「是」就是真正的下发**（当场开始写目标卷）。
+#    所以这种调用同样必须有 BR_ALLOW_RESTORE=yes，否则在点「是」之前停下（2026-11-26 补——此前「none」是个绕过授权的口子）。
 #
 # 前提：tools/vm/lib/vm.sh 的 ensure_helper + stage_gui_helpers 已做过（脚本自己也会做一遍）。
 # 退出码：0 = 流程走完且每一步都点到了；1 = 有点击没成功 / 窗口没出现；3 = 安全闸拦下（想答 yes 却没授权）。
@@ -22,7 +24,8 @@ ok_clicks=0; expected=0
 click_ok() { # $1 类名  $2 控件编号：点击必须回 CLICK=OK
   local out
   expected=$((expected+1))
-  out=$(elev uiclick.ps1 -Class "$1" -Id "$2" | tr '\n' ' ')
+  # 回显先解码：助手回传的窗口标题是系统本地编码，原样打印会让外层按通用编码工作的查看管道报错退出。
+  out=$(elev uiclick.ps1 -Class "$1" -Id "$2" | decode_text | tr '\n' ' ')
   case "$out" in *CLICK=OK*) ok_clicks=$((ok_clicks+1)); echo "$out" ;; *) echo "CLICK_FAILED class=$1 id=$2 $out" ;; esac
 }
 wait_window() { # $1 类名  $2 上限秒：输出已解码的控件枚举
@@ -62,6 +65,11 @@ say "点击创建任务"; click_ok BackupRestoreNativeGui 1003
 say "等待第一个确认框"; l=$(wait_window MSGBOX 30) || { say "没有出现确认框"; printf '%s\n' "$l" | head -12; echo "RESTORE_CONFIRM=FAIL reason=no_first_confirmation"; exit 1; }
 printf '%s\n' "$l" | grep -a -E "^WIN|id=(1|2|3|6|7) " | cut -c1-200
 printf '%s\n' "$l" | grep -a -q "id=6 " || { say "确认框里没有「是」按钮，中止"; echo "RESTORE_CONFIRM=FAIL reason=no_yes_button"; exit 1; }
+if [ "$CHOICE" = "none" ] && [ "${BR_ALLOW_RESTORE:-}" != "yes" ]; then
+  say "这是纯在线流程：破坏性确认上的「是」会真的开始还原（当场写目标卷）；没有设置 BR_ALLOW_RESTORE=yes，停在这里不点"
+  echo "RESTORE_CONFIRM=ABORT reason=online_yes_requires_BR_ALLOW_RESTORE"
+  exit 3
+fi
 click_ok MSGBOX 6
 
 if [ "$CHOICE" != "none" ]; then

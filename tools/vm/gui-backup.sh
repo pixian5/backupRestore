@@ -100,25 +100,12 @@ after_answer() {
   fetch "$GUI_LOG" "$NAME-$1-gui.raw.log" && say "fetched gui.log"
   {
     python3 -I "$HERE/judge/gui-dispatch.py" "$EV/$NAME-$1-gui.raw.log" "$T0"
-    python3 -I "$HERE/judge/windows.py" "$EV/$NAME-$1-windows-before.txt" "$EV/$NAME-$1-windows-after.txt"
+    windows_judge "$1"
   } | tee "$EV/$NAME-$1-readings.txt"
 }
 # rd <键> <标签>：从某一轮的读数文件里取一个键的值（取不到输出空串）
 rd() { sed -n "s/^$1=\(.*\)$/\1/p" "$EV/$NAME-$2-readings.txt" 2>/dev/null | tail -1 | tr -d '\r'; }
-
-# settle_windows <标签> <最多轮数>：点掉结果框之后，反复列窗口直到「没有消息框、也没有新窗口类」为止
-# （每轮之间隔 3 秒；轮数用尽就用最后一次的清单）。进度窗口关得慢一点不该被判成残留，但一直不关必须判出来。
-settle_windows() {
-  local i out
-  for i in $(seq 1 "$2"); do
-    gui_windows "$NAME-$1-windows-after.txt" >/dev/null
-    out=$(python3 -I "$HERE/judge/windows.py" "$EV/$NAME-$1-windows-before.txt" "$EV/$NAME-$1-windows-after.txt")
-    if printf '%s\n' "$out" | grep -a -q '^MESSAGE_BOXES_AFTER=0$' && printf '%s\n' "$out" | grep -a -q '^NEW_WINDOW_CLASSES_AFTER=$'; then break; fi
-    sleep 3
-  done
-  grep -a -E '^WIN' "$EV/$NAME-$1-windows-after.txt" | cut -c1-170 | sed 's/^/  WINDOW_AFTER /'
-  say "WINDOWS_SETTLED_AFTER=$i round(s)"
-}
+# （点掉结果框之后等窗口收干净：settle_windows；读结果框上那颗按钮的编号：result_box_button_id——都在 common.sh）
 
 # judge_cancel_round <标签> <不许出现的那两个键> <结论键> <说明>：点「否」之后的判据。
 judge_cancel_round() {
@@ -283,7 +270,7 @@ online)
   printf '%s\n' "$l" | grep -a -E '^WIN|id=1 ' | cut -c1-200 | sed 's/^/  RESULT_BOX /'
   # 结果框只有一个按钮；它的控件编号从清单里读出来再点——实测是 2，不是消息框惯用的 1（第一版写死了 1，
   # 结果框没被点掉，留在桌面上被判成残留）。不是恰好一颗按钮就不点，直接判失败。
-  ok_ids=$(printf '%s\n' "$l" | sed -n 's/^  id=\([0-9]*\) class=Button visible=True .*/\1/p' | tr '\n' ' ')
+  ok_ids=$(result_box_button_id "$l")
   if [ "$(printf '%s' "$ok_ids" | wc -w | tr -d ' ')" = 1 ]; then
     say "RESULT_BOX_BUTTON_ID=$ok_ids"; gui_must_click onl MSGBOX "$ok_ids"
   else

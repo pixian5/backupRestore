@@ -64,7 +64,7 @@ ITEMS = {
     "gate-pair": "完整 Windows 门禁双组（缺件硬拒 + 完整镜像放行）与 A 入口硬拒探针",
     "reagentc": "系统盘还原后 reagentc /info Enabled、recoverysequence 核对",
     "missing-re-047": "缺件场景必须是 BR-RE-047，且一次注册写入都没有",
-    "b-entry": "B 入口数据还原：离线那一条跑 tools/vm/data-restore.sh（哨兵法）；在线不格式化 / 在线格式化两条暂无脚本",
+    "b-entry": "B 入口数据还原：离线那一条跑 tools/vm/data-restore.sh（哨兵法）或界面全链 tools/vm/gui-data-restore.sh；在线不格式化跑 tools/vm/gui-data-restore.sh online（界面，约 2 分钟，不重启）；在线格式化暂无脚本",
     "c-entry-online": "C 入口在线还原到非 C 盘",
     "overlay": "覆盖式还原：六条判据 + 保留访问控制列表的逐字节比对 + 进度条四帧单调",
     "pe-chain": "装预安装环境全链 + 装前自检（换版本必须重出镜像）",

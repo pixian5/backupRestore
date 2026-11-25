@@ -29,6 +29,11 @@
 #   GUI_LOG_ONLINE_DONE=<n>                 「online completed: success=true」的行数
 #   GUI_LOG_ONLINE_FAILED=<n>               「online completed: success=false」的行数
 #   GUI_LOG_ACTION_FAILED=<n>               「GUI action failed」的行数
+#   —— 「还原数据到非 C 盘」在线、不格式化（tools/vm/gui-data-restore.sh online）——
+#   GUI_LOG_CANCELLED_ANY=<n>               「GUI action cancelled: destructive confirmation」的行数（任何入口在破坏性确认上答了「否」）
+#   GUI_LOG_CHANNEL_ONLINE=<n>              「channel split: op=restore-data online=true」的行数（数据入口分流到了在线通道）
+#   GUI_LOG_ONLINE_PARAMS_NO_FORMAT=<n>     「online params: format_target=false」的行数（在线通道收到的是「不格式化」）
+#   GUI_LOG_ONLINE_RESTORE_STARTED=<n>      「online started: op=restore-existing」的行数（在线还原已开始）
 #   GUI_EVIDENCE_LINE <原文>                上面几类里最先出现的几行（供人看）
 import sys
 
@@ -51,6 +56,11 @@ KEYS = {
     "GUI_LOG_ONLINE_DONE": "online completed: success=true",
     "GUI_LOG_ONLINE_FAILED": "online completed: success=false",
     "GUI_LOG_ACTION_FAILED": "GUI action failed",
+    # ---- 「还原数据到非 C 盘」在线、不格式化（tools/vm/gui-data-restore.sh online）----
+    "GUI_LOG_CANCELLED_ANY": "GUI action cancelled: destructive confirmation",          # 任何入口在破坏性确认上答了「否」
+    "GUI_LOG_CHANNEL_ONLINE": "channel split: op=restore-data online=true",             # 数据入口分流到了在线通道
+    "GUI_LOG_ONLINE_PARAMS_NO_FORMAT": "online params: format_target=false",            # 在线通道收到的是「不格式化」
+    "GUI_LOG_ONLINE_RESTORE_STARTED": "online started: op=restore-existing",            # 在线还原已开始
 }
 
 
