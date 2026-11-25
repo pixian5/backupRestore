@@ -26,7 +26,7 @@ GUI_RUNAS='H:\brwork\gui-check\runas.ps1'
 # 实机用例会用到的界面辅助脚本。stage_gui_helpers 按这份清单把它们拷进虚拟机，并逐个核对字节数。
 GUI_HELPERS=(
   runas.ps1 helper.ps1 clickenv.ps1 launch.ps1 launch-nokill.ps1
-  uiclick.ps1 uidlglist.ps1 comboitems.ps1 uitext2.ps1
+  uiclick.ps1 uidlglist.ps1 comboitems.ps1 uitext2.ps1 uicombosel.ps1
   c5prep.ps1 c5check.ps1 helperkill.ps1 who.ps1
 )
 

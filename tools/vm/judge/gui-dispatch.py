@@ -1,5 +1,5 @@
 # 从「原样取回」的界面日志（H:\brwork\logs\gui.log）里，数**某一时点之后**界面自己记下的结构化证据。
-# 被 tools/vm/gui-data-restore.sh 调用；tools/vm/selftest.sh 用人工拼的日志离线验证它。
+# 被 tools/vm/gui-data-restore.sh 与 tools/vm/gui-backup.sh 调用；tools/vm/selftest.sh 用人工拼的日志离线验证它。
 #
 # 用法：python3 judge/gui-dispatch.py <gui.raw.log> <起算时点>
 #   起算时点形如 2026-11-25T12:33:46（虚拟机自己的世界时，精确到秒），与日志行 [2026-11-25T12:33:48.15…+00:00]
@@ -15,6 +15,20 @@
 #   GUI_LOG_CHOICE_RE=<n>                   「user chose Windows RE (prepare chain)」的行数
 #   GUI_LOG_BLOCKED=<n>                     「GUI action blocked」的行数
 #   GUI_LOG_ERROR=<n>                       含 [ERROR] 的行数
+#   —— 备份入口（tools/vm/gui-backup.sh）——
+#   GUI_LOG_CANCELLED=<n>                   「GUI action cancelled: destructive confirmation; operation=backup」的行数
+#                                           （破坏性确认框上点了「否」之后界面自己记下的那一行）
+#   GUI_LOG_SYSTEM_CHOICE_ANY=<n>            「system drive choice returned:」的行数（处理方式选择框**弹出过**；答了什么不论）
+#   GUI_LOG_SYSTEM_CHOICE_RE=<n>             同上，且答的是「进入 Windows RE」
+#   GUI_LOG_SYSTEM_CONFIRM_YES=<n>          「system drive operation: Windows RE confirm result=6 (6=yes)」的行数
+#   GUI_LOG_PREPARE_LAUNCH=<n>              「elevated prepare: launching (visible) operation=backup」的行数
+#   GUI_LOG_PREPARE_FAILED_EARLY=<n>        「elevated prepare failed early」的行数（准备进程 1.5 秒内异常退出）
+#   GUI_LOG_DELEGATED=<n>                   「GUI action delegated: elevated prepare launched; operation=backup」的行数
+#   GUI_LOG_ONLINE_SPLIT=<n>                「online operation: affected=」的行数（确认框之后分流到了在线分支）
+#   GUI_LOG_ONLINE_STARTED=<n>              「online started: op=backup」的行数
+#   GUI_LOG_ONLINE_DONE=<n>                 「online completed: success=true」的行数
+#   GUI_LOG_ONLINE_FAILED=<n>               「online completed: success=false」的行数
+#   GUI_LOG_ACTION_FAILED=<n>               「GUI action failed」的行数
 #   GUI_EVIDENCE_LINE <原文>                上面几类里最先出现的几行（供人看）
 import sys
 
@@ -24,6 +38,19 @@ KEYS = {
     "GUI_LOG_CHOICE_RE": "offline data restore: user chose Windows RE (prepare chain)",
     "GUI_LOG_BLOCKED": "GUI action blocked",
     "GUI_LOG_ERROR": "[ERROR]",
+    # ---- 备份入口 ----
+    "GUI_LOG_CANCELLED": "GUI action cancelled: destructive confirmation; operation=backup",
+    "GUI_LOG_SYSTEM_CHOICE_ANY": "system drive choice returned:",
+    "GUI_LOG_SYSTEM_CHOICE_RE": "system drive choice returned: 2 (0=cancel 1=PE 2=RE)",
+    "GUI_LOG_SYSTEM_CONFIRM_YES": "system drive operation: Windows RE confirm result=6 (6=yes)",
+    "GUI_LOG_PREPARE_LAUNCH": "elevated prepare: launching (visible) operation=backup",
+    "GUI_LOG_PREPARE_FAILED_EARLY": "elevated prepare failed early",
+    "GUI_LOG_DELEGATED": "GUI action delegated: elevated prepare launched; operation=backup",
+    "GUI_LOG_ONLINE_SPLIT": "online operation: affected=",
+    "GUI_LOG_ONLINE_STARTED": "online started: op=backup",
+    "GUI_LOG_ONLINE_DONE": "online completed: success=true",
+    "GUI_LOG_ONLINE_FAILED": "online completed: success=false",
+    "GUI_LOG_ACTION_FAILED": "GUI action failed",
 }
 
 

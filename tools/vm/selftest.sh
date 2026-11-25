@@ -1,10 +1,12 @@
 #!/bin/bash
 # tools/vm/selftest.sh —— tools/vm 的离线自检：不需要虚拟机，几秒钟跑完。
 #
-# 检查两样东西：
+# 检查三样东西：
 #   1. 公共读数函数在固定输入上的行为（本地编码解码、取控件文字、取 JSON 字段、读数比对）；
 #   2. 命令行冒烟的判读程序 judge/cli-probe.py：拿真实抓到的输出样本（fixtures/）必须判 PASS；
-#      对样本做变异（删掉「驱动器类型」字段）必须判 FAIL——不变红的判读等于没有判读。
+#      对样本做变异（删掉「驱动器类型」字段）必须判 FAIL——不变红的判读等于没有判读；
+#   3. 其余判读程序（恢复环境日志、界面日志、窗口清单、镜像信息、下拉框选中项、构建日志）：
+#      用人工拼的输入或真实样本验证读数，并对每一个做变异——变异之后必须变红。
 # 改了 tools/vm/lib/common.sh、tools/vm/judge/ 或样本之后跑一遍。
 # 用法：tools/vm/selftest.sh          退出码：0 = 全过；1 = 有检查不通过。
 set -u
@@ -128,9 +130,91 @@ printf '[2026-11-25T12:33:50.000000000+00:00] GUI action blocked: something\n' >
 out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/gui.log" 2026-11-25T12:33:46)
 check_in "gui-dispatch judge mutation: a block after the boundary is counted" "GUI_LOG_BLOCKED=1" "$out"
 
+# judge/gui-dispatch.py：备份入口的几类行。人工拼一段「系统盘备份走恢复环境」的界面日志，前面另带两行五天前的在线备份记录。
+cat > "$TMP/guib.log" <<'LOG'
+[2026-11-20T10:00:00.000000000+00:00] online started: op=backup source=F target=C
+[2026-11-20T10:00:01.000000000+00:00] online completed: success=true
+[2026-11-25T13:00:00.000000000+00:00] GUI started; elevated native Rust window initialized
+[2026-11-25T13:00:05.000000000+00:00] GUI action started: create task; operation=backup
+[2026-11-25T13:00:08.000000000+00:00] system drive choice returned: 2 (0=cancel 1=PE 2=RE)
+[2026-11-25T13:00:12.000000000+00:00] system drive operation: Windows RE confirm result=6 (6=yes)
+[2026-11-25T13:00:12.500000000+00:00] elevated prepare: launching (visible) operation=backup params=[112]
+[2026-11-25T13:00:13.000000000+00:00] GUI action delegated: elevated prepare launched; operation=backup; source=C; target=C
+LOG
+line() { printf '%s\n' "$1" | sed -n "s/^$2=\(.*\)$/\1/p" | tail -1; }
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
+check "gui-dispatch judge: system backup chain - Windows RE was chosen" "1" "$(line "$out" GUI_LOG_SYSTEM_CHOICE_RE)"
+check "gui-dispatch judge: system backup chain - the final confirmation was answered yes" "1" "$(line "$out" GUI_LOG_SYSTEM_CONFIRM_YES)"
+check "gui-dispatch judge: system backup chain - prepare launched and delegated" "1" "$(line "$out" GUI_LOG_DELEGATED)"
+check "gui-dispatch judge: system backup chain - nothing was cancelled" "0" "$(line "$out" GUI_LOG_CANCELLED)"
+check "gui-dispatch judge: system backup chain - it did not go online" "0" "$(line "$out" GUI_LOG_ONLINE_SPLIT)"
+check "gui-dispatch judge: an online start five days old is not this run's" "0" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-20T09:00:00)
+check "gui-dispatch judge: an early boundary sees the old online start (the reading channel is proven to see it)" "1" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
+# 变异：界线之后补三行——「已取消」、分流到在线、「在线已开始」——模拟在确认框上点了「否」之后在线备份照样开始。
+printf '[2026-11-25T13:00:20.000000000+00:00] GUI action cancelled: destructive confirmation; operation=backup\n[2026-11-25T13:00:21.000000000+00:00] online operation: affected=F system=C\n[2026-11-25T13:00:21.500000000+00:00] online started: op=backup source=F target=C\n' >> "$TMP/guib.log"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
+check "gui-dispatch judge mutation: an online start after the boundary is counted" "1" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
+check "gui-dispatch judge mutation: the split to the online branch is counted" "1" "$(line "$out" GUI_LOG_ONLINE_SPLIT)"
+check "gui-dispatch judge mutation: the cancelled line is counted" "1" "$(line "$out" GUI_LOG_CANCELLED)"
+
+# judge/combo-selected.py：人工拼一份「读取下拉框」的输出。
+printf 'COMBO id=1202 count=4 selected=2 visible=True\n  ITEM[0]=C: | NTFS\n  ITEM[1]=D: | UDF\n  ITEM[2]=F: | NTFS | more\n__END__\n' > "$TMP/combo.txt"
+check "combo-selected judge: the selected item's text" "F: | NTFS | more" "$(python3 -I "$HERE/judge/combo-selected.py" < "$TMP/combo.txt")"
+printf 'COMBO id=1204 count=4 selected=0 visible=True\n  ITEM[0]=C: | NTFS\n' > "$TMP/combo0.txt"
+check "combo-selected judge: the first item is not mistaken for 'nothing selected'" "C: | NTFS" "$(python3 -I "$HERE/judge/combo-selected.py" < "$TMP/combo0.txt")"
+printf 'COMBO=NO_WINDOW id=1202\n__END__\n' > "$TMP/combo-none.txt"
+check "combo-selected judge: no window gives an empty string (the caller must not treat it as a drive)" "" "$(python3 -I "$HERE/judge/combo-selected.py" < "$TMP/combo-none.txt")"
+printf 'COMBO id=1202 count=3 selected=-1 visible=True\n  ITEM[0]=C: | NTFS\n' > "$TMP/combo-neg.txt"
+check "combo-selected judge: selected=-1 gives an empty string" "" "$(python3 -I "$HERE/judge/combo-selected.py" < "$TMP/combo-neg.txt")"
+
+# judge/windows.py：人工拼「点之前 / 点之后」的窗口清单。
+printf 'WINDOWS=1 class=ANY\nWIN hwnd=111 class=BackupRestoreNativeGui title=BackupRestore\n  id=1003 class=Button visible=True text=x\n__END__\n' > "$TMP/wb.txt"
+printf 'WINDOWS=1 class=ANY\nWIN hwnd=111 class=BackupRestoreNativeGui title=BackupRestore\n__END__\n' > "$TMP/wa-clean.txt"
+printf 'WINDOWS=2 class=ANY\nWIN hwnd=111 class=BackupRestoreNativeGui title=BackupRestore\nWIN hwnd=222 class=#32770 title=Confirm\n__END__\n' > "$TMP/wa-box.txt"
+printf 'WINDOWS=2 class=ANY\nWIN hwnd=111 class=BackupRestoreNativeGui title=BackupRestore\nWIN hwnd=333 class=BackupRestoreSystemDriveChoice title=Choose\n__END__\n' > "$TMP/wa-choice.txt"
+printf 'HELPER=resident pid=5\n__END__\n' > "$TMP/wa-unread.txt"
+out=$(python3 -I "$HERE/judge/windows.py" "$TMP/wb.txt" "$TMP/wa-clean.txt"); rc=$?
+check "windows judge: a clean after-listing passes" "0" "$rc"
+check "windows judge: clean - no message box" "0" "$(line "$out" MESSAGE_BOXES_AFTER)"
+check "windows judge: clean - no new window class" "" "$(line "$out" NEW_WINDOW_CLASSES_AFTER)"
+check "windows judge: clean - both listings were read" "both" "$(line "$out" WINDOWS_READ)"
+out=$(python3 -I "$HERE/judge/windows.py" "$TMP/wb.txt" "$TMP/wa-box.txt")
+check "windows judge: a message box still up is counted" "1" "$(line "$out" MESSAGE_BOXES_AFTER)"
+check "windows judge: a message box is a new window class" "#32770" "$(line "$out" NEW_WINDOW_CLASSES_AFTER)"
+out=$(python3 -I "$HERE/judge/windows.py" "$TMP/wb.txt" "$TMP/wa-choice.txt")
+check "windows judge mutation: the handler-choice dialog appearing after NO is a new window class" "BackupRestoreSystemDriveChoice" "$(line "$out" NEW_WINDOW_CLASSES_AFTER)"
+out=$(python3 -I "$HERE/judge/windows.py" "$TMP/wb.txt" "$TMP/wa-unread.txt"); rc=$?
+check "windows judge: an unreadable after-listing exits non-zero" "1" "$rc"
+check "windows judge: unreadable after-listing is not 'no message box'" "<unreadable>" "$(line "$out" MESSAGE_BOXES_AFTER)"
+check "windows judge: which listing was read is named" "before_only" "$(line "$out" WINDOWS_READ)"
+out=$(python3 -I "$HERE/judge/windows.py" "$TMP/wa-unread.txt" "$TMP/wa-clean.txt"); rc=$?
+check "windows judge: an unreadable before-listing exits non-zero too (it would make 'new' empty and pass)" "1" "$rc"
+
+# judge/wim-info.py：用命令行冒烟留下的真实样本。
+cp "$HERE/fixtures/cli-probe-sample-wim-info.txt" "$TMP/wi.txt"
+out=$(python3 -I "$HERE/judge/wim-info.py" "$TMP/wi.txt" 2.10.6); rc=$?
+check "wim-info judge: the real sample is read" "0" "$rc"
+check "wim-info judge: the sample has one index" "1" "$(line "$out" WIM_IMAGE_COUNT)"
+check "wim-info judge: the sample was written by 2.10.6" "2.10.6" "$(line "$out" WIM_PROGRAM_VERSION)"
+check "wim-info judge: version equal to the expected one" "True" "$(line "$out" WIM_VERSION_MATCH)"
+out=$(python3 -I "$HERE/judge/wim-info.py" "$TMP/wi.txt" 2.10.11)
+check "wim-info judge mutation: an image written by another version does not match" "False" "$(line "$out" WIM_VERSION_MATCH)"
+python3 -I - "$TMP/wi.txt" "$TMP/wi-mut.txt" <<'PY'
+import json, sys
+lines = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace').splitlines()
+value = json.loads(next(l for l in lines if l.strip().startswith('{')))
+del value['images']
+open(sys.argv[2], 'wb').write((json.dumps(value) + '\nVM_DONE=0\n').encode('utf-8'))
+PY
+out=$(python3 -I "$HERE/judge/wim-info.py" "$TMP/wi-mut.txt" 2.10.6); rc=$?
+check "wim-info judge mutation: no images field -> not read, exits non-zero" "1" "$rc"
+check_in "wim-info judge mutation: no images field is named" "WIM_INFO_READ=False reason=no_images_field" "$out"
+
 for f in run-kept.sh orphan-race.sh cli-probe.sh data-guard.sh pause-backup.sh pause-restore.sh data-restore.sh \
-         gui-fix-check.sh gui-choice-text.sh gui-matrix.sh vm-unit.sh mutate.sh mutation-guard.sh mutation-progress.sh \
-         rebuild-deploy.sh clean-fixtures.sh lib/vm.sh lib/common.sh ../gui-check/restore-confirm.sh; do
+         gui-fix-check.sh gui-choice-text.sh gui-matrix.sh gui-data-restore.sh gui-backup.sh vm-unit.sh mutate.sh \
+         mutation-guard.sh mutation-progress.sh rebuild-deploy.sh clean-fixtures.sh lib/vm.sh lib/common.sh \
+         ../gui-check/restore-confirm.sh; do
   bash -n "$HERE/$f" 2>/dev/null || { echo "SELFTEST syntax $f FAIL"; failed=$((failed+1)); }
 done
 echo "SELFTEST syntax of every script PASS"

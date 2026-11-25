@@ -875,7 +875,15 @@ pub(crate) unsafe fn create_task(state: &mut State) {
             MB_YESNO | MB_ICONWARNING,
         )
     };
-    if is_image_restore_entry(&operation) && destructive_answer != IDYES {
+    // ★★ 「否」对**每一个**弹出这道确认框的入口都必须是「停下」（v2.10.11 修）。
+    // 此前这里写的是 `is_image_restore_entry(&operation) && …`——只有三个还原入口认「否」，
+    // 备份入口点「否」照样往下走：系统盘备份继续弹处理方式选择框；非系统盘的在线备份
+    // **直接开始写镜像**，镜像已存在时还会追加一个索引。这个框是「是 / 否」两个按钮、
+    // 警示语以「确认继续？」结尾，没有哪一种读法能把「否」理解成「继续」。
+    // 从 2026-10-13 起就是这样（当时写成 `matches!(…, "restore-existing" | "create-secondary")`）；
+    // 界面驱动一直只点「是」，所以没有暴露。实机用例：tools/vm/gui-backup.sh cancel。
+    // 探测入口与测试钩子自动应答走到这里时一定是「是」，不受影响。
+    if destructive_answer != IDYES {
         append_gui_log(
             state,
             &format!("GUI action cancelled: destructive confirmation; operation={operation}"),

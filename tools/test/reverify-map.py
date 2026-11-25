@@ -55,7 +55,7 @@ CORE = "crates/backuprestore-core/src/"
 
 # ── 条目：编号 → 说明（输出顺序以此为准）────────────────────────────────────
 ITEMS = {
-    "win-backup": "系统盘备份经恢复环境一轮",
+    "win-backup": "系统盘备份经恢复环境一轮（命令行暂无脚本；界面路径跑 tools/vm/gui-backup.sh system，约 20 分钟，有宿主空闲空间前置检查）",
     "win-restore": "系统盘还原经恢复环境一轮：RESTORE_SELFCHECK 命中、BCD 清理回读、status=success/100",
     "core-unit": "核心库：macOS 与 Windows 两处单元测试 + 变异验证",
     "smoke-status": "一轮冒烟，看 status.json 契约（stage / progress / errorCode）",
@@ -84,6 +84,8 @@ ITEMS = {
     "orphan-race": "守卫竞态：准备进行中放弃被拒、启动界面程序守卫不动、准备成功：跑 tools/vm/orphan-race.sh new both（约 4 分钟，重启两次）",
     "guard-unit": "准备锁与孤儿任务守卫：Windows 单元测试 + 变异验证：跑 tools/vm/mutation-guard.sh",
     "gui-data-restore": "界面驱动的离线数据卷还原全链（不格式化，从点按钮到回到 Windows）：跑 tools/vm/gui-data-restore.sh（约 4 分钟，重启两次）",
+    "gui-backup-cancel": "界面备份入口的「破坏性确认」点「否」必须停下（系统盘、在线两种分支；不建任务、不写镜像）：跑 tools/vm/gui-backup.sh cancel（约 2 分钟）",
+    "gui-backup-online": "界面驱动的在线备份全链（测试卷 → 镜像放程序盘，从点按钮到「执行完成」）：跑 tools/vm/gui-backup.sh online（约 5 分钟）",
 }
 
 # ── 规则：(编号, 匹配模式（| 分隔，fnmatch 语法）, [(条目, 前提或 None), ...], 备注) ──
@@ -117,12 +119,14 @@ RULES = [
     ("R12", f"{CLI}winre_registration.rs",
      [("reagentc", None), ("missing-re-047", None)], "恢复环境注册"),
     ("R13", f"{CLI}online_operation.rs|{CLI}wimlib_apply.rs",
-     [("b-entry", None), ("c-entry-online", None), ("overlay", None)], "在线操作与覆盖式通道"),
+     [("b-entry", None), ("c-entry-online", None), ("overlay", None),
+      ("gui-backup-online", "改到在线备份时")], "在线操作与覆盖式通道"),
     ("R14", f"{CLI}pe_operation.rs|{CLI}pe_safety.rs|{CLI}pe_desktop.rs|{CLI}pe_installer.rs|{CLI}native_gui/pe_desktop.rs|{CLI}native_gui/pe_installer.rs",
      [("pe-chain", None)], "预安装环境链"),
     ("R15", f"{CLI}native_gui.rs|{CLI}native_gui/*.rs|{CLI}dpi.rs",
-     [("gui-matrix", None), ("gui-confirm", None), ("dpi-200", "动了坐标或字号时"),
-      ("gui-data-restore", "改到任务下发的参数、离线通道选择或数据入口的校验时")], "界面与缩放"),
+     [("gui-matrix", None), ("gui-confirm", None), ("gui-backup-cancel", None), ("dpi-200", "动了坐标或字号时"),
+      ("gui-data-restore", "改到任务下发的参数、离线通道选择或数据入口的校验时"),
+      ("gui-backup-online", "改到确认框之后的分流或在线分支时")], "界面与缩放"),
     ("R16", f"{CLI}text_parsing.rs|{CLI}*_parse.rs|{CLI}step_progress.rs|{CLI}progress_text.rs",
      [("parse-unit", None), ("progress-pe", "解析结果影响进度显示时")], "解析类"),
     ("R17", f"{CLI}main.rs",
@@ -265,7 +269,9 @@ SELFTEST_CASES = [
       "VERSION", "README.md"],
      {"win-backup", "win-restore", "core-unit", "smoke-status", "hash-backend", "doc-gates"}, set()),
     ("只改文档", ["README.md", "docs/20261124-x.md", "经验/02-VM操作与传输纪律.md"], {"doc-gates"}, set()),
-    ("只改界面", [f"{CLI}native_gui/task_executor.rs"], {"gui-matrix", "gui-confirm"}, set()),
+    # 2026-11-25 起：改到界面就必须跑「备份入口的确认框点否必须停下」（v2.10.11 修的缺陷就在界面里，此前没有用例看得见它）。
+    ("只改界面", [f"{CLI}native_gui/task_executor.rs"], {"gui-matrix", "gui-confirm", "gui-backup-cancel"}, set()),
+    ("只改在线操作", [f"{CLI}online_operation.rs"], {"b-entry", "c-entry-online", "overlay"}, set()),
     ("表里没有的文件", [f"{CLI}some_new_module.rs"], set(), {f"{CLI}some_new_module.rs"}),
     ("错误码表、日志文案表与卷设备模块", [f"{CLI}error_code.rs", f"{CLI}i18n.rs", f"{CLI}volume_device.rs", f"{CLI}image_admin.rs"],
      {"table-unit", "cli-probe"}, set()),

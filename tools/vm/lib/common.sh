@@ -507,5 +507,45 @@ gui_set_image_path() {
 # gui_combo_items <控件编号>：输出下拉框的选中项与全部条目（已解码）
 gui_combo_items() { elev comboitems.ps1 -Id "$1" 2>/dev/null | decode_text; }
 
+# gui_combo_selected <控件编号>：输出下拉框**当前选中项**的文字（已解码；读不到输出空串）。
+# ★ 调用方用之前先确认不是空串：读不到的时候「以 X: 开头」这类判断会全部落空。
+gui_combo_selected() { gui_combo_items "$1" | python3 -I "$HERE_VM/judge/combo-selected.py"; }
+
+# gui_select_combo <控件编号> <条目文字的开头>：在主窗口的下拉框里选中「以这段文字开头的唯一一个条目」。
+# 与用户手选走同一条处理路径（直选之后向父窗口发「选择已变化」通知，界面照常刷新卷详情与默认索引名）。
+# 输出助手回传的 SELECT= 行；**没有读到 SELECT=OK 就返回非零**——调用方必须据此中止。
+# ★ 选完用 gui_combo_selected 读回核对：通知发出去了不等于界面认了。
+# ★ 末尾的冒号在这里去掉：经 -Extra 传给常驻助手的整串参数**末尾是冒号时必定被弄坏**（外层脚本报「参数缺值」、
+#   什么都不返回；2026-11-25 实测两次重复都失败，冒号在中间就正常）。辅助脚本按「条目文字的开头」匹配，
+#   盘符不带冒号只会匹配到那一个卷。
+gui_select_combo() {
+  local out text="${2%:}"
+  out=$(elev uicombosel.ps1 -Class "$MAIN_CLASS" -Id "$1" -Text "$text" 2>/dev/null | decode_text | grep -a -E '^(SELECT=|SELECTED=)' | tr '\n' ' ')
+  echo "$out"
+  case "$out" in *SELECT=OK*) return 0 ;; *) return 1 ;; esac
+}
+
+# gui_windows <证据文件名>：列出界面进程当前**全部**可见顶层窗口（任意类名，已解码），
+# 同时写进证据文件。用来回答「点完某个按钮之后，界面上是不是多出了一个窗口」。
+gui_windows() { elev uidlglist.ps1 -Class ANY 2>/dev/null | decode_text | tee "$EV/$1"; }
+
+# gui_close：结束界面程序（以系统身份结束进程；不弹任何窗口）。
+gui_close() { vrun "taskkill /im BackupRestore.exe /f" 3 | grep -a 'VM_DONE'; }
+
+# gui_must_click <轮次标签> <类名> <控件编号>：点击必须被确认（CLICK=OK）；没确认就打印原因并返回非零，
+# 调用方必须据此中止本轮。★ 带着没点成的一步往下走，只会干等一个不会出现的对话框
+#   （2026-11-25 实测：点「创建任务」那一步通道静默，脚本干等了 40 秒）。
+# ★ 回显先解码：助手回传的窗口标题是系统本地编码，原样打印出来的话，外层按通用编码查看的管道会报
+#   「非法字节序列」而中断，连带把正在跑的脚本弄断（2026-11-25 实测：点完「否」之后脚本就这样死了一回）。
+gui_must_click() {
+  local out
+  out=$(gui_click "$2" "$3" | decode_text)
+  echo "$out"
+  case "$out" in
+    *CLICK=OK*) return 0 ;;
+    *) say "ABORT $1: the click on control $3 was not confirmed (the channel did not run, or the helper refused to click)"; return 1 ;;
+  esac
+}
+
 # gui_task_list：任务目录编号列表（排序后，空格分隔）——比对「前后有没有多出任务」用
 gui_task_list() { vrun "dir /b /ad H:\\brwork\\tasks" 3 | grep -a -E '^[0-9a-f]{8}-' | sort | tr '\n' ' '; }
