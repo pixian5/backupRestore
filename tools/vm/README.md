@@ -69,7 +69,9 @@
   （离线流程是最后一道确认；纯在线流程没有第二道确认，破坏性确认上的「是」就是下发，同样要授权；离线自检里有这条的静态检查与变异验证）。
   `lib/common.sh` 里对应的函数：`gui_click` / `gui_must_click` /
   `gui_wait_window` / `gui_windows` / `gui_set_image_path` / `gui_combo_items` / `gui_combo_selected` / `gui_select_combo`。
-  ★ 清单里的输入框文字读不到是常态（跨进程读不到编辑框的文字），不能拿「文字是空的」下结论。
+  ★ 历史注：跨进程 `GetWindowTextW` 会返回 `Edit` 控件创建时的占位文案，此前清单里的编辑框文本读取不到；
+    `tools/gui-check/ps/uidlglist.ps1` 已于 2026-11-26 修复为对 `Edit` 控件发送 `SendMessageTimeoutW`（`WM_GETTEXT`），
+    并附带输出 `Button` 控件的 `def=True|False` 默认按钮标记（`gui-backup.sh cancel` 与 `gui-negative.sh` 已实测利用）。
 
 证据（日志、原样取回的文件、判定文件）写在 `.test-artifacts/vm-runs/evidence/`（已 gitignore），文件名带「用途、版本号、时间戳」前缀——
 每次运行都是一组新文件，既不会覆盖上一轮，也不会读到上一轮的旧文件。
