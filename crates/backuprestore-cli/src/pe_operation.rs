@@ -995,36 +995,20 @@ mod tests {
 
     #[test]
     fn request_format_target_defaults_false_for_legacy_json_and_respects_true() {
+        let target = VolumeIdentity::new(
+            "{11111111-1111-1111-1111-111111111111}",
+            "{22222222-2222-2222-2222-222222222222}",
+        );
+        let image_volume = VolumeIdentity::new(
+            "{11111111-1111-1111-1111-111111111111}",
+            "{44444444-4444-4444-4444-444444444444}",
+        );
         let mut legacy = serde_json::json!({
             "version": 1,
             "id": "1-1",
             "operation": "data",
-            "target": {
-                "disk_guid": "{11111111-1111-1111-1111-111111111111}",
-                "partition_guid": "{22222222-2222-2222-2222-222222222222}",
-                "volume_guid": "{33333333-3333-3333-3333-333333333333}",
-                "partition_type_guid": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}",
-                "disk_number": 0,
-                "partition_number": 3,
-                "partition_offset": 1048576,
-                "partition_size": 1073741824,
-                "filesystem": "NTFS",
-                "volume_serial": "ABCD-1234",
-                "drive_letter": "F"
-            },
-            "image_volume": {
-                "disk_guid": "{11111111-1111-1111-1111-111111111111}",
-                "partition_guid": "{44444444-4444-4444-4444-444444444444}",
-                "volume_guid": "{55555555-5555-5555-5555-555555555555}",
-                "partition_type_guid": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}",
-                "disk_number": 0,
-                "partition_number": 4,
-                "partition_offset": 2147483648_u64,
-                "partition_size": 1073741824,
-                "filesystem": "NTFS",
-                "volume_serial": "EFGH-5678",
-                "drive_letter": "H"
-            },
+            "target": target,
+            "image_volume": image_volume,
             "image_relative": "BRImages\\data.wim",
             "index": 1,
             "main": null,
