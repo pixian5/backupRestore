@@ -434,8 +434,64 @@ pub(crate) fn defer_pending_task(pending: &PendingResume) -> Result<(), TaskErro
     )
 }
 
+/// 显式放弃任务后的两步收口回执：
+/// 1. 任务本身是否已标记终态并摘除一次性启动锁定（未修改破坏卷阶段或已 Failed）；
+/// 2. BCD 备份回导等补偿步骤是否完整完成，未完成时保留警告供界面/命令行如实呈现。
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AbandonOutcome {
+    pub task_id: String,
+    pub log_path: String,
+    pub already_failed: bool,
+    pub bcd_warning: Option<String>,
+    pub staging_cleaned: bool,
+}
+
+/// 把两步放弃结果格式化为界面提示正文，返回 `(提示文案, 是否带警告)`。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn format_abandon_feedback(outcome: &AbandonOutcome, english: bool) -> (String, bool) {
+    if let Some(warning) = &outcome.bcd_warning {
+        let text = if english {
+            format!(
+                "Step 1/2 (Done): Task {} was voided and the one-shot recovery boot lock was cleared. This machine will no longer auto-boot into the recovery environment for it.\n\nStep 2/2 (Warning): BCD snapshot compensation was incomplete ({warning}). If your boot menu looks unexpected, run Boot Repair (M) or inspect:\n{}",
+                outcome.task_id, outcome.log_path
+            )
+        } else {
+            format!(
+                "第 1 步（已完成）：任务 {} 已作废并解除一次性重启锁定，本机不会再为它自动进入恢复环境。\n\n第 2 步（存在警告）：BCD 快照补偿未能完整恢复（{warning}）。如发现启动菜单异常，请使用「引导修复(M)」或查看日志：\n{}",
+                outcome.task_id, outcome.log_path
+            )
+        };
+        return (text, true);
+    }
+    let text = if outcome.already_failed {
+        if english {
+            format!(
+                "Step 1/2 (Done): Failed task {} boot lock was cleared and temporary artifacts cleaned.\nStep 2/2 (Done): Evidence records kept (log: {}).",
+                outcome.task_id, outcome.log_path
+            )
+        } else {
+            format!(
+                "第 1 步（已完成）：已解除失败任务 {} 的重启锁定并清理临时产物。\n第 2 步（已完成）：诊断证据已保留（日志：{}）。",
+                outcome.task_id, outcome.log_path
+            )
+        }
+    } else if english {
+        format!(
+            "Step 1/2 (Done): Task {} abandoned and marked terminal; this machine will no longer reboot into the recovery environment for it.\nStep 2/2 (Done): BCD compensation and staging cleanup completed (evidence kept: {}).",
+            outcome.task_id, outcome.log_path
+        )
+    } else {
+        format!(
+            "第 1 步（已完成）：已作废并收口任务 {}，本机不会再为它重启进恢复环境。\n第 2 步（已完成）：BCD 补偿与暂存清理全部完成（诊断证据保留在：{}）。",
+            outcome.task_id, outcome.log_path
+        )
+    };
+    (text, false)
+}
+
 #[cfg(windows)]
-pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<(), TaskError> {
+pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<AbandonOutcome, TaskError> {
     append_log(
         &pending.task_dir.join("prepare.log"),
         &crate::i18n::msg_tpl(
@@ -443,7 +499,7 @@ pub(crate) fn abandon_pending_task(pending: &PendingResume) -> Result<(), TaskEr
             &[&pending.task_id, &format!("{:?}", pending.stage)],
         ),
     )?;
-    crate::environment_admin::abandon_task(
+    crate::environment_admin::abandon_task_with_outcome(
         pending.workspace.to_string_lossy().into_owned(),
         pending.task_id.clone(),
     )
@@ -498,6 +554,38 @@ mod tests {
         assert!(stage_resumable_after_interruption(Stage::BootRepaired));
         assert!(!stage_resumable_after_interruption(Stage::Success));
         assert!(!stage_resumable_after_interruption(Stage::Failed));
+    }
+
+    #[test]
+    fn abandon_feedback_reports_two_steps_and_surfaces_bcd_warning() {
+        use super::{AbandonOutcome, format_abandon_feedback};
+
+        let clean = AbandonOutcome {
+            task_id: "task-123".into(),
+            log_path: r"H:\brwork\tasks\task-123\prepare.log".into(),
+            already_failed: false,
+            bcd_warning: None,
+            staging_cleaned: true,
+        };
+        let (zh_ok, warn_zh) = format_abandon_feedback(&clean, false);
+        assert!(!warn_zh);
+        assert!(zh_ok.contains("第 1 步（已完成）") && zh_ok.contains("第 2 步（已完成）"));
+        let (en_ok, warn_en) = format_abandon_feedback(&clean, true);
+        assert!(!warn_en);
+        assert!(en_ok.contains("Step 1/2 (Done)") && en_ok.contains("Step 2/2 (Done)"));
+
+        let partial = AbandonOutcome {
+            bcd_warning: Some("BCD locked by BFSVC".into()),
+            ..clean
+        };
+        let (zh_warn, is_warn_zh) = format_abandon_feedback(&partial, false);
+        assert!(is_warn_zh);
+        assert!(zh_warn.contains("第 1 步（已完成）") && zh_warn.contains("第 2 步（存在警告）"));
+        assert!(zh_warn.contains("BCD locked by BFSVC"));
+        let (en_warn, is_warn_en) = format_abandon_feedback(&partial, true);
+        assert!(is_warn_en);
+        assert!(en_warn.contains("Step 1/2 (Done)") && en_warn.contains("Step 2/2 (Warning)"));
+        assert!(en_warn.contains("Boot Repair (M)"));
     }
 
     /// 守卫对「正在准备中的任务」的处理（2026-11-24 实机缺陷的回归测试，只能在 Windows 上跑）。

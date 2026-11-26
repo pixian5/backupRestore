@@ -342,6 +342,37 @@ pub(crate) fn parse_percent(line: &str) -> Option<u32> {
     None
 }
 
+/// 解析 `wimlib-imagex dir <wim> <index> --path=/Windows/System32` 输出：
+/// 当目录清单中同时包含 `Windows/System32/reagentc.exe` 与 `Windows/System32/config/SYSTEM`
+///（不区分大小写、统一正反斜杠与可选前导 `/`）时返回 `true`。
+pub(crate) fn wimlib_dir_has_windows_markers(listing_output: &str) -> bool {
+    let mut has_reagentc = false;
+    let mut has_system_hive = false;
+    for raw_line in listing_output.lines() {
+        let normalized = raw_line
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        if normalized == "windows/system32/reagentc.exe" {
+            has_reagentc = true;
+        } else if normalized == "windows/system32/config/system" {
+            has_system_hive = true;
+        }
+        if has_reagentc && has_system_hive {
+            return true;
+        }
+    }
+    false
+}
+
+/// 识别 `wimlib-imagex dir` 在目标路径不存在（常见退出码 49）时的标准报错文本。
+pub(crate) fn wimlib_path_absent_output(output_text: &str) -> bool {
+    output_text
+        .to_ascii_lowercase()
+        .contains("does not exist in the wim image")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,5 +751,35 @@ mod replay_probe {
             parsed >= 2_000,
             "全量日志应有数千条片段，实际只有 {parsed}"
         );
+    }
+
+    #[test]
+    fn wimlib_dir_marker_parser_requires_both_reagentc_and_system_hive() {
+        let full_windows = "\
+/Windows/System32
+/Windows/System32/config
+/Windows/System32/config/SYSTEM
+/Windows/System32/reagentc.exe
+";
+        assert!(wimlib_dir_has_windows_markers(full_windows));
+
+        // 大小写、反斜杠与无前导斜杠同样识别
+        let mixed = "windows\\System32\\REAGENTC.EXE\nwindows/system32/config/system\n";
+        assert!(wimlib_dir_has_windows_markers(mixed));
+
+        // 缺 SYSTEM hive、仅部分文件名匹配或空清单均不能判成完整 Windows
+        let missing_hive = "/Windows/System32/reagentc.exe\n/Windows/System32/config/SOFTWARE\n";
+        assert!(!wimlib_dir_has_windows_markers(missing_hive));
+        let suffix_decoy = "/Windows/System32/not_reagentc.exe\n/Windows/System32/config/SYSTEM\n";
+        assert!(!wimlib_dir_has_windows_markers(suffix_decoy));
+        assert!(!wimlib_dir_has_windows_markers(""));
+    }
+
+    #[test]
+    fn wimlib_path_absent_output_detects_missing_dir_error_only() {
+        let err_49 = "[ERROR] \"/Windows/System32\" does not exist in the WIM image\nERROR: Exiting with error code 49";
+        assert!(wimlib_path_absent_output(err_49));
+        let corrupt = "[ERROR] Failed to read WIM header\nERROR: Exiting with error code 1";
+        assert!(!wimlib_path_absent_output(corrupt));
     }
 }

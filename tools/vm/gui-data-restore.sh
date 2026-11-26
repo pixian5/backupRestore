@@ -2,8 +2,9 @@
 # tools/vm/gui-data-restore.sh —— 界面驱动的「还原数据到非 C 盘」（不格式化）全链：从在界面上点按钮，到还原做完、
 # 用硬判据核对。两种模式：
 #   offline（默认）：通道选「离线」→ 三道确认答「是」→ 界面自己派发准备 → 重启进恢复环境还原 → 回到 Windows。
-#   online：通道保持默认的「在线」→ 破坏性确认答「是」→ 界面当场开始在线还原（不重启）→ 等到「执行完成」结果框并点掉。
+#   online：通道保持默认的「在线」→ 取消勾选格式化 → 破坏性确认答「是」→ 界面当场开始在线还原（不重启）→ 等到「执行完成」结果框并点掉。
 #     （2026-11-26 新增：对应表里「B 入口在线不格式化」此前没有脚本。）
+#   online-format：通道与「格式化目标分区」均保持默认（在线 + 格式化）→ 破坏性确认答「是」→ 界面当场格式化并还原 → 核对卷序列号已变、哨兵/多余文件已清除、镜像内容已恢复。
 #
 # 为什么单独一个用例（2026-11-25）：缺陷 1（离线数据卷还原走不通）当初是在**界面上**报出来的，
 # 修复后验证的却是命令行下发的准备；界面上只走到对话框、最后点了「否」。界面自己拼参数、派发子进程、
@@ -26,22 +27,26 @@
 #   才会在真正下发的那一道确认上点「是」——本脚本替你设置了它，因为它只跑数据卷、不格式化这条链。
 # ★ 界面默认是勾选「格式化目标分区」的：本脚本明确取消勾选。要测格式化那两条链，另写用例，不要改这里。
 #
-# 用法：tools/vm/gui-data-restore.sh [数据镜像路径] [offline|online]     或     tools/vm/gui-data-restore.sh online
-#   offline 约 4 分钟（含两次重启）；online 约 2 分钟（不重启）。
+# 用法：tools/vm/gui-data-restore.sh [数据镜像路径] [offline|online|online-format]
+#   或  tools/vm/gui-data-restore.sh online|online-format
+#   offline 约 4 分钟（含两次重启）；online / online-format 约 2 分钟（不重启）。
 # 前提：虚拟机在运行且没人在用；测试卷上有夹具目录 F:\BRDATA（与镜像内容一致）。
 # 退出码：0 = 全部判据通过；1 = 有判据不满足；其它 = 步骤中止。
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/lib/common.sh"
-# 第一个参数是 offline / online 时直接当模式（镜像用默认的）；否则第一个参数是镜像路径、第二个是模式。
-if [ "${1:-}" = offline ] || [ "${1:-}" = online ]; then MODE="$1"; DATA_WIM="$DATA_IMAGE"; else DATA_WIM="${1:-$DATA_IMAGE}"; MODE="${2:-offline}"; fi
+# 第一个参数是模式关键字时直接当模式（镜像用默认的）；否则第一个参数是镜像路径、第二个是模式。
+if [ "${1:-}" = offline ] || [ "${1:-}" = online ] || [ "${1:-}" = online-format ]; then MODE="$1"; DATA_WIM="$DATA_IMAGE"; else DATA_WIM="${1:-$DATA_IMAGE}"; MODE="${2:-offline}"; fi
 case "$MODE" in
-  offline|online) ;;
-  *) echo "用法: tools/vm/gui-data-restore.sh [数据镜像路径] [offline|online]"; echo "GUI_DATA_RESTORE=ABORT reason=usage"; exit 2 ;;
+  offline|online|online-format) ;;
+  *) echo "用法: tools/vm/gui-data-restore.sh [数据镜像路径] [offline|online|online-format]"; echo "GUI_DATA_RESTORE=ABORT reason=usage"; exit 2 ;;
 esac
-# 证据文件名前缀：离线沿用原来的 gui-data-restore（已有的证据不被改名），在线另起一个。
-if [ "$MODE" = offline ]; then run_name "gui-data-restore"; else run_name "gui-data-restore-online"; fi
-TAG="gd$MODE"
+# 证据文件名前缀：离线沿用原来的 gui-data-restore，在线与在线格式化分别独立命名。
+case "$MODE" in
+  offline) run_name "gui-data-restore"; TAG="gdoffline" ;;
+  online) run_name "gui-data-restore-online"; TAG="gdonline" ;;
+  online-format) run_name "gui-data-restore-online-format"; TAG="gdfmt" ;;
+esac
 fail=0
 
 say "STEP=0 deployed binaries"
@@ -108,9 +113,14 @@ if [ "$MODE" = offline ]; then
   fetch "H:\\BRImages\\Recovery.log" "$NAME-Recovery.raw.log" && say "fetched Recovery.log"
   fetch "H:\\brwork\\logs\\gui.log" "$NAME-gui.raw.log" && say "fetched gui.log"
 else
-  say "STEP=5 drive the GUI: the channel stays ONLINE (its default), format is unchecked, YES on the destructive confirmation -- the GUI then restores online at once"
-  # 「纯在线流程」没有第二道确认：破坏性确认上的「是」就是真正的下发（驱动脚本因此同样要求 BR_ALLOW_RESTORE=yes）。
-  drive=$(BR_ALLOW_RESTORE=yes bash "$HERE/../gui-check/restore-confirm.sh" 1105 "$DATA_WIM" none yes 1214 2>&1)
+  if [ "$MODE" = online-format ]; then
+    say "STEP=5 drive the GUI: channel stays ONLINE and format stays CHECKED (default), YES on destructive confirmation"
+    drive=$(BR_ALLOW_RESTORE=yes bash "$HERE/../gui-check/restore-confirm.sh" 1105 "$DATA_WIM" none yes 2>&1)
+  else
+    say "STEP=5 drive the GUI: the channel stays ONLINE (its default), format is unchecked, YES on the destructive confirmation -- the GUI then restores online at once"
+    # 「纯在线流程」没有第二道确认：破坏性确认上的「是」就是真正的下发（驱动脚本因此同样要求 BR_ALLOW_RESTORE=yes）。
+    drive=$(BR_ALLOW_RESTORE=yes bash "$HERE/../gui-check/restore-confirm.sh" 1105 "$DATA_WIM" none yes 1214 2>&1)
+  fi
   DRC=$?
   printf '%s\n' "$drive" | cut -c1-240
   [ "$DRC" -eq 0 ] || { verdict GUI_DRIVE FAIL "driver rc=$DRC (see the lines above)"; fail=1; }
@@ -201,10 +211,19 @@ else
   else
     verdict GUI_DATA_RESTORE_ONLINE_COMPLETED FAIL "online_completed_success=${DONE:-none} online_completed_failed=${BAD:-none}"; fail=1
   fi
-  PNF=$(rd GUI_LOG_ONLINE_PARAMS_NO_FORMAT); CHON=$(rd GUI_LOG_CHANNEL_ONLINE); STON=$(rd GUI_LOG_ONLINE_RESTORE_STARTED)
+  PNF=$(rd GUI_LOG_ONLINE_PARAMS_NO_FORMAT); PFMT=$(rd GUI_LOG_ONLINE_PARAMS_FORMAT)
+  CHON=$(rd GUI_LOG_CHANNEL_ONLINE); STON=$(rd GUI_LOG_ONLINE_RESTORE_STARTED)
   CANC=$(rd GUI_LOG_CANCELLED_ANY); AF=$(rd GUI_LOG_ACTION_FAILED); OFFSKIP=$(rd GUI_LOG_SKIP_FORMAT_ARGS)
   if [ "${LINES_AFTER:-0}" -lt 1 ]; then
     verdict GUI_DISPATCH FAIL "no GUI log line after $T0_GUEST (the log could not be bounded to this run; reading failed is not a verdict)"; fail=1
+  elif [ "$MODE" = online-format ]; then
+    if [ "${PFMT:-0}" -ge 1 ] && [ "${PNF:-0}" -eq 0 ] && [ "${CHON:-0}" -ge 1 ] && [ "${STON:-0}" -ge 1 ] \
+         && [ "${CANC:-0}" -eq 0 ] && [ "${AF:-0}" -eq 0 ] && [ "${BLOCKED:-0}" -eq 0 ] \
+         && [ "${ERRLOG:-0}" -eq 0 ] && [ "${OFFSKIP:-0}" -eq 0 ]; then
+      verdict GUI_DISPATCH PASS "since $T0_GUEST: $LINES_AFTER GUI log lines; split to the online channel with format_target=true, started, nothing cancelled, blocked or failed"
+    else
+      verdict GUI_DISPATCH FAIL "lines_after=${LINES_AFTER:-none} online_format=${PFMT:-none} online_no_format=${PNF:-none} channel_online=${CHON:-none} started=${STON:-none} cancelled=${CANC:-none} action_failed=${AF:-none} blocked_log=${BLOCKED:-none} error_log=${ERRLOG:-none} offline_skip_format_line=${OFFSKIP:-none}"; fail=1
+    fi
   elif [ "${PNF:-0}" -ge 1 ] && [ "${CHON:-0}" -ge 1 ] && [ "${STON:-0}" -ge 1 ] && [ "${CANC:-0}" -eq 0 ] && [ "${AF:-0}" -eq 0 ] \
        && [ "${BLOCKED:-0}" -eq 0 ] && [ "${ERRLOG:-0}" -eq 0 ] && [ "${OFFSKIP:-0}" -eq 0 ]; then
     verdict GUI_DISPATCH PASS "since $T0_GUEST: $LINES_AFTER GUI log lines; split to the online channel with format_target=false, started, nothing cancelled, blocked or failed (and the offline prepare-args line is absent)"
@@ -219,7 +238,15 @@ else
   fi
 fi
 # ★ 比对之前先确认读到的不是空串：读不到的时候「空串 == 空串」会让比对假通过。
-if [ "$FILE1_A" = "BRDATA file1 v1" ] && [ "$SENT_A" = "True" ] && [ "$EXTRA_A" = "True" ] && [ -n "$SERIAL_A" ] && [ "$SERIAL_B" = "$SERIAL_A" ] \
+if [ "$MODE" = online-format ]; then
+  if [ "$FILE1_A" = "BRDATA file1 v1" ] && [ "$SENT_A" = "False" ] && [ "$EXTRA_A" = "False" ] \
+     && [ -n "$SERIAL_B" ] && [ -n "$SERIAL_A" ] && [ "$SERIAL_B" != "$SERIAL_A" ] \
+     && [ -n "$COUNT_B" ] && [ -n "$COUNT_A" ] && [ "$COUNT_A" -lt "$COUNT_B" ]; then
+    verdict GUI_DATA_RESTORE_CONTENT PASS "format wiped sentinel and extra file, refreshed volume serial ($SERIAL_B -> $SERIAL_A), and restored BRDATA from the image"
+  else
+    verdict GUI_DATA_RESTORE_CONTENT FAIL "file1=[$FILE1_A] sentinel=$SENT_A extra=$EXTRA_A serial=$SERIAL_B->$SERIAL_A count=$COUNT_B->$COUNT_A"; fail=1
+  fi
+elif [ "$FILE1_A" = "BRDATA file1 v1" ] && [ "$SENT_A" = "True" ] && [ "$EXTRA_A" = "True" ] && [ -n "$SERIAL_A" ] && [ "$SERIAL_B" = "$SERIAL_A" ] \
    && [ -n "$HASH_A" ] && [ "$HASH_B" = "$HASH_A" ] && [ -n "$COUNT_A" ] && [ "$COUNT_B" = "$COUNT_A" ]; then
   verdict GUI_DATA_RESTORE_CONTENT PASS "file1 back to the image content; sentinel and extra file kept; volume serial, payload hash and file count unchanged"
 else
@@ -237,5 +264,9 @@ WINRE=$(winre_enabled)
 printf '%s\n' "$WINRE" | tee -a "$EV/$NAME-verdict.txt"
 [ "$WINRE" = "WINRE_ENABLED=True" ] || fail=1
 
-if [ "$MODE" = offline ]; then FINAL_KEY=GUI_DATA_RESTORE; else FINAL_KEY=GUI_DATA_RESTORE_ONLINE; fi
+case "$MODE" in
+  offline) FINAL_KEY=GUI_DATA_RESTORE ;;
+  online) FINAL_KEY=GUI_DATA_RESTORE_ONLINE ;;
+  online-format) FINAL_KEY=GUI_DATA_RESTORE_ONLINE_FORMAT ;;
+esac
 if [ $fail -eq 0 ]; then verdict "$FINAL_KEY" PASS "mode=$MODE task=${TASK:-<online: no task directory>}"; else verdict "$FINAL_KEY" FAIL "mode=$MODE (see the lines above)"; exit 1; fi

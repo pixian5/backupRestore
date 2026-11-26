@@ -2354,6 +2354,108 @@ unsafe extern "system" fn window_proc(
 }
 
 
+/// 主窗口单实例互斥锁守卫：持有期间禁止第二个正常 GUI 实例拉起第二个主窗口。
+struct SingleInstanceGuard {
+    handle: Handle,
+}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+/// 若已有正常 GUI 实例存在，将其主窗（或当前弹出的模态对话框）唤醒到前台并返回 `Ok(None)`。
+unsafe fn acquire_single_instance_guard() -> Option<SingleInstanceGuard> {
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    const SW_RESTORE: i32 = 9;
+    const HWND_TOPMOST_RAW: isize = -1;
+    const HWND_NOTOPMOST_RAW: isize = -2;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_SHOWWINDOW: u32 = 0x0040;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateMutexW(
+            attributes: *const c_void,
+            initial_owner: i32,
+            name: *const u16,
+        ) -> Handle;
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowW(class_name: *const u16, window_name: *const u16) -> Hwnd;
+        fn GetLastActivePopup(hwnd: Hwnd) -> Hwnd;
+        fn IsIconic(hwnd: Hwnd) -> i32;
+        fn SetWindowPos(
+            hwnd: Hwnd,
+            insert_after: Hwnd,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    let mutex_name = wide("Local\\BackupRestoreNativeGuiSingleInstance");
+    let handle = CreateMutexW(null(), 1, mutex_name.as_ptr());
+    if handle.is_null() {
+        // 创建互斥锁失败不阻断启动（宁可放行也不要让异常环境卡死工具）。
+        return Some(SingleInstanceGuard { handle: null_mut() });
+    }
+    if GetLastError() == ERROR_ALREADY_EXISTS {
+        CloseHandle(handle);
+        let class_name = wide("BackupRestoreNativeGui");
+        let mut existing: Hwnd = null_mut();
+        // 先行实例刚拿到锁时窗口可能尚未建完，短暂轮询最多 1 秒找到它并推到前台。
+        for _ in 0..10 {
+            existing = FindWindowW(class_name.as_ptr(), null());
+            if !existing.is_null() {
+                break;
+            }
+            Sleep(100);
+        }
+        if !existing.is_null() {
+            if IsIconic(existing) != 0 {
+                ShowWindow(existing, SW_RESTORE);
+            }
+            SetWindowPos(
+                existing,
+                HWND_TOPMOST_RAW as Hwnd,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            SetWindowPos(
+                existing,
+                HWND_NOTOPMOST_RAW as Hwnd,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE,
+            );
+            let active = GetLastActivePopup(existing);
+            let target = if active.is_null() { existing } else { active };
+            SetForegroundWindow(target);
+        }
+        let log_path = crate::log_root::logs_dir().join("gui.log");
+        let _ = append_log(
+            &log_path,
+            "GUI single-instance: activated existing window and exited",
+        );
+        return None;
+    }
+    Some(SingleInstanceGuard { handle })
+}
+
 pub fn run() -> Result<(), super::TaskError> {
     unsafe {
         let common_controls = InitCommonControlsEx {
@@ -2364,6 +2466,10 @@ pub fn run() -> Result<(), super::TaskError> {
         if !is_elevated() {
             return relaunch_elevated();
         }
+        // 在任何孤儿回收、扫描未完成任务或建窗前先占住命名互斥锁，防止双开界面互抢状态。
+        let Some(_single_instance_guard) = acquire_single_instance_guard() else {
+            return Ok(());
+        };
         // 【2026-10-18 新增 B5】先把「注定跑不下去」的僵尸任务收口，再问续跑。
         // 判据极窄（非终态 + 破坏性边界之前 + 没有一次性启动项），只在不可能
         // 误伤还能续跑的任务时才动手；失败只记日志，不阻塞启动。

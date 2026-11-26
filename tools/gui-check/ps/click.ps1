@@ -1,4 +1,4 @@
-# NOTE: keep this file ASCII-only.
+﻿# NOTE: keep this file ASCII-only.
 # Click the centre of a control by (window class, control id).
 # Real mouse click (not BM_CLICK) so it exercises the same path a user does.
 # Usage: -Class BackupRestoreNativeGui -Id 1104
@@ -54,8 +54,35 @@ if ($r.R -le $r.L -or $r.B -le $r.T) {
   '__END__'
   exit 3
 }
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class GCLKWin {
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder buf, int max);
+}
+'@
 [void][GCLK]::SetForegroundWindow($script:win)
+# 仅调 SetForegroundWindow 容易被 Windows 前台锁忽略；参照 uiclick.ps1 用
+# HWND_TOPMOST/NOTOPMOST 强制抬到桌面常规窗口（例如「设置」）之上，再用 WindowFromPoint 复核。
+[void][GCLKWin]::SetWindowPos($script:win, [IntPtr](-1), 0, 0, 0, 0, 0x0013)
+[void][GCLKWin]::SetWindowPos($script:win, [IntPtr](-2), 0, 0, 0, 0, 0x0013)
 Start-Sleep -Milliseconds 400
+$pt = New-Object GCLKWin+POINT
+$pt.X = $x; $pt.Y = $y
+$at = [GCLKWin]::WindowFromPoint($pt)
+$root = [GCLKWin]::GetAncestor($at, 2)
+if ($root -ne $script:win) {
+  $cls = New-Object System.Text.StringBuilder 256
+  if ($root -ne [IntPtr]::Zero) { [void][GCLKWin]::GetClassNameW($root, $cls, 256) }
+  "CLICK=COVERED id=$Id at=$x,$y cover_root=$root cover_class=$($cls.ToString())"
+  '__END__'
+  exit 4
+}
 [void][GCLK]::SetCursorPos($x, $y)
 Start-Sleep -Milliseconds 200
 [GCLK]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero)

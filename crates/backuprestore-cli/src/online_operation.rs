@@ -1531,7 +1531,7 @@ pub(crate) fn capture(
         }
     }
     let metadata = im::remap_sidecars(&metadata, removed);
-    let hash = backuprestore_core::sha256_file(&candidate)?;
+    let hash = crate::hash_image_logged(&candidate, log_path)?;
     let final_size = fs::metadata(&candidate)?.len();
     im::write_sidecars(&candidate, &metadata, &hash, final_size, 0)?;
     log(

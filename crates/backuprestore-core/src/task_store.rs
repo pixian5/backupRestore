@@ -1330,6 +1330,37 @@ mod tests {
 
         // 读不存在的文件必须是错误，不能给出「算出来了」的摘要。
         assert!(sha256_file(root.join("missing.bin")).is_err());
+        assert!(sha256_file_software(root.join("missing.bin")).is_err());
+        assert!(sha256_file_with_backend(root.join("missing.bin")).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sha256_software_fallback_and_backend_tag_match_expected_vectors() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("backuprestore-sha256-backend-{suffix}"));
+        fs::create_dir_all(&root).unwrap();
+
+        let empty = root.join("empty.bin");
+        fs::write(&empty, []).unwrap();
+        assert_eq!(
+            sha256_file_software(&empty).unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let abc = root.join("abc.bin");
+        fs::write(&abc, b"abc").unwrap();
+        let (digest, backend) = sha256_file_with_backend(&abc).unwrap();
+        assert_eq!(
+            digest,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(sha256_file_software(&abc).unwrap(), digest);
+        assert_eq!(backend, crate::sha256_backend());
+        assert!(matches!(backend, "bcrypt" | "software"));
+
         let _ = fs::remove_dir_all(root);
     }
 }

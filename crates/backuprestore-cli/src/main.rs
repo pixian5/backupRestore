@@ -61,6 +61,7 @@ mod boot_record;
 // 文案表不依赖任何 Win32 句柄，**无条件编译**——这样 mac 上也能单测它
 // （2026-10-26 拆分的目的之一）。`native_gui` 仍然是 Windows 专属。
 mod gui_text;
+mod gui_dispatch_plan;
 /// 失败回执的错误码可见性：把 `error_code` 拼进界面文字（幂等）。
 /// **无条件编译**——`Io`/`Json` 这类失败的码只存在字段里，界面必须能看到；
 /// 纯字符串逻辑，本机单测即可覆盖全部规则。

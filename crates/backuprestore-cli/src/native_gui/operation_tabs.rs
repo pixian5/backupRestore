@@ -21,31 +21,7 @@ pub(crate) unsafe fn selected_operation(state: &State) -> &'static str {
     }
 }
 
-/// GUI 入口键 → CLI `prepare --operation` 值。
-/// B 复用 restore-existing（prepare 链要求 source==target，RE 内数据卷分支不碰引导）；
-/// C 复用 create-secondary（目标≠活动系统、需菜单名、NewWindows 收尾）——
-/// 2.4.9 起收尾按「目标性质」路由，operation 只表达语义，这里仅做入口归一。
-pub(crate) fn cli_operation(gui: &str) -> &'static str {
-    match gui {
-        "restore-data" => "restore-existing",
-        "create-secondary" => "create-secondary",
-        "backup" => "backup",
-        "restore-existing" => "restore-existing",
-        "install-pe-entry" => "install-pe-entry",
-        "probe" => "probe",
-        _ => "backup",
-    }
-}
-
-/// 是否「镜像还原类」入口（A/B/C + 新增第二系统）：
-
-/// 共用 WIM 索引必选、破坏性确认、副档校验、--allow-destructive 等闸门。
-pub(crate) fn is_image_restore_entry(gui: &str) -> bool {
-    matches!(
-        gui,
-        "restore-existing" | "restore-data" | "create-secondary"
-    )
-}
+pub(crate) use crate::gui_dispatch_plan::is_image_restore_entry;
 
 /// 「格式化目标分区」复选框的入口集合：A/B/C 三个还原入口。
 /// set_operation_visibility 的可见性列表与 layout_operation 的重排条件

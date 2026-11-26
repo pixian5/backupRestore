@@ -46,6 +46,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import subprocess
 import sys
 
@@ -107,7 +108,7 @@ RULES = [
      [("win-backup", None), ("win-restore", None), ("b-key", "改到回退或失败策略时")], "恢复环境里的引导修复"),
     ("R08", f"{CLI}recovery_progress.rs",
      [("win-backup", None), ("win-restore", None), ("progress-pe", None)], "进度窗与后台控制台"),
-    ("R09", f"{CLI}pending_task.rs|{CLI}boot_entry.rs|{CLI}boot_cleanup.rs|{CLI}boot_record.rs",
+    ("R09", f"{CLI}pending_task.rs|{CLI}boot_entry.rs|{CLI}boot_entry_fault_tests.rs|{CLI}boot_cleanup.rs|{CLI}boot_record.rs",
      [("win-backup", None), ("win-restore", None), ("power-resume", None),
       ("orphan-race", "改到孤儿任务守卫时"), ("guard-unit", "改到孤儿任务守卫时")], "启动项与续跑"),
     ("R10", f"{CLI}boot_menu.rs",
@@ -116,14 +117,14 @@ RULES = [
      [("win-backup", None), ("win-restore", None), ("gate-pair", "改到门禁时"),
       ("orphan-race", "改到任务落盘、启动项记录、失败补偿的先后时"),
       ("gui-data-restore", "改到数据卷放行或镜像性质判断时")], "准备链（备份、还原都要经过）"),
-    ("R12", f"{CLI}winre_registration.rs",
+    ("R12", f"{CLI}winre_registration.rs|{CLI}winre_registration_fault_tests.rs",
      [("reagentc", None), ("missing-re-047", None)], "恢复环境注册"),
     ("R13", f"{CLI}online_operation.rs|{CLI}wimlib_apply.rs",
      [("b-entry", None), ("c-entry-online", None), ("overlay", None),
       ("gui-backup-online", "改到在线备份时")], "在线操作与覆盖式通道"),
     ("R14", f"{CLI}pe_operation.rs|{CLI}pe_safety.rs|{CLI}pe_desktop.rs|{CLI}pe_installer.rs|{CLI}native_gui/pe_desktop.rs|{CLI}native_gui/pe_installer.rs",
      [("pe-chain", None)], "预安装环境链"),
-    ("R15", f"{CLI}native_gui.rs|{CLI}native_gui/*.rs|{CLI}dpi.rs",
+    ("R15", f"{CLI}native_gui.rs|{CLI}native_gui/*.rs|{CLI}gui_dispatch_plan.rs|{CLI}dpi.rs",
      [("gui-matrix", None), ("gui-confirm", None), ("gui-backup-cancel", None), ("dpi-200", "动了坐标或字号时"),
       ("gui-data-restore", "改到任务下发的参数、离线通道选择或数据入口的校验时"),
       ("gui-backup-online", "改到确认框之后的分流或在线分支时")], "界面与缩放"),
@@ -156,6 +157,20 @@ RULES = [
      [("orphan-race", None), ("guard-unit", None)], "准备期在办锁（2026-11-24 实机缺陷后新增的模块）"),
     ("R29", f"{CLI}environment_admin.rs",
      [("cli-probe", None), ("orphan-race", "改到放弃任务的入口时")], "环境探测、启动项枚举与放弃任务（2026-11-24 补：此前是表外文件）"),
+    ("R30", f"{CLI}winre_payload.rs",
+     [("win-restore", None), ("pe-chain", None), ("reagentc", "改到 WinRE 载荷提取或校验时")], "WinRE 载荷提取与完整性"),
+    ("R31", f"{CLI}boot_menu_window.rs|{CLI}gui_text.rs|{CLI}settings_file.rs",
+     [("gui-matrix", None), ("table-unit", "改到界面文案或配置持久化时")], "引导菜单窗、界面双语表与配置读写"),
+    ("R32", f"{CLI}failure_policy.rs|{CLI}failure_receipt.rs|{CLI}recovery_fault.rs|{CLI}resume_safety.rs|{CLI}dism_timeout.rs",
+     [("win-restore", None), ("power-resume", None), ("b-key", "改到失败策略、断电续跑或 DISM 超时时")], "失败策略、回执、故障注入、续跑安全与 DISM 超时"),
+    ("R33", f"{CLI}capture_heartbeat.rs|{CLI}online_log.rs",
+     [("b-entry", None), ("gui-backup-online", None), ("win-backup", "改到捕获心跳计时时")], "捕获心跳与在线日志"),
+    ("R34", f"{CLI}session_log.rs|{CLI}log_root.rs|{CLI}letter_trace.rs",
+     [("win-backup", None), ("win-restore", None), ("cli-probe", "改到日志根目录或盘符追踪时")], "会话日志镜像、日志根目录与盘符时间线"),
+    ("R35", f"{CLI}status_receipt.rs|{CLI}task_admin.rs",
+     [("smoke-status", None), ("gui-matrix", "改到任务管理界面状态读取时")], "任务状态回执与任务管理读写"),
+    ("R36", f"{CLI}cli_json.rs",
+     [("cli-probe", None), ("orphan-race", "改到 --json 输出结构时")], "命令行结构化 --json 输出契约"),
 ]
 
 
@@ -338,7 +353,19 @@ def selftest() -> int:
     print(f"SELFTEST mutation=drop_R28 {'PASS' if ok else 'FAIL'} gone={gone_g} kept={kept_g} restored={back_g}")
     failed += 0 if ok else 1
 
-    print(f"SELFTEST_CASES={len(SELFTEST_CASES) + 3} SELFTEST_FAILED={failed}")
+    # 检查仓库内全部 Rust 源码文件都已被规则覆盖（不能留 UNMAPPED 死角）
+    all_rs = sorted(
+        os.path.relpath(os.path.join(dp, fn), ".").replace("\\", "/")
+        for dp, _dn, fns in os.walk("crates")
+        for fn in fns
+        if fn.endswith(".rs")
+    )
+    _, _, rs_unmapped = resolve(all_rs)
+    ok_rs = bool(all_rs) and not rs_unmapped
+    print(f"SELFTEST all_crates_mapped {'PASS' if ok_rs else 'FAIL'} total_rs={len(all_rs)} unmapped={','.join(rs_unmapped) or '-'}")
+    failed += 0 if ok_rs else 1
+
+    print(f"SELFTEST_CASES={len(SELFTEST_CASES) + 4} SELFTEST_FAILED={failed}")
     print("SELFTEST=PASS" if failed == 0 else "SELFTEST=FAIL")
     return 1 if failed else 0
 

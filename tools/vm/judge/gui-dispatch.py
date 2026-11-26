@@ -33,6 +33,7 @@
 #   GUI_LOG_CANCELLED_ANY=<n>               「GUI action cancelled: destructive confirmation」的行数（任何入口在破坏性确认上答了「否」）
 #   GUI_LOG_CHANNEL_ONLINE=<n>              「channel split: op=restore-data online=true」的行数（数据入口分流到了在线通道）
 #   GUI_LOG_ONLINE_PARAMS_NO_FORMAT=<n>     「online params: format_target=false」的行数（在线通道收到的是「不格式化」）
+#   GUI_LOG_ONLINE_PARAMS_FORMAT=<n>        「online params: format_target=true」的行数（在线通道收到的是「格式化」）
 #   GUI_LOG_ONLINE_RESTORE_STARTED=<n>      「online started: op=restore-existing」的行数（在线还原已开始）
 #   —— 界面「说不」矩阵（tools/vm/gui-negative.sh）——
 #   GUI_LOG_CANCELLED_RESTORE_EXISTING=<n>  「GUI action cancelled: destructive confirmation; operation=restore-existing」
@@ -72,6 +73,7 @@ KEYS = {
     "GUI_LOG_CANCELLED_ANY": "GUI action cancelled: destructive confirmation",          # 任何入口在破坏性确认上答了「否」
     "GUI_LOG_CHANNEL_ONLINE": "channel split: op=restore-data online=true",             # 数据入口分流到了在线通道
     "GUI_LOG_ONLINE_PARAMS_NO_FORMAT": "online params: format_target=false",            # 在线通道收到的是「不格式化」
+    "GUI_LOG_ONLINE_PARAMS_FORMAT": "online params: format_target=true",                # 在线通道收到的是「格式化」
     "GUI_LOG_ONLINE_RESTORE_STARTED": "online started: op=restore-existing",            # 在线还原已开始
     # ---- 界面「说不」矩阵（tools/vm/gui-negative.sh）：用户点「否」或「取消」之后界面自己记下的那一行 ----
     "GUI_LOG_CANCELLED_RESTORE_EXISTING": "GUI action cancelled: destructive confirmation; operation=restore-existing",

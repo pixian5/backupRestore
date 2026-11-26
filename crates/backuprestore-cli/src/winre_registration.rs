@@ -645,7 +645,10 @@ fn repair_with_mode(
                         .iter()
                         .fold(self.target.to_path_buf(), |path, item| path.join(item));
                     let hash = crate::sha256_file(&source)?;
-                    fs::create_dir_all(destination.parent().expect("恢复目录"))?;
+                    let parent = destination.parent().ok_or_else(|| {
+                        crate::err("recovery payload destination has no parent directory")
+                    })?;
+                    fs::create_dir_all(parent)?;
                     fs::copy(&source, &destination)?;
                     if crate::sha256_file(&destination)? != hash {
                         return Err(crate::errc(ErrCode::RecoveryPayloadCopyVerifyFailed));
@@ -695,7 +698,10 @@ fn repair_with_mode(
                     .fold(self.target.to_path_buf(), |p, part| p.join(part));
                 let backup = path.with_extension("xml.before-secondary");
                 let mut backup_parts = parts.clone();
-                *backup_parts.last_mut().expect("配置文件名") = "ReAgent.xml.before-secondary";
+                let last = backup_parts
+                    .last_mut()
+                    .ok_or_else(|| crate::err("ReAgent.xml relative path is empty"))?;
+                *last = "ReAgent.xml.before-secondary";
                 let exists = pe_safety::probe_file(self.target, &backup_parts)?;
                 let hash = crate::sha256_file(&path)?;
                 if exists {

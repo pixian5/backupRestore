@@ -107,7 +107,25 @@ pub(crate) fn inspect_environment() -> Result<(), TaskError> {
 ///
 /// 仍拒绝的情形：**非终态且已越过破坏性边界**（TargetErased 之后但未标终态）——那说明恢复链
 /// 还在进行中，需要先继续原任务或人工恢复，不能从清理入口直接抹掉。
+/// 对外命令行入口：执行放弃并打印两步结论，兼容 `--json` 字段回执。
 pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskError> {
+    let outcome = abandon_task_with_outcome(root, task_id)?;
+    crate::cli_json::set_detail(Some(outcome.task_id.clone()), Some(outcome.log_path.clone()));
+    if !crate::cli_json::enabled() {
+        let (summary, _) = crate::pending_task::format_abandon_feedback(
+            &outcome,
+            crate::i18n::get() == crate::i18n::MessageLanguage::English,
+        );
+        println!("{summary}");
+    }
+    Ok(())
+}
+
+/// 显式放弃或收口一个任务，并返回明确的两步收口结果（任务作废 vs BCD 补偿）。
+pub(crate) fn abandon_task_with_outcome(
+    root: String,
+    task_id: String,
+) -> Result<crate::pending_task::AbandonOutcome, TaskError> {
     // 先拿到日志路径再查提权：这样「不是管理员」这件事本身也能落进任务日志，
     // 而不是只留一句弹框文案。
     let log = TaskStore::new(root.clone()).log_path(&task_id)?;
@@ -170,7 +188,13 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
             &log,
             "Terminal (Failed) task collected; evidence records retained",
         )?;
-        return Ok(());
+        return Ok(crate::pending_task::AbandonOutcome {
+            task_id: task.task_id,
+            log_path: log.to_string_lossy().into_owned(),
+            already_failed: true,
+            bcd_warning: None,
+            staging_cleaned: false,
+        });
     }
     if !task.status.can_abandon_before_target_write() {
         return Err(errc_with(
@@ -192,13 +216,16 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
     // 此时中断整个放弃流程 = 用户又被卡住——和刚修好的阶段闸门是同一个死锁，
     // 只是换了个位置复发。改为记 ERROR 后继续：BCD 保持现状（可用「引导修复(M)」
     // 或 bcdedit 手工处理），任务照样标终态、一次性启动项照样撤销。
+    let mut bcd_warning = None;
     if let Err(cleanup) = compensate_prepare_failure(&dir, &efi, &log) {
+        let message = cleanup.to_string();
         append_log(
             &log,
             &format!(
-                "[ERROR] abandon: BCD compensation incomplete ({cleanup}); continuing to close the task"
+                "[ERROR] abandon: BCD compensation incomplete ({message}); continuing to close the task"
             ),
         )?;
+        bcd_warning = Some(message);
     }
     // create_entry can copy the WIM to staging before its final boot-entry
     // record is durable. Re-check by stable volume identity and remove only
@@ -208,6 +235,7 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
             .as_ref()
             .map(|destination| &destination.volume)
     });
+    let mut staging_cleaned = false;
     if let Some(volume) = staging_volume {
         let root_path = staging_volume_root(volume)?;
         let actual =
@@ -219,6 +247,7 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
             return Err(errc(ErrCode::AbandonPayloadVolumeMismatch));
         }
         remove_staging(&root_path, &task.task_id)?;
+        staging_cleaned = true;
     }
     store.write_failure(&mut task, 2, "用户在创建新任务前明确放弃")?;
     store.cleanup_task_artifacts(&task.task_id)?;
@@ -226,5 +255,11 @@ pub(crate) fn abandon_task(root: String, task_id: String) -> Result<(), TaskErro
         &log,
         "Abandoned task cleanup completed; evidence records retained",
     )?;
-    Ok(())
+    Ok(crate::pending_task::AbandonOutcome {
+        task_id: task.task_id,
+        log_path: log.to_string_lossy().into_owned(),
+        already_failed: false,
+        bcd_warning,
+        staging_cleaned,
+    })
 }

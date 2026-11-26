@@ -256,10 +256,19 @@ for combo in "${COMBOS[@]}"; do
     fi
     sleep 8
 
-    o_click=$(vmps_elev click.ps1 -Id "$TAB") || { say "  SKIP $tag (click 通道没跑)"; skipped=$((skipped+1)); continue; }
+    click_rc=0
+    o_click=$(vmps_elev click.ps1 -Id "$TAB") || click_rc=$?
     case "$o_click" in
       *"CLICK=OK"*) ;;
-      *) say "  SKIP $tag (页签没切: $(printf '%s' "$o_click" | head -1))"; skipped=$((skipped+1)); continue ;;
+      *"CLICK=COVERED"*) say "  SKIP $tag (目标坐标被其它窗口遮挡，已拒绝点击: $(printf '%s' "$o_click" | grep -E '^CLICK=' | head -1))"; skipped=$((skipped+1)); continue ;;
+      *)
+        if [ "$click_rc" -ne 0 ] && [ -z "$o_click" ]; then
+          say "  SKIP $tag (click 通道没跑 rc=$click_rc)"
+        else
+          say "  SKIP $tag (页签没切 rc=$click_rc: $(printf '%s' "$o_click" | head -1))"
+        fi
+        skipped=$((skipped+1)); continue
+        ;;
     esac
     sleep 2
 

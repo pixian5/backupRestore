@@ -1061,27 +1061,28 @@ pub(crate) unsafe fn create_task(state: &mut State) {
     } else {
         None
     };
-    if matches!(operation.as_str(), "backup" | "restore-existing") {
-        let system_upper = std::env::var("SystemDrive")
-            .unwrap_or_else(|_| "C:".to_string())
-            .trim_end_matches('\\')
-            .trim_end_matches(':')
-            .to_ascii_uppercase();
-        // 待处理分区：备份=被捕获的源卷（镜像保存卷只是存放位置，不影响是否离线）；
-        // 还原=被覆盖的目标卷。
-        let affected = if operation == "backup" {
-            &source_drive
-        } else {
-            &target_drive
-        };
-        let affected_upper = affected.trim_end_matches(':').to_ascii_uppercase();
-        // A（还原系统到 C 盘）目标锁定系统盘、必离线；备份仍按「是否当前活动系统」分流。
-        let needs_offline = if operation == "backup" {
-            affected_upper == system_upper
-        } else {
-            true
-        };
-        if needs_offline {
+    let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    let channel_online = IsDlgButtonChecked(state.root, ID_CHANNEL_ONLINE as i32) != 0;
+    let format_target = IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
+    let boot_menu_name = get_text(state.controls.menu);
+    if matches!(operation.as_str(), "restore-data" | "create-secondary") {
+        append_gui_log(
+            state,
+            &format!("channel split: op={operation} online={channel_online}"),
+        );
+    }
+    let route = crate::gui_dispatch_plan::plan_gui_dispatch(&crate::gui_dispatch_plan::DispatchInputs {
+        operation: &operation,
+        source_drive: &source_drive,
+        target_drive: &target_drive,
+        system_drive: &system_drive,
+        channel_online,
+        format_target,
+        image_name: &image_name,
+        boot_menu_name: &boot_menu_name,
+    });
+    match route {
+        crate::gui_dispatch_plan::DispatchRoute::SystemDriveChoiceRequired => {
             // 当前活动系统：必须离线处理，弹窗让用户选 PE / RE / 取消。
             // 测试钩子配置了 system_drive_choice 时直接采用（跳过弹窗）。
             let choice = match state.test_drive_choice {
@@ -1115,10 +1116,6 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                     // 确认后再走管理员 prepare → WinRE 任务链，避免"只关弹窗无反应"。
                     // 测试钩子指定了 choice 时跳过确认框（自动化环境无法精确点击）。
                     if state.test_drive_choice.is_none() {
-                        // 文案按实际操作区分：此前写死「备份」，还原/新增第二系统时
-                        // 也在说"执行备份"，用户会以为点错了。
-                        // 操作名走 operation_display 的显示名，不能直接用内部键：2026-09-30
-                        // 实机确认框显示成「将创建backup任务」，中文界面里混进英文内部键。
                         let operation_text = operation_display(language, &operation);
                         let (body, caption) = if language == Language::English {
                             (
@@ -1165,54 +1162,28 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                     return;
                 }
             }
-        } else {
-            // 非当前活动系统（数据盘 / 未运行的第二系统）：在线直接执行，不重启
-            append_gui_log(
-                state,
-                &format!("online operation: affected={affected_upper} system={system_upper}"),
-            );
-            run_online_operation(
-                state,
-                &operation,
-                &source_drive,
-                &target_drive,
-                &image_path,
-                &index,
-                &compress,
-                &image_name,
-                keep_indexes,
-                false,
-            );
-            return;
         }
-    }
-    // ===== B/C 入口按「通道单选」分流（默认在线；离线 = 重启进 PE/RE）=====
-    if matches!(operation.as_str(), "restore-data" | "create-secondary") {
-        let online = IsDlgButtonChecked(state.root, ID_CHANNEL_ONLINE as i32) != 0;
-        append_gui_log(
-            state,
-            &format!("channel split: op={operation} online={online}"),
-        );
-        if online {
-            // 在线：按「格式化目标分区」选项决定是否清空目标卷（默认勾选）——
-            // B=数据卷覆盖/格式化应用；C=格式化+应用+修复引导（online_operation
-            // 的 create-secondary 分支，同样尊重格式化选项）。
-            // C 的启动菜单名通过 image_name 传给在线通道——restore_to_windows_volume
-            // 会优先用它命名新启动项（用户命名 > 镜像版本名自动推断）。
-            let online_image_name = if operation == "create-secondary" {
-                get_text(state.controls.menu).trim().to_string()
+        crate::gui_dispatch_plan::DispatchRoute::Online {
+            cli_op,
+            affected_upper,
+            system_upper,
+            format_target,
+            online_image_name,
+        } => {
+            if matches!(operation.as_str(), "backup" | "restore-existing") {
+                append_gui_log(
+                    state,
+                    &format!("online operation: affected={affected_upper} system={system_upper}"),
+                );
             } else {
-                String::new()
-            };
-            let format_target =
-                IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
-            append_gui_log(
-                state,
-                &format!("online params: format_target={format_target}"),
-            );
+                append_gui_log(
+                    state,
+                    &format!("online params: format_target={format_target}"),
+                );
+            }
             run_online_operation(
                 state,
-                cli_operation(&operation),
+                cli_op,
                 &source_drive,
                 &target_drive,
                 &image_path,
@@ -1224,14 +1195,8 @@ pub(crate) unsafe fn create_task(state: &mut State) {
             );
             return;
         }
-        // 离线 B：目标是数据卷（不是系统盘），PE/RE 弹窗用通用文案；
-        // PE=排队 PE 任务，RE=确认后走提权 prepare 链。
-        if operation == "restore-data" {
+        crate::gui_dispatch_plan::DispatchRoute::OfflineDataChoiceRequired { format_target } => {
             CHOICE_GENERIC_OFFLINE.store(true, std::sync::atomic::Ordering::SeqCst);
-            // 【2026-11-24 缺陷 3】没勾「格式化目标分区」时实际是不格式化的覆盖式应用，
-            // 弹窗正文要按这个说，不能再固定写「将被格式化」。
-            let format_target =
-                IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) != 0;
             CHOICE_OFFLINE_KEEP_FILES.store(
                 !format_target,
                 std::sync::atomic::Ordering::SeqCst,
@@ -1240,10 +1205,7 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                 Some(c) => c,
                 None => ask_system_drive_handler(state.root, language),
             };
-            // 与下面那个标志一样：弹窗创建时已消费；测试钩子跳过弹窗时在这里复位。
             CHOICE_OFFLINE_KEEP_FILES.store(false, std::sync::atomic::Ordering::SeqCst);
-            // 弹窗在 WM_CREATE 里已 swap(false) 消费；测试钩子跳过弹窗时手动复位，
-            // 防止标志泄漏到下一次系统盘弹窗（文案错成通用版）。
             CHOICE_GENERIC_OFFLINE.store(false, std::sync::atomic::Ordering::SeqCst);
             append_gui_log(
                 state,
@@ -1268,7 +1230,6 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                     return;
                 }
                 2 => {
-                    // 进入 Windows RE：与 A/备份相同的确认框机制
                     if state.test_drive_choice.is_none() {
                         let operation_text = operation_display(language, &operation);
                         let (body, caption) = if language == Language::English {
@@ -1317,87 +1278,34 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                 }
             }
         }
-        // 离线 C（还原系统到非 C 盘）：与「新增第二系统」完全一致的离线链——
-        // destructive 确认已在上方完成，直接落到下面的提权 prepare。
+        crate::gui_dispatch_plan::DispatchRoute::PrepareDirect => {}
     }
     let executable =
         std::env::current_exe().unwrap_or_else(|_| state.executable_dir.join("BackupRestore.exe"));
-    let mut arguments = vec![
-        "prepare".to_string(),
-        // GUI 入口归一成 CLI operation：B→restore-existing、C→create-secondary
-        //（2.4.9 起收尾按目标性质路由，CLI 侧无需感知三入口细分）。
-        "--operation".to_string(),
-        cli_operation(&operation).to_string(),
-        "--source-drive".to_string(),
-        source_drive.clone(),
-        "--target-drive".to_string(),
-        target_drive.clone(),
-        "--boot-menu-name".to_string(),
-        get_text(state.controls.menu),
-    ];
-    if operation != "probe" {
-        arguments.extend([
-            "--image-path".to_string(),
-            image_path,
-            "--wim-index".to_string(),
-            index,
-        ]);
+    if crate::gui_dispatch_plan::should_append_skip_format(&operation, format_target) {
+        append_gui_log(state, "prepare args: --skip-format (overlay restore)");
     }
-    if operation == "backup" {
-        // 压缩下拉：值即 fast/none（DISM 术语，语言无关，已在上方分流处解析）。
-        arguments.extend(["--compress".to_string(), compress]);
-        // 备份索引名（用户输入，默认程序启动时间）与保留最近 N 个索引。
-        arguments.extend(["--image-name".to_string(), image_name]);
-        if let Some(keep) = keep_indexes {
-            arguments.extend(["--keep-indexes".to_string(), keep.to_string()]);
-        }
-    }
-    if is_image_restore_entry(&operation) {
-        arguments.push("--allow-destructive".to_string());
-        // 档案缺失/哈希不匹配且用户已确认 → 跳过哈希校验。
-        if force_restore_hash {
-            arguments.push("--force-restore-hash".to_string());
-        }
-        if verify_hash_enabled {
-            arguments.push("--verify-hash".to_string());
-        }
-        // 格式化选项（离线链路）：三个还原入口取消勾选「格式化目标分区」时，
-        // prepare 落盘 format_target=false，RE 恢复链做覆盖式应用（跳过 diskpart）。
-        // 默认勾选不传参（=格式化，历史行为）。
-        if matches!(
-            operation.as_str(),
-            "restore-existing" | "restore-data" | "create-secondary"
-        ) && IsDlgButtonChecked(state.root, ID_FORMAT_TARGET as i32) == 0
-        {
-            append_gui_log(state, "prepare args: --skip-format (overlay restore)");
-            arguments.push("--skip-format".to_string());
-        }
-    }
-    if operation == "probe" {
-        arguments.push("--no-reboot".to_string());
-    }
-    // 恢复环境失败处理策略 + 界面语言（2026-10-16 用户拍板做成设置项）。
-    // 显式传给 prepare，由它落盘进 `RecoveryTask.env`——这样「任务创建时用的是
-    // 哪套策略」被固定在任务里，事后改设置不会改变已有任务的行为。
-    arguments.extend([
-        "--fail-threshold".to_string(),
-        state.failure_policy.threshold.to_string(),
-        "--fail-action".to_string(),
-        state.failure_policy.action.env_name().to_string(),
-        // `pause` 策略的最长等待秒数（0 = 一直等 = 旧版行为）。
-        "--fail-pause-max-wait-secs".to_string(),
-        state.failure_policy.pause_max_wait_secs.to_string(),
-        // DISM 等待上限（2026-10-16 审查补上）：显式传给 prepare，由它落盘进
-        // `RecoveryTask.env`，恢复环境在入口灌进进程环境变量。0 = 不限制。
-        "--dism-timeout-secs".to_string(),
-        state.dism_timeout_secs.to_string(),
-        "--ui-language".to_string(),
-        if language == Language::English {
-            "en".to_string()
-        } else {
-            "zh".to_string()
+    let arguments = crate::gui_dispatch_plan::build_prepare_arguments(
+        &crate::gui_dispatch_plan::PrepareArgInputs {
+            operation: &operation,
+            source_drive: &source_drive,
+            target_drive: &target_drive,
+            boot_menu_name: &boot_menu_name,
+            image_path: &image_path,
+            wim_index: &index,
+            compress: &compress,
+            image_name: &image_name,
+            keep_indexes,
+            force_restore_hash,
+            verify_hash: verify_hash_enabled,
+            format_target,
+            fail_threshold: state.failure_policy.threshold,
+            fail_action_env: state.failure_policy.action.env_name(),
+            fail_pause_max_wait_secs: state.failure_policy.pause_max_wait_secs,
+            dism_timeout_secs: state.dism_timeout_secs,
+            english: language == Language::English,
         },
-    ]);
+    );
     let executable_wide = wide(&executable.to_string_lossy());
     let params = arguments
         .iter()
@@ -1882,24 +1790,42 @@ pub(crate) unsafe fn cancel_pending_task(state: &mut State) {
         return;
     }
     match crate::abandon_pending_task(&pending) {
-        Ok(()) => {
-            append_gui_log(
-                state,
-                &format!("cancel_pending: abandoned task {}", pending.task_id),
-            );
+        Ok(outcome) => {
+            let (body, is_warning) =
+                crate::format_abandon_feedback(&outcome, language == Language::English);
+            if let Some(warning) = &outcome.bcd_warning {
+                append_gui_log(
+                    state,
+                    &format!(
+                        "cancel_pending: abandoned task {} with BCD warning: {warning}",
+                        pending.task_id
+                    ),
+                );
+            } else {
+                append_gui_log(
+                    state,
+                    &format!(
+                        "cancel_pending: abandoned task {} (bcd_compensation=ok)",
+                        pending.task_id
+                    ),
+                );
+            }
+            let title = if is_warning {
+                if language == Language::English {
+                    "Abandon completed with warning"
+                } else {
+                    "已作废任务（补偿存在警告）"
+                }
+            } else if language == Language::English {
+                "Done"
+            } else {
+                "已完成"
+            };
             show_message(
                 state.root,
-                if language == Language::English {
-                    "Task abandoned and cleaned up. This machine will no longer reboot into the recovery environment for it."
-                } else {
-                    "已放弃并清理该任务。本机不会再为它重启进恢复环境。"
-                },
-                if language == Language::English {
-                    "Done"
-                } else {
-                    "已完成"
-                },
-                MB_OK | MB_ICONINFORMATION,
+                &body,
+                title,
+                MB_OK | if is_warning { MB_ICONWARNING } else { MB_ICONINFORMATION },
             );
         }
         Err(error) => {

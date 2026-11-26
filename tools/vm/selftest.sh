@@ -165,7 +165,11 @@ printf '[2026-11-25T13:00:30.000000000+00:00] GUI action started: create task; o
 out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
 check "gui-dispatch judge: the data entry split to the online channel" "1" "$(line "$out" GUI_LOG_CHANNEL_ONLINE)"
 check "gui-dispatch judge: the online channel got format_target=false" "1" "$(line "$out" GUI_LOG_ONLINE_PARAMS_NO_FORMAT)"
+check "gui-dispatch judge: format_target=true count is still 0" "0" "$(line "$out" GUI_LOG_ONLINE_PARAMS_FORMAT)"
 check "gui-dispatch judge mutation: the online restore start is counted, the backup start count does not change" "1" "$(line "$out" GUI_LOG_ONLINE_RESTORE_STARTED)"
+printf '[2026-11-25T13:00:45.000000000+00:00] online params: format_target=true\n' >> "$TMP/guib.log"
+out=$(python3 -I "$HERE/judge/gui-dispatch.py" "$TMP/guib.log" 2026-11-25T13:00:00)
+check "gui-dispatch judge mutation: format_target=true counted once appended" "1" "$(line "$out" GUI_LOG_ONLINE_PARAMS_FORMAT)"
 check "gui-dispatch judge: backup start and restore start are told apart (backup count stays 1)" "1" "$(line "$out" GUI_LOG_ONLINE_STARTED)"
 check "gui-dispatch judge: a cancel on any entry is counted regardless of the entry" "1" "$(line "$out" GUI_LOG_CANCELLED_ANY)"
 # 界面「说不」矩阵（gui-negative.sh）用到的键：人工拼一遍每个「说不」的出口留下的那一行，逐键核对。

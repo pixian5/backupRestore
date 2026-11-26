@@ -531,8 +531,107 @@ pub(crate) fn wim_full_windows_probe(
 
 /// 只读挂载镜像并检查完整 Windows 标记（reagentc.exe + SYSTEM hive）。
 /// 返回 Ok(true)=标记齐全；Ok(false)=缺标记（纯 PE）；Err=挂载/卸载失败。
+/// 优先使用 `wimlib-imagex dir --path=/Windows/System32` 做免挂载毫秒级探测；
+/// 仅在 `wimlib` 不可用或返回非预期错误时返回 `None` 交给 DISM `/Mount-Wim` 兜底。
+#[cfg(windows)]
+fn try_wimlib_dir_markers(image_path: &str, index: u32, log: &Path) -> Option<bool> {
+    const PROBE_TIMEOUT_MS: u32 = 120_000;
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))?;
+    let wimlib = match crate::wimlib_apply::locate_wimlib(&exe_dir) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = crate::append_log(
+                log,
+                &format!("wim_probe: wimlib unavailable ({error}); using DISM mount"),
+            );
+            return None;
+        }
+    };
+    let wimlib_str = wimlib.to_string_lossy().into_owned();
+    let index_str = index.to_string();
+    let dir_out = std::env::temp_dir().join(format!(
+        "br-wimdir-{}-{}-{index}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let dir_args = [
+        "dir".to_string(),
+        image_path.to_string(),
+        index_str.clone(),
+        "--path=/Windows/System32".to_string(),
+    ];
+    let dir_outcome =
+        crate::windows_command::run_program(&wimlib_str, &dir_args, Some(&dir_out), PROBE_TIMEOUT_MS);
+    let text = fs::read(&dir_out)
+        .map(|bytes| crate::text_parsing::decode_windows_bytes(&bytes))
+        .unwrap_or_default();
+    let _ = fs::remove_file(&dir_out);
+
+    if dir_outcome.is_success() {
+        let found = crate::wim_parse::wimlib_dir_has_windows_markers(&text);
+        // 有非空目录输出时才能确信列出过文件；若意外返回空白则保守退回 DISM 挂载。
+        if !found && !text.lines().any(|line| !line.trim().is_empty()) {
+            let _ = crate::append_log(
+                log,
+                "wim_probe: wimlib dir succeeded with empty listing; falling back to DISM mount",
+            );
+            return None;
+        }
+        let _ = crate::append_log(
+            log,
+            &format!(
+                "wim_probe: wimlib dir completed; index={index} windows_markers={found} image={image_path}"
+            ),
+        );
+        return Some(found);
+    }
+
+    if crate::wim_parse::wimlib_path_absent_output(&text) {
+        // 退出码 49（路径不存在）必须再核验一次 `wimlib info`：区分「纯数据镜像无 System32」与「索引损坏/越界」。
+        let info_args = [
+            "info".to_string(),
+            image_path.to_string(),
+            index_str.clone(),
+        ];
+        let info_outcome =
+            crate::windows_command::run_program(&wimlib_str, &info_args, None, PROBE_TIMEOUT_MS);
+        if info_outcome.is_success() {
+            let _ = crate::append_log(
+                log,
+                &format!(
+                    "wim_probe: wimlib path /Windows/System32 absent and info verified; index={index} windows_markers=false image={image_path}"
+                ),
+            );
+            return Some(false);
+        }
+        let _ = crate::append_log(
+            log,
+            &format!(
+                "wim_probe: wimlib info verification failed after path-absent (exit={info_outcome}); falling back to DISM mount"
+            ),
+        );
+        return None;
+    }
+
+    let _ = crate::append_log(
+        log,
+        &format!(
+            "wim_probe: wimlib dir inconclusive (exit={dir_outcome}); falling back to DISM mount"
+        ),
+    );
+    None
+}
+
 #[cfg(windows)]
 pub(crate) fn wim_mount_markers(image_path: &str, index: u32, log: &Path) -> Result<bool, TaskError> {
+    if let Some(found) = try_wimlib_dir_markers(image_path, index, log) {
+        return Ok(found);
+    }
     let mount_dir = std::env::temp_dir().join(format!("br-wimprobe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&mount_dir);
     std::fs::create_dir_all(&mount_dir)?;

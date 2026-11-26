@@ -397,17 +397,18 @@ pub(crate) fn parse_wim_indexes_output(output: &str) -> Result<Vec<u32>, TaskErr
 /// 给镜像算 SHA-256，并把「实际用的是哪种实现、花了多久」写进日志。
 ///
 /// 这一步的时长取决于用的是系统加密接口（硬件加速）还是纯软件实现，相差数倍；
+/// 恢复环境与在线备份共用的镜像哈希日志入口（实机取证用 `backend=` / `seconds=`）。
 /// 恢复环境里跑不了单元测试，所以这一行就是「快速路径确实走到了」的实机证据。
 /// 日志只用英文与结构化字段（`backend=` / `seconds=`），判据可以直接匹配。
 #[cfg(windows)]
-fn hash_image_logged(path: &Path, log: &Path) -> Result<String, TaskError> {
+pub(crate) fn hash_image_logged(path: &Path, log: &Path) -> Result<String, TaskError> {
     let started = std::time::Instant::now();
     let (digest, backend) = backuprestore_core::sha256_file_with_backend(path)?;
     append_log(
         log,
         &format!(
-            "Image hash computed: backend={backend} seconds={} sha256={digest} file={}",
-            started.elapsed().as_secs(),
+            "Image hash computed: backend={backend} seconds={:.2} sha256={digest} file={}",
+            started.elapsed().as_secs_f64(),
             path.display()
         ),
     )?;

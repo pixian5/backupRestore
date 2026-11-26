@@ -95,8 +95,20 @@ jobs:
       # 索引链接必须指向**已入库**的文件：本机点得开 ≠ clone 后打得开
       # （`文档索引.md` 曾链接 .gitignore 里的 AGENTS.md）。脚本自带分级与退出码：
       # 0 通过 / 1 有阻塞项 / 2 判据本身故障（后者必须当失败，不能当通过）。
-      - name: 4/4 文档链接入库检查
+      - name: 4/8 文档链接入库检查
         run: python3 tools/doc/check-doc-links.py --strict
+
+      - name: 5/8 VM 判读脚本与解析器自检（无需虚拟机）
+        run: bash tools/vm/selftest.sh
+
+      - name: 6/8 源码→重跑映射表与全量 Rust 文件覆盖自检
+        run: python3 tools/test/reverify-map.py --selftest
+
+      - name: 7/8 源码静态守卫（盘符租约、夹具配对、变量花括号）
+        run: bash tools/test/source-guard.sh
+
+      - name: 8/8 陈旧断言扫描（信息汇总）
+        run: bash tools/doc/stale-claims.sh
 
   windows:
     name: Windows 原生单测（mac 上完全看不到的 cfg(windows) 那一半）
