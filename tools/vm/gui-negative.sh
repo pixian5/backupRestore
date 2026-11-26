@@ -253,7 +253,7 @@ case_b-offline-final-no() {   # 「还原数据到非 C 盘」离线：破坏性
       dismiss_next b-offline-final-no
     fi
   fi
-  finish_case b-offline-final-no "Windows RE chosen, then NO on the last confirmation" "GUI_LOG_CHOICE_RE GUI_LOG_OFFLINE_CONFIRM_NO GUI_LOG_OFFLINE_CONFIRM_DECLINED" -- "GUI_LOG_CONFIRM_YES"
+  finish_case b-offline-final-no "Windows RE chosen, then NO on the last confirmation" "GUI_LOG_OFFLINE_CHOICE_RE GUI_LOG_OFFLINE_CONFIRM_NO GUI_LOG_OFFLINE_CONFIRM_DECLINED" -- "GUI_LOG_CONFIRM_YES GUI_LOG_CHOICE_RE"
 }
 
 case_a-metadata-no() {   # 「还原系统到 C 盘」+ 没有副档的镜像：破坏性确认「是」→ 副档缺失提示「否」

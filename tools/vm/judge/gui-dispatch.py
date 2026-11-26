@@ -11,8 +11,8 @@
 # 输出（一行一个键值）：
 #   GUI_LOG_LINES_AFTER=<n>                 起算时点之后的日志行数（0 说明划界本身有问题，比如时钟读错了）
 #   GUI_LOG_SKIP_FORMAT_ARGS=<n>            「prepare args: --skip-format (overlay restore)」的行数
-#   GUI_LOG_CONFIRM_YES=<n>                 「Windows RE confirm result=6 (6=yes)」的行数
-#   GUI_LOG_CHOICE_RE=<n>                   「user chose Windows RE (prepare chain)」的行数
+#   GUI_LOG_CONFIRM_YES=<n>                 「offline data restore: Windows RE confirm result=6 (6=yes)」的行数
+#   GUI_LOG_CHOICE_RE=<n>                   「offline data restore: user chose Windows RE (prepare chain)」的行数（最后一道确认框答「是」后才记）
 #   GUI_LOG_BLOCKED=<n>                     「GUI action blocked」的行数
 #   GUI_LOG_ERROR=<n>                       含 [ERROR] 的行数
 #   —— 备份入口（tools/vm/gui-backup.sh）——
@@ -39,6 +39,7 @@
 #   GUI_LOG_CANCELLED_RESTORE_DATA=<n>      同上，operation=restore-data
 #   GUI_LOG_CANCELLED_CREATE_SECONDARY=<n>  同上，operation=create-secondary
 #   GUI_LOG_OVERLAY_DECLINED=<n>            「GUI action blocked: overlay restore (wimlib route) declined by the user」
+#   GUI_LOG_OFFLINE_CHOICE_RE=<n>           「offline data restore choice: 2 (0=cancel 1=PE 2=RE)」（处理方式选择框选 RE 即记）
 #   GUI_LOG_OFFLINE_CONFIRM_NO=<n>          「offline data restore: Windows RE confirm result=7 (6=yes)」
 #   GUI_LOG_OFFLINE_CONFIRM_DECLINED=<n>    「offline data restore: Windows RE confirm declined」
 #   GUI_LOG_METADATA_DECLINED=<n>           「restore cancelled: metadata check declined」
@@ -77,6 +78,7 @@ KEYS = {
     "GUI_LOG_CANCELLED_RESTORE_DATA": "GUI action cancelled: destructive confirmation; operation=restore-data",
     "GUI_LOG_CANCELLED_CREATE_SECONDARY": "GUI action cancelled: destructive confirmation; operation=create-secondary",
     "GUI_LOG_OVERLAY_DECLINED": "GUI action blocked: overlay restore (wimlib route) declined by the user",
+    "GUI_LOG_OFFLINE_CHOICE_RE": "offline data restore choice: 2 (0=cancel 1=PE 2=RE)",
     "GUI_LOG_OFFLINE_CONFIRM_NO": "offline data restore: Windows RE confirm result=7 (6=yes)",
     "GUI_LOG_OFFLINE_CONFIRM_DECLINED": "offline data restore: Windows RE confirm declined",
     "GUI_LOG_METADATA_DECLINED": "restore cancelled: metadata check declined",
