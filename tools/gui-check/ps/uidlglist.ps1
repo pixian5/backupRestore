@@ -18,9 +18,26 @@ public class UIL {
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int idx);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr wp, IntPtr lp, uint flags, uint timeout, out IntPtr res);
 }
 '@
 function TextOf([IntPtr]$h) { $t = New-Object System.Text.StringBuilder 2048; [void][UIL]::GetWindowTextW($h, $t, 2048); return $t.ToString() }
+function LiveTextOf([IntPtr]$h, [string]$cls) {
+  if ($cls -ne 'Edit') { return (TextOf $h) }
+  $r = [IntPtr]::Zero
+  if ([UIL]::SendMessageTimeoutW($h, 0x000E, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 2000, [ref]$r) -eq [IntPtr]::Zero) { return (TextOf $h) }
+  $len = [int]$r.ToInt64()
+  if ($len -le 0) { return '' }
+  if ($len -gt 60000) { $len = 60000 }
+  $buf = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(($len + 2) * 2)
+  try {
+    $r2 = [IntPtr]::Zero
+    if ([UIL]::SendMessageTimeoutW($h, 0x000D, [IntPtr]::new($len + 1), $buf, 0x0002, 2000, [ref]$r2) -eq [IntPtr]::Zero) { return (TextOf $h) }
+    return [System.Runtime.InteropServices.Marshal]::PtrToStringUni($buf)
+  } finally {
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($buf)
+  }
+}
 function ClassOf([IntPtr]$h) { $c = New-Object System.Text.StringBuilder 256; [void][UIL]::GetClassNameW($h, $c, 256); return $c.ToString() }
 function IsDefaultBtn([IntPtr]$c, [string]$cls) { if ($cls -ne 'Button') { return '' }; $isDef = (([UIL]::GetWindowLongW($c, -16) -band 0xF) -eq 1); return " def=$isDef" }
 [void][UIL]::SetProcessDPIAware()
@@ -41,6 +58,6 @@ foreach ($h in $script:found) {
   $script:items = New-Object System.Collections.ArrayList
   $ccb = [UIL+Cb]{ param([IntPtr]$c,[IntPtr]$l) [void]$script:items.Add($c); return $true }
   [void][UIL]::EnumChildWindows($h, $ccb, [IntPtr]::Zero)
-  foreach ($c in $script:items) { $cls = ClassOf $c; "  id=$([UIL]::GetDlgCtrlID($c)) class=$cls visible=$([UIL]::IsWindowVisible($c))$(IsDefaultBtn $c $cls) text=$(TextOf $c)" }
+  foreach ($c in $script:items) { $cls = ClassOf $c; "  id=$([UIL]::GetDlgCtrlID($c)) class=$cls visible=$([UIL]::IsWindowVisible($c))$(IsDefaultBtn $c $cls) text=$(LiveTextOf $c $cls)" }
 }
 '__END__'
