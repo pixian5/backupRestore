@@ -1152,8 +1152,17 @@ unsafe fn pe_run_interactive(hwnd: Hwnd, operation: &str) {
     let request = index
         .map_err(|_| crate::errc(ErrCode::ImageIndexNotPositive))
         .and_then(|index| {
-            // overlay_no_acl=false：PE 桌面三入口恒格式化，无覆盖式组合（任务 #110）。
-            crate::pe_operation::new_request(operation, drive, image.trim(), index, main, &name, false)
+            // overlay_no_acl=false, format_target=false：PE 桌面三入口维持系统替换/第二系统默认语义（任务 #110）。
+            crate::pe_operation::new_request(
+                operation,
+                drive,
+                image.trim(),
+                index,
+                main,
+                &name,
+                false,
+                false,
+            )
         });
     let request = match request {
         Ok(request) => request,
@@ -1177,7 +1186,7 @@ unsafe fn pe_run_interactive(hwnd: Hwnd, operation: &str) {
                 drive
             ),
             "还原确认",
-            MB_YESNO | MB_ICONWARNING,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
         );
         if ask != IDYES {
             return;

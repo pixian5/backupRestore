@@ -11,6 +11,20 @@ pub(crate) enum RestoreIntent {
     DataOverlay,
 }
 
+/// 将图形界面入口名映射为 PE 请求队列使用的操作名（`"backup"` / `"restore"` / `"secondary"` / `"data"`）。
+///
+/// 历史上除备份外一律映射为 `"restore"`，导致离线数据卷还原（`"restore-data"`）在 PE 中
+/// 落入 `SystemReplace` 并在预检阶段因镜像缺少系统文件而失败（缺陷 5）。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn pe_mode_from_gui_operation(operation: &str) -> &'static str {
+    match operation {
+        "backup" => "backup",
+        "restore-data" | "data" => "data",
+        "create-secondary" | "secondary" => "secondary",
+        _ => "restore",
+    }
+}
+
 /// 同时拆解两种 Windows 分隔符，逐层拒绝可改变解析语义的路径组件。
 pub(crate) fn relative_components(value: &str) -> Result<Vec<&str>, TaskError> {
     let parts: Vec<_> = value.split(['\\', '/']).collect();
@@ -269,6 +283,11 @@ pub(crate) fn claim_request(request: &Path) -> Result<Vec<u8>, TaskError> {
 
 pub(crate) trait RestoreBackend {
     fn intent(&self) -> RestoreIntent;
+    /// 是否在应用镜像前格式化目标卷。非数据覆盖场景恒为 `true`；数据覆盖默认不格式化，
+    /// 由请求里的 `format_target` 控制是否先清空数据卷再写入。
+    fn should_format(&self) -> bool {
+        self.intent() != RestoreIntent::DataOverlay
+    }
     fn preflight(&mut self) -> Result<(), TaskError>;
     fn persist(&mut self, stage: &str) -> Result<(), TaskError>;
     fn format(&mut self) -> Result<(), TaskError>;
@@ -280,7 +299,7 @@ pub(crate) trait RestoreBackend {
 pub(crate) fn run_restore(backend: &mut impl RestoreBackend) -> Result<(), TaskError> {
     let result = (|| {
         backend.preflight()?;
-        if backend.intent() != RestoreIntent::DataOverlay {
+        if backend.should_format() {
             backend.persist("format-intent")?;
             backend.format()?;
             backend.persist("format-verified")?;
@@ -568,6 +587,90 @@ mod tests {
     /// 「覆盖式应用打到含 Windows 的目标卷」判据（用户 2026-10-16 拍板立项，
     /// 2026-10-22 #110 起由硬拒改路由）。四象限全锁：只有「含 Windows +
     /// 取消格式化」命中，其余三格必须放行。
+    struct FormatDataBackend {
+        calls: Vec<String>,
+        fail: &'static str,
+    }
+    impl RestoreBackend for FormatDataBackend {
+        fn intent(&self) -> RestoreIntent {
+            RestoreIntent::DataOverlay
+        }
+        fn should_format(&self) -> bool {
+            true
+        }
+        fn preflight(&mut self) -> Result<(), TaskError> {
+            self.calls.push("preflight".into());
+            Ok(())
+        }
+        fn persist(&mut self, s: &str) -> Result<(), TaskError> {
+            self.calls.push(s.into());
+            Ok(())
+        }
+        fn format(&mut self) -> Result<(), TaskError> {
+            self.calls.push("format".into());
+            if self.fail == "format" {
+                return Err(crate::errc(ErrCode::InjectFailed));
+            }
+            Ok(())
+        }
+        fn apply(&mut self) -> Result<(), TaskError> {
+            self.calls.push("apply".into());
+            Ok(())
+        }
+        fn verify(&mut self) -> Result<(), TaskError> {
+            self.calls.push("verify".into());
+            Ok(())
+        }
+        fn boot(&mut self) -> Result<(), TaskError> {
+            self.calls.push("boot".into());
+            Ok(())
+        }
+    }
+    #[test]
+    fn data_overlay_with_format_formats_but_never_repairs_boot() {
+        let mut backend = FormatDataBackend {
+            calls: vec![],
+            fail: "",
+        };
+        run_restore(&mut backend).unwrap();
+        assert_eq!(
+            backend.calls,
+            vec![
+                "preflight",
+                "format-intent",
+                "format",
+                "format-verified",
+                "apply-intent",
+                "apply",
+                "verify",
+                "apply-verified",
+                "success",
+            ]
+        );
+        assert!(!backend.calls.iter().any(|s| s.contains("boot")));
+
+        let mut blocked = FormatDataBackend {
+            calls: vec![],
+            fail: "format",
+        };
+        assert!(run_restore(&mut blocked).is_err());
+        assert_eq!(blocked.calls.len(), 4);
+        assert_eq!(&blocked.calls[..3], &["preflight", "format-intent", "format"]);
+        assert!(
+            blocked.calls[3].starts_with("failed:")
+                && blocked.calls[3].contains(ErrCode::InjectFailed.code()),
+            "{:?}",
+            blocked.calls[3]
+        );
+    }
+    #[test]
+    fn pe_mode_from_gui_operation_preserves_data_and_secondary_modes() {
+        assert_eq!(pe_mode_from_gui_operation("restore-data"), "data");
+        assert_eq!(pe_mode_from_gui_operation("data"), "data");
+        assert_eq!(pe_mode_from_gui_operation("backup"), "backup");
+        assert_eq!(pe_mode_from_gui_operation("restore-existing"), "restore");
+        assert_eq!(pe_mode_from_gui_operation("create-secondary"), "secondary");
+    }
     #[test]
     fn overlay_route_quadrant_is_exact() {
         // 含 Windows + 取消格式化 = 命中（恢复期路由到 wimlib 通道）。

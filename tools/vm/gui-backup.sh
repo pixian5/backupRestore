@@ -109,7 +109,7 @@ rd() { sed -n "s/^$1=\(.*\)$/\1/p" "$EV/$NAME-$2-readings.txt" 2>/dev/null | tai
 
 # judge_cancel_round <标签> <不许出现的那两个键> <结论键> <说明>：点「否」之后的判据。
 judge_cancel_round() {
-  local tag="$1" k1="$2" k2="$3" key="$4" what="$5" lines canc went1 went2 boxes new after blocked errlog tasks1 rc
+  local tag="$1" k1="$2" k2="$3" key="$4" what="$5" lines canc went1 went2 boxes new after blocked errlog tasks1 rc status_txt status_ok def_no def_ok
   lines=$(num "$(rd GUI_LOG_LINES_AFTER "$tag")"); canc=$(num "$(rd GUI_LOG_CANCELLED "$tag")")
   went1=$(num "$(rd "$k1" "$tag")"); went2=$(num "$(rd "$k2" "$tag")")
   boxes=$(rd MESSAGE_BOXES_AFTER "$tag"); new=$(rd NEW_WINDOW_CLASSES_AFTER "$tag"); after=$(num "$(rd WINDOWS_AFTER "$tag")")
@@ -117,6 +117,15 @@ judge_cancel_round() {
   tasks1=$(gui_task_list); echo "TASKS_AFTER_$tag=$(printf '%s' "$tasks1" | wc -w | tr -d ' ')" | tee -a "$EV/$NAME-tasks.txt"
   guest_exists "$NEVER_IMAGE"; rc=$?
   echo "NEVER_IMAGE_EXISTS_$tag=$([ $rc -eq 0 ] && echo True || echo False) reading_rc=$rc" | tee -a "$EV/$NAME-$tag-readings.txt"
+  status_txt=$(control_text "$(cat "$EV/$NAME-$tag-windows-after.txt" 2>/dev/null)" 1300)
+  status_ok=0
+  case "$status_txt" in
+    "用户取消了备份任务。"|"The backup task was cancelled.") status_ok=1 ;;
+  esac
+  def_no=$(grep -a 'id=7 class=Button ' "$EV/$NAME-$tag-confirm.txt" 2>/dev/null | head -1)
+  def_ok=0
+  case "$def_no" in *def=True*) def_ok=1 ;; esac
+  say "CANCEL_ROUND_$tag STATUS=[$status_txt] DEF_NO_RAW=[$(printf '%s' "$def_no" | tr '\r\n' ' ')]"
   if [ "$lines" -lt 1 ]; then
     verdict "$key" FAIL "no GUI log line after $T0 (the log could not be bounded to this run; reading failed is not a verdict)"; fail=1; return
   fi
@@ -125,10 +134,11 @@ judge_cancel_round() {
   fi
   # 「之后一个窗口都没有」不算通过：主窗口必须还在（读成 0 个窗口多半是没读到界面进程）。
   if [ "$canc" -eq 1 ] && [ "$went1" -eq 0 ] && [ "$went2" -eq 0 ] && [ "$(num "$boxes")" -eq 0 ] && [ -z "$new" ] && [ "$after" -ge 1 ] \
-     && [ "$blocked" -eq 0 ] && [ "$errlog" -eq 0 ] && [ "$tasks1" = "$TASKS0" ] && [ $rc -eq 1 ]; then
-    verdict "$key" PASS "NO on the confirmation stopped the $what backup: one 'cancelled' line, nothing went on, no new window, no task, no image"
+     && [ "$blocked" -eq 0 ] && [ "$errlog" -eq 0 ] && [ "$tasks1" = "$TASKS0" ] && [ $rc -eq 1 ] \
+     && [ "$status_ok" -eq 1 ] && [ "$def_ok" -eq 1 ]; then
+    verdict "$key" PASS "NO on the confirmation stopped the $what backup: one 'cancelled' line, backup status text, No default button, nothing went on, no new window, no task, no image"
   else
-    verdict "$key" FAIL "$what: cancelled=$canc $(printf '%s' "$k1" | sed 's/^GUI_LOG_//')=$went1 $(printf '%s' "$k2" | sed 's/^GUI_LOG_//')=$went2 message_boxes_after=$boxes new_window_classes=[${new}] windows_after=$after blocked=$blocked error=$errlog tasks_$([ "$tasks1" = "$TASKS0" ] && echo same || echo CHANGED) never_image_exists=$([ $rc -eq 0 ] && echo True || echo False)"
+    verdict "$key" FAIL "$what: cancelled=$canc $(printf '%s' "$k1" | sed 's/^GUI_LOG_//')=$went1 $(printf '%s' "$k2" | sed 's/^GUI_LOG_//')=$went2 message_boxes_after=$boxes new_window_classes=[${new}] windows_after=$after blocked=$blocked error=$errlog tasks_$([ "$tasks1" = "$TASKS0" ] && echo same || echo CHANGED) never_image_exists=$([ $rc -eq 0 ] && echo True || echo False) status_ok=$status_ok def_ok=$def_ok"
     fail=1
   fi
 }

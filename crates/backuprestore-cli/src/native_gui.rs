@@ -138,9 +138,11 @@ const MB_YESNOCANCEL: u32 = 0x00000003;
 const MB_ICONWARNING: u32 = 0x00000030;
 const MB_ICONINFORMATION: u32 = 0x00000040;
 const MB_ICONQUESTION: u32 = 0x00000020;
-/// 默认按钮放在第二个（「否」）。用于「发现镜像有问题」这类警告：让人看见，
-/// 但别让一个回车就把坏镜像装上去。
+/// 默认按钮放在第二个（「否」）。用于高危确认框（格式化分区、不可逆删除、下发确认等）：
+/// 让人看见提示，避免误按回车直接触发不可逆操作。
 const MB_DEFBUTTON2: u32 = 0x00000100;
+/// 默认按钮放在第三个（「取消」）。用于三按钮高危选择框（如多选一或立即重启询问）。
+const MB_DEFBUTTON3: u32 = 0x00000200;
 /// 让消息框在最前台（恢复环境没有外壳帮它抢焦点；待续跑询问框也需要）。
 const MB_SETFOREGROUND: u32 = 0x00010000;
 const IDYES: i32 = 6;

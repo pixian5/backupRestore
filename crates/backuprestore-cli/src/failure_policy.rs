@@ -418,6 +418,27 @@ pub(crate) fn destructive_confirm_parts(
     (line, warning)
 }
 
+/// 破坏性确认框上点「否」中止后，主界面底部状态栏显示的提示语。
+///
+/// 备份没有「破坏性目标分区覆盖」语义，不能沿用「用户取消了破坏性任务。」；
+/// 抽成跨平台纯函数并用单测锁定，避免再出现「只按还原写法硬编码」的回归。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+pub(crate) fn destructive_cancel_status(
+    operation: &str,
+    language: MessageLanguage,
+) -> &'static str {
+    if operation == "backup" {
+        return match language {
+            MessageLanguage::English => "The backup task was cancelled.",
+            MessageLanguage::Chinese => "用户取消了备份任务。",
+        };
+    }
+    match language {
+        MessageLanguage::English => "The destructive task was cancelled.",
+        MessageLanguage::Chinese => "用户取消了破坏性任务。",
+    }
+}
+
 impl FailurePolicy {
     /// 构造并校验阈值范围。`Err` 里是给用户看的中文原因。
     pub(crate) fn new(threshold: u32, action: FailureAction) -> Result<Self, String> {
@@ -1615,5 +1636,27 @@ mod tests {
         assert_eq!(policy.threshold, 2);
         assert_eq!(policy.action, FailureAction::AutoEscape);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn destructive_cancel_status_separates_backup_from_restore() {
+        assert_eq!(
+            destructive_cancel_status("backup", MessageLanguage::Chinese),
+            "用户取消了备份任务。"
+        );
+        assert_eq!(
+            destructive_cancel_status("backup", MessageLanguage::English),
+            "The backup task was cancelled."
+        );
+        for op in ["restore-existing", "restore-data", "create-secondary"] {
+            assert_eq!(
+                destructive_cancel_status(op, MessageLanguage::Chinese),
+                "用户取消了破坏性任务。"
+            );
+            assert_eq!(
+                destructive_cancel_status(op, MessageLanguage::English),
+                "The destructive task was cancelled."
+            );
+        }
     }
 }

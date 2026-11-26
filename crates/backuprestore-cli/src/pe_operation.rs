@@ -105,8 +105,13 @@ pub(crate) struct Request {
     /// 为了 task.json 序列化兼容。
     #[serde(default)]
     pub overlay_no_acl: bool,
+    /// 是否在应用前格式化目标卷。仅对 `"data"`（`DataOverlay`）生效：
+    /// `false`（旧请求反序列化默认值）保留既有文件做覆盖还原；`true` 先格式化目标卷再还原数据镜像。
+    #[serde(default)]
+    pub format_target: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn new_request(
     operation: &str,
     drive: &str,
@@ -115,6 +120,7 @@ pub(crate) fn new_request(
     main: Option<char>,
     name: &str,
     overlay_no_acl: bool,
+    format_target: bool,
 ) -> Result<Request, TaskError> {
     let letter = drive_letter(drive)?;
     let image = image.replace('/', "\\");
@@ -148,6 +154,7 @@ pub(crate) fn new_request(
         main: main.map(wp::volume_identity).transpose()?,
         name: name.into(),
         overlay_no_acl,
+        format_target,
     })
 }
 
@@ -578,7 +585,7 @@ impl Engine {
                 ],
             ));
         }
-        if self.intent() == RestoreIntent::DataOverlay {
+        if self.intent() == RestoreIntent::DataOverlay && !self.request.format_target {
             let (letter, _lease_target) =
                 wp::ensure_volume_mounted_leased(&self.target, 'T', &self.dir.join("operation.log"))?;
             pe_safety::verify_binding(&self.target, &wp::volume_identity(letter)?, true)?;
@@ -629,6 +636,12 @@ impl RestoreBackend for Engine {
             "secondary" => RestoreIntent::SecondaryInstall,
             "data" => RestoreIntent::DataOverlay,
             _ => RestoreIntent::SystemReplace,
+        }
+    }
+    fn should_format(&self) -> bool {
+        match self.intent() {
+            RestoreIntent::DataOverlay => self.request.format_target,
+            RestoreIntent::SystemReplace | RestoreIntent::SecondaryInstall => true,
         }
     }
     fn preflight(&mut self) -> Result<(), TaskError> {
@@ -707,7 +720,7 @@ impl RestoreBackend for Engine {
         Ok(())
     }
     fn apply(&mut self) -> Result<(), TaskError> {
-        let actual = self.recheck(self.intent() != RestoreIntent::DataOverlay)?;
+        let actual = self.recheck(self.should_format())?;
         // 【2026-10-22 任务 #110】覆盖式应用（DataOverlay 跳过格式化）打到已含
         // Windows 的目标卷时按请求里的 overlay_no_acl 路由：DISM 必然
         // RestoreDirMetadata 0x80070005（TrustedInstaller 保护目录的 SD/owner
@@ -760,7 +773,7 @@ impl RestoreBackend for Engine {
         Ok(())
     }
     fn verify(&mut self) -> Result<(), TaskError> {
-        let actual = self.recheck(self.intent() != RestoreIntent::DataOverlay)?;
+        let actual = self.recheck(self.should_format())?;
         fs::read_dir(root(&actual)?)?;
         if self.intent() != RestoreIntent::DataOverlay {
             for components in [
@@ -981,6 +994,51 @@ mod tests {
     }
 
     #[test]
+    fn request_format_target_defaults_false_for_legacy_json_and_respects_true() {
+        let mut legacy = serde_json::json!({
+            "version": 1,
+            "id": "1-1",
+            "operation": "data",
+            "target": {
+                "disk_guid": "{11111111-1111-1111-1111-111111111111}",
+                "partition_guid": "{22222222-2222-2222-2222-222222222222}",
+                "volume_guid": "{33333333-3333-3333-3333-333333333333}",
+                "partition_type_guid": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}",
+                "disk_number": 0,
+                "partition_number": 3,
+                "partition_offset": 1048576,
+                "partition_size": 1073741824,
+                "filesystem": "NTFS",
+                "volume_serial": "ABCD-1234",
+                "drive_letter": "F"
+            },
+            "image_volume": {
+                "disk_guid": "{11111111-1111-1111-1111-111111111111}",
+                "partition_guid": "{44444444-4444-4444-4444-444444444444}",
+                "volume_guid": "{55555555-5555-5555-5555-555555555555}",
+                "partition_type_guid": "{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}",
+                "disk_number": 0,
+                "partition_number": 4,
+                "partition_offset": 2147483648_u64,
+                "partition_size": 1073741824,
+                "filesystem": "NTFS",
+                "volume_serial": "EFGH-5678",
+                "drive_letter": "H"
+            },
+            "image_relative": "BRImages\\data.wim",
+            "index": 1,
+            "main": null,
+            "name": ""
+        });
+        let parsed: Request = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!parsed.format_target);
+        assert!(!parsed.overlay_no_acl);
+        legacy["format_target"] = serde_json::Value::Bool(true);
+        let parsed_format: Request = serde_json::from_value(legacy).unwrap();
+        assert!(parsed_format.format_target);
+    }
+
+    #[test]
     fn console_output_keeps_chinese_and_rejects_truncated_utf16() {
         assert_eq!(decode_output("操作成功".as_bytes()).unwrap(), "操作成功");
         assert_eq!(
@@ -1172,7 +1230,8 @@ mod tests {
             .is_success()
         );
         let request =
-            new_request("data", "V", fx.image.to_str().unwrap(), 2, None, "", false).unwrap();
+            new_request("data", "V", fx.image.to_str().unwrap(), 2, None, "", false, false)
+                .unwrap();
         execute(&request).unwrap();
         assert_eq!(fs::read_to_string("V:\\payload.txt").unwrap(), "second");
         assert!(Path::new("V:\\sentinel.txt").is_file());
@@ -1193,6 +1252,7 @@ mod tests {
                 None,
                 "",
                 false,
+                false,
             )
             .unwrap();
             assert!(execute(&request).is_err());
@@ -1203,7 +1263,17 @@ mod tests {
             );
         }
         fs::copy(&fx.image, "V:\\on-target.wim").unwrap();
-        let conflict = new_request("restore", "V", "V:\\on-target.wim", 1, None, "", false).unwrap();
+        let conflict = new_request(
+            "restore",
+            "V",
+            "V:\\on-target.wim",
+            1,
+            None,
+            "",
+            false,
+            false,
+        )
+        .unwrap();
         assert!(execute(&conflict).is_err());
         assert!(Path::new("V:\\sentinel.txt").is_file());
         let backup = new_request(
@@ -1214,10 +1284,23 @@ mod tests {
             None,
             "",
             false,
+            false,
         )
         .unwrap();
         execute(&backup).unwrap();
         assert!(fx.dir.join("capture.wim").is_file());
+        // 勾选「格式化目标分区」的 data 分支：清空既有哨兵并改变卷序列号，但仍按数据卷规则
+        // 允许非 Windows 镜像且不写系统引导。
+        let formatted_data =
+            new_request("data", "V", fx.image.to_str().unwrap(), 1, None, "", false, true)
+                .unwrap();
+        execute(&formatted_data).unwrap();
+        assert_eq!(fs::read_to_string("V:\\payload.txt").unwrap(), "first");
+        assert!(!Path::new("V:\\sentinel.txt").exists());
+        assert_ne!(
+            wp::volume_identity('V').unwrap().volume_serial,
+            before.volume_serial
+        );
         teardown_disposable_vhd_fixture(fx);
         println!("PE_SAFETY_NO_WRITE_ON_REJECT_PASS");
     }
@@ -1258,7 +1341,7 @@ mod tests {
             .is_success()
         );
         let request =
-            new_request("restore", "V", system_image.to_str().unwrap(), 1, None, "", false)
+            new_request("restore", "V", system_image.to_str().unwrap(), 1, None, "", false, false)
                 .unwrap();
         let state_dir = fx.dir.join("format-apply-failure");
         fs::create_dir(&state_dir).unwrap();

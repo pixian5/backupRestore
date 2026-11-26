@@ -34,6 +34,9 @@ decoded=$(decode_text < "$TMP/gbk.txt")
 check_in "decode_text brings GBK control text back" "id=2003 class=Button text=取消" "$decoded"
 check_in "decode_text keeps ASCII key lines" "WINDOWS=1 class=X" "$decoded"
 check "control_text reads the Cancel button" "取消" "$(control_text "$decoded" 2003)"
+with_def=$(printf 'WINDOWS=1 class=#32770\nWIN hwnd=1 class=#32770 title=Confirm\n  id=6 class=Button visible=True def=False text=是(&Y)\n  id=7 class=Button visible=True def=True text=否(&N)\n__END__\n')
+check "control_text tolerates def= field before text=" "否(&N)" "$(control_text "$with_def" 7)"
+check "result_box_button_id tolerates def= field" "6 7" "$(result_box_button_id "$with_def")"
 check "control_text reads the body" "已选择离线通道" "$(control_text "$decoded" 2000)"
 check "control_text of a missing control is empty" "" "$(control_text "$decoded" 9999)"
 printf '%s\n' '{"success":true,"stage":"success"}' '中文正文（通用编码）' | decode_text > "$TMP/utf8.txt"
@@ -315,6 +318,16 @@ python3 -I "$HERE/pslog.py" "$TMP/synth.log" > "$TMP/synth.txt" 2>/dev/null
 check_in "pslog keeps the whole end marker" "TOOLS_TEST_RUN_END tag=x rc=0" "$(cat "$TMP/synth.txt")"
 check_in "pslog decodes the UTF-16 body" "test result: ok. 1 passed; 0 failed" "$(cat "$TMP/synth.txt")"
 check_in "pslog reports the marker" "END_MARKER_FOUND=1" "$(cat "$TMP/synth.txt")"
+python3 -I - "$TMP/build-synth.log" <<'PY'
+import sys
+head = b'\xef\xbb\xbfTOOLS_BUILD_RUN_START tag=v21012-20261126-231000 23:10:00\r\n'
+body = 'Finished `release` profile\n'.encode('utf-16-le')
+tail = b'TOOLS_BUILD_RUN_END tag=v21012-20261126-231000 rc=0 23:12:00\r\n'
+open(sys.argv[1], 'wb').write(head + body + tail)
+PY
+python3 -I "$HERE/pslog.py" "$TMP/build-synth.log" > "$TMP/build-synth.txt" 2>/dev/null
+check_in "pslog keeps per-run build end marker with tag and rc=0" "TOOLS_BUILD_RUN_END tag=v21012-20261126-231000 rc=0" "$(cat "$TMP/build-synth.txt")"
+check "pslog build marker matches rebuild-deploy regex" "1" "$(grep -a -c -E '^TOOLS_BUILD_RUN_END (tag=[^ ]+ )?rc=0' "$TMP/build-synth.txt")"
 printf '\xef\xbb\xbfhead only\r\n' > "$TMP/bad.log"
 check_in "pslog refuses a log without an end marker" "ERROR=unexpected_log_shape" "$(python3 -I "$HERE/pslog.py" "$TMP/bad.log" 2>&1)"
 

@@ -97,7 +97,7 @@ unsafe fn incomplete_task_choice(
             state.root,
             &format!("{text}\n\n是=继续最早的旧任务；否=放弃并清理；取消=不创建新任务。"),
             title,
-            MB_YESNOCANCEL | MB_ICONWARNING,
+            MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON3,
         ),
         task,
     ))
@@ -872,7 +872,7 @@ pub(crate) unsafe fn create_task(state: &mut State) {
             } else {
                 "破坏性确认"
             },
-            MB_YESNO | MB_ICONWARNING,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
         )
     };
     // ★★ 「否」对**每一个**弹出这道确认框的入口都必须是「停下」（v2.10.11 修）。
@@ -890,11 +890,10 @@ pub(crate) unsafe fn create_task(state: &mut State) {
         );
         set_text(
             state.controls.status,
-            if language == Language::English {
-                "The destructive task was cancelled."
-            } else {
-                "用户取消了破坏性任务。"
-            },
+            crate::failure_policy::destructive_cancel_status(
+                &operation,
+                message_language(language),
+            ),
         );
         return;
     }
@@ -1107,6 +1106,7 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                         &image_path,
                         &index,
                         &compress,
+                        false,
                     );
                     return;
                 }
@@ -1135,8 +1135,12 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                                 "进入恢复环境".to_string(),
                             )
                         };
-                        let confirm =
-                            show_message(state.root, &body, &caption, MB_YESNO | MB_ICONQUESTION);
+                        let confirm = show_message(
+                            state.root,
+                            &body,
+                            &caption,
+                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+                        );
                         append_gui_log(
                             state,
                             &format!(
@@ -1253,12 +1257,13 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                     );
                     schedule_pe_task(
                         state,
-                        cli_operation(&operation),
+                        &operation,
                         &source_drive,
                         &target_drive,
                         &image_path,
                         &index,
                         &compress,
+                        format_target,
                     );
                     return;
                 }
@@ -1281,8 +1286,12 @@ pub(crate) unsafe fn create_task(state: &mut State) {
                                 "进入恢复环境".to_string(),
                             )
                         };
-                        let confirm =
-                            show_message(state.root, &body, &caption, MB_YESNO | MB_ICONQUESTION);
+                        let confirm = show_message(
+                            state.root,
+                            &body,
+                            &caption,
+                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+                        );
                         append_gui_log(
                             state,
                             &format!(
@@ -1532,6 +1541,7 @@ pub(crate) unsafe fn create_task(state: &mut State) {
 // ===================== 智能分流：进入 PE / 在线直接执行 =====================
 
 /// 将绑定稳定卷身份和镜像索引的请求持久写入 ESP，成功后才安排一次性 PE 启动。
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn schedule_pe_task(
     state: &State,
     operation: &str,
@@ -1540,6 +1550,7 @@ pub(crate) unsafe fn schedule_pe_task(
     image_path: &str,
     _index: &str,
     _compress: &str,
+    format_target: bool,
 ) {
     let language = selected_language(state);
     let guid_file = state.executable_dir.join("pe-entry-guid.txt");
@@ -1564,12 +1575,9 @@ pub(crate) unsafe fn schedule_pe_task(
         );
         return;
     };
+    let mode = crate::pe_safety::pe_mode_from_gui_operation(operation);
+    let pe_format = mode == "data" && format_target;
     let request = (|| -> Result<(), backuprestore_core::TaskError> {
-        let mode = if operation == "backup" {
-            "backup"
-        } else {
-            "restore"
-        };
         let drive = if mode == "backup" {
             source_drive
         } else {
@@ -1578,9 +1586,18 @@ pub(crate) unsafe fn schedule_pe_task(
         let index = _index
             .parse::<u32>()
             .map_err(|_| crate::errc(ErrCode::ImageIndexInvalid))?;
-        // overlay_no_acl=false：PE 三入口（backup/restore/secondary）恒格式化，
-        // 不存在「覆盖式应用到已含 Windows 卷」组合（任务 #110）。
-        let request = crate::pe_operation::new_request(mode, drive, image_path, index, None, "", false)?;
+        // 缺陷 5 修复：离线数据卷（"restore-data"）路由为 "data"（DataOverlay），
+        // 按界面的「格式化目标分区」勾选状态透传 `format_target`。
+        let request = crate::pe_operation::new_request(
+            mode,
+            drive,
+            image_path,
+            index,
+            None,
+            "",
+            false,
+            pe_format,
+        )?;
         crate::pe_operation::enqueue(&request)
     })();
     let write_ok = request.is_ok();
@@ -1593,6 +1610,10 @@ pub(crate) unsafe fn schedule_pe_task(
         );
         return;
     }
+    append_gui_log(
+        state,
+        &format!("schedule_pe_task: enqueued mode={mode} format_target={pe_format}"),
+    );
     let command = format!("bcdedit.exe /set {{bootmgr}} bootsequence {{{guid}}}");
     let code = run_boot_command_logged(Some(state), "schedule_pe_task", &command);
     if code.is_success() && write_ok {
@@ -1774,7 +1795,7 @@ pub(crate) unsafe fn ask_pending_resume(pending: &crate::PendingResume) -> Pendi
         null_mut(),
         text.as_ptr(),
         title.as_ptr(),
-        MB_YESNOCANCEL | MB_ICONWARNING | MB_SETFOREGROUND,
+        MB_YESNOCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_DEFBUTTON3,
     );
     match answer {
         IDYES => PendingResumeChoice::Reboot,

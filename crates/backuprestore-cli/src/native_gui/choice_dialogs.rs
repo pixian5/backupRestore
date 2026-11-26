@@ -64,19 +64,17 @@ unsafe extern "system" fn window_proc_system_choice(
         //   2026-10-30 截图确认：18 号设置下这个框仍是老样子。
         let body_text = if english {
             if generic_offline && keep_files {
-                // 进入 PE 仍然会格式化：PE 通道对任何目标都是「先格式化再应用」。
-                "Offline channel selected with 'Format target volume' unchecked: after rebooting into \
-Windows RE, the image is applied to the target volume without formatting it. Files that are \
+                "Offline channel selected with 'Format target volume' unchecked: after rebooting into PE \
+or Windows RE, the image is applied to the target volume without formatting it. Files that are \
 not in the image are kept; files and folders with the same names as image entries are \
-overwritten. Entering PE always formats the target volume. Choose how to proceed:"
+overwritten. Choose how to proceed:"
             } else if generic_offline {
                 "Offline channel selected: the target volume will be formatted and receive the image after rebooting into PE or Windows RE. Choose how to proceed:"
             } else {
                 "The target volume is the currently running system. Backing up or restoring the system partition must run offline in PE or Windows RE. Choose how to proceed:"
             }
         } else if generic_offline && keep_files {
-            // 进入 PE 仍然会格式化：PE 通道对任何目标都是「先格式化再应用」。
-            "已选择离线通道，且未勾选「格式化目标分区」：进入 Windows RE 后，镜像会写入目标卷但不格式化——目标卷上镜像之外的文件会保留，与镜像同名的文件和文件夹会被覆盖。进入 PE 则仍会格式化目标卷。请选择处理方式："
+            "已选择离线通道，且未勾选「格式化目标分区」：进入 PE 或 Windows RE 后，镜像会写入目标卷但不格式化——目标卷上镜像之外的文件会保留，与镜像同名的文件和文件夹会被覆盖。请选择处理方式："
         } else if generic_offline {
             "已选择离线通道：重启进入 PE 或 Windows RE 后，目标卷将被格式化并写入镜像。请选择处理方式："
         } else {

@@ -10,7 +10,7 @@
 #       ★ 第一次写成「版本号后面还要有时间戳」，漏掉了加时间戳之前留下的四份——待删清单里没有它们，
 #         回读那一项却是「0 个、通过」（空集通过）。两种名字现在都认：以版本号结尾的、版本号后带时间戳的。
 #       ★ 回读不能只用删除时的那一个匹配写法（同一台仪器证明的只是仪器自洽）：STEP=4 另有一条不同代码路径的交叉核对。
-#   H:\brwork\test-*.log、build-vm-tools.log        虚拟机里的测试与构建日志（宿主证据目录里有原样副本）
+#   H:\brwork\test-*.log、build-*.log               虚拟机里的测试与构建日志（宿主证据目录里有原样副本）
 #   共享盘 X: 的映射                               这些用例映射的（不跨重启；留着会让下次登录弹「无法访问 X:」）
 # ★ 删启动配置备份之前先做一次健康核对：当前读数必须等于最近一次用例结束时的读数；一次性启动项必须为 0。
 # 前提：没有任务在跑（都回到终态、虚拟机在 Windows 桌面）。
@@ -40,14 +40,14 @@ inflight=$(vrun "tasklist /fi \"IMAGENAME eq dism.exe\" /fo csv /nh" 3 | tr -cd 
 say "BACKUPRESTORE_PROCESSES=$n DISM_PROCESSES=$inflight"
 
 say "STEP=2 what is going to be deleted (listed first)"
-vrun "dir /b $PAD $IMAGE $IMAGE.index-1.metadata.json F:\\BR-SENTINEL-*.txt H:\\brwork\\bcd-pre-*-v*.bak H:\\brwork\\test-*.log H:\\brwork\\build-vm-tools.log" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -v 'VM_DONE' | grep -a -E '\.(bin|wim|json|txt|bak|log)$' | sed 's/^/  BEFORE /'
+vrun "dir /b $PAD $IMAGE $IMAGE.index-1.metadata.json F:\\BR-SENTINEL-*.txt H:\\brwork\\bcd-pre-*-v*.bak H:\\brwork\\test-*.log H:\\brwork\\build-*.log" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -v 'VM_DONE' | grep -a -E '\.(bin|wim|json|txt|bak|log)$' | sed 's/^/  BEFORE /'
 
 say "STEP=3 delete"
 vrun "del /f /q $PAD" 2 | grep -a 'VM_DONE' | sed 's/^/  PAD /'
 vrun "del /f /q $IMAGE $IMAGE.index-1.metadata.json" 2 | grep -a 'VM_DONE' | sed 's/^/  IMAGE /'
 vrun "del /f /q F:\\BR-SENTINEL-*.txt" 2 | grep -a 'VM_DONE' | sed 's/^/  SENTINELS /'
 vrun "del /f /q H:\\brwork\\bcd-pre-*-v*.bak" 2 | grep -a 'VM_DONE' | sed 's/^/  BCD_BACKUPS /'
-vrun "del /f /q H:\\brwork\\test-*.log H:\\brwork\\build-vm-tools.log" 2 | grep -a 'VM_DONE' | sed 's/^/  LOGS /'
+vrun "del /f /q H:\\brwork\\test-*.log H:\\brwork\\build-*.log" 2 | grep -a 'VM_DONE' | sed 's/^/  LOGS /'
 
 say "STEP=4 read back"
 left() { vrun "dir /b $1" 2 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -v 'VM_DONE' | grep -a -E '\.(bin|wim|json|txt|bak|log)$' | grep -a -c -E "$2"; }
@@ -55,7 +55,7 @@ ok "pad file" 0 "$(left "$PAD" 'pad\.bin')"
 ok "test image + sidecar" 0 "$(left "$IMAGE*" 'br-vm-tools-test')"
 ok "sentinel files" 0 "$(left 'F:\BR-SENTINEL-*.txt' 'SENTINEL')"
 ok "boot configuration backups of these cases" 0 "$(left 'H:\brwork\bcd-pre-*-v*.bak' '\.bak')"
-ok "test / build logs" 0 "$(left 'H:\brwork\test-*.log H:\brwork\build-vm-tools.log' '\.log')"
+ok "test / build logs" 0 "$(left 'H:\brwork\test-*.log H:\brwork\build-*.log' '\.log')"
 # 交叉核对（不同代码路径）：上面几项的回读和删除用的是同一个通配写法，匹配漏了就会空集通过（2026-11-25 实测：
 # 漏了四份旧命名的启动配置备份）。这里改用 PowerShell 的文件枚举再数一遍：启动配置备份 / 哨兵 / 测试镜像 / 占位文件。
 cross=$(vrun "powershell -NoProfile -Command \"'CROSS=' + @(Get-ChildItem H:\\brwork -File | Where-Object { \$_.Name -like 'bcd-pre-*v*.bak' }).Count + ',' + @(Get-ChildItem F:\\ -Filter 'BR-SENTINEL-*.txt' -File).Count + ',' + @(Get-ChildItem H:\\BRImages -Filter 'br-vm-tools-test*' -File).Count + ',' + @(Get-ChildItem F:\\ -Filter 'br-vm-tools-pad.bin' -File).Count; '__END__'\"" 3 | tr -cd '\11\12\40-\176\r' | tr -d '\r' | grep -a -o 'CROSS=[0-9,]*' | tail -1)

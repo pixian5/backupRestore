@@ -35,8 +35,8 @@ for line in open(sys.argv[1], encoding='utf-8', errors='replace').read().splitli
         cancel = text
 print("BODY=" + (body or '<missing>'))
 print("CANCEL_OK=%s" % (cancel in ('取消', 'Cancel')))
-# 勾选「格式化」：正文说目标卷将被格式化；未勾选：正文说明不格式化（并提醒进入 PE 仍会格式化）。
-# 先判「未勾选」：未勾选的正文里也有一句「进入 PE 则仍会格式化」，不能被「将被格式化」抢先命中。
+# 勾选「格式化」：正文说目标卷将被格式化；未勾选：正文说明不格式化（PE 与 Windows RE 均适用）。
+# 仍然先判「未勾选」，防止将来文案调整被抢先命中。
 if body is None:
     kind = 'NONE'
 elif ('未勾选' in body) or ('unchecked' in body):

@@ -16,11 +16,13 @@ public class UIL {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h, int idx);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 }
 '@
 function TextOf([IntPtr]$h) { $t = New-Object System.Text.StringBuilder 2048; [void][UIL]::GetWindowTextW($h, $t, 2048); return $t.ToString() }
 function ClassOf([IntPtr]$h) { $c = New-Object System.Text.StringBuilder 256; [void][UIL]::GetClassNameW($h, $c, 256); return $c.ToString() }
+function IsDefaultBtn([IntPtr]$c, [string]$cls) { if ($cls -ne 'Button') { return '' }; $isDef = (([UIL]::GetWindowLongW($c, -16) -band 0xF) -eq 1); return " def=$isDef" }
 [void][UIL]::SetProcessDPIAware()
 $pids = @(Get-Process -Name $Proc -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $script:found = New-Object System.Collections.ArrayList
@@ -39,6 +41,6 @@ foreach ($h in $script:found) {
   $script:items = New-Object System.Collections.ArrayList
   $ccb = [UIL+Cb]{ param([IntPtr]$c,[IntPtr]$l) [void]$script:items.Add($c); return $true }
   [void][UIL]::EnumChildWindows($h, $ccb, [IntPtr]::Zero)
-  foreach ($c in $script:items) { "  id=$([UIL]::GetDlgCtrlID($c)) class=$(ClassOf $c) visible=$([UIL]::IsWindowVisible($c)) text=$(TextOf $c)" }
+  foreach ($c in $script:items) { $cls = ClassOf $c; "  id=$([UIL]::GetDlgCtrlID($c)) class=$cls visible=$([UIL]::IsWindowVisible($c))$(IsDefaultBtn $c $cls) text=$(TextOf $c)" }
 }
 '__END__'

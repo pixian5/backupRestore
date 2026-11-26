@@ -817,7 +817,7 @@ pub(super) unsafe fn install_pe_harddisk(state: &State) {
             } else {
                 "安装 PE"
             },
-            MB_YESNO | MB_ICONWARNING,
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
         )
     };
     if answer != IDYES {

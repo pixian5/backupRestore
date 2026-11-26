@@ -56,11 +56,13 @@ say "GUI_PROCESSES_RUNNING=${n:-<unreadable>}"
 [ "${n:-1}" = "0" ] || { say "ABORT: the GUI is still running; deploying now would die silently"; exit 2; }
 
 say "STEP=4 build + deploy inside the VM (the only release path)"
-LOG="H:\\brwork\\build-vm-tools.log"
+TAG="v$(printf '%s' "$VERSION" | tr -d '.')-$(date +%Y%m%d-%H%M%S)"
+LOG="H:\\brwork\\build-$TAG.log"
+say "BUILD_LOG=$LOG"
 vrun "del /q $LOG" 2 | grep -a 'VM_DONE' | sed 's/^/OLD_LOG_REMOVED /'
 launch=""
 for i in 1 2 3; do
-  launch=$("$PRL" exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass -File "$SHARE_VM_PS\\build-launcher.ps1" 2>/dev/null | tr -d '\r')
+  launch=$("$PRL" exec "$VM" --current-user powershell -NoProfile -ExecutionPolicy Bypass -File "$SHARE_VM_PS\\build-launcher.ps1" -Tag "$TAG" 2>/dev/null | tr -d '\r')
   printf '%s' "$launch" | grep -a -q '^LAUNCHED pid=' && break
   sleep 2
 done
@@ -74,13 +76,13 @@ while [ $t -lt 2400 ]; do
   sleep 8; t=$((t+8))
 done
 say "BUILD_WAITED=${t}s END_MARK=${end:-<none within limit>}"
-[ -n "$end" ] || { say "ABORT: the build log has no end marker (the build died silently?)"; fetch "$LOG" "build-last.raw.log" && say "the log was saved as $EV/build-last.raw.log"; exit 1; }
+[ -n "$end" ] || { say "ABORT: the build log has no end marker (the build died silently?)"; fetch "$LOG" "build-$TAG-incomplete.raw.log" && say "the log was saved as $EV/build-$TAG-incomplete.raw.log"; exit 1; }
 
 say "STEP=5 read the build log back verbatim"
 fetch "$LOG" "$NAME-build.raw.log" || { say "ABORT: could not fetch the build log verbatim"; exit 1; }
 python3 -I "$HERE/pslog.py" "$EV/$NAME-build.raw.log" > "$EV/$NAME-build.txt" 2>"$EV/$NAME-build.err" || { say "ABORT: build log parse failed"; cat "$EV/$NAME-build.err"; exit 1; }
 grep -a -E 'Finished|Compiling backup|OK|DEPLOYED|TOOLS_BUILD_RUN|error' "$EV/$NAME-build.txt" | cut -c1-170 | sed 's/^/  /'
-grep -a -q 'TOOLS_BUILD_RUN_END rc=0' "$EV/$NAME-build.txt" || { say "ABORT: the build did not end with rc=0"; exit 1; }
+grep -a -E -q '^TOOLS_BUILD_RUN_END (tag=[^ ]+ )?rc=0' "$EV/$NAME-build.txt" || { say "ABORT: the build did not end with rc=0"; exit 1; }
 
 say "STEP=6 three-way hash: deployed (both names) == package == manifest"
 want=$(python3 -I -c "

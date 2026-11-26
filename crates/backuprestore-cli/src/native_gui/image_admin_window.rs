@@ -337,7 +337,7 @@ unsafe fn image_admin_delete_flow(hwnd: Hwnd) {
         } else {
             "删除旧索引？"
         },
-        MB_YESNO | MB_ICONWARNING,
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
     );
     if answer != IDYES {
         return;
