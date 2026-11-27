@@ -29,40 +29,32 @@ Windows 一键系统备份还原工具（**开发测试版**）。
 
 ## 【当前开发进度】
 
-**v2.10.12 已完成构建、部署与实机验收（2026-11-27 00:25）。**
+**v2.10.13 已完成工程加固与全面实机回归；v2.10.14 已修复实机暴露的 WinRE DISM 32MB 暂存空间写满（Error 112）与报错弹框超屏问题并完成 VM 部署及首批核验，现按指令暂停其余实机复验（2026-11-27 11:35）。**
 
-1. **v2.10.12 修复与安全增强**：
-   - **修复缺陷 5（接入 PE `"data"` 分支）**：`schedule_pe_task` 经 `pe_mode_from_gui_operation` 将 `restore-data` 路由到 PE `"data"`（`DataOverlay`）并透传 `format_target: bool`（只有勾选「格式化目标分区」才先格式化，且 `DataOverlay` 永不修复引导）；同步修正离线选择框说明文案并纠正旧文档对纯数据镜像「先格后败」的误述（实际在 `check_image` 预检阶段、格式化之前即拒绝）。
-   - **高危确认框默认按钮改「否 / 取消」**：仅对高危操作（破坏性确认、进恢复环境最终确认、硬盘格式装 PE、删除旧索引、PE 桌面还原、未完成任务与开机续跑/立即重启询问）设置 `MB_DEFBUTTON2` 或 `MB_DEFBUTTON3`；同步扩充 `uidlglist.ps1` 输出 `def=True|False` 并改用 `WM_GETTEXT` 跨进程直读 `Edit` 实时内容。
-   - **备份取消状态栏文案更正**：备份确认点「否」后，`id=1300` 状态栏改写 `用户取消了备份任务。` / `The backup task was cancelled.`。
-   - **构建日志隔离**：`tools/vm/rebuild-deploy.sh` 改为按次输出 `H:\brwork\build-<tag>.log`，不再相互覆盖。
-2. **此前连续修复回顾（v2.10.8–v2.10.11）**：
-   - **v2.10.8**：修离线数据卷还原（改查镜像是否完整 Windows）、禁用备份「暂停」按钮与文案、修数据还原默认目标避开光驱与选择框文案；
-   - **v2.10.9–v2.10.10**：`prepare_lock.rs` 在办锁阻断孤儿守卫误清正在准备的任务；补全暂停支持声明落盘；
-   - **v2.10.11**：修复备份入口「破坏性确认」点「否」不中止的问题，并完成 `gui-backup.sh` 与 9 项 `gui-negative.sh` 矩阵。
+1. **v2.10.13 工程加固与缺陷修复（`0085ff6`，VM 二进制 `1ece100e…`）**：
+   - `winre_registration.rs` 移除最后两处 `.expect()`，达成 `crates/` 生产代码 `0 unwrap / 0 expect`；
+   - `native_gui.rs` 新增 `SingleInstanceGuard` 命名互斥量单实例保护；
+   - `abandon-task` 改两步显式反馈（任务清理与 BCD 补偿分开呈现）；`hash_image_logged` 改为两位小数且在线备份同步写出 `backend=` 日志；抽离 `gui_dispatch_plan.rs` 纯分派单测；无副档镜像改优先免挂载 `wimlib dir`；补全 `gui-data-restore.sh online-format`；`reverify-map.py` 全量覆盖 `83` 个 `.rs` 并接入 CI；清理 53 个零散旧文件及 98 个过期构建产物；
+   - 修复 [`tools/gui-check/ps/click.ps1`](./tools/gui-check/ps/click.ps1) 未做临时置顶与窗口坐标归属校验导致点击穿透到后台「设置」触发浏览器的问题（新增 `CLICK=COVERED` 守卫）。
+2. **v2.10.14 WinRE 热修（`8041efa`，VM 部署件 `9dcffb29…`）**：
+   - `process_runner::DismScratchDir` 将 WinRE 内 DISM `/ScratchDir`、`/LogPath` 与 `TEMP`/`TMP` 重定向至镜像所在卷或任务目录（接入 `recovery_backup.rs` 与 `recovery_engine.rs`），绕过基线 `Winre.wim`（`10.0.26100.9968`）仅 `32MB` RAM 盘引起的 `Error: 112`；
+   - `failure_policy::summarize_prompt_error` 收敛超长 8 KiB 错误尾部，防止 WinRE 报错弹窗把「重试 / 取消」按钮顶出 `1024×768` 屏幕底边。
+3. **验证与现状快照（如实列出）**：
+   - **`v2.10.13`（`1ece100e…`）全套实机**：`vm-unit.sh`（`479 passed`）、`ignored-acceptance`（4/4）、`cli-probe`、`data-guard`、`mutation-guard`、`gui-fix-check`、`gui-choice-text`、`gui-negative`（9/9）、`gui-backup cancel/online`、`gui-data-restore`（离线+在线+在线格式化）、`pause-backup/restore`、`orphan-race` 与 **`C:` 系统盘离线还原全链（`1c1164cf…`）** 全 PASS；`gui-matrix.sh` 40 组合在 `12pt/14pt` 全绿（`16pt/18pt` 在 `1024×768` 下存在底溢/裁剪）；`gui-backup.sh system` 于 `26200.9974` 暴露上述两项问题并由 `2.10.14` 修复。
+   - **`v2.10.14`（`9dcffb29…`）已完成**：宿主机 `448` 单测、WinARM64 检查与 Core clippy、`source-guard`、`selftest`、`reverify-map --selftest`（83 `.rs`）、`rebuild-deploy.sh`（三方哈希一致、`PREFLIGHT=pass`）、`vm-unit.sh v21014 --allow-known`（`481 passed, 10 ignored, 2 known`）、`mutation-guard`（3/3）、`cli-probe` 全 PASS；其余实机复验（`gui-backup.sh system`、`win-restore`、`power-resume`、按 B 回退及打包验收）按指令暂停并保留干净 VM（`running`、`0` 快照、宿主空闲 `313 GiB`）。
 
-**实机与自动化验证（v2.10.12 最终二进制 `0c453518…`）**：
-- **单元测试与联调**：本机工作区 `439 passed, 1 ignored`、`core clippy` 0 警告、Windows 交叉测试目标编译通过；VM 内 Windows 原生 `vm-unit.sh` `472 passed, 10 ignored, 2 failed（既有非提权环境项）`；VHD+DISM `no_write_on_reject` 用例 `PASS`（验证了 PE `"data"` 的 `format_target=false/true`）。
-- **界面与命令实机**：`gui-matrix.sh --quick`、`gui-choice-text.sh`、`gui-backup.sh cancel`（实时核对 `用户取消了备份任务。` 与 `id=7 def=True`）、`gui-fix-check.sh`、`gui-negative.sh`（9/9）、`gui-backup.sh online`（`104859963` B、`WIM_PROGRAM_VERSION=2.10.12`）、`gui-data-restore.sh`（离线任务 `dcf4ebf8…` 与在线模式）、`cli-probe.sh` 全绿；`source-guard.sh`、`selftest.sh` 全绿。
-
-**仍然没做（如实列出）**：
-
-- **新版本系统盘离线还原**（`restore-existing`）：会抹掉系统盘当前变更，需由用户定时间执行；
-- **PE 桌面真机重启链**：测试虚拟机当前未安装 WinPE（`pe_desktop` 与重启进 PE 消费 `"data"` 请求未在真 PE 内目验，靠 VHD+DISM 与单测覆盖）；
-- 其余 6 处高危确认框的实时弹窗抓取（仅代码与交叉编译核对）、全量 40 组合界面矩阵、`gui-backup.sh system`、系统还原到非 C 盘、断电/物理机矩阵。
-
-**交付**：见 [`文档索引.md`](./文档索引.md) 顶部版本行与 [`20261127-0025` v2.10.12 验收文档](./docs/20261127-0025-缺陷5接入PE数据分支与高危确认默认按钮及v2.10.12验收-v2.10.12-Gemini.md)。详细版 → [当前开发进度（详细）](./docs/20261127-0025-当前开发进度-Gemini.md)。
+**交付**：见 [`文档索引.md`](./文档索引.md) 顶部状态行与 [`20261127-1135` 完整记录](./docs/20261127-1135-v2.10.13-v2.10.14工程加固实机回归与WinRE暂存修复-Gemini.md)。详细版 → [当前开发进度（详细）](./docs/20261127-1135-当前开发进度-Gemini.md)。
 
 ## 【下一步待实现】
 
-总原则不变：**先补缺口验证，再视需求推进体验增强；不盲目拆改核心契约。**
+1. **恢复后补齐 `v2.10.14` 实机复验与发包**（对照 `reverify-map.py`）：
+   - 跑通 `BR_SKIP_IDLE=1 bash tools/vm/gui-backup.sh system` 实证 `DismScratchDir` 消除 WinRE `Error: 112`；
+   - 拍 1 个临时 VM 快照补跑完整 `C:` 系统盘离线还原（验证 `/Apply-Image` 暂存与引导修复）后立即删快照；
+   - 补跑 `failure_policy` 相关的断电续跑 / 按 B 回退与 `pause-restore` / `orphan-race` / `gui-data-restore` 回归，并完成 `pack-dist.sh` + `release-check.sh --baseline dist/BackupRestore-2.10.12-windows-arm64.zip` 与 `verified/vm-20261127` 基线标签。
+2. **修复小屏大字号（`16pt/18pt`）布局溢底/裁剪**：为 `1024×768` 下的高字号主窗口页签（`1101..1106`）与设置窗补齐紧凑排布或滚动支持。
+3. **如条件具备补目验 `PE` 桌面重启链**：在独立分区安装 PE 后实机跑通 `restore-data -> PE` 重启环（目前由 `no_write_on_reject` VHD+DISM 与单测覆盖）。
 
-1. **按需安排重跑系统盘离线还原**（约 12 分钟往返）：验证 `v2.10.8–v2.10.12` 在真实 `restore-existing` 进 WinRE 后的端到端与引导修复链路。
-2. **如要实机目验 PE 数据分支重启环**：在测试机独立分区按产品「安装 PE」流程部署最新镜像后，跑通「还原数据到非 C 盘 → 进入 PE → 重启回 Windows」。
-3. **如要补齐界面系统盘备份实机**（`tools/vm/gui-backup.sh system`，约 20 分钟）：目前宿主机可用空间约 `315 GiB`，满足检查要求，待安排即可运行。
-4. **五个既定长期可选改进**（不急，要做请说）：界面单实例保护；`abandon-task` 分两步反馈；无副档大镜像改免挂载列目录；在线备份校验补充 `backend=` 与小数秒日志；取消勾选格式化的数据卷完整链路实机。
-
-**逐项依据 →** [下一步待实现（详细）](./docs/20261127-0025-下一步待实现-Gemini.md)、[v2.10.12 验收报告](./docs/20261127-0025-缺陷5接入PE数据分支与高危确认默认按钮及v2.10.12验收-v2.10.12-Gemini.md)；更早 → [20261125-0030 下一步待实现](./docs/20261125-0030-下一步待实现-GLM-5.4.md)。
+**逐项依据 →** [下一步待实现（详细）](./docs/20261127-1135-下一步待实现-Gemini.md)、[v2.10.13–v2.10.14 实机回归与修复报告](./docs/20261127-1135-v2.10.13-v2.10.14工程加固实机回归与WinRE暂存修复-Gemini.md)。
 
 ---
 
