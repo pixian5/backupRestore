@@ -30,7 +30,7 @@ use backuprestore_core::{
 use crate::append_log;
 use crate::err;
 #[cfg(windows)]
-use crate::process_runner::{capture_logged, run_logged};
+use crate::process_runner::{DismScratchDir, capture_logged};
 #[cfg(windows)]
 use crate::recovery_volume::{
     env_optional, env_optional_u64, native_windows_architecture, resolve_volume_path,
@@ -158,6 +158,13 @@ pub(crate) fn execute_recovery_backup(
     )?;
     let exclude_arg = format!("/ConfigFile:{}", exclude_config_path.display());
 
+    // WinRE 默认 RAM 盘（X:）暂存空间常仅 32MB；将 DISM ScratchDir/LogPath/TEMP 重定向到镜像所在卷，避免捕获大图中途报 Error 112。
+    let scratch_base = destination_path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(&store.root);
+    let dism_scratch = DismScratchDir::new(scratch_base, &task.task_id, log)?;
+
     // A power loss can leave a partial WIM behind.  For the first
     // capture, only that partial file is removed.  For an existing
     // WIM, copy it to a same-volume candidate and append there; the
@@ -187,7 +194,7 @@ pub(crate) fn execute_recovery_backup(
         // 「还在扫盘」与「真的卡死」在日志里可区分（只观测，不干预）。
         let heartbeat =
             crate::capture_heartbeat::Heartbeat::start(candidate.clone(), log.to_path_buf());
-        let append_result = run_logged("dism.exe", &append_args, log);
+        let append_result = dism_scratch.run_dism(&append_args, log, u32::MAX);
         drop(heartbeat);
         if let Err(error) = append_result {
             let _ = fs::remove_file(&candidate);
@@ -209,8 +216,7 @@ pub(crate) fn execute_recovery_backup(
         let compress_level =
             canonical_compression(task.compress.as_deref().unwrap_or("fast"))?;
         let heartbeat = crate::capture_heartbeat::Heartbeat::start(partial.clone(), log.to_path_buf());
-        let capture_result = run_logged(
-            "dism.exe",
+        let capture_result = dism_scratch.run_dism(
             &[
                 "/English",
                 "/Capture-Image",
@@ -222,6 +228,7 @@ pub(crate) fn execute_recovery_backup(
                 &exclude_arg,
             ],
             log,
+            u32::MAX,
         );
         drop(heartbeat);
         capture_result?;
@@ -322,8 +329,7 @@ pub(crate) fn execute_recovery_backup(
     if let Some(keep) = task.keep_indexes.filter(|n| *n > 0) {
         let keep = keep.max(1).min(new_index);
         for remaining in (keep + 1..=new_index).rev() {
-            run_logged(
-                "dism.exe",
+            dism_scratch.run_dism(
                 &[
                     "/English",
                     "/Delete-Image",
@@ -331,6 +337,7 @@ pub(crate) fn execute_recovery_backup(
                     "/Index:1",
                 ],
                 log,
+                u32::MAX,
             )?;
             if wim_indexes(&destination_path, log)? != (1..remaining).collect::<Vec<_>>() {
                 return Err(err("WIM retention index read-back mismatch"));

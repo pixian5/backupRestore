@@ -368,7 +368,7 @@ system)
 
   say "STEP=7 collect evidence verbatim"
   fetch "H:\\brwork\\tasks\\$TASK\\status.json" "$NAME-status.json" && say "fetched status.json"
-  fetch 'H:\BRImages\Recovery.log' "$NAME-Recovery.raw.log" && say "fetched Recovery.log"
+  fetch "${SOURCE_DRIVE}:\\Recovery.log" "$NAME-Recovery.raw.log" && say "fetched Recovery.log"
   fetch "$GUI_LOG" "$NAME-sys-gui.raw.log" && say "fetched gui.log"
   {
     status_field "$EV/$NAME-status.json" stage | sed 's/^/FINAL_STAGE=/'

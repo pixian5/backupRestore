@@ -8,7 +8,6 @@ use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-#[cfg(windows)]
 use std::path::Path;
 use std::process::Command;
 #[cfg(windows)]
@@ -30,6 +29,76 @@ use crate::{CREATE_NO_WINDOW, recovery_fault};
 #[cfg(windows)]
 pub(crate) fn run_logged(program: &str, args: &[&str], log: &Path) -> Result<(), TaskError> {
     run_logged_timeout(program, args, log, u32::MAX)
+}
+
+/// 为 `dism.exe` 注入 `/ScratchDir` 与 `/LogPath`，将暂存目录与日志从 WinRE 32MB `X:` RAM 盘移至大容量 NTFS 卷。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn dism_scratch_args(
+    scratch_dir: &Path,
+    dism_log: &Path,
+    args: &[&str],
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len() + 2);
+    let mut rest = args;
+    if let Some((first, tail)) = args.split_first()
+        && first.eq_ignore_ascii_case("/English")
+    {
+        out.push((*first).to_string());
+        rest = tail;
+    }
+    out.push(format!("/ScratchDir:{}", scratch_dir.display()));
+    out.push(format!("/LogPath:{}", dism_log.display()));
+    for arg in rest {
+        out.push((*arg).to_string());
+    }
+    out
+}
+
+/// 作用域管理的 DISM 暂存目录：把 `/ScratchDir`、`/LogPath` 与 `TEMP`/`TMP` 重定向至非 `X:` 卷，并在结束时自动清理。
+#[cfg(windows)]
+pub(crate) struct DismScratchDir {
+    dir: std::path::PathBuf,
+    dism_log: std::path::PathBuf,
+}
+
+#[cfg(windows)]
+impl DismScratchDir {
+    /// 在指定大容量基准目录下创建任务作用域暂存目录，并写入结构化日志标记。
+    pub(crate) fn new(base_dir: &Path, tag: &str, log: &Path) -> Result<Self, TaskError> {
+        let safe_tag: String = tag
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let suffix = if safe_tag.is_empty() { "task" } else { &safe_tag };
+        let dir = base_dir.join(format!(".br-dism-scratch-{suffix}"));
+        std::fs::create_dir_all(&dir)?;
+        let dism_log = dir.join("dism.log");
+        let _ = append_log(log, &format!("DISM scratch redirected to {}", dir.display()));
+        Ok(Self { dir, dism_log })
+    }
+
+    /// 以重定向后的 `ScratchDir`、`LogPath` 与 `TEMP`/`TMP` 运行 `dism.exe`；失败时回写部分 DISM 日志尾部便于归因。
+    pub(crate) fn run_dism(&self, args: &[&str], log: &Path, wait_ms: u32) -> Result<(), TaskError> {
+        let owned = dism_scratch_args(&self.dir, &self.dism_log, args);
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let dir_text = self.dir.to_string_lossy().into_owned();
+        let envs = [("TEMP", dir_text.as_str()), ("TMP", dir_text.as_str())];
+        let result = run_logged_timeout_with_env("dism.exe", &refs, log, wait_ms, &envs);
+        if result.is_err() && self.dism_log.is_file() {
+            let tail = crate::text_parsing::tail_text(&self.dism_log, 4096);
+            if !tail.trim().is_empty() {
+                let _ = append_log(log, &format!("DISM dism.log tail:\n{tail}"));
+            }
+        }
+        result
+    }
+}
+
+#[cfg(windows)]
+impl Drop for DismScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// 等子进程结束；`wait_ms == u32::MAX` 时**等到底**（旧行为，任何调用点都不受影响）。
@@ -74,14 +143,29 @@ pub(crate) fn run_logged_timeout(
     log: &Path,
     wait_ms: u32,
 ) -> Result<(), TaskError> {
+    run_logged_timeout_with_env(program, args, log, wait_ms, &[])
+}
+
+/// 带等待上限与可选子进程环境变量覆盖的日志执行入口。
+#[cfg(windows)]
+pub(crate) fn run_logged_timeout_with_env(
+    program: &str,
+    args: &[&str],
+    log: &Path,
+    wait_ms: u32,
+    env_overrides: &[(&str, &str)],
+) -> Result<(), TaskError> {
     append_log(log, &format!("running {program} {}", args.join(" ")))?;
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+        .creation_flags(CREATE_NO_WINDOW);
+    for (key, value) in env_overrides {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn()?;
     if let Err(error) = recovery_fault::pause_running_bcdboot(program, &mut child, log) {
         let _ = child.kill();
         let _ = child.wait();
@@ -347,5 +431,25 @@ mod tests {
             !error.to_string().ends_with('\n'),
             "文案不该以换行结尾：{error:?}"
         );
+    }
+
+    #[test]
+    fn dism_scratch_args_inserts_scratch_and_log_after_english() {
+        let scratch = Path::new("/tmp/br-scratch");
+        let dism_log = Path::new("/tmp/br-scratch/dism.log");
+        let with_en = dism_scratch_args(
+            scratch,
+            dism_log,
+            &["/English", "/Capture-Image", "/CaptureDir:C:\\"],
+        );
+        assert_eq!(with_en[0], "/English");
+        assert!(with_en[1].starts_with("/ScratchDir:"));
+        assert!(with_en[2].starts_with("/LogPath:"));
+        assert_eq!(with_en[3], "/Capture-Image");
+
+        let no_en = dism_scratch_args(scratch, dism_log, &["/Apply-Image"]);
+        assert!(no_en[0].starts_with("/ScratchDir:"));
+        assert!(no_en[1].starts_with("/LogPath:"));
+        assert_eq!(no_en[2], "/Apply-Image");
     }
 }

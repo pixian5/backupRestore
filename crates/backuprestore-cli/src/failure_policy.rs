@@ -74,6 +74,16 @@ pub(crate) enum FailureAction {
     PauseInRecovery,
 }
 
+/// 按字符边界安全截断过长单行，避免弹框宽度被单条长路径撑爆。
+fn truncate_line_chars(line: &str, max_chars: usize) -> String {
+    let trimmed = line.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let prefix: String = trimmed.chars().take(max_chars.saturating_sub(3)).collect();
+    format!("{prefix}...")
+}
+
 impl FailureAction {
     /// 写进 `RecoveryTask.env` / 设置文件的值（ASCII，语言无关）。
     pub(crate) fn env_name(self) -> &'static str {
@@ -569,6 +579,42 @@ impl FailurePolicy {
     /// **重试也几乎必然再失败**——2026-10-23 实机撞见用户连点两次重试、每次都在同一处
     /// 失败。把这一点写进正文，让用户带着信息选，而不是替用户决定（是否自动收口为终态
     /// 属于产品取舍，已由用户 2026-10-23 拍板「不自动终态，只把信息说清」）。
+    /// 弹窗错误摘要：避免 8192 字节日志尾部把 `MessageBoxW` 撑出 768px 屏幕底边而隐藏「重试 / 取消」按钮。
+    pub(crate) fn summarize_prompt_error(error: &str, language: MessageLanguage) -> String {
+        let non_empty: Vec<&str> = error
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty()
+                    && trimmed != "[stdout]"
+                    && trimmed != "[stderr]"
+                    && !trimmed.starts_with("--- 输出尾部")
+                    && !trimmed.starts_with("--- output tail")
+            })
+            .collect();
+        let char_count = error.chars().count();
+        if non_empty.len() <= 8 && char_count <= 450 {
+            return error.to_string();
+        }
+        let mut selected: Vec<String> = Vec::new();
+        if let Some(first) = non_empty.first() {
+            selected.push(truncate_line_chars(first, 110));
+        }
+        let tail_start = non_empty.len().saturating_sub(5).max(1);
+        if tail_start > 1 {
+            let note = match language {
+                MessageLanguage::Chinese => "...（已省略过程输出，完整日志见 Recovery.log）",
+                MessageLanguage::English => "... (intermediate output omitted; see Recovery.log)",
+            };
+            selected.push(note.to_string());
+        }
+        for line in &non_empty[tail_start..] {
+            selected.push(truncate_line_chars(line, 110));
+        }
+        selected.join("\n")
+    }
+
     pub(crate) fn retry_prompt(
         &self,
         error: &str,
@@ -576,6 +622,7 @@ impl FailurePolicy {
         language: MessageLanguage,
         bcd_rolled_back: bool,
     ) -> String {
+        let error = Self::summarize_prompt_error(error, language);
         let rollback_note = if bcd_rolled_back {
             match language {
                 MessageLanguage::Chinese => {
@@ -622,6 +669,7 @@ impl FailurePolicy {
         consecutive_failures: u32,
         language: MessageLanguage,
     ) -> String {
+        let error = Self::summarize_prompt_error(error, language);
         let wait_note = self.pause_wait_note(language);
         match language {
             MessageLanguage::Chinese => format!(
@@ -1658,5 +1706,31 @@ mod tests {
                 "The destructive task was cancelled."
             );
         }
+    }
+
+    #[test]
+    fn long_error_is_summarized_to_fit_screen() {
+        let mut long = String::from(
+            "[BR-APL-009] dism.exe failed with exit code: 112\n--- 输出尾部（至多 8192 字节）---\n",
+        );
+        for pct in 1..=60 {
+            long.push_str(&format!(
+                "[stdout]\n[stdout] [=== {pct}.0% ===]\nCAPTURE_HEARTBEAT elapsed_secs={pct}\n"
+            ));
+        }
+        long.push_str("[stdout] Error: 112\n[stdout] There is not enough space on the disk.\n");
+
+        let policy = FailurePolicy::new(3, FailureAction::AutoEscape).expect("valid");
+        let zh = policy.retry_prompt(&long, 1, MessageLanguage::Chinese, false);
+        assert!(zh.lines().count() <= 20, "prompt too tall: {zh}");
+        assert!(zh.contains("[BR-APL-009]"), "{zh}");
+        assert!(zh.contains("Error: 112"), "{zh}");
+        assert!(zh.contains("Recovery.log"), "{zh}");
+
+        let pause = FailurePolicy::new(3, FailureAction::PauseInRecovery).expect("valid");
+        let en = pause.pause_prompt(&long, 3, MessageLanguage::English);
+        assert!(en.lines().count() <= 25, "pause prompt too tall: {en}");
+        assert!(en.contains("[BR-APL-009]"), "{en}");
+        assert!(en.contains("Error: 112"), "{en}");
     }
 }

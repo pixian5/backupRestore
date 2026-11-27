@@ -24,7 +24,7 @@ use crate::err;
 #[allow(unused_imports)]
 use crate::error_code::{ErrCode, errc, errc_with};
 #[cfg(windows)]
-use crate::process_runner::{run_logged, run_logged_timeout};
+use crate::process_runner::{DismScratchDir, run_logged};
 #[cfg(windows)]
 use crate::recovery_volume::*;
 #[cfg(windows)]
@@ -997,20 +997,26 @@ pub(crate) fn recover_windows(
                         log,
                         crate::dism_timeout::wait_ms(),
                     )?;
-                } else if let Err(error) = run_logged_timeout(
-                    "dism.exe",
-                    &[
-                        "/English",
-                        "/Apply-Image",
-                        &format!("/ImageFile:{}", image_path.display()),
-                        &format!("/Index:{}", image_index),
-                        &format!("/ApplyDir:{}", target_root.display()),
-                    ],
+                } else if let Err(error) = DismScratchDir::new(
+                    &store.task_dir(&task.task_id)?,
+                    &task.task_id,
                     log,
-                    // 设置里的 DISM 等待上限（默认 u32::MAX = 不限制，零回归）。
-                    // 以前这里写死无限等待，配置项形同虚设。
-                    crate::dism_timeout::wait_ms(),
-                ) {
+                )
+                .and_then(|scratch| {
+                    scratch.run_dism(
+                        &[
+                            "/English",
+                            "/Apply-Image",
+                            &format!("/ImageFile:{}", image_path.display()),
+                            &format!("/Index:{}", image_index),
+                            &format!("/ApplyDir:{}", target_root.display()),
+                        ],
+                        log,
+                        // 设置里的 DISM 等待上限（默认 u32::MAX = 不限制，零回归）。
+                        // 以前这里写死无限等待，配置项形同虚设。
+                        crate::dism_timeout::wait_ms(),
+                    )
+                }) {
                     // 【D1 2026-10-24】DISM apply 失败 → 按判据自动降级 wimlib
                     // 重试一次（设计 docs/20261024-1636；判据/分类/文案单一来源
                     // = failure_policy，编排 = wimlib_apply）。四个 apply 落点

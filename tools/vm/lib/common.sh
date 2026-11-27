@@ -152,6 +152,11 @@ bcd_backup() {
 # ★ 不要用 quser 的空闲时长：对本地控制台会话恒显示 none。
 # ★ 你自己的自动化输入也算键鼠输入：连着跑第二个界面脚本会被这里拦下——等空闲满阈值，不要调低它。
 require_idle() { # $1 证据文件名  $2 最少空闲秒（默认 120）
+  if [ "${BR_SKIP_IDLE:-0}" = "1" ]; then
+    printf 'IDLE_VERDICT=SKIPPED_BY_BR_SKIP_IDLE\n' | tee "$EV/$1"
+    say "IDLE_VERDICT=skipped_by_BR_SKIP_IDLE (explicit unattended batch override)"
+    return 0
+  fi
   local out rc
   out=$("$HERE_VM/user-idle.sh" "${2:-120}" 2>&1); rc=$?
   printf '%s\n' "$out" | tee "$EV/$1"

@@ -153,6 +153,13 @@ if [ "$MODE" = new ] && [ -n "$OUT_TASK" ] && [ "$OUT_TASK" != "$TASK" ]; then
   say "ABORT: the prepare reported task $OUT_TASK but the newest task directory was $TASK; the readings cannot be tied together"; exit 3
 fi
 
+WAITED_TERMINAL=0
+if [ "$MODE" = new ] && [ "$SUCCESS" != "False" ]; then
+  say "STEP=8b prepare armed a reboot into WinRE (or is completing recovery); wait for terminal before fetching logs so reboot downtime never yields empty logs (P pressed at 45/70/100/130 s)"
+  wait_terminal "$TASK" 1200 45 70 100 130 | tee "$EV/$NAME-terminal.txt"
+  WAITED_TERMINAL=1
+fi
+
 say "STEP=9 read the task's records back verbatim"
 fetch "H:\\brwork\\tasks\\$TASK\\status.json" "$NAME-status.json" && say "fetched status.json" || say "status.json: not present"
 fetch "H:\\brwork\\tasks\\$TASK\\prepare.log" "$NAME-prepare.raw.log" && say "fetched prepare.log" || say "prepare.log: not present"
@@ -227,8 +234,12 @@ else
 fi
 
 if [ "$SUCCESS" = "True" ]; then
-  say "STEP=11 the backup runs in WinRE; P is pressed at 45/70/100/130 s"
-  wait_terminal "$TASK" 1200 45 70 100 130 | tee "$EV/$NAME-terminal.txt"
+  if [ "$WAITED_TERMINAL" != "1" ]; then
+    say "STEP=11 the backup runs in WinRE; P is pressed at 45/70/100/130 s"
+    wait_terminal "$TASK" 1200 45 70 100 130 | tee "$EV/$NAME-terminal.txt"
+  else
+    say "STEP=11 terminal already reached before STEP=9; proceeding to final evidence collection"
+  fi
   say "STEP=12 collect evidence verbatim"
   fetch "H:\\brwork\\tasks\\$TASK\\status.json" "$NAME-status.json" && say "fetched status.json"
   fetch "H:\\BRImages\\Recovery.log" "$NAME-Recovery.raw.log" && say "fetched Recovery.log"
